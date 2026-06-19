@@ -6,7 +6,7 @@
 
 ---
 
-**Status:** Work in progress — no release yet. Polishing the Windows client, Linux port planned.
+**Status:** Work in progress - no release yet. Polishing the Windows client, Linux port planned.
 
 Built with C++20 · ncurses · miniaudio · TagLib · AccurateRip
 

@@ -1,6 +1,6 @@
-# RE-MOCT — Music On Console Terminal
+# RE-MOCT - Music On Console Terminal
 
-> A homage to MOC — keyboard-driven terminal CD player and ripper for Windows.
+> A homage to MOC - keyboard-driven terminal CD player and ripper for Windows.
 
 📖 **[Documentation & Feature Guide](https://radmageirl.github.io/re-moct/)**
 

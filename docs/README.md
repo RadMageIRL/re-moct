@@ -23,7 +23,7 @@ Example TUI:
 <br><br>
 <img width="703" height="795" alt="image" src="https://github.com/user-attachments/assets/00ca1e84-b779-4bb9-b47e-f8cf5fea6c19" />
 
-## AccurateRip Pipeline
+## AccurateRip Pipeline (RE-MOCT Implementation)
 ```mermaid
 graph TD
     classDef hardware fill:#13161b,stroke:#4fc8a0,stroke-width:2px,color:#cdd5df;

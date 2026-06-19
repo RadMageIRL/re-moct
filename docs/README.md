@@ -16,3 +16,6 @@ Built with C++20 · ncurses · miniaudio · TagLib · AccurateRip
 Example TUI:
 
 <img width="1125" height="618" alt="image" src="https://github.com/user-attachments/assets/eccefb9e-1d83-4422-b72a-113b282a68d7" />
+<br><br>
+<img width="1124" height="616" alt="image" src="https://github.com/user-attachments/assets/0b67803d-2800-4e4b-aec4-697e0e807744" />
+

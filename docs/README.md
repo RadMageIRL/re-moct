@@ -30,7 +30,7 @@ Example TUI:
 <img width="700" height="795" alt="image" src="https://github.com/user-attachments/assets/4df0a844-56f6-4fff-8584-a5af428f3aad" />
 <br>
 
-## AccurateRip Pipeline (RE-MOCT Implementation)
+## AccurateRip Pipeline (RE-MOCT Native Handshake Implementation)
 
 ```mermaid
 %%{init: {'flowchart': {'htmlLabels': true, 'padding': 18}}}%%

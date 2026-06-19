@@ -23,6 +23,29 @@ Example TUI:
 <br><br>
 <img width="703" height="795" alt="image" src="https://github.com/user-attachments/assets/00ca1e84-b779-4bb9-b47e-f8cf5fea6c19" />
 
+## AccurateRip Pipeline
+
+```mermaid
+graph TD
+    Start([START RIP]) --> A[Phase 01: Disc ID Gen]
+    A --> B[Phase 02: WinInet Handshake]
+    B --> C{HTTP 200?}
+    
+    C -- Yes --> D[Phase 03: .bin Binary Parse]
+    C -- No/404 --> F([NOT FOUND])
+    
+    D --> E[Phase 04: CRC Compute Loop]
+    E --> G[Phase 05: Verify v1/v2 vs DB]
+    
+    G --> H{Match Found?}
+    H -- Yes --> I([VERIFIED: BIT-PERFECT])
+    H -- No --> J{Retry Pass 2?}
+    
+    J -- Yes --> K[Flush Hardware Cache / 1x Speed]
+    K --> E
+    J -- No --> L([ABORT: VERIFY FAIL])
+```
+
 ## Acknowledgements
 
 - **[Leo Bogert](https://github.com/leo-bogert/accuraterip-checksum)** - authoritative AccurateRip CRCv2 reference implementation (`accuraterip-checksum.c`), which confirmed the correct formula including disc-absolute pregap anchoring

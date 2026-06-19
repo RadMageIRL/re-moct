@@ -27,6 +27,10 @@ Example TUI:
 
 ```mermaid
 graph TD
+    classDef hardware fill:#13161b,stroke:#4fc8a0,stroke-width:2px,color:#cdd5df;
+    classDef handshake fill:#1a1e25,stroke:#c98bff,stroke-width:2px,color:#cdd5df;
+    classDef forensic fill:#111418,stroke:#f0c060,stroke-width:2px,color:#cdd5df;
+
     Start([START RIP]) --> A[Phase 01: Disc ID Gen]
     A --> B[Phase 02: WinInet Handshake]
     B --> C{HTTP 200?}
@@ -44,6 +48,10 @@ graph TD
     J -- Yes --> K[Flush Hardware Cache / 1x Speed]
     K --> E
     J -- No --> L([ABORT: VERIFY FAIL])
+
+    class A,B,D hardware;
+    class C,G,H,J handshake;
+    class E,K forensic;
 ```
 
 ## Acknowledgements

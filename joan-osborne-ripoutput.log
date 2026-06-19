@@ -1,0 +1,418 @@
+RE-MOCT CD Rip Log
+==================
+Album  : Relish
+Artist : Joan Osborne
+Year   : 1995
+Drive  : G  (offset +6 samples)
+Model  : HL-DT-ST DVDRW GHD3N
+Tracks : 12
+Mode   : AccurateRip
+Output : C:\Users\david\Music\re-moct\Joan Osborne - Relish (1995)
+
+C2 support  : no
+Drive cache : not probed
+            Note: if drive caches sector reads, dual-pass returns
+            identical data on damaged discs -- determinism check unreliable.
+            Use 'whipper drive analyze' to test for caching behavior.
+
+
+=== AccurateRip ===
+ntracks=12 cddb=ab0e5d0c disc_id1=001b9e61 disc_id2=01021471
+  track[01] lba=182  rel=32
+  track[02] lba=24295  rel=24145
+  track[03] lba=46090  rel=45940
+  track[04] lba=68637  rel=68487
+  track[05] lba=89017  rel=88867
+  track[06] lba=117435  rel=117285
+  track[07] lba=141540  rel=141390
+  track[08] lba=160507  rel=160357
+  track[09] lba=185447  rel=185297
+  track[10] lba=208680  rel=208530
+  track[11] lba=232357  rel=232207
+  track[12] lba=261840  rel=261690
+  t1_lba=182  leadout_rel=275790
+TRY 001b9e61/01021471 -> HTTP 200
+HIT! disc_id1=001b9e61 disc_id2=01021471 size=2057
+  [Track 1 sector 0 first 16 samples (L R pairs)]:
+   ffc40002 ffd2fffa ffc20006 ffc20004 ffc7fffd ffca0001 ffc4fffd ffc7000d
+   ffcafffe ffb1fffd ffcafffd ffd10002 ffb90009 ffd0ffff ffc7000a ffd40002
+  ar_check_from=2940 ar_check_to=14178444 total_samples=14178444
+  AR diag T1: csum_lo=e400dca9 csum_hi=bf767a81 n_accum=14175505 expected=14175505 COUNT OK
+  pcm_crc32=2406f512  (dBpoweramp CRC32 for T1=b02e7e1a)
+  frame450: global=93c79638 local=b598ad60  (total_skip=6)
+
+Track 1 Pass 1: crc_v1(=csum_lo)=e400dca9  crc_v2(=csum_lo+hi)=a377572a  status=1 (AR v2 OK)
+  DB main_crcs (16):
+    crc=a377572a conf=200  <-- MATCH v2
+    crc=f002712a conf=200
+    crc=e400dca9 conf=165  <-- MATCH v1
+    crc=8866d505 conf=114
+    crc=eb72e474 conf=64
+    crc=563d9173 conf=54
+    crc=97290850 conf=44
+    crc=87bce923 conf=40
+    crc=eb2b2bf0 conf=29
+    crc=2ffc4047 conf=26
+    crc=ae0b957b conf=14
+    crc=fd27b4dd conf=11
+    crc=577e9f1a conf=10
+    crc=fb29d9d8 conf=5
+    crc=255dca48 conf=5
+    crc=6d98aef0 conf=4
+  DB frame450_crcs (8):
+    crc=b598ad60 conf=200
+    crc=46d45531 conf=200
+    crc=6ef16f6a conf=165
+    crc=5fc7440e conf=114
+    crc=217e7121 conf=64
+    crc=c88ce2d3 conf=54
+    crc=7358aa12 conf=44
+    crc=6c01fc8e conf=40
+  AR diag T2: csum_lo=f806d0cd csum_hi=a8bee2f5 n_accum=12815460 expected=12815460 COUNT OK
+  pcm_crc32=5e49ff2d  (dBpoweramp CRC32 for T1=b02e7e1a)
+
+Track 2 Pass 1: crc_v1(=csum_lo)=f806d0cd  crc_v2(=csum_lo+hi)=a0c5b3c2  status=1 (AR v2 OK)
+  DB main_crcs (16):
+    crc=a0c5b3c2 conf=200  <-- MATCH v2
+    crc=7b33695f conf=200
+    crc=f806d0cd conf=166  <-- MATCH v1
+    crc=01e75874 conf=116
+    crc=ca215ef2 conf=64
+    crc=caa1fb24 conf=55
+    crc=1f965543 conf=43
+    crc=4d669a7c conf=39
+    crc=5462c9c0 conf=29
+    crc=a5e8a663 conf=24
+    crc=5b40240e conf=14
+    crc=b8f8132c conf=11
+    crc=08c81c5c conf=10
+    crc=fbec9de1 conf=5
+    crc=a8918fcf conf=5
+    crc=6bb0dd56 conf=3
+  DB frame450_crcs (8):
+    crc=38221990 conf=200
+    crc=0fd5f4cb conf=200
+    crc=397b8b3f conf=166
+    crc=b498c032 conf=116
+    crc=4f0df3a5 conf=64
+    crc=38f86211 conf=55
+    crc=91188dc8 conf=43
+    crc=6c82676f conf=39
+  AR diag T3: csum_lo=10fcc470 csum_hi=d74dc72a n_accum=13257636 expected=13257636 COUNT OK
+  pcm_crc32=b905c21e  (dBpoweramp CRC32 for T1=b02e7e1a)
+
+Track 3 Pass 1: crc_v1(=csum_lo)=10fcc470  crc_v2(=csum_lo+hi)=e84a8b9a  status=1 (AR v2 OK)
+  DB main_crcs (16):
+    crc=e84a8b9a conf=200  <-- MATCH v2
+    crc=2361a50e conf=200
+    crc=10fcc470 conf=163  <-- MATCH v1
+    crc=c9ddac85 conf=113
+    crc=c9b5b514 conf=64
+    crc=17ec2002 conf=53
+    crc=c45e33ff conf=43
+    crc=73bb6707 conf=38
+    crc=bb432166 conf=28
+    crc=6b3eddbc conf=24
+    crc=b6af6a9d conf=14
+    crc=076390a2 conf=11
+    crc=8213832e conf=10
+    crc=e245ccf9 conf=5
+    crc=e8ebfb03 conf=5
+    crc=459d8ae0 conf=4
+  DB frame450_crcs (8):
+    crc=865e1567 conf=200
+    crc=f2c5ac09 conf=200
+    crc=974f9dc0 conf=163
+    crc=060bd1d5 conf=113
+    crc=5472acd3 conf=64
+    crc=67e19515 conf=53
+    crc=f9eb65a6 conf=43
+    crc=8d2c956e conf=38
+  AR diag T4: csum_lo=990a7392 csum_hi=f7132174 n_accum=11983440 expected=11983440 COUNT OK
+  pcm_crc32=fc8e5b06  (dBpoweramp CRC32 for T1=b02e7e1a)
+
+Track 4 Pass 1: crc_v1(=csum_lo)=990a7392  crc_v2(=csum_lo+hi)=901d9506  status=1 (AR v2 OK)
+  DB main_crcs (16):
+    crc=901d9506 conf=200  <-- MATCH v2
+    crc=ad9daae0 conf=200
+    crc=990a7392 conf=167  <-- MATCH v1
+    crc=c6478920 conf=112
+    crc=f34d0eb9 conf=64
+    crc=c37eeb9a conf=55
+    crc=a401eeda conf=44
+    crc=0c57a69e conf=39
+    crc=dc240900 conf=28
+    crc=bd07cc13 conf=24
+    crc=ca04d3b1 conf=14
+    crc=bce2bca4 conf=11
+    crc=2311db78 conf=10
+    crc=6b6678c7 conf=5
+    crc=38cf41b1 conf=5
+    crc=5326d367 conf=3
+  DB frame450_crcs (8):
+    crc=5879b9eb conf=200
+    crc=04157a66 conf=200
+    crc=a611e47e conf=167
+    crc=ecfd4e77 conf=112
+    crc=d30ed2b8 conf=64
+    crc=549d4cd7 conf=55
+    crc=89519b40 conf=44
+    crc=3780de7f conf=39
+  AR diag T5: csum_lo=c4d860d6 csum_hi=b9ad05e3 n_accum=16709784 expected=16709784 COUNT OK
+  pcm_crc32=0c6e6aa1  (dBpoweramp CRC32 for T1=b02e7e1a)
+
+Track 5 Pass 1: crc_v1(=csum_lo)=c4d860d6  crc_v2(=csum_lo+hi)=7e8566b9  status=1 (AR v2 OK)
+  DB main_crcs (16):
+    crc=7e8566b9 conf=200  <-- MATCH v2
+    crc=5e5868bd conf=200
+    crc=c4d860d6 conf=168  <-- MATCH v1
+    crc=935d62fb conf=111
+    crc=5d38d750 conf=64
+    crc=b8029741 conf=55
+    crc=f0d3867d conf=44
+    crc=94b6f791 conf=40
+    crc=f104bd47 conf=28
+    crc=2558b091 conf=24
+    crc=f4f6f7bf conf=14
+    crc=ba52a137 conf=11
+    crc=0d69330a conf=10
+    crc=4062215c conf=5
+    crc=3bf6bbf5 conf=5
+    crc=feeaa10c conf=3
+  DB frame450_crcs (8):
+    crc=7e9f7b0e conf=200
+    crc=71ad9535 conf=200
+    crc=bba470b6 conf=168
+    crc=124fa7f7 conf=111
+    crc=61ce46cf conf=64
+    crc=60f859df conf=55
+    crc=8f3eba60 conf=44
+    crc=5306ab39 conf=40
+  AR diag T6: csum_lo=503ad68e csum_hi=df162ffe n_accum=14173740 expected=14173740 COUNT OK
+  pcm_crc32=00effb1f  (dBpoweramp CRC32 for T1=b02e7e1a)
+
+Track 6 Pass 1: crc_v1(=csum_lo)=503ad68e  crc_v2(=csum_lo+hi)=2f51068c  status=1 (AR v2 OK)
+  DB main_crcs (16):
+    crc=2f51068c conf=200  <-- MATCH v2
+    crc=a6050947 conf=200
+    crc=503ad68e conf=168  <-- MATCH v1
+    crc=e972c76d conf=115
+    crc=b2b4f1a5 conf=63
+    crc=7d83bae9 conf=55
+    crc=15d85438 conf=45
+    crc=f5a989ef conf=39
+    crc=c0fd1656 conf=27
+    crc=58d8828a conf=23
+    crc=b764067e conf=14
+    crc=75f948d5 conf=11
+    crc=a362fa71 conf=10
+    crc=50293e74 conf=5
+    crc=0a496ad9 conf=5
+    crc=09a247ab conf=4
+  DB frame450_crcs (9):
+    crc=a88bff92 conf=200
+    crc=b775edd3 conf=200
+    crc=1e75839c conf=168
+    crc=dad57eb0 conf=115
+    crc=60a4215a conf=63
+    crc=38c9c384 conf=55
+    crc=a90a1470 conf=45
+    crc=c265b7c2 conf=39
+    crc=272816b5 conf=27
+  AR diag T7: csum_lo=8b2bd172 csum_hi=25ec9b07 n_accum=11152596 expected=11152596 COUNT OK
+  pcm_crc32=933f3342  (dBpoweramp CRC32 for T1=b02e7e1a)
+
+Track 7 Pass 1: crc_v1(=csum_lo)=8b2bd172  crc_v2(=csum_lo+hi)=b1186c79  status=1 (AR v2 OK)
+  DB main_crcs (16):
+    crc=b1186c79 conf=200  <-- MATCH v2
+    crc=9c322a4c conf=200
+    crc=8b2bd172 conf=165  <-- MATCH v1
+    crc=defc0f7c conf=111
+    crc=d7e5f0a4 conf=65
+    crc=674da20c conf=55
+    crc=a2d264fa conf=44
+    crc=1da1c0c7 conf=39
+    crc=a779554b conf=27
+    crc=e5f006bf conf=23
+    crc=d1fce363 conf=14
+    crc=dda7501d conf=11
+    crc=3b0b9884 conf=10
+    crc=31b4e948 conf=5
+    crc=c82c30e1 conf=5
+    crc=f71943d2 conf=4
+  DB frame450_crcs (8):
+    crc=3c5451cd conf=200
+    crc=fd560660 conf=200
+    crc=7ab7e07d conf=165
+    crc=c1c557a2 conf=111
+    crc=23df6688 conf=65
+    crc=d8fbc60d conf=55
+    crc=138a35cd conf=44
+    crc=0d1c7d09 conf=39
+  AR diag T8: csum_lo=a0cf6615 csum_hi=fc574106 n_accum=14664720 expected=14664720 COUNT OK
+  pcm_crc32=3c214654  (dBpoweramp CRC32 for T1=b02e7e1a)
+
+Track 8 Pass 1: crc_v1(=csum_lo)=a0cf6615  crc_v2(=csum_lo+hi)=9d26a71b  status=1 (AR v2 OK)
+  DB main_crcs (16):
+    crc=9d26a71b conf=200  <-- MATCH v2
+    crc=d2733184 conf=200
+    crc=a0cf6615 conf=167  <-- MATCH v1
+    crc=ea01c261 conf=112
+    crc=fb0662de conf=64
+    crc=98ad6ada conf=54
+    crc=e5207fa4 conf=42
+    crc=13d6810e conf=38
+    crc=ae88f729 conf=26
+    crc=fd1d5eae conf=24
+    crc=7d3c7900 conf=14
+    crc=2f3dbde0 conf=11
+    crc=da181769 conf=10
+    crc=223c4250 conf=5
+    crc=e709bdad conf=4
+    crc=d263481a conf=3
+  DB frame450_crcs (8):
+    crc=4bff4f63 conf=200
+    crc=5b86a5d9 conf=200
+    crc=b9efda5b conf=167
+    crc=c1115a31 conf=112
+    crc=4052e209 conf=64
+    crc=86bf3a26 conf=54
+    crc=45e7f69f conf=42
+    crc=b70fca21 conf=38
+  AR diag T9: csum_lo=88af30d6 csum_hi=73dfa22c n_accum=13661004 expected=13661004 COUNT OK
+  pcm_crc32=add1ef7e  (dBpoweramp CRC32 for T1=b02e7e1a)
+
+Track 9 Pass 1: crc_v1(=csum_lo)=88af30d6  crc_v2(=csum_lo+hi)=fc8ed302  status=1 (AR v2 OK)
+  DB main_crcs (16):
+    crc=fc8ed302 conf=200  <-- MATCH v2
+    crc=98830528 conf=200
+    crc=88af30d6 conf=164  <-- MATCH v1
+    crc=a3f24aaa conf=109
+    crc=db15ce92 conf=65
+    crc=5dde7485 conf=53
+    crc=9fdf397e conf=43
+    crc=ea19ae3b conf=38
+    crc=661ef262 conf=27
+    crc=abb455bb conf=25
+    crc=4fd32101 conf=14
+    crc=354865ca conf=10
+    crc=608b9eef conf=10
+    crc=34db5e7b conf=5
+    crc=e3013760 conf=4
+    crc=e1840fac conf=4
+  DB frame450_crcs (8):
+    crc=91539494 conf=200
+    crc=a5ed4332 conf=200
+    crc=9245764c conf=164
+    crc=314b8708 conf=109
+    crc=4f3d9059 conf=65
+    crc=368c4f93 conf=53
+    crc=5963a6df conf=43
+    crc=337200f3 conf=38
+  AR diag T10: csum_lo=42a74bec csum_hi=55f15539 n_accum=13922076 expected=13922076 COUNT OK
+  pcm_crc32=44af95fd  (dBpoweramp CRC32 for T1=b02e7e1a)
+
+Track 10 Pass 1: crc_v1(=csum_lo)=42a74bec  crc_v2(=csum_lo+hi)=9898a125  status=1 (AR v2 OK)
+  DB main_crcs (16):
+    crc=9898a125 conf=200  <-- MATCH v2
+    crc=a74f7734 conf=200
+    crc=42a74bec conf=160  <-- MATCH v1
+    crc=5a878913 conf=109
+    crc=766fba38 conf=65
+    crc=50bcaa7b conf=53
+    crc=c00176f9 conf=44
+    crc=2aec8d68 conf=38
+    crc=03ef3d92 conf=27
+    crc=73a467e2 conf=24
+    crc=86722e39 conf=14
+    crc=adfed351 conf=11
+    crc=a3754e05 conf=10
+    crc=1a96c395 conf=5
+    crc=77d0fae4 conf=5
+    crc=6da8ee40 conf=3
+  DB frame450_crcs (8):
+    crc=f7079a22 conf=200
+    crc=ad7bb088 conf=200
+    crc=fc0bb01a conf=160
+    crc=2061065a conf=109
+    crc=d503dad0 conf=65
+    crc=207b7c29 conf=53
+    crc=ab179d80 conf=44
+    crc=3fcc9b5f conf=38
+  AR diag T11: csum_lo=72856214 csum_hi=7eb65fe2 n_accum=17336004 expected=17336004 COUNT OK
+  pcm_crc32=61ad7982  (dBpoweramp CRC32 for T1=b02e7e1a)
+
+Track 11 Pass 1: crc_v1(=csum_lo)=72856214  crc_v2(=csum_lo+hi)=f13bc1f6  status=1 (AR v2 OK)
+  DB main_crcs (16):
+    crc=f13bc1f6 conf=200  <-- MATCH v2
+    crc=888b03a4 conf=200
+    crc=72856214 conf=160  <-- MATCH v1
+    crc=ade88421 conf=104
+    crc=ed809d11 conf=65
+    crc=dac831e0 conf=54
+    crc=3e5ac2f0 conf=44
+    crc=177b7057 conf=38
+    crc=fc0b956a conf=26
+    crc=643b81e9 conf=23
+    crc=1c4ac56e conf=14
+    crc=4f925f33 conf=11
+    crc=681983ba conf=10
+    crc=e6dcb918 conf=5
+    crc=243fa0a0 conf=5
+    crc=ce50c46a conf=4
+  DB frame450_crcs (8):
+    crc=b51cdb1a conf=200
+    crc=e3b4d036 conf=200
+    crc=a5e981ad conf=160
+    crc=e114ce5f conf=104
+    crc=a31c4226 conf=65
+    crc=edb67374 conf=54
+    crc=abb00570 conf=44
+    crc=08654181 conf=38
+  AR diag T12: csum_lo=979620cb csum_hi=aa591969 n_accum=8287860 expected=8287860 COUNT OK
+  pcm_crc32=2f5b1a85  (dBpoweramp CRC32 for T1=b02e7e1a)
+
+Track 12 Pass 1: crc_v1(=csum_lo)=979620cb  crc_v2(=csum_lo+hi)=41ef3a34  status=1 (AR v2 OK)
+  DB main_crcs (17):
+    crc=41ef3a34 conf=200  <-- MATCH v2
+    crc=53b0ec16 conf=200
+    crc=979620cb conf=163  <-- MATCH v1
+    crc=f5111e4b conf=102
+    crc=f4fd9601 conf=63
+    crc=19a5af22 conf=53
+    crc=baf25307 conf=44
+    crc=987efa39 conf=38
+    crc=b9213e5b conf=28
+    crc=5c8f1a49 conf=24
+    crc=9ca0d5a9 conf=14
+    crc=c1b57e0e conf=11
+    crc=1e05c9cb conf=10
+    crc=d9c3827d conf=5
+    crc=67738430 conf=4
+    crc=3e4dd44a conf=3
+    crc=d7531e4b conf=2
+  DB frame450_crcs (8):
+    crc=d3c525fa conf=200
+    crc=2084b92d conf=200
+    crc=e6cced86 conf=163
+    crc=a1b1eaf2 conf=102
+    crc=a9fb8d44 conf=63
+    crc=021da08c conf=53
+    crc=cc554970 conf=44
+    crc=51b03c62 conf=38
+
+=== Summary ===
+AR: 12 v2 + 0 v1 matched, 0 not found / 12 total
+ReplayGain: album gain=-6.39 dB peak=1.165594
+  Track 01: [AR v2 OK] conf=200  rg=-6.92dB
+  Track 02: [AR v2 OK] conf=200  rg=-4.93dB
+  Track 03: [AR v2 OK] conf=200  rg=-8.02dB
+  Track 04: [AR v2 OK] conf=200  rg=-7.53dB
+  Track 05: [AR v2 OK] conf=200  rg=-7.48dB
+  Track 06: [AR v2 OK] conf=200  rg=-7.18dB
+  Track 07: [AR v2 OK] conf=200  rg=-7.51dB
+  Track 08: [AR v2 OK] conf=200  rg=-8.10dB
+  Track 09: [AR v2 OK] conf=200  rg=-5.92dB
+  Track 10: [AR v2 OK] conf=200  rg=-6.30dB
+  Track 11: [AR v2 OK] conf=200  rg=-5.59dB
+  Track 12: [AR v2 OK] conf=200  rg=-1.24dB

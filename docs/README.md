@@ -26,6 +26,7 @@ Example TUI:
 ## AccurateRip Pipeline (RE-MOCT Implementation)
 
 ```mermaid
+%%{init: {'flowchart': {'htmlLabels': true, 'padding': 18}}}%%
 graph TD
     classDef hardware fill:#13161b,stroke:#4fc8a0,stroke-width:2px,color:#cdd5df;
     classDef handshake fill:#1a1e25,stroke:#c98bff,stroke-width:2px,color:#cdd5df;

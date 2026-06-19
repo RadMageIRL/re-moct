@@ -24,33 +24,37 @@ Example TUI:
 <img width="703" height="795" alt="image" src="https://github.com/user-attachments/assets/00ca1e84-b779-4bb9-b47e-f8cf5fea6c19" />
 
 ## AccurateRip Pipeline (RE-MOCT Implementation)
+
+```mermaid
 graph TD
     classDef hardware fill:#13161b,stroke:#4fc8a0,stroke-width:2px,color:#cdd5df;
     classDef handshake fill:#1a1e25,stroke:#c98bff,stroke-width:2px,color:#cdd5df;
     classDef forensic fill:#111418,stroke:#f0c060,stroke-width:2px,color:#cdd5df;
 
-    START([START]) --> ID[Disc ID Generation]
-    ID --> HS[WinInet Handshake]
-    HS --> STATUS{HTTP 200?}
+    Start([START RIP]) --> A[Phase 01: Disc ID Gen]
+    A --> B[Phase 02: WinInet Handshake]
+    B --> C{HTTP 200?}
 
-    STATUS -- Yes --> BIN[Binary Parse]
-    STATUS -- No --> NF([NOT FOUND])
+    C -- Yes --> D[Phase 03: .bin Binary Parse]
+    C -- No/404 --> F([NOT FOUND])
 
-    BIN --> OFF[Offset Correction]
-    OFF --> PRE[Read Pregap: 150 Sectors]
-    PRE --> CRC[CRC Accumulation]
-    CRC --> VER{Verify CRC vs DB}
+    D --> O[Phase 04: Drive Offset Correction]
+    O --> P[Phase 04a: Pregap Preamble Read\n150 sectors before track start]
+    P --> E[Phase 04b: CRC Accumulate\ndisc-absolute mul_by anchoring]
+    E --> G[Phase 05: Verify CRCv1/v2 vs DB]
 
-    VER --> MATCH([VERIFIED])
-    VER -- No --> RET{Retry Pass 2?}
+    G --> H{Match Found?}
+    H -- Yes --> I([VERIFIED: BIT-PERFECT])
+    H -- No --> J{Retry Pass 2?}
 
-    RET -- Yes --> FLUSH[Flush Cache / 1x Speed]
-    FLUSH --> PRE
-    RET -- No --> FAIL([VERIFY FAIL])
+    J -- Yes --> K[Flush Hardware Cache\nReduce to 1x Speed]
+    K --> P
+    J -- No --> L([ABORT: VERIFY FAIL])
 
-    class ID,HS,BIN,OFF hardware;
-    class STATUS,VER,RET handshake;
-    class PRE,CRC,FLUSH forensic;
+    class A,B,D,O hardware;
+    class C,G,H,J handshake;
+    class P,E,K forensic;
+```
 
 ## Acknowledgements
  

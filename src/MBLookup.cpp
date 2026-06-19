@@ -293,8 +293,10 @@ std::vector<MBSearchResult> MBLookup::parseSearchJson(const std::string& json_st
 }
 
 // ─── Parse Discogs search JSON (fallback) ────────────────────────────────────
-// Response: { "results": [ { "id", "title" (= "Artist - Album"),
-//             "year", "country", "label": [...], "tracklist": [...] } ] }
+// Search response: { "results": [ { "id", "title" (= "Artist - Album"),
+//             "year", "country", "label": [...], "resource_url" } ] }
+// NOTE: the search endpoint does NOT include a tracklist — only summary fields.
+// Track titles come from the release-detail endpoint (see discogsReleaseWorker).
 std::vector<MBSearchResult> MBLookup::parseDiscogsJson(const std::string& json_str) {
     std::vector<MBSearchResult> results;
     try {
@@ -482,4 +484,123 @@ bool MBLookup::lookupByMbid(const std::string& mbid, MBCallback cb) {
     if (thread_.joinable()) thread_.join();
     thread_ = std::thread(&MBLookup::mbidWorker, this, mbid, cb);
     return true;
+}
+
+// ─── Public: lookupDiscogsRelease ────────────────────────────────────────────
+bool MBLookup::lookupDiscogsRelease(const std::string& discogs_id, MBCallback cb) {
+    if (active_.load()) return false;
+    active_.store(true);
+    cancel_.store(false);
+    if (thread_.joinable()) thread_.join();
+    thread_ = std::thread(&MBLookup::discogsReleaseWorker, this, discogs_id, cb);
+    return true;
+}
+
+// ─── Discogs release-detail worker ───────────────────────────────────────────
+// The Discogs /database/search endpoint returns NO tracklist — only summary
+// fields. The tracklist lives on the release-detail endpoint. This mirrors
+// mbidWorker: GET /releases/{id}, parse the `tracklist` array, and feed the
+// same MBCallback pipeline so a Discogs pick populates tracks like an MB pick.
+//
+// Discogs quirks handled here:
+//   • positions are non-numeric on many releases ("A1", "1-2") — we renumber
+//     sequentially so they line up with CD track numbers.
+//   • tracklists contain "heading"/"index" rows (section titles, medley
+//     containers) with no audio — filtered out by type_.
+//   • the release-level artist name often carries a " (N)" disambiguator that
+//     Discogs appends for duplicate names — stripped for display.
+//   • per-track artists exist on compilations — captured when present.
+void MBLookup::discogsReleaseWorker(std::string discogs_id, MBCallback cb) {
+    {
+        std::lock_guard<std::mutex> lk(rate_mutex_);
+        auto now     = std::chrono::steady_clock::now();
+        auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+                           now - last_request_).count();
+        if (elapsed < 1000)   // Discogs throttles harder than MB; pace at 1s
+            std::this_thread::sleep_for(std::chrono::milliseconds(1000 - elapsed));
+    }
+    if (cancel_.load()) { active_.store(false); return; }
+
+    std::string url  = "https://api.discogs.com/releases/" + discogs_id;
+    std::string body = httpGet(url);
+    {
+        std::lock_guard<std::mutex> lk(rate_mutex_);
+        last_request_ = std::chrono::steady_clock::now();
+    }
+
+    if (body.empty()) {
+        if (cb) cb(false, {}, "Network error fetching Discogs release");
+        active_.store(false);
+        return;
+    }
+
+    MBRelease release;
+    try {
+        auto j = nlohmann::json::parse(body);
+
+        // Discogs 404 / error payloads carry a "message" and no tracklist.
+        if (!j.contains("tracklist") || !j["tracklist"].is_array()) {
+            std::string msg = j.value("message", "Discogs release has no tracklist");
+            if (cb) cb(false, {}, msg);
+            active_.store(false);
+            return;
+        }
+
+        release.mb_id = "";   // no Cover Art Archive ID for Discogs releases
+        release.title = j.value("title", "");
+
+        // "year" is an int in the release endpoint (sometimes a string).
+        if (j.contains("year")) {
+            if (j["year"].is_number_integer()) {
+                int y = j["year"].get<int>();
+                if (y > 0) release.date = std::to_string(y);
+            } else if (j["year"].is_string()) {
+                release.date = j["year"].get<std::string>();
+            }
+        }
+
+        // Release-level artist, with Discogs " (N)" disambiguator stripped.
+        if (j.contains("artists") && j["artists"].is_array() && !j["artists"].empty()) {
+            std::string a = j["artists"][0].value("name", "");
+            auto pos = a.rfind(" (");
+            if (pos != std::string::npos && !a.empty() && a.back() == ')') {
+                bool all_digits = (pos + 2 < a.size());
+                for (size_t k = pos + 2; k + 1 < a.size(); ++k)
+                    if (a[k] < '0' || a[k] > '9') { all_digits = false; break; }
+                if (all_digits) a = a.substr(0, pos);
+            }
+            release.artist = a;
+        }
+
+        // Tracklist — real tracks only, renumbered sequentially.
+        int seq = 0;
+        for (auto& t : j["tracklist"]) {
+            std::string type = t.value("type_", "track");
+            if (type != "track") continue;   // skip heading / index rows
+            MBTrack mt;
+            mt.number = ++seq;
+            mt.title  = t.value("title", "");
+            if (t.contains("artists") && t["artists"].is_array() && !t["artists"].empty())
+                mt.artist = t["artists"][0].value("name", "");
+            if (!mt.title.empty())
+                release.tracks.push_back(std::move(mt));
+        }
+    } catch (const std::exception& e) {
+        if (cb) cb(false, {}, std::string("Parse error: ") + e.what());
+        active_.store(false);
+        return;
+    } catch (...) {
+        if (cb) cb(false, {}, "Could not parse Discogs release");
+        active_.store(false);
+        return;
+    }
+
+    if (release.tracks.empty()) {
+        if (cb) cb(false, {}, "Discogs release had no usable tracks");
+        active_.store(false);
+        return;
+    }
+
+    if (cb) cb(true, release, "");
+    active_.store(false);
 }

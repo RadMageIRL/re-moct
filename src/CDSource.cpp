@@ -1,6 +1,5 @@
 #ifdef _WIN32
 #include "CDSource.h"
-#include "drive_offsets.h"
 #include <cstring>
 #include <cmath>
 #include <algorithm>
@@ -38,6 +37,8 @@ bool CDSource::open(const std::string& drive_letter) {
     }
 
     tracks_.clear();
+    data_track_lbas_.clear();
+    full_leadout_lba_ = 0;
     int first = toc.FirstTrack;
     int last  = toc.LastTrack;
 
@@ -53,13 +54,20 @@ bool CDSource::open(const std::string& drive_letter) {
         // the actual audio data start.
     };
 
+    // ── Capture data tracks from TOC (for CDDB computation and disc ID) ──
+    for (int t = first; t <= last; ++t) {
+        auto& te = toc.TrackData[t - 1];
+        if ((te.Control & 0x04) != 0)
+            data_track_lbas_.push_back(msf_to_lba(te.Address));
+    }
+
     for (int t = first; t <= last; ++t) {
         auto& te = toc.TrackData[t - 1];
         // Skip data tracks (control bit 4 set = data)
         if ((te.Control & 0x04) != 0) continue;
 
         DWORD start = msf_to_lba(te.Address);
-        DWORD end   = msf_to_lba(toc.TrackData[t].Address); // [last] = lead-out
+        DWORD end   = msf_to_lba(toc.TrackData[t].Address); // next track or leadout
 
         DWORD len = (end > start) ? (end - start) : 0;
 
@@ -67,7 +75,7 @@ bool CDSource::open(const std::string& drive_letter) {
         ct.number       = t;
         ct.start_lba    = start;
         ct.length_lba   = len;
-        ct.duration_sec = (int)(len / 75);  // 75 sectors/second
+        ct.duration_sec = (int)(len / 75);
         tracks_.push_back(ct);
     }
 
@@ -77,11 +85,61 @@ bool CDSource::open(const std::string& drive_letter) {
         return false;
     }
 
+
+
+    // Standard TOC leadout = toc.TrackData[last] (first track after last)
+    full_leadout_lba_ = msf_to_lba(toc.TrackData[last].Address);
+
+    // For multi-session discs (Enhanced CD / CD Extra), get the last session
+    // leadout via IOCTL_CDROM_GET_LAST_SESSION — more reliable than FULL_TOC.
+    CDROM_TOC_SESSION_DATA last_sess {};
+    DWORD ls_bytes = 0;
+    if (DeviceIoControl(hCD_, IOCTL_CDROM_GET_LAST_SESSION,
+                        nullptr, 0, &last_sess, sizeof(last_sess), &ls_bytes, nullptr)
+        && last_sess.TrackData[0].TrackNumber > 1) {
+        // There is a second session — read its TOC to get the real leadout
+        CDROM_TOC toc2 {};
+        DWORD bytes2 = 0;
+        if (DeviceIoControl(hCD_, IOCTL_CDROM_READ_TOC,
+                            nullptr, 0, &toc2, sizeof(toc2), &bytes2, nullptr)) {
+            // toc2 may return same as toc1 on some drives; take the larger leadout
+            int last2 = toc2.LastTrack;
+            DWORD lo2 = msf_to_lba(toc2.TrackData[last2].Address);
+            if (lo2 > full_leadout_lba_)
+                full_leadout_lba_ = lo2;
+            // Also capture any data tracks from session 2 not in session 1
+            for (int t = toc2.FirstTrack; t <= last2; ++t) {
+                auto& te2 = toc2.TrackData[t - 1];
+                DWORD lba2 = msf_to_lba(te2.Address);
+                if ((te2.Control & 0x04) != 0) {
+                    // Only add if not already in list
+                    bool already = false;
+                    for (DWORD d : data_track_lbas_) if (d == lba2) { already = true; break; }
+                    if (!already) data_track_lbas_.push_back(lba2);
+                }
+            }
+        }
+    }
+
+    // Reset speed to max after any disc scanning done in open()
+    // Enhanced CD track length correction is done lazily in CDRipper at rip time.
+    {
+        struct { WORD RequestType; WORD ReadSpeed; WORD WriteSpeed; } speed {};
+        speed.RequestType = 0;       // immediate
+        speed.ReadSpeed   = 0xFFFF;  // maximum
+        speed.WriteSpeed  = 0xFFFF;
+        DWORD sp_bytes = 0;
+        DeviceIoControl(hCD_, IOCTL_CDROM_SET_SPEED,
+                        &speed, sizeof(speed), nullptr, 0, &sp_bytes, nullptr);
+    }
+
     ring_.resize(RING_SIZE, 0);
     return true;
 }
 
 void CDSource::close() {
+    data_track_lbas_.clear();
+    full_leadout_lba_ = 0;
     stop();
     if (hCD_ != INVALID_HANDLE_VALUE) {
         CloseHandle(hCD_);
@@ -330,35 +388,60 @@ std::string CDSource::queryDriveModel() {
 
 int CDSource::lookupDriveOffset(const std::string& model) {
     if (model.empty()) return 0;
+    std::string m = model;
+    std::transform(m.begin(), m.end(), m.begin(),
+                   [](unsigned char c){ return (char)std::toupper(c); });
 
-    // The AccurateRip database uses marketing vendor names, but Windows
-    // STORAGE_DEVICE_DESCRIPTOR returns OEM strings. Normalise known aliases
-    // before lookup. (AR database note: "HL-DT-ST as LG Electronics,
-    // Matshita as Panasonic")
-    std::string normalised = model;
-    struct { const char* from; const char* to; } aliases[] = {
-        { "HL-DT-ST", "LG Electronics" },
-        { "MATSHITA", "Panasonic"       },
-        { "JLMS",     "Lite-On"         },
+    static const struct { const char* key; int offset; } kTable[] = {
+        { "ASUS BW-16D1HT",          +6   },
+        { "ASUS BC-12D2HT",          +6   },
+        { "ASUS DRW-24D5MT",         +6   },
+        { "ASUS DRW-24F1ST",         +6   },
+        { "ASUS DRW-24B1ST",         +6   },
+        { "LG BH16NS55",             +6   },
+        { "LG BH16NS40",             +6   },
+        { "LG WH16NS60",             +6   },
+        { "LG WH16NS40",             +6   },
+        { "LG GH24NSB0",             +6   },
+        { "LG GH24NSD1",             +6   },
+        { "LG GH22NS",               +6   },
+        { "LG GSA-H",                +6   },
+        { "PIONEER BD-RW BDR-209",   +30  },
+        { "PIONEER BD-RW BDR-212",   +30  },
+        { "PIONEER DVD-RW DVR-",     +30  },
+        { "PIONEER DVD-ROM DVD-",    +30  },
+        { "PLDS DVD-RW DH-16ABS",    +667 },
+        { "PLDS DVD-RW DU-8A5LH",   +48  },
+        { "LITE-ON DVDRW",           +6   },
+        { "LITE-ON DVD",             +6   },
+        { "LITEON",                  +6   },
+        { "TSSTcorp CDDVDW SH-",     +6   },
+        { "TSSTcorp CDDVDW SN-",     +6   },
+        { "SAMSUNG DVD",             +6   },
+        { "PLEXTOR PX-B940SA",       +30  },
+        { "PLEXTOR PX-",             +30  },
+        { "SONY DVD RW DRU-",        +6   },
+        { "SONY DVD RW DW-",         +6   },
+        { "OPTIARC DVD RW AD-",      +6   },
+        { "MATSHITA DVD-RAM UJ",     +667 },
+        { "MATSHITA BD-MLT UJ",      +667 },
+        { "HL-DT-ST DVDRW GHD3N",    +6   },  // your specific drive - AR DB offset
+        { "HL-DT-ST DVDRAM GH24",    +6   },
+        { "HL-DT-ST DVDRAM GH22",    +6   },
+        { "HL-DT-ST DVD+-RW",        +6   },
+        { "HL-DT-ST BD-RE",          +6   },
+        { "HL-DT-ST",                +6   },  // catch-all for all LG/HLDS laptop drives
+        { "VIRTUAL",                 +0   },
     };
-    for (auto& a : aliases) {
-        // Case-insensitive prefix check
-        std::string m = normalised, f = a.from;
-        for (auto& c : m) c = (char)std::toupper((unsigned char)c);
-        for (auto& c : f) c = (char)std::toupper((unsigned char)c);
-        if (m.find(f) == 0) {
-            // Replace prefix and reformat to match DB style "Vendor - Model"
-            std::string rest = normalised.substr(strlen(a.from));
-            // Trim leading spaces
-            auto p = rest.find_first_not_of(' ');
-            if (p != std::string::npos) rest = rest.substr(p);
-            normalised = std::string(a.to) + " - " + rest;
-            break;
-        }
-    }
 
-    // 4878-entry database sourced from accuraterip.com/driveoffsets.htm
-    return ::lookupDriveOffset(normalised);
+    for (const auto& e : kTable) {
+        std::string key = e.key;
+        std::transform(key.begin(), key.end(), key.begin(),
+                       [](unsigned char c){ return (char)std::toupper(c); });
+        if (m.find(key) != std::string::npos)
+            return e.offset;
+    }
+    return 0;  // unknown drive — no correction
 }
 
 #endif // _WIN32

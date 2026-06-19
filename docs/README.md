@@ -25,7 +25,7 @@ Example TUI:
 
 ## Acknowledgements
 
-- **[Leo Bogert](https://github.com/leo-bogert/accuraterip-checksum)** — authoritative AccurateRip CRCv2 reference implementation (`accuraterip-checksum.c`), which confirmed the correct formula including disc-absolute pregap anchoring
-- **[AccurateRip](https://www.accuraterip.com)** (Spoon) — the AccurateRip verification database, used under non-commercial terms. Drive offset database sourced from [accuraterip.com/driveoffsets.htm](https://www.accuraterip.com/driveoffsets.htm)
-- **[MusicBrainz](https://musicbrainz.org)** — open music metadata database, DiscID lookup and text search
-- **[whipper](https://github.com/whipper-team/whipper)** & **[CUETools](http://cue.tools/wiki/CUETools)** — reference implementations consulted during AccurateRip research
+- **[Leo Bogert](https://github.com/leo-bogert/accuraterip-checksum)** - authoritative AccurateRip CRCv2 reference implementation (`accuraterip-checksum.c`), which confirmed the correct formula including disc-absolute pregap anchoring
+- **[AccurateRip](https://www.accuraterip.com)** (Spoon) - the AccurateRip verification database, used under non-commercial terms. Drive offset database sourced from [accuraterip.com/driveoffsets.htm](https://www.accuraterip.com/driveoffsets.htm)
+- **[MusicBrainz](https://musicbrainz.org)** - open music metadata database, DiscID lookup and text search
+- **[whipper](https://github.com/whipper-team/whipper)** & **[CUETools](http://cue.tools/wiki/CUETools)** - reference implementations consulted during AccurateRip research

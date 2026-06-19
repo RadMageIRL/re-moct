@@ -27,6 +27,11 @@ Example TUI:
 <br>
 <img width="703" height="795" alt="image" src="https://github.com/user-attachments/assets/00ca1e84-b779-4bb9-b47e-f8cf5fea6c19" />
 
+## Goo Goo Dolls - Gutterflower (Enhanced CD and Hidden Track - Solved)
+<br>
+<img width="700" height="795" alt="image" src="https://github.com/user-attachments/assets/4df0a844-56f6-4fff-8584-a5af428f3aad" />
+<br>
+
 ## AccurateRip Pipeline (RE-MOCT Implementation)
 
 ```mermaid

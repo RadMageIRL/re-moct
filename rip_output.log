@@ -1,0 +1,172 @@
+RE-MOCT CD Rip Log
+==================
+Album  : Dookie
+Artist : Green Day
+Year   : 1996-04-01
+Drive  : G  (offset +6 samples)
+Model  : HL-DT-ST DVDRW GHD3N
+Tracks : 14
+Mode   : AccurateRip
+Output : C:\Users\Music\re-moct\Green Day - Dookie (1996)
+
+C2 support  : no
+Drive cache : not probed
+            Note: if drive caches sector reads, dual-pass returns
+            identical data on damaged discs -- determinism check unreliable.
+            Use 'whipper drive analyze' to test for caching behavior.
+
+
+=== AccurateRip ===
+ntracks=14 cddb=ad09520e disc_id1=00144f9d disc_id2=00d7afed
+  track[01] lba=150  rel=0
+  track[02] lba=9750  rel=9600
+  track[03] lba=22101  rel=21951
+  track[04] lba=35152  rel=35002
+  track[05] lba=53085  rel=52935
+  track[06] lba=69932  rel=69782
+  track[07] lba=81250  rel=81100
+  track[08] lba=94985  rel=94835
+  track[09] lba=105052  rel=104902
+  track[10] lba=116875  rel=116725
+  track[11] lba=130235  rel=130085
+  track[12] lba=137355  rel=137205
+  track[13] lba=145150  rel=145000
+  track[14] lba=153130  rel=152980
+  t1_lba=150  leadout_rel=178999
+TRY 00144f9d/00d7afed -> HTTP 200
+HIT! disc_id1=00144f9d disc_id2=00d7afed size=139
+  [Track 1 sector 0 first 16 samples (L R pairs)]:
+   f906009c eaaaf38c e685f215 fba204f5 05490d1f f36ffada ec1bf354 fa61009e
+   004b0553 fa2bfe4d f5fafb19 f4dbfaff f637fc20 fdae02a8 02c40706 f9abfbdf
+  ar_check_from=2940 ar_check_to=5644800 total_samples=5644800
+  AR diag T1: csum_lo=4f8819bf csum_hi=71fcd954 n_accum=5641861 expected=5641861 COUNT OK
+  pcm_crc32=1138ffa4  (dBpoweramp CRC32 for T1=b02e7e1a)
+  frame450: global=d21e9b54 local=5c35b2dc  (total_skip=6)
+
+Track 1 Pass 1: crc_v1(=csum_lo)=4f8819bf  crc_v2(=csum_lo+hi)=c184f313  status=1 (AR v2 OK)
+  DB main_crcs (1):
+    crc=c184f313 conf=77  <-- MATCH v2
+  DB frame450_crcs (1):
+    crc=5c35b2dc conf=77
+  AR diag T2: csum_lo=a5b52ac1 csum_hi=4522c97c n_accum=7262388 expected=7262388 COUNT OK
+  pcm_crc32=888ecb49  (dBpoweramp CRC32 for T1=b02e7e1a)
+
+Track 2 Pass 1: crc_v1(=csum_lo)=a5b52ac1  crc_v2(=csum_lo+hi)=ead7f43d  status=1 (AR v2 OK)
+  DB main_crcs (1):
+    crc=ead7f43d conf=77  <-- MATCH v2
+  DB frame450_crcs (1):
+    crc=8f97761a conf=77
+  AR diag T3: csum_lo=c19ce5f0 csum_hi=91258574 n_accum=7673988 expected=7673988 COUNT OK
+  pcm_crc32=74cc04f2  (dBpoweramp CRC32 for T1=b02e7e1a)
+
+Track 3 Pass 1: crc_v1(=csum_lo)=c19ce5f0  crc_v2(=csum_lo+hi)=52c26b64  status=1 (AR v2 OK)
+  DB main_crcs (1):
+    crc=52c26b64 conf=77  <-- MATCH v2
+  DB frame450_crcs (1):
+    crc=fd08f08b conf=77
+  AR diag T4: csum_lo=9f1e301f csum_hi=577d60d2 n_accum=10544604 expected=10544604 COUNT OK
+  pcm_crc32=0761dadb  (dBpoweramp CRC32 for T1=b02e7e1a)
+
+Track 4 Pass 1: crc_v1(=csum_lo)=9f1e301f  crc_v2(=csum_lo+hi)=f69b90f1  status=1 (AR v2 OK)
+  DB main_crcs (1):
+    crc=f69b90f1 conf=77  <-- MATCH v2
+  DB frame450_crcs (1):
+    crc=afdee2ff conf=77
+  AR diag T5: csum_lo=d998b347 csum_hi=538a96ae n_accum=9906036 expected=9906036 COUNT OK
+  pcm_crc32=0682da8d  (dBpoweramp CRC32 for T1=b02e7e1a)
+
+Track 5 Pass 1: crc_v1(=csum_lo)=d998b347  crc_v2(=csum_lo+hi)=2d2349f5  status=1 (AR v2 OK)
+  DB main_crcs (1):
+    crc=2d2349f5 conf=77  <-- MATCH v2
+  DB frame450_crcs (1):
+    crc=b8908e27 conf=77
+  AR diag T6: csum_lo=3b3da097 csum_hi=34421297 n_accum=6654984 expected=6654984 COUNT OK
+  pcm_crc32=51364bff  (dBpoweramp CRC32 for T1=b02e7e1a)
+
+Track 6 Pass 1: crc_v1(=csum_lo)=3b3da097  crc_v2(=csum_lo+hi)=6f7fb32e  status=1 (AR v2 OK)
+  DB main_crcs (1):
+    crc=6f7fb32e conf=77  <-- MATCH v2
+  DB frame450_crcs (1):
+    crc=27ea0fd6 conf=77
+  AR diag T7: csum_lo=21728c2f csum_hi=5e8bed4e n_accum=8076180 expected=8076180 COUNT OK
+  pcm_crc32=0acf46cf  (dBpoweramp CRC32 for T1=b02e7e1a)
+
+Track 7 Pass 1: crc_v1(=csum_lo)=21728c2f  crc_v2(=csum_lo+hi)=7ffe797d  status=1 (AR v2 OK)
+  DB main_crcs (1):
+    crc=7ffe797d conf=77  <-- MATCH v2
+  DB frame450_crcs (1):
+    crc=b091297b conf=77
+  AR diag T8: csum_lo=e2ca2c7f csum_hi=82e025d5 n_accum=5919396 expected=5919396 COUNT OK
+  pcm_crc32=7ff644d2  (dBpoweramp CRC32 for T1=b02e7e1a)
+
+Track 8 Pass 1: crc_v1(=csum_lo)=e2ca2c7f  crc_v2(=csum_lo+hi)=65aa5254  status=1 (AR v2 OK)
+  DB main_crcs (1):
+    crc=65aa5254 conf=77  <-- MATCH v2
+  DB frame450_crcs (1):
+    crc=8672a033 conf=77
+  AR diag T9: csum_lo=4b1eebb3 csum_hi=b133f395 n_accum=6951924 expected=6951924 COUNT OK
+  pcm_crc32=483b3960  (dBpoweramp CRC32 for T1=b02e7e1a)
+
+Track 9 Pass 1: crc_v1(=csum_lo)=4b1eebb3  crc_v2(=csum_lo+hi)=fc52df48  status=1 (AR v2 OK)
+  DB main_crcs (1):
+    crc=fc52df48 conf=77  <-- MATCH v2
+  DB frame450_crcs (1):
+    crc=7270d282 conf=77
+  AR diag T10: csum_lo=a645c4fb csum_hi=7df62c6e n_accum=7855680 expected=7855680 COUNT OK
+  pcm_crc32=1ced60b3  (dBpoweramp CRC32 for T1=b02e7e1a)
+
+Track 10 Pass 1: crc_v1(=csum_lo)=a645c4fb  crc_v2(=csum_lo+hi)=243bf169  status=1 (AR v2 OK)
+  DB main_crcs (1):
+    crc=243bf169 conf=78  <-- MATCH v2
+  DB frame450_crcs (1):
+    crc=bb127239 conf=78
+  AR diag T11: csum_lo=76342044 csum_hi=d04e85a7 n_accum=4186560 expected=4186560 COUNT OK
+  pcm_crc32=53cd8c3c  (dBpoweramp CRC32 for T1=b02e7e1a)
+
+Track 11 Pass 1: crc_v1(=csum_lo)=76342044  crc_v2(=csum_lo+hi)=4682a5eb  status=1 (AR v2 OK)
+  DB main_crcs (1):
+    crc=4682a5eb conf=77  <-- MATCH v2
+  DB frame450_crcs (1):
+    crc=7a5a3282 conf=77
+  AR diag T12: csum_lo=986f04ee csum_hi=a9719304 n_accum=4583460 expected=4583460 COUNT OK
+  pcm_crc32=855fb7bd  (dBpoweramp CRC32 for T1=b02e7e1a)
+
+Track 12 Pass 1: crc_v1(=csum_lo)=986f04ee  crc_v2(=csum_lo+hi)=41e097f2  status=1 (AR v2 OK)
+  DB main_crcs (1):
+    crc=41e097f2 conf=77  <-- MATCH v2
+  DB frame450_crcs (1):
+    crc=455950f7 conf=77
+  AR diag T13: csum_lo=6df24695 csum_hi=718533d1 n_accum=4692240 expected=4692240 COUNT OK
+  pcm_crc32=5677e1a2  (dBpoweramp CRC32 for T1=b02e7e1a)
+
+Track 13 Pass 1: crc_v1(=csum_lo)=6df24695  crc_v2(=csum_lo+hi)=df777a66  status=1 (AR v2 OK)
+  DB main_crcs (1):
+    crc=df777a66 conf=77  <-- MATCH v2
+  DB frame450_crcs (1):
+    crc=197701db conf=77
+  AR diag T14: csum_lo=2f4cc121 csum_hi=2eca276c n_accum=15296232 expected=15296232 COUNT OK
+  pcm_crc32=1812b009  (dBpoweramp CRC32 for T1=b02e7e1a)
+
+Track 14 Pass 1: crc_v1(=csum_lo)=2f4cc121  crc_v2(=csum_lo+hi)=5e16e88d  status=1 (AR v2 OK)
+  DB main_crcs (1):
+    crc=5e16e88d conf=77  <-- MATCH v2
+  DB frame450_crcs (1):
+    crc=348c6f20 conf=77
+
+=== Summary ===
+AR: 14 v2 + 0 v1 matched, 0 not found / 14 total
+ReplayGain: album gain=-8.33 dB peak=1.145869
+  Track 01: [AR v2 OK] conf=77  rg=-8.83dB
+  Track 02: [AR v2 OK] conf=77  rg=-8.41dB
+  Track 03: [AR v2 OK] conf=77  rg=-7.46dB
+  Track 04: [AR v2 OK] conf=77  rg=-6.90dB
+  Track 05: [AR v2 OK] conf=77  rg=-8.15dB
+  Track 06: [AR v2 OK] conf=77  rg=-8.82dB
+  Track 07: [AR v2 OK] conf=77  rg=-8.20dB
+  Track 08: [AR v2 OK] conf=77  rg=-8.35dB
+  Track 09: [AR v2 OK] conf=77  rg=-9.76dB
+  Track 10: [AR v2 OK] conf=78  rg=-9.03dB
+  Track 11: [AR v2 OK] conf=77  rg=-9.39dB
+  Track 12: [AR v2 OK] conf=77  rg=-8.88dB
+  Track 13: [AR v2 OK] conf=77  rg=-8.49dB
+  Track 14: [AR v2 OK] conf=77  rg=-5.90dB

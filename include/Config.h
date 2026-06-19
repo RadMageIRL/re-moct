@@ -1,0 +1,51 @@
+#pragma once
+#include <string>
+#include <vector>
+#include <unordered_map>
+#include <cstddef>
+#include <ctime>
+
+struct TrackStats {
+    int       play_count   = 0;
+    std::time_t last_played = 0;  // unix timestamp, 0 = never
+};
+
+struct DigiConfig {
+    std::string              last_dir;
+    std::vector<std::string> playlist_paths;
+    std::size_t              playlist_current = 0;
+    float                    volume           = 1.0f;
+    int                      repeat_mode      = 0;
+    bool                     shuffle          = false;
+    bool                     toast_enabled    = false;
+
+    // EQ state
+    bool  eq_enabled = false;
+    float eq_gains[10] {};
+
+    // Bookmarks: list of saved directory paths
+    std::vector<std::string> bookmarks;
+
+    // Recently played: list of track paths, most recent first, max 50
+    std::vector<std::string> recent_tracks;
+    static constexpr int     RECENT_MAX = 50;
+
+    // Favourites: curated list of audio file paths, max 50, FIFO on overflow
+    std::vector<std::string> fav_tracks;
+    static constexpr int     FAV_MAX = 50;
+
+    void addFavTrack(const std::string& path);
+    void removeFavTrack(const std::string& path);
+    bool isFav(const std::string& path) const;
+
+    // Per-track play statistics keyed by file path
+    std::unordered_map<std::string, TrackStats> track_stats;
+    static constexpr int STATS_MAX = 5000;  // cap to avoid unbounded growth
+
+    void addRecentTrack(const std::string& path);
+    void recordPlay(const std::string& path);   // increment count + timestamp
+
+    static std::string configPath();
+    void load();
+    void save() const;
+};

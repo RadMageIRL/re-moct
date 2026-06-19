@@ -1,0 +1,116 @@
+#pragma once
+#ifdef _WIN32
+
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#include <string>
+#include <vector>
+#include <atomic>
+#include <thread>
+#include <mutex>
+#include <functional>
+#include <chrono>
+
+// ─── MusicBrainz DiscID + metadata lookup ────────────────────────────────────
+// Non-blocking CD metadata retrieval via WinINet.
+// Spawns a single worker thread per lookup. Rate-limited to 1 req/sec.
+// Uses the MusicBrainz DiscID algorithm (SHA-1 + custom Base64).
+
+struct MBTrack {
+    int         number;
+    std::string title;
+    std::string artist;
+};
+
+struct MBRelease {
+    std::string mb_id;   // MusicBrainz release ID (for Cover Art Archive)
+    std::string title;
+    std::string artist;
+    std::string date;
+    std::vector<MBTrack> tracks;
+};
+
+// Callback fired on completion (success or failure), always on worker thread.
+// Caller must sync before touching UI state.
+using MBCallback = std::function<void(bool ok, const MBRelease& result, const std::string& err)>;
+
+// ─── Text search result (lightweight — just enough for the picker UI) ─────────
+struct MBSearchResult {
+    std::string mbid;
+    std::string title;
+    std::string artist;
+    std::string date;
+    std::string country;
+    std::string label;
+    int         track_count  = 0;
+    bool        from_discogs = false;  // true if result came from Discogs fallback
+};
+
+using MBSearchCallback = std::function<void(bool ok,
+                                            std::vector<MBSearchResult> results,
+                                            const std::string& err)>;
+
+class MBLookup {
+public:
+    MBLookup() = default;
+    ~MBLookup() { cancel(); }
+
+    // Start async DiscID lookup. Returns false if already in progress.
+    // toc_offsets: sector offsets for each track (1-based), plus lead-out as last entry.
+    bool lookup(int first_track, int last_track,
+                const std::vector<DWORD>& toc_offsets,
+                MBCallback cb);
+
+    // Search MusicBrainz by artist + album text.
+    // Falls back to Discogs if MB returns zero results.
+    // Returns false if a lookup/search is already in progress.
+    bool search(const std::string& artist, const std::string& album,
+                MBSearchCallback cb);
+
+    // Fetch full release metadata by MBID (feeds the existing MBCallback pipeline).
+    // Returns false if already in progress.
+    bool lookupByMbid(const std::string& mbid, MBCallback cb);
+
+    bool isActive() const { return active_.load(); }
+    void cancel();
+
+    // Compute DiscID from TOC data (public for testing)
+    static std::string computeDiscId(int first_track, int last_track,
+                                     const std::vector<DWORD>& offsets);
+
+    // URL-encode a UTF-8 string for use in query parameters
+    static std::string urlEncode(const std::string& s);
+
+private:
+    std::atomic<bool>   active_  { false };
+    std::atomic<bool>   cancel_  { false };
+    std::thread         thread_;
+
+    static std::chrono::steady_clock::time_point last_request_;
+    static std::mutex                            rate_mutex_;
+
+    // DiscID worker (existing)
+    void worker(int first_track, int last_track,
+                std::vector<DWORD> offsets, MBCallback cb);
+
+    // Text search worker
+    void searchWorker(std::string artist, std::string album, MBSearchCallback cb);
+
+    // MBID direct fetch worker
+    void mbidWorker(std::string mbid, MBCallback cb);
+
+    static std::string httpGet(const std::string& url);
+    static MBRelease   parseJson(const std::string& json);
+
+    // Parse the /ws/2/release?query=... response into a list of lightweight results
+    static std::vector<MBSearchResult> parseSearchJson(const std::string& json);
+
+    // Parse Discogs /database/search response as fallback
+    static std::vector<MBSearchResult> parseDiscogsJson(const std::string& json);
+
+    // DiscID internals
+    static void   sha1(const uint8_t* data, size_t len, uint8_t out[20]);
+    static std::string mb_base64(const uint8_t* data, size_t len);
+};
+
+#endif // _WIN32

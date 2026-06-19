@@ -61,3 +61,7 @@ graph TD
 - **[AccurateRip](https://www.accuraterip.com)** (Spoon) - the AccurateRip verification database, used under non-commercial terms. Drive offset database sourced from [accuraterip.com/driveoffsets.htm](https://www.accuraterip.com/driveoffsets.htm)
 - **[MusicBrainz](https://musicbrainz.org)** - open music metadata database, DiscID lookup and text search
 - **[whipper](https://github.com/whipper-team/whipper)** & **[CUETools](http://cue.tools/wiki/CUETools)** - reference implementations consulted during AccurateRip research
+- - **[CD Extra / CD Plus specification](https://en.wikipedia.org/wiki/Blue_Book_(CD_standard))**
+  — Blue Book standard for multi-session Enhanced CDs. Understanding the 
+  two-session layout (audio first, data second) was key to correctly 
+  computing AccurateRip disc IDs for discs like Goo Goo Dolls *Gutterflower*.

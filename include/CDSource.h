@@ -43,7 +43,9 @@ public:
 
     // TOC
     const std::vector<CDTrack>& tracks() const { return tracks_; }
-    std::string driveLetter() const { return drive_letter_; }
+    std::string driveLetter()    const { return drive_letter_; }
+    DWORD       fullLeadoutLba()   const { return full_leadout_lba_; }
+    const std::vector<DWORD>& dataTrackLbas() const { return data_track_lbas_; }
 
     // Returns sector offsets suitable for DiscID computation:
     // [track1_start, track2_start, ..., trackN_start, lead_out]
@@ -111,6 +113,8 @@ private:
     std::string             drive_letter_;
     std::string             drive_model_;
     int                     drive_offset_samples_ = 0;
+    DWORD                   full_leadout_lba_     = 0;  // includes all sessions
+    std::vector<DWORD>      data_track_lbas_;              // data tracks for CDDB
     bool                    offset_known_         = false;
     std::vector<CDTrack>    tracks_;
 

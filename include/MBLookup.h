@@ -71,6 +71,13 @@ public:
     // Returns false if already in progress.
     bool lookupByMbid(const std::string& mbid, MBCallback cb);
 
+    // Fetch full release metadata from Discogs by numeric release ID.
+    // The Discogs /database/search endpoint returns NO tracklist; this hits the
+    // release-detail endpoint (/releases/{id}) and feeds the same MBCallback
+    // pipeline so a Discogs pick populates tracks like an MB pick.
+    // Returns false if already in progress.
+    bool lookupDiscogsRelease(const std::string& discogs_id, MBCallback cb);
+
     bool isActive() const { return active_.load(); }
     void cancel();
 
@@ -98,6 +105,9 @@ private:
 
     // MBID direct fetch worker
     void mbidWorker(std::string mbid, MBCallback cb);
+
+    // Discogs release-detail fetch worker (parses tracklist)
+    void discogsReleaseWorker(std::string discogs_id, MBCallback cb);
 
     static std::string httpGet(const std::string& url);
     static MBRelease   parseJson(const std::string& json);

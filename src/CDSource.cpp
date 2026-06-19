@@ -1,5 +1,6 @@
 #ifdef _WIN32
 #include "CDSource.h"
+#include "drive_offsets.h"   // full AccurateRip drive-offset DB (4885 drives)
 #include <cstring>
 #include <cmath>
 #include <algorithm>
@@ -441,7 +442,11 @@ int CDSource::lookupDriveOffset(const std::string& model) {
         if (m.find(key) != std::string::npos)
             return e.offset;
     }
-    return 0;  // unknown drive — no correction
+
+    // Not in the hand-tuned overrides above — fall back to the full AccurateRip
+    // drive-offset database (4885 drives) in drive_offsets.h. The :: qualifier
+    // calls the free function there, NOT this member (same name, different scope).
+    return ::lookupDriveOffset(model);
 }
 
 #endif // _WIN32

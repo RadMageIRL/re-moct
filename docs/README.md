@@ -84,6 +84,7 @@ graph TD
   — the multi-session Enhanced-CD standard. Understanding the two-session layout
   (audio first, data second) was key to computing correct AccurateRip disc IDs for
   Enhanced discs such as Goo Goo Dolls — *Gutterflower*.
+  
 ### Libraries
  
 RE-MOCT links the following third-party libraries. See
@@ -125,8 +126,6 @@ distributions.
 **Reference material consulted** (not redistributed): Leo Bogert's
 `accuraterip-checksum` (GPLv3) was read as a reference implementation. RE-MOCT's
 checksum code was written independently; no GPLv3 source was copied or adapted.
-*(Adjust this statement if any code was in fact derived from it — in that case the
-GPLv3 terms would apply to the derived portion.)*
  
 **Data services**: AccurateRip (used under non-commercial terms), the CUETools
 Database, MusicBrainz, and the Cover Art Archive are network services accessed at

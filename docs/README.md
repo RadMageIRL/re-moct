@@ -71,6 +71,7 @@ graph TD
   lookup and text search.
 - **[Cover Art Archive](https://coverartarchive.org/)** — release cover art, embedded
   into output files via TagLib.
+- AccurateRip CRC and disc-identifier algorithms, and the offset-finding CRC technique, are documented by Spoon (Illustrate / dBpoweramp). RE-MOCT implements them independently.
 ### Algorithm references
  
 - **[HydrogenAudio thread #97603](https://hydrogenaud.io/index.php?topic=97603)** — the

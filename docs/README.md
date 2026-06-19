@@ -56,12 +56,80 @@ graph TD
 ```
 
 ## Acknowledgements
+ 
+### Verification &amp; metadata services
+ 
+- **[AccurateRip](https://www.accuraterip.com/)** (Spoon / Illustrate) — the AccurateRip
+  verification database, used under non-commercial terms. Drive-offset table sourced
+  from [accuraterip.com/driveoffsets.htm](https://www.accuraterip.com/driveoffsets.htm).
+- **[CUETools Database (CTDB)](http://db.cuetools.net/)** — secondary rip verification
+  via the CTDB lookup service.
+- **[MusicBrainz](https://musicbrainz.org/)** — open music metadata database; DiscID
+  lookup and text search.
+- **[Cover Art Archive](https://coverartarchive.org/)** — release cover art, embedded
+  into output files via TagLib.
+### Algorithm references
+ 
+- **[HydrogenAudio thread #97603](https://hydrogenaud.io/index.php?topic=97603)** — the
+  canonical public description of the AccurateRip v1/v2 checksum; the primary source for
+  the multiply-accumulate formula used here.
+- **[Leo Bogert — accuraterip-checksum](https://github.com/leo-bogert/accuraterip-checksum)**
+  (`accuraterip-checksum.c`, GPLv3) — a clean reference implementation of the per-track
+  CRC formula and the first/last-track 5-sector skip; consulted to validate the
+  accumulation against an independent implementation.
+- **[whipper](https://github.com/whipper-team/whipper)** &amp;
+  **[CUETools](http://cue.tools/wiki/CUETools)** — reference implementations consulted
+  during AccurateRip research.
+- **[Blue Book (CD-Extra / CD Plus)](https://en.wikipedia.org/wiki/Blue_Book_(CD_standard))**
+  — the multi-session Enhanced-CD standard. Understanding the two-session layout
+  (audio first, data second) was key to computing correct AccurateRip disc IDs for
+  Enhanced discs such as Goo Goo Dolls — *Gutterflower*.
+### Libraries
+ 
+RE-MOCT links the following third-party libraries. See
+[`THIRD_PARTY-NOTICES.md`](THIRD_PARTY-NOTICES.md) for full license details.
+ 
+- **[libFLAC](https://xiph.org/flac/)** (Xiph.Org) — FLAC encoding. *BSD-3-Clause.*
+- **[LAME](https://lame.sourceforge.io/)** (`libmp3lame`) — MP3 encoding. *LGPL-2.1.*
+- **[TagLib](https://taglib.org/)** — audio metadata tagging. *LGPL-2.1 / MPL-1.1.*
+- **[libebur128](https://github.com/jiixyj/libebur128)** — EBU R128 / ReplayGain
+  loudness measurement. *MIT.*
+- **[ncurses](https://invisible-island.net/ncurses/)** — terminal UI. *MIT-style (X11).*
+- **[miniaudio](https://miniaud.io/)** — audio playback. *Public domain (Unlicense) or MIT-0.*
+- **WinINet** (Microsoft Windows) — HTTP transport for database lookups. *Windows system API.*
+---
+ 
+<!--
+  Save the block below as THIRD_PARTY-NOTICES.md in the repo root.
+  Verify each license name/version against the copy you actually link before release;
+  for the LGPL libraries (LAME, TagLib) keep the license texts and note how users can
+  relink (dynamic linking is the simplest path to compliance).
+-->
+ 
+# Third-Party Notices
+ 
+RE-MOCT incorporates or links the following third-party components. Each remains
+under its own license; the texts referenced below are included with their respective
+distributions.
+ 
+| Component | Purpose | License |
+|-----------|---------|---------|
+| libFLAC (Xiph.Org) | FLAC encoding | BSD-3-Clause |
+| LAME / libmp3lame | MP3 encoding | LGPL-2.1 |
+| TagLib | Metadata tagging | LGPL-2.1 / MPL-1.1 (dual) |
+| libebur128 | ReplayGain (EBU R128) | MIT |
+| ncurses | Terminal UI | MIT-style (X11) |
+| miniaudio | Audio playback | Public domain (Unlicense) or MIT-0 |
+| WinINet | HTTP transport (Windows) | Microsoft Windows system API |
+ 
+**Reference material consulted** (not redistributed): Leo Bogert's
+`accuraterip-checksum` (GPLv3) was read as a reference implementation. RE-MOCT's
+checksum code was written independently; no GPLv3 source was copied or adapted.
+*(Adjust this statement if any code was in fact derived from it — in that case the
+GPLv3 terms would apply to the derived portion.)*
+ 
+**Data services**: AccurateRip (used under non-commercial terms), the CUETools
+Database, MusicBrainz, and the Cover Art Archive are network services accessed at
+runtime, each under its own terms of use.
 
-- **[Leo Bogert](https://github.com/leo-bogert/accuraterip-checksum)** - authoritative AccurateRip CRCv2 reference implementation (`accuraterip-checksum.c`), which confirmed the correct formula including disc-absolute pregap anchoring
-- **[AccurateRip](https://www.accuraterip.com)** (Spoon) - the AccurateRip verification database, used under non-commercial terms. Drive offset database sourced from [accuraterip.com/driveoffsets.htm](https://www.accuraterip.com/driveoffsets.htm)
-- **[MusicBrainz](https://musicbrainz.org)** - open music metadata database, DiscID lookup and text search
-- **[whipper](https://github.com/whipper-team/whipper)** & **[CUETools](http://cue.tools/wiki/CUETools)** - reference implementations consulted during AccurateRip research
-- **[CD Extra / CD Plus specification](https://en.wikipedia.org/wiki/Blue_Book_(CD_standard))**
-  Blue Book standard for multi-session Enhanced CDs. Understanding the 
-  two-session layout (audio first, data second) was key to correctly 
-  computing AccurateRip disc IDs for discs like Goo Goo Dolls *Gutterflower*.
+

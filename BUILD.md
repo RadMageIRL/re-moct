@@ -2,7 +2,7 @@
 
 Install MSYS2
 
-Add the relevant PATH to win env
+Add the relevant PATH to win env: C:\msys64\ucrt64\bin
 
 Install below via pacman
 

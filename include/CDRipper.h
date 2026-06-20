@@ -30,8 +30,9 @@ struct ARTrackResult {
     int      confidence = 0;
     uint32_t crc_v1     = 0;  // csum_lo
     uint32_t crc_v2     = 0;  // csum_lo + csum_hi
-    uint32_t ctdb_crc   = 0;  // running CRC32 state for CTDB (finalized across all tracks)
-    size_t   ctdb_bytes = 0;  // bytes fed to CTDB CRC for this track
+    uint32_t ctdb_crc      = 0;  // running CRC32 state for CTDB (finalized across all tracks)
+    size_t   ctdb_bytes    = 0;  // bytes fed to CTDB CRC for this track
+    uint32_t frame450_local = 0; // sector-450 track-relative CRC (drive offset self-check)
 };
 
 // ─── ReplayGain result ────────────────────────────────────────────────────────
@@ -89,7 +90,9 @@ private:
                 ProgressCb           cb,
                 HANDLE               hCD,
                 int                  drive_offset,
-                std::string          drive_model);
+                std::string          drive_model,
+                DWORD                full_leadout_lba = 0,
+                std::vector<DWORD>   data_track_lbas = {});
 
     ARTrackResult ripTrack(HANDLE             hCD,
                            const CDTrack&     track,
@@ -119,7 +122,9 @@ private:
                         RipMode                      mode);
 
     // AccurateRip
-    static uint32_t computeCDDB(const std::vector<CDTrack>& tracks);
+    static uint32_t computeCDDB(const std::vector<CDTrack>& tracks,
+                                DWORD full_leadout_lba = 0,
+                                const std::vector<DWORD>& data_track_lbas = {});
 
     // Fetch AR binary, save .bin and manifest to ar_cache_dir.
     // Returns true even on 404 (disc not found); returns false on network error.
@@ -127,7 +132,9 @@ private:
                             const std::string&                                  log_path,
                             const std::string&                                  ar_cache_dir,
                             std::vector<std::vector<std::pair<uint32_t,int>>>&  out_v1,
-                            std::vector<std::vector<std::pair<uint32_t,int>>>&  out_v2);
+                            std::vector<std::vector<std::pair<uint32_t,int>>>&  out_v2,
+                            DWORD                                               full_leadout_lba = 0,
+                            const std::vector<DWORD>&                           data_track_lbas = {});
 
     // CTDB (CUETools Database) — global CRC32 verification
     // Returns CTDB ID string and whether disc is verified

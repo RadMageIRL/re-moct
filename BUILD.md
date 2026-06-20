@@ -13,7 +13,7 @@ pacman -S mingw-w64-ucrt-x86_64-ncurses <br>
 pacman -S mingw-w64-ucrt-x86_64-taglib <br>
 pacman -S mingw-w64-ucrt-x86_64-flac <br>
 pacman -S mingw-w64-ucrt-x86_64-lame <br>
-pacman -S mingw-w64-ucrt-x86_64-libebur128 <br><br>
+pacman -S mingw-w64-ucrt-x86_64-libebur128 <br>
 
 C:\msys64\usr\bin\bash.exe -l -c 'export PATH=/ucrt64/bin:$PATH && cd /e/code/remoct && rm -rf build && mkdir build && cd build && cmake .. -G Ninja && ninja'
 

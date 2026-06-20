@@ -155,14 +155,20 @@ MBRelease MBLookup::parseJson(const std::string& json_str) {
         if (rel.contains("artist-credit") && !rel["artist-credit"].empty())
             result.artist = rel["artist-credit"][0]["artist"].value("name", "");
 
-        // Media → tracks
-        if (rel.contains("media") && !rel["media"].empty()) {
-            auto& media = rel["media"][0];
-            if (media.contains("tracks")) {
+        // Media → tracks. Parse ALL media (discs), tagging each track with its
+        // 1-based disc number. The correct disc is selected at consumption time
+        // via pickDiscForTrackCount() — see MBLookup.h. (Previously this read
+        // only media[0], so every disc inherited disc 1's track titles.)
+        if (rel.contains("media")) {
+            int disc_no = 0;
+            for (auto& media : rel["media"]) {
+                ++disc_no;
+                if (!media.contains("tracks")) continue;
                 for (auto& t : media["tracks"]) {
                     MBTrack mt;
                     mt.number = std::stoi(t.value("number", "0"));
                     mt.title  = t.value("title", "");
+                    mt.disc   = disc_no;
                     // Artist from recording
                     if (t.contains("recording")) {
                         auto& rec = t["recording"];
@@ -429,7 +435,9 @@ void MBLookup::mbidWorker(std::string mbid, MBCallback cb) {
         if (j.contains("artist-credit") && !j["artist-credit"].empty())
             release.artist = j["artist-credit"][0]["artist"].value("name", "");
         if (j.contains("media")) {
+            int disc_no = 0;
             for (auto& media : j["media"]) {
+                ++disc_no;
                 if (!media.contains("tracks")) continue;
                 for (auto& t : media["tracks"]) {
                     MBTrack mt;
@@ -437,6 +445,7 @@ void MBLookup::mbidWorker(std::string mbid, MBCallback cb) {
                     // "number" is a display string that may be non-numeric (vinyl: "A1").
                     mt.number = t.value("position", 0);
                     mt.title  = t.value("title", "");
+                    mt.disc   = disc_no;
                     if (t.contains("recording")) {
                         auto& rec = t["recording"];
                         if (rec.contains("artist-credit") && !rec["artist-credit"].empty())

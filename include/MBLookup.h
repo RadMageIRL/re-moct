@@ -17,9 +17,10 @@
 // Uses the MusicBrainz DiscID algorithm (SHA-1 + custom Base64).
 
 struct MBTrack {
-    int         number;
+    int         number;        // 1-based position WITHIN its disc
     std::string title;
     std::string artist;
+    int         disc = 1;      // 1-based medium/disc number (for multi-disc sets)
 };
 
 struct MBRelease {
@@ -29,6 +30,24 @@ struct MBRelease {
     std::string date;
     std::vector<MBTrack> tracks;
 };
+
+// For multi-disc releases, rel.tracks holds every disc's tracks tagged with
+// MBTrack::disc. Given the physical disc's audio track count, return the 1-based
+// disc whose track count matches. Unambiguous single match wins; otherwise (no
+// match, or two discs sharing a count) fall back to disc 1. Single-disc releases
+// always return 1. Lookups should scope on (number == tnum && disc == result).
+inline int pickDiscForTrackCount(const MBRelease& rel, int n_physical) {
+    int max_disc = 1;
+    for (const auto& t : rel.tracks) if (t.disc > max_disc) max_disc = t.disc;
+    if (max_disc == 1) return 1;                 // single-disc: nothing to scope
+    int found = 1, nmatch = 0;
+    for (int d = 1; d <= max_disc; ++d) {
+        int c = 0;
+        for (const auto& t : rel.tracks) if (t.disc == d) ++c;
+        if (c == n_physical) { found = d; ++nmatch; }
+    }
+    return (nmatch == 1) ? found : 1;            // exact unique match, else disc 1
+}
 
 // Callback fired on completion (success or failure), always on worker thread.
 // Caller must sync before touching UI state.

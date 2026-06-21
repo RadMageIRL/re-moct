@@ -214,6 +214,12 @@ int main(int argc, char* argv[]) {
 
     } catch (const std::exception& ex) {
         endwin();
+#ifdef _WIN32
+        // stderr was redirected to NUL at startup (win32_console_init) to silence
+        // TagLib's frame-deprecation chatter. Reopen the console here so this fatal
+        // message is actually visible instead of vanishing into NUL.
+        freopen("CONOUT$", "w", stderr);
+#endif
         std::cerr << "[RE-MOCT] fatal: " << ex.what() << '\n';
         return EXIT_FAILURE;
     }

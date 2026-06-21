@@ -118,6 +118,7 @@ void AudioManager::teardown() {
     }
     viz_buf_.fill(0.0f);
     viz_write_pos_.store(0);
+    resetSpeedResampler();  // device is stopped above, so this is race-free
 }
 
 void AudioManager::clearNext() {
@@ -194,6 +195,11 @@ bool AudioManager::play(const std::string& path) {
     ma_device_start(&device_);
     state_.store(PlaybackState::Playing);
     track_ended_flag_.store(false);
+
+    // Reset the per-track live-bitrate estimator (was leaking across tracks via statics).
+    lbr_prev_file_pos_ = 0.0;
+    lbr_cached_kbps_   = 0;
+    lbr_prev_time_     = std::chrono::steady_clock::now();
 
     // Seed duration from TagLib (already available in current_track_)
     // This avoids calling ma_decoder_get_length_in_pcm_frames from UI thread
@@ -312,7 +318,8 @@ void AudioManager::initCrossfade() {
     std::memset(&next_decoder_, 0, sizeof(next_decoder_));
 
     current_track_ = next_track_info_;  // safe: acquire on next_decoder_initialised_ above
-    current_track_.bpm = 0;
+    live_bpm_.store(0);                  // new track: clear BPM (atomic, not current_track_)
+    resetSpeedResampler();               // decoder swapped — drop stale varispeed residual
     cached_duration_.store((double)current_track_.duration_sec);
     next_path_.clear();
     bpm_needed_flag_.store(true);
@@ -376,6 +383,7 @@ void AudioManager::seekTo(double seconds) {
     seeking_.store(true);
     if (was_playing && device_initialised_) ma_device_stop(&device_);
     ma_decoder_seek_to_pcm_frame(&decoder_, frame);
+    resetSpeedResampler();  // drop residual from the pre-seek position
     if (was_playing && device_initialised_) ma_device_start(&device_);
     seeking_.store(false);
 }
@@ -438,28 +446,25 @@ int AudioManager::liveBitrateKbps() const {
         || ext == ".aif" || ext == ".alac" || ext == ".ape"
         || ext == ".wv")
         return taglib_br;
-    static double  prev_file_pos = 0.0;
-    static auto    prev_time     = std::chrono::steady_clock::now();
-    static int     cached_kbps   = 0;
 
     auto now     = std::chrono::steady_clock::now();
-    double elapsed = std::chrono::duration<double>(now - prev_time).count();
+    double elapsed = std::chrono::duration<double>(now - lbr_prev_time_).count();
 
     if (elapsed >= 0.5) {
         double pos_sec  = positionSec();
         double dur      = current_track_.duration_sec;
         double file_pos = (dur > 0) ? (pos_sec / dur) * (double)current_track_.file_size_bytes : 0.0;
 
-        if (prev_file_pos > 0 && elapsed > 0) {
-            double bytes_per_sec = (file_pos - prev_file_pos) / elapsed;
+        if (lbr_prev_file_pos_ > 0 && elapsed > 0) {
+            double bytes_per_sec = (file_pos - lbr_prev_file_pos_) / elapsed;
             if (bytes_per_sec > 0)
-                cached_kbps = (int)(bytes_per_sec * 8.0 / 1000.0);
+                lbr_cached_kbps_ = (int)(bytes_per_sec * 8.0 / 1000.0);
         }
-        prev_file_pos = file_pos;
-        prev_time     = now;
+        lbr_prev_file_pos_ = file_pos;
+        lbr_prev_time_     = now;
     }
 
-    return (cached_kbps > 0) ? cached_kbps : taglib_br;
+    return (lbr_cached_kbps_ > 0) ? lbr_cached_kbps_ : taglib_br;
 }
 
 // ─── visualizer ──────────────────────────────────────────────────────────────
@@ -491,6 +496,65 @@ void AudioManager::pollEvents() {
 void AudioManager::maDataCallback(ma_device* device, void* output,
                                    const void*, ma_uint32 frame_count) {
     static_cast<AudioManager*>(device->pUserData)->onDataCallback(output, frame_count);
+}
+
+// Streaming linear-interpolation resampler for tape-speed playback. Produces
+// n_out output frames from n_out*speed source frames decoded from decoder_,
+// carrying a residual buffer + fractional read position across callbacks so the
+// phase is continuous (no per-buffer clicks). Returns MA_AT_END only when the
+// source is exhausted mid-buffer (produced < n_out); the caller's existing
+// track-done logic then handles gapless/silence exactly as for a 1:1 read.
+ma_result AudioManager::readVarispeed(float* out, ma_uint32 n_out, ma_uint32 ch,
+                                      float spd, ma_uint64& produced) {
+    produced = 0;
+    if (!decoder_initialised_ || ch == 0) return MA_AT_END;
+
+    // Source frames needed to cover all outputs (+1 frame of interpolation
+    // lookahead, +1 slack so an integer-aligned position never under-reads).
+    int need = (int)std::floor(speed_pos_ + (double)n_out * (double)spd) + 2;
+    if (need < 1) need = 1;
+    if ((int)speed_res_.size() < need * (int)ch)
+        speed_res_.resize((size_t)need * (size_t)ch);
+
+    // Top up the residual with freshly decoded source frames until we have `need`
+    // or the decoder runs dry.
+    bool eof = false;
+    while (speed_res_frames_ < need) {
+        ma_uint64 got = 0;
+        ma_result r = ma_decoder_read_pcm_frames(
+            &decoder_, &speed_res_[(size_t)speed_res_frames_ * ch],
+            (ma_uint64)(need - speed_res_frames_), &got);
+        speed_res_frames_ += (int)got;
+        if (got == 0 || r == MA_AT_END) { eof = true; break; }
+    }
+
+    // Resample residual -> out by linear interpolation at fractional positions.
+    for (; produced < n_out; ++produced) {
+        double pos = speed_pos_ + (double)produced * (double)spd;
+        int i0 = (int)pos;
+        if (i0 + 1 >= speed_res_frames_) break;     // source exhausted: EOF tail
+        float fr = (float)(pos - (double)i0);
+        const float* f0 = &speed_res_[(size_t)i0 * ch];
+        const float* f1 = &speed_res_[(size_t)(i0 + 1) * ch];
+        for (ma_uint32 c = 0; c < ch; ++c)
+            out[(size_t)produced * ch + c] = f0[c] + (f1[c] - f0[c]) * fr;
+    }
+
+    // Advance the continuous read position, then drop fully-consumed leading
+    // frames so the residual stays tiny and phase carries into the next callback.
+    speed_pos_ += (double)produced * (double)spd;
+    int drop = (int)speed_pos_;
+    if (drop > speed_res_frames_) drop = speed_res_frames_;
+    if (drop > 0) {
+        int remain = speed_res_frames_ - drop;
+        if (remain > 0)
+            std::memmove(speed_res_.data(), &speed_res_[(size_t)drop * ch],
+                         (size_t)remain * ch * sizeof(float));
+        speed_res_frames_ = remain;
+        speed_pos_       -= (double)drop;
+    }
+
+    return (eof && produced < n_out) ? MA_AT_END : MA_SUCCESS;
 }
 
 void AudioManager::onDataCallback(void* output, ma_uint32 frame_count) {
@@ -548,7 +612,12 @@ void AudioManager::onDataCallback(void* output, ma_uint32 frame_count) {
     }
 
     // ── Crossfade trigger ────────────────────────────────────────────────────
-    if (crossfade_secs > 0.0f && next_decoder_initialised_.load() && !crossfading_.load()) {
+    // Suppressed while varispeed is active (speed != 1.0): the two effects both
+    // consume from the decoder, and tape-speed near a track boundary is an edge
+    // not worth the extra accounting. A crossfade already in flight finishes via
+    // the normal (non-varispeed) read path below.
+    if (crossfade_secs > 0.0f && next_decoder_initialised_.load() && !crossfading_.load()
+        && speed_.load() == 1.0f) {
         double pos = positionSec();
         double dur = durationSec();
         if (dur > 0.0 && (dur - pos) <= (double)crossfade_secs) {
@@ -560,8 +629,19 @@ void AudioManager::onDataCallback(void* output, ma_uint32 frame_count) {
 
     ma_uint64 frames_read_a = 0;
     ma_result result = MA_SUCCESS;
+    float spd = speed_.load();
+    bool use_varispeed = (spd != 1.0f && frame_count > 1 && !crossfading_.load());
     try {
-        result = ma_decoder_read_pcm_frames(&decoder_, out, frame_count, &frames_read_a);
+        if (use_varispeed) {
+            // Varispeed read: produce frame_count outputs from frame_count*spd
+            // source frames, advancing the decoder at the sped-up/down rate.
+            result = readVarispeed(out, frame_count, ch, spd, frames_read_a);
+        } else {
+            // Normal 1:1 read. If we just left varispeed, drop any half-consumed
+            // residual so we neither replay nor skip a few source frames.
+            if (speed_res_frames_ != 0 || speed_pos_ != 0.0) resetSpeedResampler();
+            result = ma_decoder_read_pcm_frames(&decoder_, out, frame_count, &frames_read_a);
+        }
     } catch (...) {
         std::memset(out, 0, frame_count * ch * sizeof(float));
         track_ended_flag_.store(true);
@@ -625,33 +705,6 @@ void AudioManager::onDataCallback(void* output, ma_uint32 frame_count) {
         }
     }
 
-    // Feed visualizer from output (already mixed)
-    for (ma_uint32 f = 0; f < frame_count; ++f) {
-        float mono = 0.0f;
-        for (ma_uint32 c = 0; c < ch; ++c)
-            mono += out[(ma_uint64)f * ch + c];
-        pushVizSample(mono / (float)ch);
-    }
-
-    // ── Speed adjustment (tape-speed: pitch shifts with speed) ───────────
-    float spd = speed_.load();
-    if (spd != 1.0f && frame_count > 1) {
-        std::vector<float> speed_buf((size_t)frame_count * ch);
-        std::memcpy(speed_buf.data(), out, frame_count * ch * sizeof(float));
-        for (ma_uint32 f = 0; f < frame_count; ++f) {
-            float src_f = f * spd;
-            auto  src_i = (ma_uint32)src_f;
-            if (src_i >= frame_count) src_i = frame_count - 1;  // clamp
-            float frac  = src_f - (float)src_i;
-            ma_uint32 src_i1 = std::min(src_i + 1, frame_count - 1);
-            for (ma_uint32 c = 0; c < ch; ++c) {
-                float a = speed_buf[(ma_uint64)src_i  * ch + c];
-                float b = speed_buf[(ma_uint64)src_i1 * ch + c];
-                out[(ma_uint64)f * ch + c] = a + frac * (b - a);
-            }
-        }
-    }
-
     // ── ReplayGain ────────────────────────────────────────────────────────
     if (replaygain_enabled_.load()) {
         float db   = current_track_.replaygain_db;
@@ -681,6 +734,15 @@ void AudioManager::onDataCallback(void* output, ma_uint32 frame_count) {
         applyEq(out, frame_count, ch, (float)device_.sampleRate);
     }
 
+    // Feed visualizer from the processed output (ReplayGain/balance/EQ applied),
+    // but BEFORE mute so the display stays alive when muted.
+    for (ma_uint32 f = 0; f < frame_count; ++f) {
+        float mono = 0.0f;
+        for (ma_uint32 c = 0; c < ch; ++c)
+            mono += out[(ma_uint64)f * ch + c];
+        pushVizSample(mono / (float)ch);
+    }
+
     // ── Mute ─────────────────────────────────────────────────────────────
     if (muted_.load())
         std::memset(out, 0, frame_count * ch * sizeof(float));
@@ -699,14 +761,14 @@ void AudioManager::startBpmDetection(const std::string& path, int sample_rate) {
     bpm_cancel_.store(true);
     if (bpm_thread_.joinable()) bpm_thread_.join();
     bpm_cancel_.store(false);
-    current_track_.bpm = 0;
+    live_bpm_.store(0);
 
     if (path.empty()) return;
 
     bpm_thread_ = std::thread([this, path, sample_rate]() {
         int bpm = detectBpm(path, sample_rate, bpm_cancel_);
         if (!bpm_cancel_.load())
-            current_track_.bpm = bpm;
+            live_bpm_.store(bpm);
     });
 }
 
@@ -835,10 +897,11 @@ AudioManager::BiquadCoeff AudioManager::makePeakingEq(
 }
 
 void AudioManager::rebuildEqCoeffs() {
+    // Audio-thread only (called from onDataCallback when eq_dirty_). Reads the
+    // atomic gains; no lock needed since coeffs/state are audio-thread-private.
     float sr = decoder_initialised_ ? (float)decoder_.outputSampleRate : 44100.0f;
-    std::lock_guard<std::mutex> lk(eq_mutex_);
     for (int b = 0; b < EQ_BANDS; ++b)
-        eq_coeffs_[b] = makePeakingEq(EQ_FREQS[b], eq_gains_db_[b], EQ_Q, sr);
+        eq_coeffs_[b] = makePeakingEq(EQ_FREQS[b], eq_gains_db_[b].load(std::memory_order_relaxed), EQ_Q, sr);
     // Reset state to avoid pops when coefficients change
     for (int b = 0; b < EQ_BANDS; ++b)
         for (int c = 0; c < 2; ++c)
@@ -848,7 +911,8 @@ void AudioManager::rebuildEqCoeffs() {
 
 void AudioManager::applyEq(float* out, ma_uint32 frames,
                             ma_uint32 channels, float /*sr*/) {
-    std::lock_guard<std::mutex> lk(eq_mutex_);
+    // Lock-free: eq_coeffs_/eq_state_ are written only by rebuildEqCoeffs on this
+    // same (audio) thread, immediately before this call.
     for (int b = 0; b < EQ_BANDS; ++b) {
         const auto& cf = eq_coeffs_[b];
         if (cf.a0 == 1.0f && cf.a1 == 0.0f) continue;  // unity, skip
@@ -869,27 +933,19 @@ void AudioManager::applyEq(float* out, ma_uint32 frames,
 void AudioManager::setEqGain(int band, float db) {
     if (band < 0 || band >= EQ_BANDS) return;
     db = std::clamp(db, -12.0f, 12.0f);
-    {
-        std::lock_guard<std::mutex> lk(eq_mutex_);
-        eq_gains_db_[band] = db;
-        eq_dirty_ = true;
-    }
-    rebuildEqCoeffs();
+    eq_gains_db_[band].store(db, std::memory_order_relaxed);
+    eq_dirty_ = true;   // audio thread rebuilds coeffs on its next pass
 }
 
 float AudioManager::getEqGain(int band) const {
     if (band < 0 || band >= EQ_BANDS) return 0.0f;
-    std::lock_guard<std::mutex> lk(eq_mutex_);
-    return eq_gains_db_[band];
+    return eq_gains_db_[band].load(std::memory_order_relaxed);
 }
 
 void AudioManager::resetEq() {
-    {
-        std::lock_guard<std::mutex> lk(eq_mutex_);
-        for (int b = 0; b < EQ_BANDS; ++b) eq_gains_db_[b] = 0.0f;
-        eq_dirty_ = true;
-    }
-    rebuildEqCoeffs();
+    for (int b = 0; b < EQ_BANDS; ++b)
+        eq_gains_db_[b].store(0.0f, std::memory_order_relaxed);
+    eq_dirty_ = true;
 }
 
 

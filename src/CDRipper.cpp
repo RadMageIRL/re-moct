@@ -642,13 +642,28 @@ bool CDRipper::fetchCTDBData(const std::string& ctdb_id,
     }
     return status == 200;
 }
+
+// True only if the bytes begin with a known raster-image signature. Used to gate
+// the cover-art path so an HTML/JSON error body returned with a 200 (or with an
+// unreadable status code) is never embedded into the files as "cover art".
+static bool looksLikeImage(const std::vector<uint8_t>& d) {
+    if (d.size() < 12) return false;
+    const uint8_t* b = d.data();
+    if (b[0]==0xFF && b[1]==0xD8 && b[2]==0xFF) return true;                  // JPEG
+    if (b[0]==0x89 && b[1]=='P' && b[2]=='N' && b[3]=='G') return true;      // PNG
+    if (b[0]=='G' && b[1]=='I' && b[2]=='F' && b[3]=='8') return true;       // GIF
+    if (b[0]=='B' && b[1]=='M') return true;                                 // BMP
+    if (b[0]=='R' && b[1]=='I' && b[2]=='F' && b[3]=='F' &&
+        b[8]=='W' && b[9]=='E' && b[10]=='B' && b[11]=='P') return true;     // WEBP
+    return false;
+}
 static std::vector<uint8_t> fetchCoverArt(const std::string& mb_id) {
     if (mb_id.empty()) return {};
     for (const auto& url : {
             "https://coverartarchive.org/release/"+mb_id+"/front-500",
             "https://coverartarchive.org/release/"+mb_id+"/front"}) {
         auto wurl = utf8_to_wide(url);
-        HINTERNET inet = InternetOpenW(L"RE-MOCT/1.0.0-rc1 (dostrom@gmail.com)",
+        HINTERNET inet = InternetOpenW(L"RE-MOCT/1.0.0-rc1 (https://github.com/RadMageIRL/re-moct)",
                                        INTERNET_OPEN_TYPE_PRECONFIG, nullptr, nullptr, 0);
         if (!inet) continue;
         HINTERNET conn = InternetOpenUrlW(inet, wurl.c_str(), nullptr, 0,
@@ -660,7 +675,7 @@ static std::vector<uint8_t> fetchCoverArt(const std::string& mb_id) {
         DWORD status=0, sz=sizeof(status);
         HttpQueryInfoW(conn, HTTP_QUERY_STATUS_CODE|HTTP_QUERY_FLAG_NUMBER, &status, &sz, nullptr);
         std::vector<uint8_t> data;
-        if (status==200||status==0) {
+        if (status==200) {   // require a real 200, not an unreadable/redirect status
             char buf[8192]; DWORD bytes=0;
             while (InternetReadFile(conn,buf,sizeof(buf),&bytes)&&bytes>0) {
                 data.insert(data.end(),(uint8_t*)buf,(uint8_t*)buf+bytes);
@@ -668,7 +683,7 @@ static std::vector<uint8_t> fetchCoverArt(const std::string& mb_id) {
             }
         }
         InternetCloseHandle(conn); InternetCloseHandle(inet);
-        if (!data.empty()) return data;
+        if (looksLikeImage(data)) return data;   // never return a non-image body
     }
     return {};
 }
@@ -783,7 +798,7 @@ static std::vector<uint8_t> fetchArtByText(const std::string& artist,
                 if (!best_url.empty()) {
                     auto pos = best_url.rfind("100x100");   // bump to 600x600
                     if (pos != std::string::npos) best_url.replace(pos, 7, "600x600");
-                    if (simpleHttpGet(best_url, img, L"RE-MOCT/1.0.0-rc1") && !img.empty())
+                    if (simpleHttpGet(best_url, img, L"RE-MOCT/1.0.0-rc1") && looksLikeImage(img))
                         return img;
                     img.clear();
                 }
@@ -814,7 +829,7 @@ static std::vector<uint8_t> fetchArtByText(const std::string& artist,
                     if (score > best_score) { best_score = score; best_url = aurl; }
                 }
                 if (!best_url.empty()) {
-                    if (simpleHttpGet(best_url, img, L"RE-MOCT/1.0.0-rc1") && !img.empty())
+                    if (simpleHttpGet(best_url, img, L"RE-MOCT/1.0.0-rc1") && looksLikeImage(img))
                         return img;
                     img.clear();
                 }
@@ -832,6 +847,7 @@ static std::string arStatusStr(ARStatus s, int conf) {
     case ARStatus::Matched_v1: return "AR v1 OK (conf "+std::to_string(conf)+")";
     case ARStatus::NotFound:   return "AR: not in database";
     case ARStatus::NetworkError: return "AR: network error";
+    case ARStatus::ReadError:    return "AR: inconclusive (preamble read error)";
     default: return "";
     }
 }
@@ -957,7 +973,9 @@ ARTrackResult CDRipper::ripTrack(HANDLE             hCD,
                                  int                drive_offset,
                                  uint32_t           ctdb_crc_in,
                                  size_t             ctdb_bytes_in,
-                                 int                pressing_offset) {
+                                 int                pressing_offset,
+                                 size_t             ctdb_total_bytes,
+                                 ebur128_state**    out_ebur) {
 
     ARTrackResult ar_result;
     ar_result.status = ARStatus::NotQueried;
@@ -1077,6 +1095,12 @@ ARTrackResult CDRipper::ripTrack(HANDLE             hCD,
     size_t ctdb_disc_offset = ctdb_bytes;
 
     static constexpr size_t CTDB_TRIM = 10 * (size_t)SECTOR_BYTES;  // 23520 bytes
+    // CTDB trims the first AND last 10 sectors of the disc audio image for offset
+    // immunity. The start trim is gated by abs_pos >= CTDB_TRIM below; the end trim
+    // needs the disc total up front (CRC32 can't be un-fed), so the worker passes
+    // ctdb_total_bytes. 0 = caller didn't supply it -> start-trim only (legacy).
+    const size_t ctdb_end_trim_at = (ctdb_total_bytes > CTDB_TRIM)
+                                  ? (ctdb_total_bytes - CTDB_TRIM) : 0;
 
     // Per-track PCM CRC32: CRC32 of the raw audio bytes fed to FLAC/AR.
     // Compared against dBpoweramp's "CRC32:" field to verify audio content.
@@ -1123,6 +1147,11 @@ ARTrackResult CDRipper::ripTrack(HANDLE             hCD,
     // through the AR CRC accumulator (not FLAC/LAME).  These sectors contain real
     // disc data (including any disc lead-in content before the nominal track start).
     // Apply the same total_skip offset correction used for the main rip.
+    // Set true if the AR preamble can't be read — its CRC contribution would be
+    // silent zeros, so we mark the whole track's AR result indeterminate downstream
+    // rather than letting a poisoned checksum masquerade as a real AR mismatch.
+    bool preamble_failed = false;
+
     if (!isLocal(mode) && !cancel_.load() &&
         track.start_lba >= 150 + (DWORD)corr_lba_adv) {
         // preamble_lba: 150 sectors before our effective read start
@@ -1139,6 +1168,19 @@ ARTrackResult CDRipper::ripTrack(HANDLE             hCD,
                                      raw.data(), use_c2, &c2d)) {
                 std::memcpy(pbuf.data(), raw.data(),
                             (size_t)preamble_secs * SECTOR_SAMPLES * 2 * sizeof(int16_t));
+            } else {
+                // Read failed: pbuf stays zero. Feeding those zeros into the AR
+                // accumulator would yield a checksum that silently never matches
+                // (a good rip reported as "not in database"). Flag it instead.
+                preamble_failed = true;
+                FILE* lf = _wfopen(utf8_to_wide(log_path).c_str(), L"a");
+                if (lf) {
+                    fprintf(lf, "  WARNING T%d: AR preamble read FAILED at LBA %lu "
+                                "(%d sectors). AR CRC marked indeterminate; "
+                                "audio still ripped and kept.\n",
+                            track.number, (unsigned long)preamble_lba, preamble_secs);
+                    fclose(lf);
+                }
             }
         }
         // Skip corr_sub_skip frames (same sub-sector offset as main rip)
@@ -1256,18 +1298,21 @@ ARTrackResult CDRipper::ripTrack(HANDLE             hCD,
         if (mp3b < 0) { ok = false; break; }
         if (mp3b > 0) fwrite(mp3_out, 1, (size_t)mp3b, mp3_file);
 
-        // ReplayGain -- interleaved stereo; pass frames not samples (samples/channels)
+        // ReplayGain -- interleaved stereo. `samples` is already the stereo-frame
+        // count (same value passed to FLAC/LAME), which is exactly what
+        // ebur128_add_frames_float expects. Do NOT divide by CHANNELS.
         if (ebur)
-            ebur128_add_frames_float(ebur, ebur_interleaved, (size_t)samples / CHANNELS);
+            ebur128_add_frames_float(ebur, ebur_interleaved, (size_t)samples);
 
         // ── CTDB CRC32 — accumulate raw sector bytes (disc-absolute, trimmed) ──
         if (mode == RipMode::CUETools) {
             size_t block_bytes = (size_t)this_read * SECTOR_BYTES;
             for (size_t bi = 0; bi < block_bytes; ++bi) {
                 size_t abs_pos = ctdb_disc_offset + bi;
-                // Will be trimmed at disc end later (caller knows total_disc_bytes)
-                // Only skip the disc-start trim here
-                if (abs_pos >= CTDB_TRIM) {
+                // Skip the disc-start trim (first 10 sectors) and, when the disc
+                // total is known, the disc-end trim (last 10 sectors) as well.
+                if (abs_pos >= CTDB_TRIM &&
+                    (ctdb_total_bytes == 0 || abs_pos < ctdb_end_trim_at)) {
                     ctdb_crc = crc32_table[(ctdb_crc ^ raw_buf[bi]) & 0xFF] ^ (ctdb_crc >> 8);
                 }
             }
@@ -1358,7 +1403,7 @@ ARTrackResult CDRipper::ripTrack(HANDLE             hCD,
             else if (mp3b > 0) fwrite(mp3_out, 1, (size_t)mp3b, mp3_file);
         }
         if (ebur) ebur128_add_frames_float(ebur, ebur_interleaved,
-                                           (size_t)samples / CHANNELS);
+                                           (size_t)samples);
     }
 
     // ── Flush encoders ────────────────────────────────────────────────────
@@ -1393,6 +1438,14 @@ ARTrackResult CDRipper::ripTrack(HANDLE             hCD,
             rg_out.valid = true;
         }
     }
+    // Hand the integrated-loudness state back to the worker so it can compute
+    // true album gain across every kept track (ebur128_loudness_global_multiple).
+    // Ownership transfers ONLY on a clean, kept rip; probe/determinism/discarded
+    // passes (out_ebur == nullptr, or a failed rip) destroy it here as before.
+    if (out_ebur && ebur && ok && !cancel_.load()) {
+        *out_ebur = ebur;
+        ebur      = nullptr;
+    }
     if (ebur) ebur128_destroy(&ebur);
 
     if (!ok || cancel_.load()) {
@@ -1411,6 +1464,13 @@ ARTrackResult CDRipper::ripTrack(HANDLE             hCD,
     ar_result.crc_v1        = csum_lo;
     ar_result.crc_v2        = csum_lo + csum_hi;
     ar_result.frame450_local = frame450_local;
+
+    // Preamble read failure -> the AR CRC accumulated silent zeros for the pregap
+    // region and cannot be trusted. Keep the audio (already written above), but
+    // mark AR inconclusive so verification + Pass 2 are skipped and the user sees
+    // it in the log. frame450 (sector 450 of the main rip) is unaffected, so the
+    // drive-offset self-check below remains valid.
+    if (preamble_failed) ar_result.status = ARStatus::ReadError;
 
     // Log diagnostic directly here (before returning)
     if (!isLocal(mode) && !log_path.empty()) {
@@ -1652,6 +1712,15 @@ void CDRipper::worker(std::string          drive_letter,
     // ── Per-track rip ─────────────────────────────────────────────────────
     setDriveSpeed(hCD, 0xFFFF);
     int total = (int)tracks.size();
+
+    // CTDB end-trim needs the disc audio total up front. The byte stream CTDB
+    // accumulates is exactly each track's length_lba*SECTOR_BYTES in order, so
+    // sum it here — AFTER the Enhanced-CD last-track cap above so the total
+    // reflects the real audio end, not the TOC's data-session boundary.
+    size_t ctdb_total_bytes = 0;
+    for (const auto& t : tracks)
+        ctdb_total_bytes += (size_t)t.length_lba * SECTOR_BYTES;
+
     // Pressing offset: disc-specific additional sample shift on top of drive offset.
     // Detected from track 1's frame450_crc after Pass 1 fails.
     // Once detected, used for all subsequent tracks' Pass 1 and Pass 2.
@@ -1659,6 +1728,9 @@ void CDRipper::worker(std::string          drive_letter,
     bool pressing_offset_detected = false;
     std::vector<ARTrackResult> ar_results(total);
     std::vector<RGResult>      rg_results(total);
+    // Integrated-loudness state for each KEPT track's audio, handed back from
+    // ripTrack. Combined after the loop for true album gain, then destroyed.
+    std::vector<ebur128_state*> album_states(total, nullptr);
     bool any_error = false;
 
     // CTDB CRC state threads across all tracks (initialized with seed 0xFFFFFFFF)
@@ -1687,6 +1759,7 @@ void CDRipper::worker(std::string          drive_letter,
         const int eff_pressing = pressing_offset_detected && i > 0 ? pressing_offset : 0;
 
         RGResult rg;
+        ebur128_state* ebur_kept = nullptr;   // Pass 1 loudness state (kept unless Pass 2 wins)
         ARTrackResult ar = ripTrack(hCD, trk, i, total,
                                     i==0, i==total-1,
                                     use_c2,
@@ -1694,7 +1767,9 @@ void CDRipper::worker(std::string          drive_letter,
                                     log_path, mode, drive_offset,
                                     ctdb_state.ctdb_crc,
                                     ctdb_state.ctdb_bytes,
-                                    eff_pressing);
+                                    eff_pressing,
+                                    ctdb_total_bytes,
+                                    &ebur_kept);
 
         // Carry CTDB state forward to next track
         ctdb_state.ctdb_crc   = ar.ctdb_crc;
@@ -1719,6 +1794,9 @@ void CDRipper::worker(std::string          drive_letter,
         // We compare our crc_v1 and crc_v2 against both out_v1 and out_v2 entries.
         auto checkAR = [&](const ARTrackResult& candidate) -> ARTrackResult {
             ARTrackResult result = candidate;
+            // A preamble read failure already marked this indeterminate — don't
+            // overwrite it with a (meaningless) match/no-match verdict.
+            if (candidate.status == ARStatus::ReadError) return result;
             result.status = ARStatus::NotFound;
             if (!ar_db_loaded) { result.status = ARStatus::NetworkError; return result; }
             if (i >= (int)ar_db_v1.size()) return result;
@@ -1779,7 +1857,8 @@ void CDRipper::worker(std::string          drive_letter,
                 fprintf(lf, "\nTrack %d Pass 1: crc_v1(=csum_lo)=%08x  crc_v2(=csum_lo+hi)=%08x  status=%d (%s)\n",
                     tnum, ar.crc_v1, ar.crc_v2, (int)ar.status,
                     ar.status==ARStatus::Matched_v2 ? "AR v2 OK" :
-                    ar.status==ARStatus::Matched_v1 ? "AR v1 OK" : "no match");
+                    ar.status==ARStatus::Matched_v1 ? "AR v1 OK" :
+                    ar.status==ARStatus::ReadError  ? "preamble read error (inconclusive)" : "no match");
                 if (i < (int)ar_db_v1.size()) {
                     fprintf(lf, "  DB main_crcs (%zu):\n", ar_db_v1[i].size());
                     for (auto& [crc,conf] : ar_db_v1[i])
@@ -1853,7 +1932,8 @@ void CDRipper::worker(std::string          drive_letter,
                         fs::remove(probe_flac, ec_probe);
                         fs::remove(probe_mp3,  ec_probe);
                         ar_probe = checkAR(ar_probe);
-                        if (ar_probe.status != ARStatus::NotFound) {
+                        if (ar_probe.status == ARStatus::Matched_v1 ||
+                            ar_probe.status == ARStatus::Matched_v2) {
                             pressing_offset = p;
                             lf = _wfopen(utf8_to_wide(log_path).c_str(), L"a");
                             if (lf) {
@@ -1906,6 +1986,7 @@ void CDRipper::worker(std::string          drive_letter,
             std::string tmp_mp3  = mp3_path  + ".tmp";
 
             RGResult      rg2;
+            ebur128_state* ebur_p2 = nullptr;
             ARTrackResult ar2 = ripTrack(hCD, trk, i, total,
                                          i==0, i==total-1,
                                          use_c2,
@@ -1913,7 +1994,9 @@ void CDRipper::worker(std::string          drive_letter,
                                          log_path, mode, drive_offset,
                                          ctdb_state.ctdb_crc,
                                          ctdb_state.ctdb_bytes,
-                                         pressing_offset);
+                                         pressing_offset,
+                                         ctdb_total_bytes,
+                                         &ebur_p2);
             if (ar2.crc_v1 != 0 || ar2.crc_v2 != 0) {
                 ar2 = checkAR(ar2);
                 pass_count = 2;
@@ -1929,7 +2012,8 @@ void CDRipper::worker(std::string          drive_letter,
                         fclose(lf);
                     }
                 }
-                if (ar2.status != ARStatus::NotFound) {
+                if (ar2.status == ARStatus::Matched_v1 ||
+                    ar2.status == ARStatus::Matched_v2) {
                     // Pass 2 verified — atomically replace Pass 1 files
                     std::error_code ec2;
                     fs::remove(flac_path, ec2);
@@ -1938,6 +2022,11 @@ void CDRipper::worker(std::string          drive_letter,
                     fs::rename(tmp_mp3,  mp3_path,  ec2);
                     ar = ar2;
                     rg = rg2;
+                    // Pass 2 audio is now the kept audio: its loudness state is
+                    // the one album gain must use. Drop Pass 1's.
+                    if (ebur_kept) ebur128_destroy(&ebur_kept);
+                    ebur_kept = ebur_p2;
+                    ebur_p2   = nullptr;
                 } else {
                     // Pass 2 also failed — discard its audio, keep Pass 1
                     std::error_code ec2;
@@ -1950,6 +2039,8 @@ void CDRipper::worker(std::string          drive_letter,
                 fs::remove(tmp_flac, ec2);
                 fs::remove(tmp_mp3,  ec2);
             }
+            // Pass 2's loudness state is discarded unless it won (handled above).
+            if (ebur_p2) ebur128_destroy(&ebur_p2);
             // Restore max speed for remaining tracks regardless of Pass 2 outcome
             setDriveSpeed(hCD, 0xFFFF);
         }
@@ -1982,8 +2073,9 @@ void CDRipper::worker(std::string          drive_letter,
             std::error_code ec; fs::remove(det_flac, ec); fs::remove(det_mp3, ec);
         }
 
-        ar_results[i] = ar;
-        rg_results[i] = rg;
+        ar_results[i]    = ar;
+        rg_results[i]    = rg;
+        album_states[i]  = ebur_kept;   // null if this track failed; owned until album calc
 
         // Report AR result with Pass label matching dBpoweramp style
         if (cb) {
@@ -2004,6 +2096,9 @@ void CDRipper::worker(std::string          drive_letter,
                              +(pass_count>1
                                 ? " not in AccurateRip database (both passes)"
                                 : " not in AccurateRip database"); break;
+            case ARStatus::ReadError:
+                p.status_msg = "Track "+std::to_string(tnum)
+                             +" ripped & kept -- AR inconclusive (preamble read error, see log)"; break;
             default:
                 p.status_msg = "Track "+std::to_string(tnum)+" ripped (AR skipped)"; break;
             }
@@ -2014,17 +2109,10 @@ void CDRipper::worker(std::string          drive_letter,
 
     // ── CTDB finalization (CUETools mode) ────────────────────────────────
     if (mode == RipMode::CUETools && !cancel_.load() && !any_error) {
-        // Finalize CRC32: apply end-trim then XOR with 0xFFFFFFFF
-        // We need to "un-feed" the last CTDB_TRIM bytes from our running CRC.
-        // Since CRC32 isn't reversible, we recompute from the trimmed total.
-        // Simpler: recompute computeCTDBId from total disc bytes we've tracked.
-        // We stored the raw CRC state without the end-trim applied.
-        // The disc-absolute total bytes = ctdb_state.ctdb_bytes.
-        // We need to stop at (total_bytes - CTDB_TRIM).
-        // Since we can't un-apply bytes, we finalize the current state which
-        // already has the start-trim applied, then note the end-trim deficit.
-        // For now finalize what we have — end trim requires knowing total_bytes upfront.
-        // TODO: pass total_disc_bytes to properly end-trim. For now XOR to get ID.
+        // The running CRC32 already excludes BOTH the first and last 10 sectors:
+        // start-trim is gated inline, and the disc total (ctdb_total_bytes) was
+        // passed into ripTrack so the end-trim boundary could be applied as bytes
+        // were fed (CRC32 can't be un-fed after the fact). Finalize = XOR ones.
         uint32_t ctdb_final = ctdb_state.ctdb_crc ^ 0xFFFFFFFFu;
         char ctdb_id[9]; snprintf(ctdb_id, sizeof(ctdb_id), "%08x", ctdb_final);
 
@@ -2033,8 +2121,8 @@ void CDRipper::worker(std::string          drive_letter,
             if (lf) {
                 fprintf(lf, "\n=== CUETools DB ===\n");
                 fprintf(lf, "Disc audio bytes processed : %zu\n", ctdb_state.ctdb_bytes);
-                fprintf(lf, "CTDB_TRIM (start)          : %zu bytes (10 sectors)\n", (size_t)(10*SECTOR_BYTES));
-                fprintf(lf, "CTDB ID (raw, no end-trim) : %s\n", ctdb_id);
+                fprintf(lf, "CTDB trim (start+end)      : %zu bytes each (10 sectors)\n", (size_t)(10*SECTOR_BYTES));
+                fprintf(lf, "CTDB ID (start+end trimmed): %s\n", ctdb_id);
                 fclose(lf);
             }
         }
@@ -2056,13 +2144,40 @@ void CDRipper::worker(std::string          drive_letter,
     }
 
     // ── Album ReplayGain ──────────────────────────────────────────────────
-    // Compute album gain from all track ebur128 states (simplified: average)
+    // Album peak = loudest track true-peak (correct as-is).
     double album_peak = 0;
     for (auto& rg : rg_results) album_peak = std::max(album_peak, rg.track_peak);
-    // Album gain = average of track gains (approximation without multi-file ebur128)
-    double sum_gain = 0; int valid = 0;
-    for (auto& rg : rg_results) if (rg.valid) { sum_gain += rg.track_gain; ++valid; }
-    double album_gain = valid > 0 ? sum_gain / valid : 0.0;
+
+    // Album gain — true EBU R128 integrated loudness over EVERY kept track's
+    // gating blocks at once (ebur128_loudness_global_multiple), NOT a mean of
+    // per-track gains. Each kept track handed its loudness state back from
+    // ripTrack; combine the live ones here.
+    std::vector<ebur128_state*> live_states;
+    for (auto* st : album_states) if (st) live_states.push_back(st);
+
+    double album_gain = 0.0;
+    bool   album_gain_ok = false;
+    if (!live_states.empty()) {
+        double album_loudness = 0.0;
+        if (ebur128_loudness_global_multiple(live_states.data(),
+                                             live_states.size(),
+                                             &album_loudness) == EBUR128_SUCCESS
+            && album_loudness > -100.0) {   // guard the silence/no-block sentinel
+            album_gain    = -18.0 - album_loudness;
+            album_gain_ok = true;
+        }
+    }
+    // Fallback only if the multiple-state measurement was unavailable (e.g. every
+    // track failed to produce a state): mean of valid track gains beats nothing.
+    if (!album_gain_ok) {
+        double sum_gain = 0; int valid = 0;
+        for (auto& rg : rg_results) if (rg.valid) { sum_gain += rg.track_gain; ++valid; }
+        album_gain = valid > 0 ? sum_gain / valid : 0.0;
+    }
+
+    // States are no longer needed once the album figure is computed.
+    for (auto*& st : album_states) if (st) { ebur128_destroy(&st); st = nullptr; }
+
     for (auto& rg : rg_results) {
         rg.album_gain = album_gain;
         rg.album_peak = album_peak;
@@ -2249,6 +2364,7 @@ void CDRipper::worker(std::string          drive_letter,
                     case ARStatus::Matched_v1:   return "matched_v1";
                     case ARStatus::NotFound:     return "not_found";
                     case ARStatus::NetworkError: return "network_error";
+                    case ARStatus::ReadError:    return "read_error";
                     default:                     return "not_queried";
                 }
             };
@@ -2303,6 +2419,7 @@ void CDRipper::worker(std::string          drive_letter,
                     ar_results[i].status==ARStatus::Matched_v2 ? "[AR v2 OK]" :
                     ar_results[i].status==ARStatus::Matched_v1 ? "[AR v1 OK]" :
                     ar_results[i].status==ARStatus::NetworkError ? "[AR net err]" :
+                    ar_results[i].status==ARStatus::ReadError ? "[AR inconclusive: read err]" :
                     "[AR not found]";
                 fprintf(lf, "  Track %02d: %s conf=%d  rg=%.2fdB [%08x] [%08x]\n",
                     i+1, status, ar_results[i].confidence,

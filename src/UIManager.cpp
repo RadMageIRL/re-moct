@@ -1810,8 +1810,9 @@ void UIManager::drawTrackInfo() {
         // BPM — from live detection if this is the current track
         {
             const auto& ct = audio_.currentTrack();
-            if (ct.path == path && ct.bpm > 0)
-                addInt("BPM", ct.bpm);
+            int live_bpm = audio_.currentBpm();
+            if (ct.path == path && live_bpm > 0)
+                addInt("BPM", live_bpm);
             else if (ct.path == path && audio_.state() != PlaybackState::Stopped)
                 add("BPM", "detecting...");
             // ReplayGain tag
@@ -1973,9 +1974,9 @@ void UIManager::drawProgress() {
         if (!meta.empty()) meta += "  ";
         meta += (track.channels==1?"mono":"stereo");
     }
-    if (track.bpm > 0) {
+    if (audio_.currentBpm() > 0) {
         if (!meta.empty()) meta += "  ";
-        meta += std::to_string(track.bpm) + " bpm";
+        meta += std::to_string(audio_.currentBpm()) + " bpm";
     } else if (audio_.state() == PlaybackState::Playing) {
         if (!meta.empty()) meta += "  ";
         meta += "bpm:...";

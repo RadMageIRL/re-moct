@@ -255,8 +255,6 @@ void MBLookup::cancel() {
     active_.store(false);
 }
 
-#endif // _WIN32
-
 // ─── URL encoding ─────────────────────────────────────────────────────────────
 std::string MBLookup::urlEncode(const std::string& s) {
     std::ostringstream out;
@@ -615,3 +613,5 @@ void MBLookup::discogsReleaseWorker(std::string discogs_id, MBCallback cb) {
     if (cb) cb(true, release, "");
     active_.store(false);
 }
+
+#endif // _WIN32

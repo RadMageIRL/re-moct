@@ -11,6 +11,21 @@
 Built with C++20 · ncurses · miniaudio · TagLib · AccurateRip
 <br>
 
+## Highlights
+
+- **AccurateRip CRCv2 + CUETools (CTDB) verification.** Disc-absolute CRCs
+  computed from the 150-sector lead-in; pressing offset auto-detected via
+  frame-450 CRC scan; drive offset applied as a combined sample shift split
+  into whole-sector LBA advance plus sub-sector skip. Offset-immune CTDB
+  fallback when AccurateRip has no entry.
+- **Real-time-safe audio path.** Raw CDDA sector reads on a dedicated thread
+  feeding a lock-free ring buffer - no mutex in the audio callback. Next track
+  is pre-decoded into a second buffer for gapless/crossfade transitions.
+- **Correct handling of awkward discs** - hidden lead-in audio, Blue Book /
+  CD-Extra multisession discs, non-standard pressings (see Verified Rips).
+- Gapless, crossfade, ReplayGain, 10-band biquad EQ, BPM detection,
+  MusicBrainz DiscID lookup with Discogs fallback, tag editor, LRC lyrics.
+
 Example TUI:
 
 <img width="1367" height="664" alt="image" src="https://github.com/user-attachments/assets/d0d189b7-d301-4ae7-a2ac-dd62a507cbb0" />
@@ -103,5 +118,10 @@ RE-MOCT links the following third-party libraries. See
 - **[miniaudio](https://miniaud.io/)** — audio playback. *Public domain (Unlicense) or MIT-0.*
 - **WinINet** (Microsoft Windows) — HTTP transport for database lookups. *Windows system API.*
 ---
+
+![License: MIT](https://img.shields.io/badge/license-MIT-green)
+![C++20](https://img.shields.io/badge/C%2B%2B-20-blue)
+![Platform: Windows](https://img.shields.io/badge/platform-Windows-lightgrey)
+![AccurateRip](https://img.shields.io/badge/AccurateRip-verified-gold)
 
 

@@ -26,6 +26,36 @@ Built with C++20 · ncurses · miniaudio · TagLib · AccurateRip
 - Gapless, crossfade, ReplayGain, 10-band biquad EQ, BPM detection,
   MusicBrainz DiscID lookup with Discogs fallback, tag editor, LRC lyrics.
 
+## Verified Rips
+
+Real RE-MOCT logs from discs that trip up naïve rippers are in
+[`logs/`](https://github.com/RadMageIRL/re-moct/tree/main/logs):
+
+**Joan Osborne - *Relish* (1995)** - non-standard lead-in: track 1 begins at
+`lba=182` instead of the usual 150, i.e. a 32-frame pregap. RE-MOCT detects the
+true track-1 LBA and still verifies all 12 tracks at AccurateRip v2, conf 200.
+
+```
+  track[01] lba=182  rel=32        # normal is lba=150 — 32-frame pregap
+  t1_lba=182  leadout_rel=275790
+  === Summary ===
+  AR: 12 v2 + 0 v1 matched, 0 not found / 12 total
+```
+
+**Goo Goo Dolls - *Gutterflower* (2002)** - Blue Book / Enhanced CD with a data
+session alongside the audio. RE-MOCT parses the audio TOC, excludes the data
+track, and verifies all 12 tracks at AccurateRip v2, conf 200.
+
+```
+  === Summary ===
+  AR: 12 v2 + 0 v1 matched, 0 not in database, 0 network error / 12 total
+```
+
+Both ripped on a HL-DT-ST GHD3N at +6-sample offset. A third log
+(`Prince_Rip.log`) shows the same pipeline verifying clean on a *different*
+drive (ASUS SDRW-08U7M-U) - evidence the offset handling generalises across
+drives, not just one unit.
+
 Example TUI:
 
 <img width="1367" height="664" alt="image" src="https://github.com/user-attachments/assets/d0d189b7-d301-4ae7-a2ac-dd62a507cbb0" />

@@ -43,6 +43,19 @@ bool CDSource::open(const std::string& drive_letter) {
     int first = toc.FirstTrack;
     int last  = toc.LastTrack;
 
+    // Guard against a malformed TOC: TrackData has MAXIMUM_NUMBER_TRACKS (100)
+    // slots, and the lead-out for an N-track disc sits at index N, so N must be
+    // <= 99. FirstTrack/LastTrack are UCHARs, so a corrupt disc could report
+    // values that would over-read the array below.
+    static_assert(MAXIMUM_NUMBER_TRACKS >= 100, "CDROM_TOC TrackData too small");
+    if (first < 1)  first = 1;
+    if (last  > 99) last  = 99;
+    if (last < first) {
+        CloseHandle(hCD_);
+        hCD_ = INVALID_HANDLE_VALUE;
+        return false;
+    }
+
     // Helper: convert MSF address to LBA (sectors from disc start)
     // TOC Address[] = {0, minutes, seconds, frames}
     auto msf_to_lba = [](const UCHAR addr[4]) -> DWORD {
@@ -259,7 +272,8 @@ void CDSource::seekTo(int seconds) {
 
     // Calculate target LBA: 75 sectors per second
     DWORD target_lba = track_start + (DWORD)(seconds * 75);
-    if (target_lba >= track_end_lba_.load()) target_lba = track_end_lba_.load() - 1;
+    DWORD track_end = track_end_lba_.load();
+    if (track_end > 0 && target_lba >= track_end) target_lba = track_end - 1;
 
     // Stop reader, flush ring, seek, restart
     reader_stop_.store(true);

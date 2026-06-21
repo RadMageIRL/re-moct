@@ -195,7 +195,8 @@ int main(int argc, char* argv[]) {
         config.volume           = audio.volume();
         config.repeat_mode      = (int)playlist.repeatMode();
         config.shuffle          = playlist.shuffle();
-        config.toast_enabled    = config.toast_enabled;
+        // toast_enabled is toggled in-place via UIManager's config reference, so
+        // it is already current here — no copy needed.
         config.eq_enabled       = audio.eqEnabled();
         for (int b = 0; b < AudioManager::EQ_BANDS; ++b)
             config.eq_gains[b]  = audio.getEqGain(b);

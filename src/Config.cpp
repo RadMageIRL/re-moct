@@ -87,9 +87,9 @@ void DigiConfig::load() {
         if (!val.empty() && val.back() == '\r') val.pop_back();
 
         if      (key == "last_dir")         last_dir          = val;
-        else if (key == "playlist_current") playlist_current  = (std::size_t)std::stoul(val);
-        else if (key == "volume")           volume            = std::stof(val);
-        else if (key == "repeat_mode")      repeat_mode       = std::stoi(val);
+        else if (key == "playlist_current") try { playlist_current = (std::size_t)std::stoul(val); } catch (...) {}
+        else if (key == "volume")           try { volume          = std::stof(val); } catch (...) {}
+        else if (key == "repeat_mode")      try { repeat_mode      = std::stoi(val); } catch (...) {}
         else if (key == "shuffle")          shuffle           = (val == "1");
         else if (key == "toast_enabled")    toast_enabled     = (val == "1");
         else if (key == "eq_enabled")       eq_enabled        = (val == "1");
@@ -116,9 +116,11 @@ void DigiConfig::load() {
             std::string tpath = val.substr(0, p2);
             // Silently drop any CD stat entries from pre-fix configs
             if (isCDTrackPath(tpath)) continue;
-            int count = std::stoi(val.substr(p2 + 1, p1 - p2 - 1));
-            std::time_t ts = (std::time_t)std::stoll(val.substr(p1 + 1));
-            track_stats[tpath] = { count, ts };
+            try {
+                int count = std::stoi(val.substr(p2 + 1, p1 - p2 - 1));
+                std::time_t ts = (std::time_t)std::stoll(val.substr(p1 + 1));
+                track_stats[tpath] = { count, ts };
+            } catch (...) {}
         }
     }
 

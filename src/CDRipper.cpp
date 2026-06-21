@@ -2096,7 +2096,7 @@ void CDRipper::worker(std::string          drive_letter,
             // Header
             if (!rel.artist.empty()) fprintf(cf, "PERFORMER \"%s\"\r\n", rel.artist.c_str());
             if (!rel.title.empty())  fprintf(cf, "TITLE \"%s\"\r\n",     rel.title.c_str());
-            fprintf(cf, "REM DATE %s\r\n",     rel.date.substr(0,4).c_str());
+            if (rel.date.size() >= 4) fprintf(cf, "REM DATE %s\r\n", rel.date.substr(0,4).c_str());
             fprintf(cf, "REM DISCID %08x\r\n", computeCDDB(tracks, full_leadout_lba, data_track_lbas));
             fprintf(cf, "REM COMMENT \"RE-MOCT v1.0.0-rc1\"\r\n");
 

@@ -166,7 +166,9 @@ MBRelease MBLookup::parseJson(const std::string& json_str) {
                 if (!media.contains("tracks")) continue;
                 for (auto& t : media["tracks"]) {
                     MBTrack mt;
-                    mt.number = std::stoi(t.value("number", "0"));
+                    // "position" is the integer track index (1-based), always present.
+                    // "number" is a display string that may be non-numeric (vinyl: "A1").
+                    mt.number = t.value("position", 0);
                     mt.title  = t.value("title", "");
                     mt.disc   = disc_no;
                     // Artist from recording

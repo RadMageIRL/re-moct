@@ -19,10 +19,6 @@
 #  include <windows.h>
 #endif
 
-#ifdef _WIN32
-#  include <windows.h>
-#endif
-
 namespace fs = std::filesystem;
 
 // ─── helpers ────────────────────────────────────────────────────────────────
@@ -435,7 +431,8 @@ int AudioManager::liveBitrateKbps() const {
     // Lossless formats (FLAC, WAV, AIFF, ALAC) have naturally variable frame sizes
     // but aren't VBR in a meaningful sense — use TagLib static value
     auto& p = current_track_.path;
-    auto ext = p.size() > 4 ? p.substr(p.rfind('.')) : "";
+    auto dot = p.rfind('.');
+    auto ext = dot != std::string::npos ? p.substr(dot) : std::string{};
     for (char& c : ext) c = (char)std::tolower((unsigned char)c);
     if (ext == ".flac" || ext == ".wav" || ext == ".aiff"
         || ext == ".aif" || ext == ".alac" || ext == ".ape"

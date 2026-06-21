@@ -2031,8 +2031,7 @@ void UIManager::drawCmdLine() {
         bool is_err  = (rip_status_.find("error") != std::string::npos
                      || rip_status_.find("failed") != std::string::npos
                      || rip_status_.find("cancelled") != std::string::npos);
-        int pair = is_err ? CP_STATUS_OK : CP_STATUS_OK;
-        (void)pair;
+        (void)is_err;
         wattron(win_cmdline_, COLOR_PAIR(CP_STATUS_OK) | (is_done ? A_BOLD : 0));
         mvwaddnstr(win_cmdline_, 0, 1, rip_status_.c_str(), screen_cols_ - 2);
         wattroff(win_cmdline_, COLOR_PAIR(CP_STATUS_OK) | (is_done ? A_BOLD : 0));
@@ -3897,8 +3896,6 @@ void UIManager::handleMBSearchInput(int ch) {
                             }
                         } catch (...) {}
                     }
-                    // Log first few track matches
-                    for (int dbgi = 0; dbgi < std::min((int)rel.tracks.size(), 3); ++dbgi)
                     if (!rel.title.empty())
                         mb_album_ = rel.title + (rel.date.size() >= 4
                                    ? " (" + rel.date.substr(0, 4) + ")" : "");

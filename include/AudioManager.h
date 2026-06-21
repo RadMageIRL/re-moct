@@ -7,6 +7,8 @@
 #include <cstdint>
 #include <thread>
 #include <algorithm>
+#include <vector>
+#include <chrono>
 
 #include "miniaudio.h"
 #ifdef _WIN32
@@ -93,6 +95,7 @@ public:
     double           durationSec()  const;
     int              liveBitrateKbps() const;
     const TrackInfo& currentTrack() const { return current_track_; }
+    int              currentBpm()   const { return live_bpm_.load(); }
 
     // Visualizer
     int copySamples(float* dst, int n) const;
@@ -162,6 +165,17 @@ private:
     std::atomic<float>         balance_  { 0.0f };  // -1.0 = full left, 0 = center, 1.0 = full right
     std::atomic<double>        cached_duration_ { 0.0 };
     std::atomic<float>         speed_    { 1.0f };
+    // Varispeed (tape-speed) streaming linear resampler — audio-thread-only state.
+    // Replaces the old in-place buffer warp that never actually changed how many
+    // source frames were consumed. Produces frame_count output frames from
+    // frame_count*speed source frames, carrying a residual + fractional position
+    // across callbacks so there are no per-buffer discontinuities.
+    std::vector<float>         speed_res_;             // residual decoded source frames
+    int                        speed_res_frames_ = 0;  // valid frames in speed_res_
+    double                     speed_pos_        = 0.0; // fractional source read position
+    void      resetSpeedResampler() { speed_res_frames_ = 0; speed_pos_ = 0.0; }
+    ma_result readVarispeed(float* out, ma_uint32 frame_count, ma_uint32 channels,
+                            float speed, ma_uint64& produced);
 #ifdef _WIN32
     std::atomic<bool>          cd_mode_  { false };
     CDSource                   cd_source_;
@@ -169,14 +183,22 @@ private:
     std::atomic<bool>          replaygain_enabled_ { false };
     std::atomic<float>         replaygain_gain_    { 1.0f };
 
+    // liveBitrateKbps() rolling VBR estimate — per-instance, reset each play().
+    // Previously function-local statics: shared across instances and never reset
+    // on track change, so the first reading after a switch was stale.
+    mutable double  lbr_prev_file_pos_ = 0.0;
+    mutable std::chrono::steady_clock::time_point lbr_prev_time_ {};
+    mutable int     lbr_cached_kbps_   = 0;
+
     // EQ biquad state (one per band per channel, max 2 ch)
     std::atomic<bool>  eq_enabled_ { false };
     struct BiquadState { float x1=0,x2=0,y1=0,y2=0; };
     struct BiquadCoeff { float a0=1,a1=0,a2=0,b1=0,b2=0; };
-    // coefficients updated on UI thread, applied on audio thread
-    // We use a simple flag to signal rebuild
-    mutable std::mutex          eq_mutex_;
-    float                       eq_gains_db_[EQ_BANDS] {};  // default all 0
+    // Gains are the only cross-thread EQ data (UI writes, audio reads at rebuild),
+    // so they're atomic and the whole EQ path is lock-free. Coefficients and filter
+    // state are touched ONLY on the audio thread: rebuildEqCoeffs() now runs solely
+    // from the data callback when eq_dirty_ is set, immediately before applyEq().
+    std::atomic<float>          eq_gains_db_[EQ_BANDS] {};  // default all 0
     BiquadCoeff                 eq_coeffs_[EQ_BANDS] {};
     BiquadState                 eq_state_[EQ_BANDS][2] {};  // [band][channel]
     std::atomic<bool>           eq_dirty_ { false };
@@ -192,6 +214,11 @@ private:
     // BPM detection — runs on a background thread
     std::thread          bpm_thread_;
     std::atomic<bool>    bpm_cancel_  { false };
+    // Detected BPM lives in its own atomic, NOT in current_track_.bpm: the BPM
+    // worker thread must never write into current_track_ while the audio thread
+    // reassigns that struct (initCrossfade) and the UI reads it. UI reads via
+    // currentBpm().
+    std::atomic<int>     live_bpm_    { 0 };
     void                 startBpmDetection(const std::string& path, int sample_rate);
     static int           detectBpm(const std::string& path, int sample_rate,
                                    const std::atomic<bool>& cancel);

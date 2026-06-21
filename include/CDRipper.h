@@ -14,6 +14,12 @@
 #include <filesystem>
 #include <cstdint>
 
+// libebur128 — needed for the ebur128_state* parameter on ripTrack, which hands
+// each kept track's integrated-loudness state back to the worker for true album-
+// gain aggregation (ebur128_loudness_global_multiple). The type is an anonymous
+// struct typedef, so it can't be forward-declared — include the header directly.
+#include <ebur128.h>
+
 // ─── Rip mode ─────────────────────────────────────────────────────────────────
 enum class RipMode {
     AccurateRip,   // [A] Full AR network handshake, CRC verification
@@ -24,7 +30,7 @@ enum class RipMode {
 };
 
 // ─── AccurateRip result per track ─────────────────────────────────────────────
-enum class ARStatus { NotQueried, Matched_v2, Matched_v1, NotFound, NetworkError };
+enum class ARStatus { NotQueried, Matched_v2, Matched_v1, NotFound, NetworkError, ReadError };
 
 struct ARTrackResult {
     ARStatus status     = ARStatus::NotQueried;
@@ -111,7 +117,9 @@ private:
                            int                drive_offset  = 0,
                            uint32_t           ctdb_crc_in   = 0xFFFFFFFFu,
                            size_t             ctdb_bytes_in = 0,
-                           int                pressing_offset = 0);
+                           int                pressing_offset = 0,
+                           size_t             ctdb_total_bytes = 0,
+                           ebur128_state**    out_ebur = nullptr);
 
     static void tagFile(const std::string&          path,
                         const MBRelease&             rel,

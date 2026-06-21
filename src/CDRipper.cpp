@@ -1,0 +1,2230 @@
+#ifdef _WIN32
+#include "CDRipper.h"
+
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#include <winioctl.h>
+#include <ntddcdrm.h>
+#include <shlobj.h>
+#include <wininet.h>
+
+// FLAC C API
+#include <FLAC/stream_encoder.h>
+
+// LAME MP3
+#include <lame/lame.h>
+
+// libebur128 for ReplayGain
+#include <ebur128.h>
+
+// TagLib
+#include <taglib/fileref.h>
+#include <taglib/tag.h>
+#include <taglib/tstring.h>
+#include <taglib/tbytevector.h>
+#include <taglib/id3v2tag.h>
+#include <taglib/textidentificationframe.h>
+#include <taglib/attachedpictureframe.h>
+#include <taglib/mpegfile.h>
+#include <taglib/flacfile.h>
+#include <taglib/flacpicture.h>
+#include <taglib/xiphcomment.h>
+
+#include <filesystem>
+#include <cstring>
+#include <ctime>
+#include <chrono>
+#include <sstream>
+#include <iomanip>
+#include <algorithm>
+#include <numeric>
+
+#include "json.hpp"   // nlohmann single-header (already vendored for MBLookup)
+
+namespace fs = std::filesystem;
+
+static constexpr int SECTOR_BYTES     = 2352;
+static constexpr int SECTOR_SAMPLES   = 588;
+static constexpr int SECTORS_PER_READ = 27;
+static constexpr int SAMPLE_RATE      = 44100;
+static constexpr int CHANNELS         = 2;
+static constexpr int BIT_DEPTH        = 16;
+static constexpr int FLAC_COMPRESSION = 5;
+// C2 read: 2352 audio bytes + 294 C2 bytes = 2646 bytes per sector
+static constexpr int SECTOR_BYTES_C2  = 2352 + 294;
+// AccurateRip frame 450: sector 450 of track 1, used for pressing offset detection
+static constexpr uint32_t AR_FRAME450_START = 450u * 588u + 1u;  // mul_by 264601
+static constexpr uint32_t AR_FRAME450_END   = 451u * 588u;       // mul_by 265188
+// Maximum pressing offset to scan (samples). 700 covers all known pressings.
+static constexpr int MAX_PRESSING_OFFSET = 700;
+
+// ─── Path helpers ─────────────────────────────────────────────────────────────
+std::string CDRipper::sanitizePath(const std::string& s) {
+    static const std::string ill = R"(\/:*?"<>|)";
+    std::string o; o.reserve(s.size());
+    for (unsigned char c : s)
+        o += (c < 32 || ill.find((char)c) != std::string::npos) ? '_' : (char)c;
+    while (!o.empty() && (o.back()=='.'||o.back()==' ')) o.pop_back();
+    return o.empty() ? "Unknown" : o;
+}
+
+std::string CDRipper::buildOutputDir(const MBRelease& rel) {
+    std::string music;
+    PWSTR wp = nullptr;
+    if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_Music, 0, nullptr, &wp))) {
+        int n = WideCharToMultiByte(CP_UTF8,0,wp,-1,nullptr,0,nullptr,nullptr);
+        std::string u(n,'\0');
+        WideCharToMultiByte(CP_UTF8,0,wp,-1,u.data(),n,nullptr,nullptr);
+        if (!u.empty()&&u.back()=='\0') u.pop_back();
+        music = u; CoTaskMemFree(wp);
+    } else {
+        char buf[MAX_PATH];
+        music = GetEnvironmentVariableA("USERPROFILE",buf,MAX_PATH)
+              ? std::string(buf)+"\\Music" : "C:\\Music";
+    }
+    std::string folder;
+    if (!rel.title.empty()) {
+        std::string yr = rel.date.size()>=4 ? " ("+rel.date.substr(0,4)+")" : "";
+        folder = sanitizePath(rel.artist.empty() ? rel.title
+                              : rel.artist+" - "+rel.title) + yr;
+    } else {
+        std::time_t t = std::time(nullptr); std::tm* tm = std::localtime(&t);
+        char buf[32]; std::strftime(buf,sizeof(buf),"CD_Rip_%Y-%m-%d",tm);
+        folder = buf;
+    }
+    return music + "\\re-moct\\" + folder;
+}
+
+HANDLE CDRipper::openDrive(const std::string& dl) {
+    std::string path = "\\\\.\\"+dl+":";
+    return CreateFileA(path.c_str(), GENERIC_READ,
+                       FILE_SHARE_READ|FILE_SHARE_WRITE,
+                       nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+}
+
+// ─── C2 Error Pointer probe ───────────────────────────────────────────────────
+// Attempt a single-sector read in C2+data mode.
+// Returns true if drive supports C2 (non-zero C2 bytes returned cleanly).
+bool CDRipper::probeC2(HANDLE hCD) {
+    // Use RAW_READ_INFO with mode 2 (CDDA + C2) if available
+    // The standard RAW_READ_INFO TrackMode field doesn't have a C2 mode —
+    // C2 is queried via IOCTL_CDROM_GET_DRIVE_GEOMETRY and a feature request.
+    // Simplest probe: try reading with a larger buffer and check if
+    // IOCTL returns exactly SECTOR_BYTES_C2 bytes.
+    uint8_t buf[SECTOR_BYTES_C2] = {};
+    RAW_READ_INFO info {};
+    info.DiskOffset.QuadPart = 0; // sector 0 — always readable
+    info.SectorCount         = 1;
+    info.TrackMode           = CDDA;
+    DWORD bytes = 0;
+    // Probe: request SECTOR_BYTES_C2 bytes — if drive gives back C2 data
+    // it will fill the extra 294 bytes; if not it returns SECTOR_BYTES.
+    BOOL ok = DeviceIoControl(hCD, IOCTL_CDROM_RAW_READ,
+                              &info, sizeof(info),
+                              buf, SECTOR_BYTES_C2, &bytes, nullptr);
+    // C2 supported if ioctl succeeded and returned the larger buffer
+    return ok && bytes == SECTOR_BYTES_C2;
+}
+
+// ─── Sector read with retry + optional C2 awareness ──────────────────────────
+static bool readSectors(HANDLE hCD, DWORD lba, int count,
+                        uint8_t* pcm_buf,  // SECTOR_BYTES*count output
+                        bool use_c2,
+                        int* c2_error_count = nullptr) {
+    if (c2_error_count) *c2_error_count = 0;
+
+    // Per-read temp buffer (may be larger if C2)
+    const int buf_size = use_c2 ? SECTOR_BYTES_C2 * count
+                                : SECTOR_BYTES     * count;
+    std::vector<uint8_t> tmp(buf_size);
+
+    RAW_READ_INFO info {};
+    info.DiskOffset.QuadPart = (ULONGLONG)lba * 2048;
+    info.SectorCount         = (ULONG)count;
+    info.TrackMode           = CDDA;
+    DWORD bytes = 0;
+
+    bool ok = DeviceIoControl(hCD, IOCTL_CDROM_RAW_READ,
+                              &info, sizeof(info),
+                              tmp.data(), (DWORD)tmp.size(),
+                              &bytes, nullptr) != 0;
+    if (!ok) return false;
+
+    if (use_c2 && bytes == (DWORD)SECTOR_BYTES_C2 * count) {
+        // C2 mode returned — de-interleave: each sector is [2352 audio][294 c2]
+        for (int s = 0; s < count; ++s) {
+            const uint8_t* src = tmp.data() + s * SECTOR_BYTES_C2;
+            std::memcpy(pcm_buf + s * SECTOR_BYTES, src, SECTOR_BYTES);
+            if (c2_error_count) {
+                // Any non-zero C2 byte = error in that sector
+                for (int b = 0; b < 294; ++b)
+                    if (src[SECTOR_BYTES + b]) { ++(*c2_error_count); break; }
+            }
+        }
+    } else {
+        // Standard CDDA mode
+        std::memcpy(pcm_buf, tmp.data(), std::min((int)bytes, SECTOR_BYTES*count));
+    }
+    return true;
+}
+
+// Retry wrapper — falls back to single-sector on block failure
+static bool readSectorsWithRetry(HANDLE hCD, DWORD lba, int count,
+                                 uint8_t* pcm_buf, bool use_c2,
+                                 int* c2_errors = nullptr) {
+    for (int attempt = 0; attempt <= 4; ++attempt) {
+        if (readSectors(hCD, lba, count, pcm_buf, use_c2, c2_errors))
+            return true;
+        Sleep(100 * (attempt+1));
+        if (count > 1 && attempt == 1) {
+            // Fall back to single-sector reads
+            if (c2_errors) *c2_errors = 0;
+            for (int s = 0; s < count; ++s) {
+                int c2e = 0;
+                if (!readSectors(hCD, lba+s, 1,
+                                 pcm_buf + s*SECTOR_BYTES, use_c2, &c2e))
+                    std::memset(pcm_buf + s*SECTOR_BYTES, 0, SECTOR_BYTES);
+                if (c2_errors) *c2_errors += c2e;
+            }
+            return true; // silence > abort
+        }
+    }
+    return false;
+}
+
+// ─── Drive speed control ──────────────────────────────────────────────────────
+// Sets the drive's read speed via IOCTL_CDROM_SET_SPEED.
+// speed is in KB/sec: 0xFFFF = max, 176 = 1x, 1764 = 10x, 3528 = 20x.
+// Used to force a hardware-level cache eviction before Pass 2 by making the
+// drive physically shift its laser/spindle parameters.
+static void setDriveSpeed(HANDLE hCD, WORD speed_kbps) {
+    CDROM_SET_SPEED s = {};
+    s.RequestType = CdromSetSpeed;
+    s.ReadSpeed   = speed_kbps;
+    DWORD dummy = 0;
+    DeviceIoControl(hCD, IOCTL_CDROM_SET_SPEED,
+                    &s, sizeof(s), nullptr, 0, &dummy, nullptr);
+}
+
+// CDDB disc ID — start_lba is already absolute (includes 150-sector pre-gap)
+uint32_t CDRipper::computeCDDB(const std::vector<CDTrack>& tracks,
+                               DWORD full_leadout_lba,
+                               const std::vector<DWORD>& data_track_lbas) {
+    auto digit_sum = [](uint32_t n) {
+        uint32_t s = 0;
+        while (n > 0) { s += n % 10; n /= 10; }
+        return s;
+    };
+    uint32_t checksum = 0;
+    for (const auto& t : tracks)
+        checksum += digit_sum(t.start_lba / 75);
+    for (DWORD lba : data_track_lbas)
+        checksum += digit_sum(lba / 75);
+    uint32_t leadout   = full_leadout_lba ? full_leadout_lba
+                       : tracks.back().start_lba + tracks.back().length_lba;
+    uint32_t total_sec = (leadout / 75) - (tracks.front().start_lba / 75);
+    uint32_t ntracks   = (uint32_t)(tracks.size() + data_track_lbas.size());
+    return ((checksum % 0xFF) << 24) | (total_sec << 8) | ntracks;
+}
+
+// ─── frame450 pressing-offset auto-detection (PRIMARY method) ─────────────────
+// Per Spoon's AccurateRip spec, bytes 5-8 of each track record are the
+// OffsetFindCRC: an AR CRC over ONE frame (588 samples) at sector 450 of track 1,
+// provided specifically for offset discovery. We read a window around that frame
+// ONCE, then sweep the total read offset and compare the frame450 CRC (both the
+// local-mul and global-mul forms — whichever the submitter used) against the DB
+// entries. The shift that matches gives the total offset; the returned pressing
+// offset is (total - drive_offset), matching ripTrack's total_skip convention.
+// One short read replaces a list of full-track probe rips. Returns true and sets
+// out_pressing_offset on a match; false (no change) if the DB record has no
+// OffsetFindCRC, the read fails, or nothing matches — caller then falls back to
+// the candidate-offset probe and ultimately the drive_offsets.h baseline.
+static bool detectPressingOffsetFrame450(
+        HANDLE hCD, const CDTrack& track1, int drive_offset, bool use_c2,
+        const std::vector<std::pair<uint32_t,int>>& db_frame450,  // = ar_db_v2[0]
+        const std::string& log_path, int& out_pressing_offset)
+{
+    out_pressing_offset = 0;
+    if (db_frame450.empty()) return false;       // this pressing has no OffsetFindCRC
+
+    static constexpr int FR_FIRST = 450 * SECTOR_SAMPLES;   // 264600, track-relative
+    static constexpr int FR_LEN   = SECTOR_SAMPLES;         // 588 (one frame)
+    static constexpr int SWEEP    = 3000;                   // samples each side (>5 frames)
+
+    // total read offset O = drive_offset + pressing; sweep O around the baseline.
+    const int O_lo = drive_offset - SWEEP;
+    const int O_hi = drive_offset + SWEEP;
+
+    // Track-relative sample window we must have buffered, with 2-sector margins.
+    const int first_rel = FR_FIRST + O_lo;
+    const int last_rel  = FR_FIRST + O_hi + FR_LEN;
+    if (first_rel < 0) return false;
+    int read_start_sec = first_rel / SECTOR_SAMPLES - 2;
+    if (read_start_sec < 0) read_start_sec = 0;
+    const int read_end_sec = last_rel / SECTOR_SAMPLES + 2;
+    const int read_count   = read_end_sec - read_start_sec + 1;
+    if (read_start_sec + read_count > (int)track1.length_lba) return false;
+
+    std::vector<uint8_t> raw((size_t)read_count * SECTOR_BYTES);
+    int c2e = 0;
+    if (!readSectorsWithRetry(hCD, track1.start_lba + (DWORD)read_start_sec,
+                              read_count, raw.data(), use_c2, &c2e))
+        return false;
+
+    const int16_t* pcm = reinterpret_cast<const int16_t*>(raw.data());
+    const int buf_frames = read_count * SECTOR_SAMPLES;
+    const int base_idx   = FR_FIRST - read_start_sec * SECTOR_SAMPLES;
+
+    auto sample32 = [&](int f) -> uint32_t {
+        uint16_t l = (uint16_t)pcm[f * 2 + 0];
+        uint16_t r = (uint16_t)pcm[f * 2 + 1];
+        return (uint32_t)l | ((uint32_t)r << 16);          // L low, R high
+    };
+
+    for (int O = O_lo; O <= O_hi; ++O) {
+        const int start = base_idx + O;
+        if (start < 0 || start + FR_LEN > buf_frames) continue;
+        uint32_t crc_local = 0, crc_global = 0;
+        for (int k = 0; k < FR_LEN; ++k) {
+            uint32_t s = sample32(start + k);
+            crc_local  += s * (uint32_t)(k + 1);                    // mul 1..588
+            crc_global += s * (uint32_t)(AR_FRAME450_START + k);    // mul 264601..265188
+        }
+        for (const auto& pr : db_frame450) {
+            if (pr.first == crc_local || pr.first == crc_global) {
+                out_pressing_offset = O - drive_offset;
+                FILE* lf = _wfopen(utf8_to_wide(log_path).c_str(), L"a");
+                if (lf) {
+                    fprintf(lf, "  frame450 auto-detect: pressing %+d (total_skip=%d) "
+                                "matched OffsetFindCRC %08x conf=%d\n",
+                            out_pressing_offset, O, pr.first, pr.second);
+                    fclose(lf);
+                }
+                return true;
+            }
+        }
+    }
+
+    FILE* lf = _wfopen(utf8_to_wide(log_path).c_str(), L"a");
+    if (lf) {
+        fprintf(lf, "  frame450 auto-detect: no match in sweep — "
+                    "falling back to candidate-offset probe\n");
+        fclose(lf);
+    }
+    return false;
+}
+
+bool CDRipper::fetchARData(
+        const std::vector<CDTrack>&                        tracks,
+        const std::string&                                  log_path,
+        const std::string&                                  ar_cache_dir,
+        std::vector<std::vector<std::pair<uint32_t,int>>>& out_v1,
+        std::vector<std::vector<std::pair<uint32_t,int>>>& out_v2,
+        DWORD                                              full_leadout_lba,
+        const std::vector<DWORD>&                          data_track_lbas) {
+
+    if (tracks.empty()) return false;
+    int ntracks = (int)tracks.size();
+
+    // AccurateRip disc ID formula (definitively confirmed against live AR database):
+    //
+    //   LBAs stored in CDTrack::start_lba are absolute (include the 150-sector
+    //   lead-in pregap that the drive adds).  The AR formula expects RELATIVE
+    //   LBAs — i.e. the pregap stripped — so we subtract 150 from every value.
+    //
+    //   disc_id1 = simple sum of relative track LBAs + relative leadout
+    //   disc_id2 = Σ max(rel_lba[i], 1) × (i+1)  +  rel_leadout × (ntracks+1)
+    //
+    // Both truncated to 32 bits.
+    // Normalize relative to track 1 start, NOT hardcoded 150.
+    // For standard discs T1 starts at LBA 150, so both are equivalent.
+    // For discs with non-standard pregap (e.g. T1 at LBA 182), subtracting
+    // 150 gives wrong disc IDs and a 404 from the AR server.
+    const uint32_t t1_lba    = tracks[0].start_lba;
+    static constexpr uint32_t AR_PREGAP = 150;
+    DWORD disc_leadout = full_leadout_lba ? full_leadout_lba
+                       : tracks.back().start_lba + tracks.back().length_lba;
+    uint32_t rel_leadout = disc_leadout - AR_PREGAP;
+    uint32_t disc_id1 = 0, disc_id2 = 0;
+    for (int i = 0; i < ntracks; ++i) {
+        uint32_t rel_lba = tracks[i].start_lba - AR_PREGAP;
+        disc_id1 += rel_lba;
+        disc_id2 += std::max(rel_lba, 1u) * (uint32_t)(i + 1);
+    }
+    disc_id1 += rel_leadout;
+    disc_id2 += rel_leadout * (uint32_t)(ntracks + 1);
+
+    struct ARVariant { uint32_t id1, id2; };
+    std::vector<ARVariant> variants = {{ disc_id1, disc_id2 }};
+
+    uint32_t cddb_id = computeCDDB(tracks, full_leadout_lba, data_track_lbas);
+
+    // Open log — append to the per-rip log file
+    FILE* dbg = _wfopen(utf8_to_wide(log_path).c_str(), L"a");
+    if (dbg) {
+        fprintf(dbg, "\n=== AccurateRip ===\n");
+        fprintf(dbg, "ntracks=%d cddb=%08x disc_id1=%08x disc_id2=%08x\n",
+                ntracks, cddb_id, disc_id1, disc_id2);
+        for (int i=0;i<ntracks;++i)
+            fprintf(dbg,"  track[%02d] lba=%lu  rel=%lu\n",
+                i+1, (unsigned long)tracks[i].start_lba,
+                (unsigned long)(tracks[i].start_lba - AR_PREGAP));
+        fprintf(dbg,"  t1_lba=%lu  leadout_rel=%lu\n",
+                (unsigned long)t1_lba, (unsigned long)rel_leadout);
+    }
+
+    std::vector<uint8_t> ar_data;
+
+    for (auto& v : variants) {
+        char id1_str[9];
+        snprintf(id1_str, sizeof(id1_str), "%08x", v.id1);
+        char url[512];
+        snprintf(url, sizeof(url),
+            "http://www.accuraterip.com/accuraterip/%c/%c/%c/dbar-%03d-%08x-%08x-%08x.bin",
+            id1_str[7], id1_str[6], id1_str[5],
+            ntracks, v.id1, v.id2, cddb_id);
+
+        if (dbg) fprintf(dbg, "TRY %08x/%08x -> HTTP ", v.id1, v.id2);
+        HINTERNET inet = InternetOpenA("RE-MOCT/1.0.0-rc1 (https://github.com/RadMageIRL/re-moct)",
+                                       INTERNET_OPEN_TYPE_PRECONFIG, nullptr, nullptr, 0);
+        if (!inet) { if (dbg) fprintf(dbg, "no inet\n"); continue; }
+        HINTERNET conn = InternetOpenUrlA(inet, url, nullptr, 0,
+                            INTERNET_FLAG_RELOAD | INTERNET_FLAG_NO_CACHE_WRITE, 0);
+        if (!conn) { InternetCloseHandle(inet);
+                     if (dbg) fprintf(dbg, "no conn\n");
+                     continue; }
+
+        DWORD status = 0, sz = sizeof(status);
+        HttpQueryInfoA(conn, HTTP_QUERY_STATUS_CODE | HTTP_QUERY_FLAG_NUMBER,
+                       &status, &sz, nullptr);
+        if (dbg) fprintf(dbg, "%lu\n", status);
+
+        if (status == 200) {
+            char buf[4096]; DWORD bytes = 0;
+            while (InternetReadFile(conn, buf, sizeof(buf), &bytes) && bytes > 0)
+                ar_data.insert(ar_data.end(), (uint8_t*)buf, (uint8_t*)buf+bytes);
+            disc_id1 = v.id1; disc_id2 = v.id2;
+            if (dbg) fprintf(dbg, "HIT! disc_id1=%08x disc_id2=%08x size=%zu\n",
+                             disc_id1, disc_id2, ar_data.size());
+            InternetCloseHandle(conn); InternetCloseHandle(inet);
+
+            // ── Save raw .bin and human-readable manifest to ar_cache_dir ──
+            if (!ar_cache_dir.empty()) {
+                std::error_code ec;
+                std::filesystem::create_directories(ar_cache_dir, ec);
+
+                // Raw .bin file named by disc IDs
+                char bin_name[64];
+                snprintf(bin_name, sizeof(bin_name), "%08x-%08x-%08x.bin",
+                         disc_id1, disc_id2, cddb_id);
+                std::string bin_path = ar_cache_dir + "\\" + bin_name;
+                FILE* bf = _wfopen(utf8_to_wide(bin_path).c_str(), L"wb");
+                if (bf) { fwrite(ar_data.data(), 1, ar_data.size(), bf); fclose(bf); }
+
+                // Human-readable manifest
+                std::string mf_path = ar_cache_dir + "\\accuraterip-id.txt";
+                FILE* mf = _wfopen(utf8_to_wide(mf_path).c_str(), L"w");
+                if (mf) {
+                    std::time_t t = std::time(nullptr); std::tm* tm = std::localtime(&t);
+                    char ts[32]; std::strftime(ts, sizeof(ts), "%Y-%m-%d", tm);
+                    fprintf(mf, "[AccurateRip Metadata Manifest]\n");
+                    fprintf(mf, "DiscID1      : %08x\n", disc_id1);
+                    fprintf(mf, "DiscID2      : %08x\n", disc_id2);
+                    fprintf(mf, "CDDB/DiscID3 : %08x\n", cddb_id);
+                    fprintf(mf, "Tracks       : %d\n", ntracks);
+                    fprintf(mf, "Rip Date     : %s\n", ts);
+                    fprintf(mf, "Bin File     : %s\n", bin_name);
+                    fprintf(mf, "Payload Size : %zu bytes\n", ar_data.size());
+                    fclose(mf);
+                }
+            }
+            break;
+        }
+        InternetCloseHandle(conn); InternetCloseHandle(inet);
+    }
+    if (dbg) fclose(dbg);
+
+    if (ar_data.empty()) {
+        out_v1.assign(ntracks, {}); out_v2.assign(ntracks, {});
+        return true;  // not in database
+    }
+
+    // Parse AR binary format
+    auto& data = ar_data;
+
+    // Parse AR binary format:
+    //   Header per chunk (13 bytes): [1 track_count][4 disc_id1][4 disc_id2][4 cddb]
+    //   Per track (9 bytes): [1 confidence][4 main_crc][4 frame450_crc]
+    //
+    // main_crc = the track checksum (may be v1 or v2 depending on chunk generation)
+    // frame450_crc = checksum of frame 450, used for drive offset detection
+    //
+    // We store all main_crcs in out_v1 and all frame450_crcs in out_v2.
+    // checkAR() will compare our computed crc_v1 against out_v1 entries.
+    // crc_v2 = crc_v1 + csum_hi (whipper formula), so a v2 match would be
+    // against a chunk whose main_crc was stored as a v2 checksum -- but since
+    // we don't know which chunks are v1 vs v2, we try matching both our values.
+    out_v1.assign(ntracks, {});
+    out_v2.assign(ntracks, {});
+
+    size_t pos = 0;
+    while (pos + 13 <= data.size()) {
+        uint8_t tc = data[pos];
+        uint32_t chunk_id1, chunk_id2, chunk_cddb;
+        std::memcpy(&chunk_id1,  data.data()+pos+1, 4);
+        std::memcpy(&chunk_id2,  data.data()+pos+5, 4);
+        std::memcpy(&chunk_cddb, data.data()+pos+9, 4);
+        pos += 13;
+
+        if (tc != (uint8_t)ntracks) { pos += (size_t)tc * 9; continue; }
+
+        for (int t = 0; t < tc && pos+9 <= data.size(); ++t, pos+=9) {
+            uint8_t  conf = data[pos];
+            uint32_t main_crc, frame450;
+            std::memcpy(&main_crc, data.data()+pos+1, 4);
+            std::memcpy(&frame450, data.data()+pos+5, 4);
+            if (t < ntracks) {
+                if (main_crc) out_v1[t].push_back({main_crc, conf});
+                if (frame450) out_v2[t].push_back({frame450, conf});
+            }
+        }
+    }
+    return true;
+}
+
+// ─── CTDB (CUETools Database) ─────────────────────────────────────────────────
+// Computes the CUETools Database ID: CRC32 of entire disc audio with first
+// and last 10 sectors (10 * 2352 = 23520 bytes) trimmed for offset immunity.
+std::string CDRipper::computeCTDBId(const std::vector<uint8_t>& disc_audio) {
+    static constexpr size_t TRIM_BYTES = 10 * 2352;
+
+    if (disc_audio.size() <= TRIM_BYTES * 2) return "00000000";
+
+    // Standard IEEE 802.3 CRC32
+    static uint32_t table[256];
+    static bool     init = false;
+    if (!init) {
+        for (uint32_t i = 0; i < 256; ++i) {
+            uint32_t c = i;
+            for (int j = 0; j < 8; ++j)
+                c = (c & 1) ? (0xedb88320u ^ (c >> 1)) : (c >> 1);
+            table[i] = c;
+        }
+        init = true;
+    }
+
+    uint32_t crc = 0xFFFFFFFFu;
+    const uint8_t* p   = disc_audio.data() + TRIM_BYTES;
+    size_t         len = disc_audio.size() - TRIM_BYTES * 2;
+    for (size_t i = 0; i < len; ++i)
+        crc = table[(crc ^ p[i]) & 0xFF] ^ (crc >> 8);
+    crc ^= 0xFFFFFFFFu;
+
+    char buf[9]; snprintf(buf, sizeof(buf), "%08x", crc);
+    return buf;
+}
+
+// CTDB server lookup — queries cue.tools for the given CTDB ID.
+bool CDRipper::fetchCTDBData(const std::string& ctdb_id,
+                              const std::string& log_path,
+                              int ntracks,
+                              std::string& out_status) {
+    out_status = "Unknown";
+    if (ctdb_id == "00000000") {
+        FILE* lf = _wfopen(utf8_to_wide(log_path).c_str(), L"a");
+        if (lf) { fprintf(lf, "CTDB ID : 00000000 (disc too short to compute)\n"); fclose(lf); }
+        return false;
+    }
+
+    char url[256];
+    snprintf(url, sizeof(url),
+        "http://db.cuetools.net/lookup2.php?version=3&ctdb=1&disc=%s&tracks=%d",
+        ctdb_id.c_str(), ntracks);
+
+    // Log the request before firing it
+    {
+        FILE* lf = _wfopen(utf8_to_wide(log_path).c_str(), L"a");
+        if (lf) {
+            fprintf(lf, "\n=== CUETools DB ===\n");
+            fprintf(lf, "CTDB ID : %s\n", ctdb_id.c_str());
+            fprintf(lf, "Tracks  : %d\n", ntracks);
+            fprintf(lf, "URL     : %s\n", url);
+            fclose(lf);
+        }
+    }
+
+    HINTERNET inet = InternetOpenA("RE-MOCT/1.0.0-rc1",
+                                   INTERNET_OPEN_TYPE_PRECONFIG, nullptr, nullptr, 0);
+    if (!inet) {
+        FILE* lf = _wfopen(utf8_to_wide(log_path).c_str(), L"a");
+        if (lf) { fprintf(lf, "HTTP    : failed to open WinInet handle\n"); fclose(lf); }
+        return false;
+    }
+    HINTERNET conn = InternetOpenUrlA(inet, url, nullptr, 0,
+                        INTERNET_FLAG_RELOAD | INTERNET_FLAG_NO_CACHE_WRITE, 0);
+    if (!conn) {
+        InternetCloseHandle(inet);
+        FILE* lf = _wfopen(utf8_to_wide(log_path).c_str(), L"a");
+        if (lf) { fprintf(lf, "HTTP    : connection failed\n"); fclose(lf); }
+        return false;
+    }
+
+    DWORD status = 0, sz = sizeof(status);
+    HttpQueryInfoA(conn, HTTP_QUERY_STATUS_CODE | HTTP_QUERY_FLAG_NUMBER,
+                   &status, &sz, nullptr);
+
+    std::string body;
+    if (status == 200) {
+        char buf[8192]; DWORD bytes = 0;
+        while (InternetReadFile(conn, buf, sizeof(buf), &bytes) && bytes > 0)
+            body.append(buf, bytes);
+    }
+    InternetCloseHandle(conn); InternetCloseHandle(inet);
+
+    // Parse response — CTDB returns XML or JSON depending on version
+    if (body.find("\"status\":\"ok\"")   != std::string::npos ||
+        body.find("status=\"ok\"")       != std::string::npos ||
+        body.find("<status>ok</status>") != std::string::npos)
+        out_status = "Correct";
+    else if (body.find("correctable") != std::string::npos)
+        out_status = "Correctable";
+    else if (status == 404)
+        out_status = "Not in database";
+    else if (!body.empty())
+        out_status = "Unknown";
+
+    // Log full result
+    {
+        FILE* lf = _wfopen(utf8_to_wide(log_path).c_str(), L"a");
+        if (lf) {
+            fprintf(lf, "HTTP    : %lu\n", status);
+            fprintf(lf, "Status  : %s\n", out_status.c_str());
+            if (!body.empty())
+                fprintf(lf, "Response:\n%.2048s\n", body.c_str());
+            else
+                fprintf(lf, "Response: (empty)\n");
+            fclose(lf);
+        }
+    }
+    return status == 200;
+}
+static std::vector<uint8_t> fetchCoverArt(const std::string& mb_id) {
+    if (mb_id.empty()) return {};
+    for (const auto& url : {
+            "https://coverartarchive.org/release/"+mb_id+"/front-500",
+            "https://coverartarchive.org/release/"+mb_id+"/front"}) {
+        auto wurl = utf8_to_wide(url);
+        HINTERNET inet = InternetOpenW(L"RE-MOCT/1.0.0-rc1 (dostrom@gmail.com)",
+                                       INTERNET_OPEN_TYPE_PRECONFIG, nullptr, nullptr, 0);
+        if (!inet) continue;
+        HINTERNET conn = InternetOpenUrlW(inet, wurl.c_str(), nullptr, 0,
+            INTERNET_FLAG_RELOAD | INTERNET_FLAG_SECURE |
+            INTERNET_FLAG_NO_CACHE_WRITE |
+            INTERNET_FLAG_IGNORE_REDIRECT_TO_HTTP |
+            INTERNET_FLAG_IGNORE_REDIRECT_TO_HTTPS, 0);
+        if (!conn) { InternetCloseHandle(inet); continue; }
+        DWORD status=0, sz=sizeof(status);
+        HttpQueryInfoW(conn, HTTP_QUERY_STATUS_CODE|HTTP_QUERY_FLAG_NUMBER, &status, &sz, nullptr);
+        std::vector<uint8_t> data;
+        if (status==200||status==0) {
+            char buf[8192]; DWORD bytes=0;
+            while (InternetReadFile(conn,buf,sizeof(buf),&bytes)&&bytes>0) {
+                data.insert(data.end(),(uint8_t*)buf,(uint8_t*)buf+bytes);
+                if (data.size()>10*1024*1024) break;
+            }
+        }
+        InternetCloseHandle(conn); InternetCloseHandle(inet);
+        if (!data.empty()) return data;
+    }
+    return {};
+}
+
+// Minimal WinINet GET into a byte buffer. true on HTTP 200 (or unknown) with data.
+static bool simpleHttpGet(const std::string& url, std::vector<uint8_t>& out,
+                          const wchar_t* user_agent) {
+    out.clear();
+    auto wurl = utf8_to_wide(url);
+    HINTERNET inet = InternetOpenW(user_agent, INTERNET_OPEN_TYPE_PRECONFIG,
+                                   nullptr, nullptr, 0);
+    if (!inet) return false;
+    HINTERNET conn = InternetOpenUrlW(inet, wurl.c_str(), nullptr, 0,
+        INTERNET_FLAG_RELOAD | INTERNET_FLAG_SECURE | INTERNET_FLAG_NO_CACHE_WRITE, 0);
+    if (!conn) { InternetCloseHandle(inet); return false; }
+    DWORD status = 0, sz = sizeof(status);
+    HttpQueryInfoW(conn, HTTP_QUERY_STATUS_CODE | HTTP_QUERY_FLAG_NUMBER,
+                   &status, &sz, nullptr);
+    if (status == 200 || status == 0) {
+        char buf[8192]; DWORD bytes = 0;
+        while (InternetReadFile(conn, buf, sizeof(buf), &bytes) && bytes > 0) {
+            out.insert(out.end(), (uint8_t*)buf, (uint8_t*)buf + bytes);
+            if (out.size() > 10 * 1024 * 1024) break;
+        }
+    }
+    InternetCloseHandle(conn); InternetCloseHandle(inet);
+    return !out.empty();
+}
+
+// Open, no-auth cover-art fallback keyed by artist + album text.
+// Runs ONLY when Cover Art Archive returns nothing: Discogs releases have no
+// MBID (so CAA can't be queried), and a few MB releases lack a CAA front cover.
+// Tries iTunes first, then Deezer. Neither needs a key. Returns bytes or {}.
+//
+// IMPORTANT: a free-text music search will happily return a *different artist's*
+// album when the exact title isn't in the catalogue (e.g. a Crystals comp that
+// isn't on iTunes returns a Doors "Very Best Of"). So we VERIFY: a candidate is
+// accepted only if its artist matches the requested artist, and among matching
+// candidates we pick the one whose album title best overlaps the request. If no
+// candidate's artist matches, we return {} — no art beats wrong-artist art.
+static std::vector<uint8_t> fetchArtByText(const std::string& artist,
+                                           const std::string& album) {
+    if (artist.empty() && album.empty()) return {};
+
+    // Query-term encoder (spaces -> '+', RFC-3986 percent-encoding otherwise).
+    auto enc = [](const std::string& s) {
+        static const char* hex = "0123456789ABCDEF";
+        std::string o;
+        for (unsigned char c : s) {
+            if ((c>='A'&&c<='Z')||(c>='a'&&c<='z')||(c>='0'&&c<='9')||
+                c=='-'||c=='_'||c=='.'||c=='~') o += (char)c;
+            else if (c==' ') o += '+';
+            else { o += '%'; o += hex[c>>4]; o += hex[c&0xF]; }
+        }
+        return o;
+    };
+
+    // Normalize for comparison: lowercase alphanumerics, single spaces between
+    // tokens, leading "the " dropped ("The Crystals" == "Crystals").
+    auto norm = [](const std::string& s) {
+        std::string o; bool sp = false;
+        for (char c : s) {
+            bool aln = (c>='A'&&c<='Z')||(c>='a'&&c<='z')||(c>='0'&&c<='9');
+            if (aln) { o += (c>='A'&&c<='Z') ? (char)(c + 32) : c; sp = false; }
+            else if (!sp && !o.empty()) { o += ' '; sp = true; }
+        }
+        while (!o.empty() && o.back() == ' ') o.pop_back();
+        if (o.rfind("the ", 0) == 0) o.erase(0, 4);
+        return o;
+    };
+    auto artist_ok = [&](const std::string& want, const std::string& got) {
+        std::string a = norm(want), b = norm(got);
+        if (a.empty() || b.empty()) return false;
+        return a == b || a.find(b) != std::string::npos
+                      || b.find(a) != std::string::npos;
+    };
+    auto album_overlap = [&](const std::string& want, const std::string& got) {
+        auto toks = [](const std::string& n) {
+            std::vector<std::string> t; std::string cur;
+            for (char c : n) { if (c==' ') { if(!cur.empty()){t.push_back(cur);cur.clear();} }
+                               else cur += c; }
+            if (!cur.empty()) t.push_back(cur);
+            return t;
+        };
+        auto ta = toks(norm(want)), tb = toks(norm(got));
+        int shared = 0;
+        for (auto& x : ta) for (auto& y : tb) if (x == y) { ++shared; break; }
+        return shared;
+    };
+
+    const std::string term = enc(artist + " " + album);
+    std::vector<uint8_t> img;
+
+    // ── iTunes Search API ──────────────────────────────────────────────────
+    {
+        std::string url = "https://itunes.apple.com/search?term=" + term
+                        + "&entity=album&limit=10";
+        std::vector<uint8_t> body;
+        if (simpleHttpGet(url, body, L"RE-MOCT/1.0.0-rc1")) {
+            try {
+                auto j = nlohmann::json::parse(
+                             std::string((char*)body.data(), body.size()));
+                std::string best_url; int best_score = -1;
+                if (j.contains("results"))
+                for (auto& r : j["results"]) {
+                    if (!artist_ok(artist, r.value("artistName", ""))) continue;
+                    std::string aurl = r.value("artworkUrl100", "");
+                    if (aurl.empty()) continue;
+                    int score = album_overlap(album, r.value("collectionName", ""));
+                    if (score > best_score) { best_score = score; best_url = aurl; }
+                }
+                if (!best_url.empty()) {
+                    auto pos = best_url.rfind("100x100");   // bump to 600x600
+                    if (pos != std::string::npos) best_url.replace(pos, 7, "600x600");
+                    if (simpleHttpGet(best_url, img, L"RE-MOCT/1.0.0-rc1") && !img.empty())
+                        return img;
+                    img.clear();
+                }
+            } catch (...) {}
+        }
+    }
+
+    // ── Deezer API (fallback) ──────────────────────────────────────────────
+    {
+        std::string url = "https://api.deezer.com/search/album?q=" + term
+                        + "&limit=10";
+        std::vector<uint8_t> body;
+        if (simpleHttpGet(url, body, L"RE-MOCT/1.0.0-rc1")) {
+            try {
+                auto j = nlohmann::json::parse(
+                             std::string((char*)body.data(), body.size()));
+                std::string best_url; int best_score = -1;
+                if (j.contains("data"))
+                for (auto& r : j["data"]) {
+                    std::string a;
+                    if (r.contains("artist") && r["artist"].contains("name"))
+                        a = r["artist"]["name"].get<std::string>();
+                    if (!artist_ok(artist, a)) continue;
+                    std::string aurl = r.value("cover_xl", "");
+                    if (aurl.empty()) aurl = r.value("cover_big", "");
+                    if (aurl.empty()) continue;
+                    int score = album_overlap(album, r.value("title", ""));
+                    if (score > best_score) { best_score = score; best_url = aurl; }
+                }
+                if (!best_url.empty()) {
+                    if (simpleHttpGet(best_url, img, L"RE-MOCT/1.0.0-rc1") && !img.empty())
+                        return img;
+                    img.clear();
+                }
+            } catch (...) {}
+        }
+    }
+
+    return {};
+}
+
+// ─── Tag writing ──────────────────────────────────────────────────────────────
+static std::string arStatusStr(ARStatus s, int conf) {
+    switch(s) {
+    case ARStatus::Matched_v2: return "AR v2 OK (conf "+std::to_string(conf)+")";
+    case ARStatus::Matched_v1: return "AR v1 OK (conf "+std::to_string(conf)+")";
+    case ARStatus::NotFound:   return "AR: not in database";
+    case ARStatus::NetworkError: return "AR: network error";
+    default: return "";
+    }
+}
+
+void CDRipper::tagFile(const std::string&         path,
+                       const MBRelease&            rel,
+                       const MBTrack*              mt,
+                       int                         track_num,
+                       const std::vector<uint8_t>& art,
+                       const ARTrackResult&        ar,
+                       const RGResult&             rg,
+                       RipMode                     mode) {
+    try {
+        auto wp = utf8_to_wide(path);
+        bool is_mp3  = path.size()>4 && path.substr(path.size()-4)==".mp3";
+        bool is_flac = path.size()>5 && path.substr(path.size()-5)==".flac";
+
+        std::string title_str;
+        if (mt && !mt->title.empty()) title_str = mt->title;
+        else {
+            std::ostringstream ss;
+            ss << "Track " << std::setw(2) << std::setfill('0') << track_num;
+            title_str = ss.str();
+        }
+        std::string artist_str = (mt&&!mt->artist.empty()) ? mt->artist : rel.artist;
+        std::string ar_str = (mode == RipMode::Local) ? "" : arStatusStr(ar.status, ar.confidence);
+        // CUETools-compatible tag names when available
+        char ar_crc_str[9]  = {}; snprintf(ar_crc_str, 9, "%08x", ar.crc_v2);
+        char ar_conf_str[8] = {}; snprintf(ar_conf_str, 8, "%d", ar.confidence);
+
+        auto rg_str = [](double gain) {
+            std::ostringstream ss; ss << std::fixed << std::setprecision(2) << gain << " dB";
+            return ss.str();
+        };
+        auto rg_peak_str = [](double peak) {
+            std::ostringstream ss; ss << std::fixed << std::setprecision(6) << peak;
+            return ss.str();
+        };
+
+        if (is_mp3) {
+            TagLib::MPEG::File f(wp.c_str(), false);
+            auto* tag = f.ID3v2Tag(true); if (!tag) return;
+            tag->setTitle (TagLib::String(title_str,  TagLib::String::UTF8));
+            tag->setArtist(TagLib::String(artist_str, TagLib::String::UTF8));
+            tag->setAlbum (TagLib::String(rel.title,  TagLib::String::UTF8));
+            tag->setTrack ((unsigned int)track_num);
+            if (rel.date.size()>=4) try { tag->setYear((unsigned)std::stoi(rel.date.substr(0,4))); } catch(...){}
+
+            auto addTxt = [&](const char* id, const std::string& val) {
+                auto* f2 = new TagLib::ID3v2::TextIdentificationFrame(id, TagLib::String::UTF8);
+                f2->setText(TagLib::String(val, TagLib::String::UTF8));
+                tag->addFrame(f2);
+            };
+            addTxt("TENC", "RE-MOCT v1.0.0-rc1");
+            if (!ar_str.empty()) {
+                addTxt("TXXX", "AccurateRip="      + ar_str);
+                addTxt("TXXX", "ACCURATERIPCRC="   + std::string(ar_crc_str));
+                addTxt("TXXX", "ACCURATERIPCOUNT=" + std::string(ar_conf_str));
+            }
+            if (rg.valid) {
+                addTxt("TXXX", "REPLAYGAIN_TRACK_GAIN="+rg_str(rg.track_gain));
+                addTxt("TXXX", "REPLAYGAIN_TRACK_PEAK="+rg_peak_str(rg.track_peak));
+                addTxt("TXXX", "REPLAYGAIN_ALBUM_GAIN="+rg_str(rg.album_gain));
+                addTxt("TXXX", "REPLAYGAIN_ALBUM_PEAK="+rg_peak_str(rg.album_peak));
+            }
+            if (!art.empty()) {
+                auto* ap = new TagLib::ID3v2::AttachedPictureFrame();
+                ap->setMimeType("image/jpeg");
+                ap->setType(TagLib::ID3v2::AttachedPictureFrame::FrontCover);
+                ap->setDescription("Cover");
+                ap->setPicture(TagLib::ByteVector((const char*)art.data(),(unsigned)art.size()));
+                tag->addFrame(ap);
+            }
+            f.save(TagLib::MPEG::File::ID3v2, TagLib::File::StripNone, TagLib::ID3v2::v4);
+
+        } else if (is_flac) {
+            TagLib::FLAC::File f(wp.c_str(), false);
+            auto* tag = f.xiphComment(true); if (!tag) return;
+            tag->setTitle (TagLib::String(title_str,  TagLib::String::UTF8));
+            tag->setArtist(TagLib::String(artist_str, TagLib::String::UTF8));
+            tag->setAlbum (TagLib::String(rel.title,  TagLib::String::UTF8));
+            tag->setTrack ((unsigned int)track_num);
+            if (rel.date.size()>=4) try { tag->setYear((unsigned)std::stoi(rel.date.substr(0,4))); } catch(...){}
+            tag->addField("ENCODER",TagLib::String("RE-MOCT v1.0.0-rc1",TagLib::String::UTF8),true);
+            if (!ar_str.empty()) {
+                tag->addField("ACCURATERIP",    TagLib::String(ar_str,       TagLib::String::UTF8),true);
+                tag->addField("ACCURATERIPCRC", TagLib::String(ar_crc_str,   TagLib::String::UTF8),true);
+                tag->addField("ACCURATERIPCOUNT",TagLib::String(ar_conf_str, TagLib::String::UTF8),true);
+            }
+            if (rg.valid) {
+                tag->addField("REPLAYGAIN_TRACK_GAIN",TagLib::String(rg_str(rg.track_gain),TagLib::String::UTF8),true);
+                tag->addField("REPLAYGAIN_TRACK_PEAK",TagLib::String(rg_peak_str(rg.track_peak),TagLib::String::UTF8),true);
+                tag->addField("REPLAYGAIN_ALBUM_GAIN",TagLib::String(rg_str(rg.album_gain),TagLib::String::UTF8),true);
+                tag->addField("REPLAYGAIN_ALBUM_PEAK",TagLib::String(rg_peak_str(rg.album_peak),TagLib::String::UTF8),true);
+            }
+            if (!art.empty()) {
+                auto* pic = new TagLib::FLAC::Picture();
+                pic->setMimeType("image/jpeg");
+                pic->setType(TagLib::FLAC::Picture::FrontCover);
+                pic->setDescription(TagLib::String("Cover"));
+                pic->setData(TagLib::ByteVector((const char*)art.data(),(unsigned)art.size()));
+                f.addPicture(pic);
+            }
+            f.save();
+        }
+    } catch(...) {}
+}
+
+// ─── Core track rip ───────────────────────────────────────────────────────────
+ARTrackResult CDRipper::ripTrack(HANDLE             hCD,
+                                 const CDTrack&     track,
+                                 int                track_idx,
+                                 int                total_tracks,
+                                 bool               is_first,
+                                 bool               is_last,
+                                 bool               use_c2,
+                                 const std::string& flac_path,
+                                 const std::string& mp3_path,
+                                 RGResult&          rg_out,
+                                 const ProgressCb&  cb,
+                                 const std::string& log_path,
+                                 RipMode            mode,
+                                 int                drive_offset,
+                                 uint32_t           ctdb_crc_in,
+                                 size_t             ctdb_bytes_in,
+                                 int                pressing_offset) {
+
+    ARTrackResult ar_result;
+    ar_result.status = ARStatus::NotQueried;
+    rg_out = {};
+
+    // CTDB seed from caller (accumulated across tracks)
+    uint32_t ctdb_crc_seed   = ctdb_crc_in;
+    size_t   ctdb_bytes_seed = ctdb_bytes_in;
+
+    const DWORD total_secs = (DWORD)track.length_lba;
+    if (total_secs == 0) return ar_result;
+
+    // ── FLAC setup ────────────────────────────────────────────────────────
+    FLAC__StreamEncoder* flac_enc = FLAC__stream_encoder_new();
+    if (!flac_enc) { ar_result.status = ARStatus::NotFound; return ar_result; }
+    FLAC__stream_encoder_set_verify(flac_enc, false);
+    FLAC__stream_encoder_set_compression_level(flac_enc, FLAC_COMPRESSION);
+    FLAC__stream_encoder_set_channels(flac_enc, CHANNELS);
+    FLAC__stream_encoder_set_bits_per_sample(flac_enc, BIT_DEPTH);
+    FLAC__stream_encoder_set_sample_rate(flac_enc, SAMPLE_RATE);
+    FLAC__stream_encoder_set_total_samples_estimate(flac_enc,
+        (FLAC__uint64)total_secs * SECTOR_SAMPLES);
+    FILE* flac_file = _wfopen(utf8_to_wide(flac_path).c_str(), L"wb");
+    if (!flac_file) { FLAC__stream_encoder_delete(flac_enc); return ar_result; }
+    if (FLAC__stream_encoder_init_FILE(flac_enc, flac_file, nullptr, nullptr)
+            != FLAC__STREAM_ENCODER_INIT_STATUS_OK) {
+        fclose(flac_file); FLAC__stream_encoder_delete(flac_enc); return ar_result;
+    }
+
+    // ── LAME setup ────────────────────────────────────────────────────────
+    lame_global_flags* lame = lame_init();
+    if (!lame) {
+        FLAC__stream_encoder_finish(flac_enc);
+        FLAC__stream_encoder_delete(flac_enc);
+        return ar_result;
+    }
+    lame_set_in_samplerate(lame, SAMPLE_RATE);
+    lame_set_num_channels(lame, CHANNELS);
+    lame_set_VBR(lame, vbr_mtrh);
+    lame_set_VBR_q(lame, 0);
+    lame_set_quality(lame, 2);
+    lame_set_mode(lame, STEREO);
+    lame_set_write_id3tag_automatic(lame, 0);
+    lame_set_bWriteVbrTag(lame, 1);   // emit Xing/LAME info header (VBR duration)
+    if (lame_init_params(lame) < 0) {
+        lame_close(lame);
+        FLAC__stream_encoder_finish(flac_enc);
+        FLAC__stream_encoder_delete(flac_enc);
+        return ar_result;
+    }
+    FILE* mp3_file = _wfopen(utf8_to_wide(mp3_path).c_str(), L"wb");
+    if (!mp3_file) {
+        lame_close(lame);
+        FLAC__stream_encoder_finish(flac_enc);
+        FLAC__stream_encoder_delete(flac_enc);
+        return ar_result;
+    }
+
+    // ── libebur128 for ReplayGain ─────────────────────────────────────────
+    ebur128_state* ebur = ebur128_init(CHANNELS, SAMPLE_RATE,
+                                       EBUR128_MODE_I | EBUR128_MODE_TRUE_PEAK);
+
+    // ── AccurateRip CRC state ─────────────────────────────────────────────
+    // From whipper accuraterip-checksum.c (authoritative reference):
+    //   MulBy increments for EVERY sample (including skipped ones at boundaries)
+    //   Skip implemented via range check: only accumulate if MulBy in valid range
+    //   audio_data is uint32_t* -- each element = one stereo frame (L+R packed)
+    //   v1 = csum_lo  (lower 32 bits of each product, summed)
+    //   v2 = csum_lo + csum_hi  (sum of lower + sum of upper 32 bits)
+    static constexpr uint32_t AR_SKIP = 5u * 588u;  // 2940 samples to skip front/back
+    const uint32_t total_samples = (uint32_t)track.length_lba * SECTOR_SAMPLES;
+    // AR uses disc-absolute mul_by (pregap-inclusive, 150 sectors before our track start).
+    // mul_by starts at track.start_lba*588+1 for our first audio sample.
+    // ar_check_from = 2940 for track 1 (disc-absolute, well before our audio start).
+    // ar_check_to   = total_samples (= dBpoweramp DataDWORDSize); with our offset mul_by
+    //   this naturally excludes the last 150 sectors of our rip (which belong to the
+    //   next track in AccurateRip's flat-disc scheme).
+    const uint32_t ar_check_from = is_first ? AR_SKIP : 1u;
+    // Guard against underflow on pathologically short tracks (< 5 sectors).
+    // total_samples - AR_SKIP would wrap to ~4 billion as uint32_t.
+    const uint32_t ar_check_to   = is_last
+        ? (total_samples > AR_SKIP ? total_samples - AR_SKIP : 0u)
+        : total_samples;
+
+    uint32_t csum_hi = 0, csum_lo = 0;
+    // AccurateRip uses disc-absolute positions. Each track's CRC starts mul_by=1 at
+    // the disc-relative track start (= track.start_lba - 150 sectors from disc LBA 0).
+    // We read from track.start_lba so must first feed the 150 preceding sectors as a
+    // "preamble" with mul_by 1..88200.  For track 1 this area contains real disc data
+    // (not silence) that contributes to the CRC.
+    static constexpr uint32_t PREGAP_SAMPLES = 150u * 588u;  // 88200
+    uint32_t mul_by  = 1u;
+    uint64_t n_accumulated = 0;  // diagnostic counter
+    uint32_t frame450_global = 0; // sector-450 CRC: global mul (264601..265188)
+    uint32_t frame450_local  = 0; // sector-450 CRC: local  mul (1..588)
+
+    // ── CTDB CRC32 state (incremental across entire disc) ─────────────────
+    // CTDB trims first/last 10 sectors of the disc (not per track).
+    // We pass in the running state from previous tracks via ar_result.ctdb_crc,
+    // accumulate this track's bytes, and pass it back for the next track.
+    // The caller finalizes with XOR 0xFFFFFFFF after the last track.
+    // Build CRC32 lookup table once
+    static uint32_t crc32_table[256] = {};
+    static bool     crc32_init = false;
+    if (!crc32_init) {
+        for (uint32_t i = 0; i < 256; ++i) {
+            uint32_t c = i;
+            for (int j = 0; j < 8; ++j)
+                c = (c & 1) ? (0xedb88320u ^ (c >> 1)) : (c >> 1);
+            crc32_table[i] = c;
+        }
+        crc32_init = true;
+    }
+    // Running CRC state — seed from previous track's state
+    uint32_t ctdb_crc   = ctdb_crc_seed;
+    size_t   ctdb_bytes = ctdb_bytes_seed;
+    size_t ctdb_disc_offset = ctdb_bytes;
+
+    static constexpr size_t CTDB_TRIM = 10 * (size_t)SECTOR_BYTES;  // 23520 bytes
+
+    // Per-track PCM CRC32: CRC32 of the raw audio bytes fed to FLAC/AR.
+    // Compared against dBpoweramp's "CRC32:" field to verify audio content.
+    uint32_t pcm_crc32 = 0xFFFFFFFFu;
+
+    // ── Streaming read + encode loop ──────────────────────────────────────
+    static constexpr int BUF_SECTORS = SECTORS_PER_READ;
+    static constexpr int BUF_BYTES   = BUF_SECTORS * SECTOR_BYTES;
+
+    uint8_t raw_buf[BUF_BYTES];
+    FLAC__int32 flac_buf[BUF_SECTORS * SECTOR_SAMPLES * 2];
+    int16_t lame_left[BUF_SECTORS * SECTOR_SAMPLES];
+    int16_t lame_right[BUF_SECTORS * SECTOR_SAMPLES];
+    uint8_t mp3_out[BUF_SECTORS * SECTOR_SAMPLES * 2 + 7200];
+    float   ebur_interleaved[BUF_SECTORS * SECTOR_SAMPLES * 2]; // interleaved L+R
+
+    // ── Drive + pressing offset correction ───────────────────────────────────
+    // total_skip = drive_offset + pressing_offset. May span multiple sectors.
+    // We advance start LBA by whole sectors; sub-sector remainder skipped from
+    // first chunk; tail borrows corr_sub_skip samples from beyond the track end.
+    //
+    // remaining = track.length_lba: always produce exactly track.length_lba * SECTOR_SAMPLES:
+    //   (track.length_lba sectors × 588) - corr_sub_skip [loop] + corr_sub_skip [tail]
+    //
+    // The tail reads from LBA (track.start_lba + corr_lba_adv + track.length_lba).
+    // The drive delivers that sector starting corr_sub_skip samples before the
+    // disc position we need — NO additional skip within the sector is needed.
+    // (The lba advance already accounts for the drive's early-read margin.)
+    const int total_skip    = drive_offset + pressing_offset;
+    const int corr_lba_adv  = total_skip / SECTOR_SAMPLES;
+    const int corr_sub_skip = total_skip % SECTOR_SAMPLES;
+    bool corr_first_done    = false;
+
+    DWORD lba       = track.start_lba + (DWORD)corr_lba_adv;
+    DWORD remaining = (DWORD)track.length_lba;   // always full track length
+    bool  ok        = true;
+    DWORD done_secs = 0;
+    int   total_c2_errors = 0;
+    auto  rip_start = std::chrono::steady_clock::now();
+
+    // ── AccurateRip preamble ───────────────────────────────────────────────
+    // AccurateRip CRCs start mul_by=1 at (track.start_lba - 150) = track.rel_lba.
+    // We read from track.start_lba, so must first feed the 150 preceding sectors
+    // through the AR CRC accumulator (not FLAC/LAME).  These sectors contain real
+    // disc data (including any disc lead-in content before the nominal track start).
+    // Apply the same total_skip offset correction used for the main rip.
+    if (mode != RipMode::Local && !cancel_.load() &&
+        track.start_lba >= 150 + (DWORD)corr_lba_adv) {
+        // preamble_lba: 150 sectors before our effective read start
+        const DWORD preamble_lba = track.start_lba - 150 + (DWORD)corr_lba_adv;
+        // Need enough sectors to produce PREGAP_SAMPLES after the sub-sector skip.
+        // ceil((PREGAP_SAMPLES + corr_sub_skip) / SECTOR_SAMPLES) + 1 for safety.
+        const int preamble_secs = (int)((PREGAP_SAMPLES + corr_sub_skip + SECTOR_SAMPLES - 1)
+                                        / SECTOR_SAMPLES) + 1;
+        std::vector<int16_t> pbuf((size_t)preamble_secs * SECTOR_SAMPLES * 2);
+        {
+            std::vector<uint8_t> raw((size_t)preamble_secs * SECTOR_BYTES);
+            int c2d = 0;
+            if (readSectorsWithRetry(hCD, preamble_lba, preamble_secs,
+                                     raw.data(), use_c2, &c2d)) {
+                std::memcpy(pbuf.data(), raw.data(),
+                            (size_t)preamble_secs * SECTOR_SAMPLES * 2 * sizeof(int16_t));
+            }
+        }
+        // Skip corr_sub_skip frames (same sub-sector offset as main rip)
+        const int16_t* ps = pbuf.data() + corr_sub_skip * 2;
+        for (uint32_t pi = 0; pi < PREGAP_SAMPLES && !cancel_.load(); ++pi) {
+            int16_t pl = ps[pi * 2], pr = ps[pi * 2 + 1];
+            uint32_t samp32 = (uint32_t)(uint16_t)pl | ((uint32_t)(uint16_t)pr << 16);
+            if (mul_by >= ar_check_from && mul_by <= ar_check_to) {
+                uint64_t product = (uint64_t)samp32 * (uint64_t)mul_by;
+                csum_hi += (uint32_t)(product >> 32);
+                csum_lo += (uint32_t)(product);
+                ++n_accumulated;
+            }
+            ++mul_by;
+        }
+    } else {
+        // Preamble is before disc start (shouldn't happen on normal CDs) — advance mul_by
+        mul_by += PREGAP_SAMPLES;
+    }
+
+    while (remaining > 0 && !cancel_.load()) {
+        DWORD this_read = std::min((DWORD)BUF_SECTORS, remaining);
+        int   c2_errs   = 0;
+
+        if (!readSectorsWithRetry(hCD, lba, (int)this_read, raw_buf,
+                                  use_c2, &c2_errs)) {
+            ok = false; break;
+        }
+        total_c2_errors += c2_errs;
+
+        int samples = (int)this_read * SECTOR_SAMPLES;
+        const int16_t* src = reinterpret_cast<const int16_t*>(raw_buf);
+
+        // On the first chunk, skip the first corr_sub_skip samples (pre-track
+        // samples delivered by a drive with positive read offset).
+        if (!corr_first_done && corr_sub_skip > 0) {
+            src     += corr_sub_skip * 2;
+            samples -= corr_sub_skip;
+            corr_first_done = true;
+        } else {
+            corr_first_done = true;
+        }
+
+        // Hex dump first 16 samples of track 1 for CRC verification
+        if (is_first && done_secs == 0 && track_idx == 0) {
+            FILE* lf = _wfopen(utf8_to_wide(log_path).c_str(), L"a");
+            if (lf) {
+                fprintf(lf, "  [Track 1 sector 0 first 16 samples (L R pairs)]:\n  ");
+                for (int d = 0; d < 16 && d < samples; ++d) {
+                    int16_t dl = src[d*2], dr = src[d*2+1];
+                    uint32_t ds = (uint32_t)(uint16_t)dl | ((uint32_t)(uint16_t)dr << 16);
+                    fprintf(lf, " %08x", ds);
+                    if (d == 7) fprintf(lf, "\n  ");
+                }
+                fprintf(lf, "\n  ar_check_from=%u ar_check_to=%u total_samples=%u\n",
+                        ar_check_from, ar_check_to, (uint32_t)track.length_lba * SECTOR_SAMPLES);
+                fclose(lf);
+            }
+        }
+
+        // Track sample offset within the track for AR boundary logic
+        DWORD samp_offset = done_secs * SECTOR_SAMPLES;
+        (void)samp_offset;
+
+        for (int i = 0; i < samples; ++i) {
+            int16_t l = src[i*2], r = src[i*2+1];
+            flac_buf[i*2]            = (FLAC__int32)l;
+            flac_buf[i*2+1]          = (FLAC__int32)r;
+            lame_left[i]             = l;
+            lame_right[i]            = r;
+            ebur_interleaved[i*2]    = (float)l / 32768.0f;
+            ebur_interleaved[i*2+1]  = (float)r / 32768.0f;
+
+            if (mode != RipMode::Local &&
+                mul_by >= ar_check_from && mul_by <= ar_check_to) {
+                uint32_t samp32 = (uint32_t)(uint16_t)l | ((uint32_t)(uint16_t)r << 16);
+                uint64_t product = (uint64_t)samp32 * (uint64_t)mul_by;
+                csum_hi += (uint32_t)(product >> 32);
+                csum_lo += (uint32_t)(product);
+                ++n_accumulated;
+                // Log first accumulated sample for cross-check
+                if (is_first && n_accumulated == 1) {
+                    FILE* lf = _wfopen(utf8_to_wide(log_path).c_str(), L"a");
+                    if (lf) {
+                        fprintf(lf, "  first_accum: mul_by=%u samp32=%08x "
+                                "contrib_lo=%08x total_skip=%d\n",
+                                mul_by, samp32, (uint32_t)product, total_skip);
+                        fclose(lf);
+                    }
+                }
+            }
+            // Frame450 diagnostic (track 1 only): accumulate sector 450 — both formulas
+            if (is_first && mul_by >= AR_FRAME450_START && mul_by <= AR_FRAME450_END) {
+                uint32_t samp32 = (uint32_t)(uint16_t)l | ((uint32_t)(uint16_t)r << 16);
+                frame450_global += samp32 * mul_by;
+                frame450_local  += samp32 * (mul_by - AR_FRAME450_START + 1);
+            }
+            ++mul_by;
+        }
+
+        // PCM CRC32 over this chunk (same bytes fed to FLAC encoder)
+        {
+            const uint8_t* b = reinterpret_cast<const uint8_t*>(src);
+            for (int n = 0; n < samples * 4; ++n)
+                pcm_crc32 = crc32_table[(pcm_crc32 ^ b[n]) & 0xFF] ^ (pcm_crc32 >> 8);
+        }
+
+        // FLAC encode
+        if (!FLAC__stream_encoder_process_interleaved(
+                flac_enc, flac_buf, (unsigned)samples)) { ok = false; break; }
+
+        // MP3 encode
+        int mp3b = lame_encode_buffer(lame, lame_left, lame_right,
+                                      samples, mp3_out, sizeof(mp3_out));
+        if (mp3b < 0) { ok = false; break; }
+        if (mp3b > 0) fwrite(mp3_out, 1, (size_t)mp3b, mp3_file);
+
+        // ReplayGain -- interleaved stereo; pass frames not samples (samples/channels)
+        if (ebur)
+            ebur128_add_frames_float(ebur, ebur_interleaved, (size_t)samples / CHANNELS);
+
+        // ── CTDB CRC32 — accumulate raw sector bytes (disc-absolute, trimmed) ──
+        if (mode == RipMode::CUETools) {
+            size_t block_bytes = (size_t)this_read * SECTOR_BYTES;
+            for (size_t bi = 0; bi < block_bytes; ++bi) {
+                size_t abs_pos = ctdb_disc_offset + bi;
+                // Will be trimmed at disc end later (caller knows total_disc_bytes)
+                // Only skip the disc-start trim here
+                if (abs_pos >= CTDB_TRIM) {
+                    ctdb_crc = crc32_table[(ctdb_crc ^ raw_buf[bi]) & 0xFF] ^ (ctdb_crc >> 8);
+                }
+            }
+            ctdb_disc_offset += block_bytes;
+            ctdb_bytes        = ctdb_disc_offset;
+        }
+
+        lba       += this_read;
+        remaining -= this_read;
+        done_secs += this_read;
+
+        // ── Progress + rip speed ────────────────────────────────────────────
+        int pct = (int)(100.0 * done_secs / total_secs);
+        auto now = std::chrono::steady_clock::now();
+        double elapsed_sec = std::chrono::duration<double>(now - rip_start).count();
+        double speed_x = elapsed_sec > 0.1
+                       ? (double)done_secs / (elapsed_sec * 75.0) : 0.0;
+
+        if (cb) {
+            RipProgress p;
+            p.state    = RipState::Ripping;
+            p.track    = track_idx + 1;
+            p.total    = total_tracks;
+            p.pct      = pct;
+            p.using_c2 = use_c2;
+            std::ostringstream ss;
+            ss << "Track " << (track_idx+1) << "/" << total_tracks
+               << "  [" << pct << "%]";
+            if (speed_x >= 0.1)
+                ss << "  " << std::fixed << std::setprecision(1) << speed_x << "x";
+            if (use_c2 && c2_errs > 0) ss << "  C2!";
+            else if (use_c2)            ss << "  C2";
+            p.status_msg = ss.str();
+            cb(p);
+        }
+    }
+
+    // ── Offset correction tail ─────────────────────────────────────────────
+    // Borrow corr_sub_skip samples from the sector just past the track end.
+    // The lba advance already positions us exactly: delivery starts at the
+    // disc sample we need, no additional skip within the sector required.
+    // For the last track, zero-pad (falls inside AR_SKIP exclusion zone).
+    if (ok && !cancel_.load() && corr_sub_skip > 0) {
+        int16_t tail[SECTOR_SAMPLES * 2] = {};
+        if (!is_last) {
+            uint8_t extra_raw[SECTOR_BYTES]; int c2d = 0;
+            readSectorsWithRetry(hCD, lba, 1, extra_raw, use_c2, &c2d);
+            // The delivery starts exactly at the disc position we need — no skip
+            std::memcpy(tail, extra_raw, (size_t)corr_sub_skip * 2 * sizeof(int16_t));
+        }
+        const int16_t* src = tail;
+        int samples = corr_sub_skip;
+        for (int i = 0; i < samples; ++i) {
+            int16_t l = src[i*2], r = src[i*2+1];
+            flac_buf[i*2]           = (FLAC__int32)l;
+            flac_buf[i*2+1]         = (FLAC__int32)r;
+            lame_left[i]            = l;
+            lame_right[i]           = r;
+            ebur_interleaved[i*2]   = (float)l / 32768.0f;
+            ebur_interleaved[i*2+1] = (float)r / 32768.0f;
+            if (mode != RipMode::Local &&
+                mul_by >= ar_check_from && mul_by <= ar_check_to) {
+                uint32_t samp32 = (uint32_t)(uint16_t)l | ((uint32_t)(uint16_t)r << 16);
+                uint64_t product = (uint64_t)samp32 * (uint64_t)mul_by;
+                csum_hi += (uint32_t)(product >> 32);
+                csum_lo += (uint32_t)(product);
+                ++n_accumulated;
+            }
+            if (is_first && mul_by >= AR_FRAME450_START && mul_by <= AR_FRAME450_END) {
+                uint32_t samp32 = (uint32_t)(uint16_t)l | ((uint32_t)(uint16_t)r << 16);
+                frame450_global += samp32 * mul_by;
+                frame450_local  += samp32 * (mul_by - AR_FRAME450_START + 1);
+            }
+            ++mul_by;
+        }
+        // PCM CRC32 over the tail bytes
+        {
+            const uint8_t* b = reinterpret_cast<const uint8_t*>(tail);
+            for (int n = 0; n < samples * 4; ++n)
+                pcm_crc32 = crc32_table[(pcm_crc32 ^ b[n]) & 0xFF] ^ (pcm_crc32 >> 8);
+        }
+        if (!FLAC__stream_encoder_process_interleaved(flac_enc, flac_buf, (unsigned)samples))
+            ok = false;
+        if (ok) {
+            int mp3b = lame_encode_buffer(lame, lame_left, lame_right,
+                                          samples, mp3_out, sizeof(mp3_out));
+            if (mp3b < 0) ok = false;
+            else if (mp3b > 0) fwrite(mp3_out, 1, (size_t)mp3b, mp3_file);
+        }
+        if (ebur) ebur128_add_frames_float(ebur, ebur_interleaved,
+                                           (size_t)samples / CHANNELS);
+    }
+
+    // ── Flush encoders ────────────────────────────────────────────────────
+    FLAC__stream_encoder_finish(flac_enc);
+    FLAC__stream_encoder_delete(flac_enc);
+    if (ok) {
+        int fb = lame_encode_flush(lame, mp3_out, sizeof(mp3_out));
+        if (fb > 0) fwrite(mp3_out, 1, (size_t)fb, mp3_file);
+        // Overwrite the reserved first frame with the real Xing/LAME info tag so
+        // VBR MP3s report the correct duration (frame count) to every player.
+        unsigned char vbr_tag[2880];
+        size_t tag_n = lame_get_lametag_frame(lame, vbr_tag, sizeof(vbr_tag));
+        if (tag_n > 0 && tag_n <= sizeof(vbr_tag)) {
+            fseek(mp3_file, 0, SEEK_SET);
+            fwrite(vbr_tag, 1, tag_n, mp3_file);
+        }
+    }
+    fclose(mp3_file);
+    lame_close(lame);
+
+    // ── ReplayGain result ─────────────────────────────────────────────────
+    if (ebur && ok) {
+        double loudness = 0;
+        if (ebur128_loudness_global(ebur, &loudness) == EBUR128_SUCCESS) {
+            // EBU R128: target = -23 LUFS; RG reference = -18 LUFS
+            rg_out.track_gain = -18.0 - loudness;
+            double peak = 0;
+            ebur128_true_peak(ebur, 0, &peak);
+            double peak_r = 0;
+            ebur128_true_peak(ebur, 1, &peak_r);
+            rg_out.track_peak = std::max(peak, peak_r);
+            rg_out.valid = true;
+        }
+    }
+    if (ebur) ebur128_destroy(&ebur);
+
+    if (!ok || cancel_.load()) {
+        fs::remove(flac_path);
+        fs::remove(mp3_path);
+        return ar_result;
+    }
+
+    ar_result.crc_v1     = csum_lo;
+    ar_result.crc_v2     = csum_lo + csum_hi;
+    ar_result.ctdb_crc   = ctdb_crc;
+    ar_result.ctdb_bytes = ctdb_bytes;
+
+    // CRC diagnostic — logged in worker after checkAR
+    // Store component values for post-check logging
+    ar_result.crc_v1        = csum_lo;
+    ar_result.crc_v2        = csum_lo + csum_hi;
+    ar_result.frame450_local = frame450_local;
+
+    // Log diagnostic directly here (before returning)
+    if (mode != RipMode::Local && !log_path.empty()) {
+        FILE* lf = _wfopen(utf8_to_wide(log_path).c_str(), L"a");
+        if (lf) {
+            // expected_n: preamble samples in range + main rip samples in range
+            const uint32_t preamble_from = std::max(ar_check_from, 1u);
+            const uint32_t preamble_to   = std::min((uint32_t)PREGAP_SAMPLES, ar_check_to);
+            const uint32_t main_from     = std::max(ar_check_from,
+                                                     (uint32_t)(PREGAP_SAMPLES + 1u));
+            uint64_t expected_n = 0;
+            if (preamble_to >= preamble_from)
+                expected_n += preamble_to - preamble_from + 1;
+            if (ar_check_to >= main_from)
+                expected_n += ar_check_to - main_from + 1;
+            fprintf(lf, "  AR diag T%d: csum_lo=%08x csum_hi=%08x n_accum=%llu expected=%llu %s\n",
+                track.number,
+                csum_lo, csum_hi,
+                (unsigned long long)n_accumulated,
+                (unsigned long long)expected_n,
+                n_accumulated == expected_n ? "COUNT OK" : "COUNT MISMATCH!");
+            fprintf(lf, "  pcm_crc32=%08x  (dBpoweramp CRC32 for T1=b02e7e1a)\n",
+                    pcm_crc32 ^ 0xFFFFFFFFu);
+            if (is_first)
+                fprintf(lf, "  frame450: global=%08x local=%08x  (total_skip=%d)\n",
+                        frame450_global, frame450_local, total_skip);
+                // Drive offset self-check on track 1: compare frame450_local
+                // against DB frame450 entries. A match confirms offset is correct;
+                // a miss with an unknown drive warns the user loudly.
+                // (Only meaningful for track 1 — frame450 is defined for track 1 only.)
+            fclose(lf);
+        }
+    }
+    return ar_result;
+}
+
+// ─── Worker thread ────────────────────────────────────────────────────────────
+void CDRipper::worker(std::string          drive_letter,
+                      std::vector<CDTrack> tracks,
+                      std::string          out_dir,
+                      MBRelease            rel,
+                      RipMode              mode,
+                      ProgressCb           cb,
+                      HANDLE               hCD,
+                      int                  drive_offset,
+                      std::string          drive_model,
+                      DWORD                full_leadout_lba,
+                      std::vector<DWORD>   data_track_lbas) {
+
+    state_.store(RipState::Ripping);
+
+    // ── Multi-disc layout ─────────────────────────────────────────────────
+    // rel carries EVERY disc's tracks (tagged with .disc). Select the disc in
+    // the drive by matching the physical track count to a medium, and — only
+    // for true multi-disc releases — nest this disc's output in "...\Disc N\"
+    // so each disc folder is self-contained. Single-disc releases stay flat.
+    const int current_disc = pickDiscForTrackCount(rel, (int)tracks.size());
+    int total_discs = 1;
+    for (const auto& t : rel.tracks) if (t.disc > total_discs) total_discs = t.disc;
+    if (total_discs > 1)
+        out_dir += "\\Disc " + std::to_string(current_disc);
+
+    std::error_code ec;
+    fs::create_directories(out_dir, ec);
+    if (ec) {
+        if (cb) { RipProgress p; p.state=RipState::Error;
+                  p.status_msg="Rip failed: could not create output dir"; cb(p); }
+        state_.store(RipState::Error); active_.store(false); return;
+    }
+
+    if (hCD == INVALID_HANDLE_VALUE) {
+        DWORD err = GetLastError();
+        if (cb) { RipProgress p; p.state=RipState::Error;
+                  p.status_msg="Rip failed: drive open error "+std::to_string(err); cb(p); }
+        state_.store(RipState::Error); active_.store(false); return;
+    }
+
+    // ── Per-rip log + AR cache dir ────────────────────────────────────────
+    std::string log_dir      = out_dir + "\\logs";
+    std::string ar_cache_dir = out_dir + "\\.ar-db-info";
+    std::string log_path;
+    {
+        fs::create_directories(log_dir, ec);
+        std::time_t t = std::time(nullptr);
+        std::tm* tm = std::localtime(&t);
+        char ts[32]; std::strftime(ts, sizeof(ts), "rip_%Y%m%d_%H%M%S", tm);
+        log_path = log_dir + "\\" + ts + ".log";
+        FILE* lf = _wfopen(utf8_to_wide(log_path).c_str(), L"w");
+        if (lf) {
+            fprintf(lf, "RE-MOCT CD Rip Log\n");
+            fprintf(lf, "==================\n");
+            fprintf(lf, "Album  : %s\n", rel.title.c_str());
+            fprintf(lf, "Artist : %s\n", rel.artist.c_str());
+            fprintf(lf, "Year   : %s\n", rel.date.c_str());
+            fprintf(lf, "Drive  : %s  (offset %+d samples)\n",
+                    drive_letter.c_str(), drive_offset);
+            fprintf(lf, "Model  : %s\n", drive_model.empty() ? "unknown" : drive_model.c_str());
+            fprintf(lf, "Tracks : %d\n", (int)tracks.size());
+            fprintf(lf, "Mode   : %s\n",
+                mode==RipMode::AccurateRip ? "AccurateRip" :
+                mode==RipMode::CUETools    ? "CUETools"    : "Local");
+            fprintf(lf, "Output : %s\n\n", out_dir.c_str());
+            fclose(lf);
+        }
+    }
+    bool use_c2 = probeC2(hCD);
+    {
+        FILE* lf = _wfopen(utf8_to_wide(log_path).c_str(), L"a");
+        if (lf) {
+            fprintf(lf, "C2 support  : %s\n", use_c2 ? "yes" : "no");
+            fprintf(lf, "Drive cache : not probed\n");
+            fprintf(lf, "            Note: if drive caches sector reads, dual-pass returns\n");
+            fprintf(lf, "            identical data on damaged discs -- determinism check unreliable.\n");
+            fprintf(lf, "            Use 'whipper drive analyze' to test for caching behavior.\n\n");
+            fclose(lf);
+        }
+    }
+    if (cb) {
+        RipProgress p; p.state=RipState::Ripping; p.using_c2=use_c2;
+        p.status_msg = use_c2
+            ? "Drive supports C2 error pointers — using C2-assisted rip"
+            : "C2 not supported by drive — using standard rip with retry";
+        cb(p);
+    }
+    Sleep(800);
+
+    // ── Drive read offset ─────────────────────────────────────────────────
+    // The drive's read offset (in samples) corrects for the hardware timing
+    // difference between where the drive thinks a sector starts and where
+    // the audio actually begins. Without this correction the AR CRC will
+    // never match the database regardless of pressing.
+    //
+    // The offset is drive-model-specific and must come from the AccurateRip
+    // drive offset database (http://www.accuraterip.com/driveoffsets.htm) or
+    // be detected by ripping a known disc. We query it from CDSource, which
+    // is expected to expose it (looked up by drive model string at init time).
+    // If CDSource doesn't provide it yet, it defaults to 0 (no correction),
+    // which will still work for the small number of drives with offset 0.
+    // drive_offset (samples, signed) is passed in from start() via worker() parameter.
+
+    // ── Cover art ─────────────────────────────────────────────────────────
+    std::vector<uint8_t> art;
+    {
+        if (cb) { RipProgress p; p.state=RipState::Ripping;
+                  p.status_msg="Fetching cover art..."; cb(p); }
+        // 1) Cover Art Archive by MBID — unchanged primary path for MB releases.
+        if (!rel.mb_id.empty())
+            art = fetchCoverArt(rel.mb_id);
+        // 2) Fallback ONLY if CAA gave nothing: Discogs releases (no MBID) and
+        //    the occasional MB release with no CAA front cover. Open, no-auth,
+        //    keyed by artist+album (iTunes -> Deezer). Never runs when step 1
+        //    already returned art, so existing MB behaviour is untouched.
+        if (art.empty())
+            art = fetchArtByText(rel.artist, rel.title);
+        if (!art.empty()) {
+            FILE* f = _wfopen(utf8_to_wide(out_dir+"\\folder.jpg").c_str(), L"wb");
+            if (f) { fwrite(art.data(),1,art.size(),f); fclose(f); }
+        }
+    }
+
+    // ── AccurateRip prefetch (AR mode only) ───────────────────────────────
+    std::vector<std::vector<std::pair<uint32_t,int>>> ar_db_v1, ar_db_v2;
+    bool ar_db_loaded = false;
+    if (mode == RipMode::AccurateRip) {
+        if (cb) { RipProgress p; p.state=RipState::Ripping;
+                  p.status_msg="Fetching AccurateRip database..."; cb(p); }
+        ar_db_loaded = fetchARData(tracks, log_path, ar_cache_dir, ar_db_v1, ar_db_v2, full_leadout_lba, data_track_lbas);
+        if (!ar_db_loaded && cb) {
+            RipProgress p; p.state=RipState::Ripping;
+            p.status_msg="AccurateRip: network error -- AR verification skipped";
+            cb(p); Sleep(600);
+        } else if (ar_db_loaded && ar_db_v1.empty() && cb) {
+            RipProgress p; p.state=RipState::Ripping;
+            p.status_msg="AccurateRip: this pressing not yet in AR database";
+            cb(p); Sleep(600);
+        }
+    } else {
+        // Give the drive a moment to become ready (AR mode gets this naturally
+        // from the network fetch delay; Local/CUETools mode need an explicit wait)
+        Sleep(500);
+    }
+
+    // ── Enhanced CD: find true audio end for last track ──────────────────
+    // Binary search is done here (not in CDSource::open) to avoid seeking
+    // the disc before ripping which drops drive speed from 20-30x to 8x.
+    // For Enhanced CDs the last audio track's TOC end points to the data
+    // track start which includes silence + hidden content in its pregap.
+    // We find the first silent sector and cap the last track's length_lba.
+    if (!data_track_lbas.empty() && !tracks.empty()) {
+        DWORD data_start  = data_track_lbas[0];
+        DWORD track_start = tracks.back().start_lba;
+        // Clamp search range to within the last audio track
+        // so we never accidentally find silence in a previous track.
+        DWORD search_lo = std::max(track_start,
+                              data_start > 15000 ? data_start - 15000 : 0u);
+        DWORD search_hi = data_start;
+        static constexpr int SB = CDSource::SECTOR_BYTES;
+        static constexpr int SS = CDSource::SECTOR_SAMPLES;
+        std::vector<uint8_t> probe(SB);
+        RAW_READ_INFO rri {}; rri.TrackMode = CDDA; rri.SectorCount = 1;
+        DWORD bpr = 0;
+        rri.DiskOffset.QuadPart = (LONGLONG)search_lo * 2048;
+        bool lo_ok = DeviceIoControl(hCD, IOCTL_CDROM_RAW_READ,
+                                     &rri, sizeof(rri), probe.data(), SB, &bpr, nullptr);
+        bool lo_silent = true;
+        if (lo_ok) {
+            const int16_t* s = reinterpret_cast<const int16_t*>(probe.data());
+            for (int i = 0; i < SS * 2; ++i)
+                if (s[i] != 0) { lo_silent = false; break; }
+        }
+        if (lo_ok && !lo_silent) {
+            while (search_hi > search_lo + 1) {
+                DWORD mid = (search_lo + search_hi) / 2;
+                rri.DiskOffset.QuadPart = (LONGLONG)mid * 2048;
+                bool ok = DeviceIoControl(hCD, IOCTL_CDROM_RAW_READ,
+                                          &rri, sizeof(rri), probe.data(), SB, &bpr, nullptr);
+                bool silent = true;
+                if (ok) {
+                    const int16_t* s = reinterpret_cast<const int16_t*>(probe.data());
+                    for (int i = 0; i < SS * 2; ++i)
+                        if (s[i] != 0) { silent = false; break; }
+                }
+                if (silent) search_hi = mid;
+                else         search_lo = mid;
+            }
+            // search_hi = first fully-zero sector; +174 = AR-consistent track end.
+            // Cap at data_start to never read into the data session.
+            DWORD audio_end = std::min(search_hi + 174, data_start);
+            // Apply to last audio track
+            auto& last_trk = tracks.back();
+            DWORD toc_end = last_trk.start_lba + last_trk.length_lba;
+            if (toc_end > audio_end) {
+                last_trk.length_lba   = audio_end - last_trk.start_lba;
+                last_trk.duration_sec = (int)(last_trk.length_lba / 75);
+            }
+        }
+    }
+
+    // ── Per-track rip ─────────────────────────────────────────────────────
+    setDriveSpeed(hCD, 0xFFFF);
+    int total = (int)tracks.size();
+    // Pressing offset: disc-specific additional sample shift on top of drive offset.
+    // Detected from track 1's frame450_crc after Pass 1 fails.
+    // Once detected, used for all subsequent tracks' Pass 1 and Pass 2.
+    int  pressing_offset          = 0;
+    bool pressing_offset_detected = false;
+    std::vector<ARTrackResult> ar_results(total);
+    std::vector<RGResult>      rg_results(total);
+    bool any_error = false;
+
+    // CTDB CRC state threads across all tracks (initialized with seed 0xFFFFFFFF)
+    ARTrackResult ctdb_state;
+    ctdb_state.ctdb_crc   = 0xFFFFFFFFu;  // CRC32 seed
+    ctdb_state.ctdb_bytes = 0;
+
+    for (int i = 0; i < total; ++i) {
+        if (cancel_.load()) break;
+
+        const CDTrack& trk = tracks[i];
+        int tnum = trk.number;
+        const MBTrack* mt = nullptr;
+        for (const auto& m : rel.tracks) if (m.number==tnum && m.disc==current_disc) { mt=&m; break; }
+
+        std::ostringstream nn;
+        nn << std::setw(2) << std::setfill('0') << tnum;
+        std::string prefix = nn.str();
+        if (mt && !mt->title.empty()) prefix += " - " + sanitizePath(mt->title);
+
+        std::string flac_path = out_dir + "\\" + prefix + ".flac";
+        std::string mp3_path  = out_dir + "\\" + prefix + ".mp3";
+
+        // For track 1: only drive_offset (pressing not yet detected).
+        // For all subsequent tracks: drive_offset + pressing_offset (once detected).
+        const int eff_pressing = pressing_offset_detected && i > 0 ? pressing_offset : 0;
+
+        RGResult rg;
+        ARTrackResult ar = ripTrack(hCD, trk, i, total,
+                                    i==0, i==total-1,
+                                    use_c2,
+                                    flac_path, mp3_path, rg, cb,
+                                    log_path, mode, drive_offset,
+                                    ctdb_state.ctdb_crc,
+                                    ctdb_state.ctdb_bytes,
+                                    eff_pressing);
+
+        // Carry CTDB state forward to next track
+        ctdb_state.ctdb_crc   = ar.ctdb_crc;
+        ctdb_state.ctdb_bytes = ar.ctdb_bytes;
+
+        // Check for rip failure (empty CRC and not-queried = encoder init failed)
+        if (mode != RipMode::Local && ar.crc_v1 == 0 && ar.crc_v2 == 0 && !cancel_.load()) {
+            any_error = true;
+            if (cb) {
+                RipProgress p; p.state=RipState::Error;
+                p.status_msg = "Read error on track "+std::to_string(tnum)
+                             + " -- disc may be scratched. Other tracks saved.";
+                cb(p);
+            }
+            break;
+        }
+
+        // ── AccurateRip verification ───────────────────────────────────────
+        // AR binary format per track: [conf][v1_or_v2_crc][v2_crc]
+        // out_v1 = bytes 1-4 of each chunk track entry (v1 or v2 depending on era)
+        // out_v2 = bytes 5-8 of each chunk track entry (v2 CRC, 0 in older submissions)
+        // We compare our crc_v1 and crc_v2 against both out_v1 and out_v2 entries.
+        auto checkAR = [&](const ARTrackResult& candidate) -> ARTrackResult {
+            ARTrackResult result = candidate;
+            result.status = ARStatus::NotFound;
+            if (!ar_db_loaded) { result.status = ARStatus::NetworkError; return result; }
+            if (i >= (int)ar_db_v1.size()) return result;
+            // Check all DB v1 field entries first (may contain v1 or v2 CRCs)
+            for (const auto& [crc, conf] : ar_db_v1[i]) {
+                if (crc == candidate.crc_v2) {
+                    result.status = ARStatus::Matched_v2; result.confidence = conf; return result;
+                }
+            }
+            for (const auto& [crc, conf] : ar_db_v1[i]) {
+                if (crc == candidate.crc_v1) {
+                    result.status = ARStatus::Matched_v1; result.confidence = conf; return result;
+                }
+            }
+            // Check DB v2 field entries (v2 CRCs from newer submissions)
+            if (i < (int)ar_db_v2.size()) {
+                for (const auto& [crc, conf] : ar_db_v2[i]) {
+                    if (crc == candidate.crc_v2) {
+                        result.status = ARStatus::Matched_v2; result.confidence = conf; return result;
+                    }
+                }
+                for (const auto& [crc, conf] : ar_db_v2[i]) {
+                    if (crc == candidate.crc_v1) {
+                        result.status = ARStatus::Matched_v1; result.confidence = conf; return result;
+                    }
+                }
+            }
+            return result;
+        };
+
+        ar = checkAR(ar);
+        int pass_count = 1;
+
+        // ── frame450 drive-offset self-check (track 1 only) ──────────────────
+        // frame450_local was computed inside ripTrack and logged.
+        // We check it here via ar.frame450_local (added to ARTrackResult).
+        // This confirms the drive offset is correct, or warns if unknown.
+        if (i == 0 && mode != RipMode::Local && ar_db_loaded
+            && !ar_db_v2[0].empty() && ar.frame450_local != 0) {
+            bool frame450_matched = false;
+            for (const auto& [crc, conf] : ar_db_v2[0])
+                if (crc == ar.frame450_local) { frame450_matched = true; break; }
+            FILE* lf = _wfopen(utf8_to_wide(log_path).c_str(), L"a");
+            if (lf) {
+                if (frame450_matched)
+                    fprintf(lf, "  frame450: drive offset %+d confirmed\n", drive_offset);
+                else
+                    fprintf(lf, "  frame450: WARNING — offset %+d not confirmed."
+                            " Check accuraterip.com/driveoffsets.htm\n", drive_offset);
+                fclose(lf);
+            }
+        }
+
+        // CRC diagnostic — append to per-rip log
+        {
+            FILE* lf = _wfopen(utf8_to_wide(log_path).c_str(), L"a");
+            if (lf) {
+                fprintf(lf, "\nTrack %d Pass 1: crc_v1(=csum_lo)=%08x  crc_v2(=csum_lo+hi)=%08x  status=%d (%s)\n",
+                    tnum, ar.crc_v1, ar.crc_v2, (int)ar.status,
+                    ar.status==ARStatus::Matched_v2 ? "AR v2 OK" :
+                    ar.status==ARStatus::Matched_v1 ? "AR v1 OK" : "no match");
+                if (i < (int)ar_db_v1.size()) {
+                    fprintf(lf, "  DB main_crcs (%zu):\n", ar_db_v1[i].size());
+                    for (auto& [crc,conf] : ar_db_v1[i])
+                        fprintf(lf, "    crc=%08x conf=%d%s%s\n", crc, conf,
+                            crc==ar.crc_v1 ? "  <-- MATCH v1" : "",
+                            crc==ar.crc_v2 ? "  <-- MATCH v2" : "");
+                }
+                if (i < (int)ar_db_v2.size() && !ar_db_v2[i].empty()) {
+                    fprintf(lf, "  DB frame450_crcs (%zu):\n", ar_db_v2[i].size());
+                    for (auto& [crc,conf] : ar_db_v2[i])
+                        fprintf(lf, "    crc=%08x conf=%d\n", crc, conf);
+                }
+                fclose(lf);
+            }
+        }
+
+        // ── Re-rip if Pass 1 failed AR and the database is loaded ─────────
+        // Mirrors dBpoweramp behaviour: "Pass 1 & 2, Re-Rip N Frames"
+        // IMPORTANT: Pass 2 writes to temp paths so Pass 1 audio is never
+        // truncated before we know whether Pass 2 actually verified.
+        if (ar.status == ARStatus::NotFound && ar_db_loaded) {
+
+            // ── Pressing offset detection (track 1 only, once) ─────────────
+            // PRIMARY: frame450 OffsetFindCRC sweep (bytes 5-8 of each AR record
+            // ARE the offset-finding CRC, per Spoon's spec — one short read finds
+            // the offset directly). FALLBACK: if the sweep finds nothing, probe a
+            // short list of known common pressing offsets with full-track rips.
+            // BASELINE underneath both: drive_offset from drive_offsets.h.
+            if (i == 0 && !pressing_offset_detected) {
+                pressing_offset_detected = true;
+
+                // (1) PRIMARY — frame450 sweep.
+                int  fr450_pressing = 0;
+                bool fr450_found    = false;
+                if (!ar_db_v2.empty())
+                    fr450_found = detectPressingOffsetFrame450(
+                        hCD, trk, drive_offset, use_c2,
+                        ar_db_v2[0], log_path, fr450_pressing);
+
+                if (fr450_found) {
+                    pressing_offset = fr450_pressing;
+                } else {
+                    // (2) FALLBACK — candidate-offset full-track probe.
+                    static constexpr int CANDIDATE_OFFSETS[] = {
+                        664, 654, 667, 594, 586, 30, -30, 618, 706, 48
+                    };
+                    FILE* lf = _wfopen(utf8_to_wide(log_path).c_str(), L"a");
+                    if (lf) {
+                        fprintf(lf, "  Scanning pressing offsets:");
+                        for (int p : CANDIDATE_OFFSETS) fprintf(lf, " %+d", p);
+                        fprintf(lf, "\n");
+                        fclose(lf);
+                    }
+                    for (int p : CANDIDATE_OFFSETS) {
+                        if (cancel_.load()) break;
+                        if (drive_offset + p < 0) continue;
+                        std::string probe_flac = flac_path + ".probe";
+                        std::string probe_mp3  = mp3_path  + ".probe";
+                        RGResult      rg_probe;
+                        ARTrackResult ar_probe = ripTrack(hCD, trk, i, total,
+                                                          true, total == 1,
+                                                          use_c2,
+                                                          probe_flac, probe_mp3,
+                                                          rg_probe, nullptr,
+                                                          log_path, mode,
+                                                          drive_offset,
+                                                          ctdb_state.ctdb_crc,
+                                                          ctdb_state.ctdb_bytes,
+                                                          p);
+                        std::error_code ec_probe;
+                        fs::remove(probe_flac, ec_probe);
+                        fs::remove(probe_mp3,  ec_probe);
+                        ar_probe = checkAR(ar_probe);
+                        if (ar_probe.status != ARStatus::NotFound) {
+                            pressing_offset = p;
+                            lf = _wfopen(utf8_to_wide(log_path).c_str(), L"a");
+                            if (lf) {
+                                fprintf(lf,
+                                    "  Pressing offset detected: +%d (total_skip=%d conf=%d)\n",
+                                    p, drive_offset + p, ar_probe.confidence);
+                                fclose(lf);
+                            }
+                            break;
+                        }
+                    }
+                    if (pressing_offset == 0) {
+                        lf = _wfopen(utf8_to_wide(log_path).c_str(), L"a");
+                        if (lf) {
+                            fprintf(lf, "  Pressing offset: none matched — using drive offset only\n");
+                            fclose(lf);
+                        }
+                    }
+                }
+            }
+
+            if (cb) {
+                RipProgress p; p.state=RipState::Ripping;
+                p.track=i+1; p.total=total; p.pct=0;
+                p.status_msg = "Track "+std::to_string(tnum)
+                             +" AR mismatch on Pass 1 -- re-ripping (Pass 2)...";
+                cb(p);
+            }
+
+            // ── Cache flush + speed reduction before Pass 2 ───────────────
+            // Modern drives serve re-reads from an internal RAM cache (512KB–2MB),
+            // so without intervention Pass 2 reads the same broken data as Pass 1.
+            //
+            // Step 1: Drop to 10x (1764 KB/s). This forces the drive controller
+            //   to recalibrate its laser tracking and spindle PLL, which has the
+            //   side-effect of invalidating its sector cache.
+            setDriveSpeed(hCD, 1764);
+            //
+            // Step 2: Seek to LBA 0 (disc lead-in). Physically moving the laser
+            //   head far away from the failing track evicts any remaining cached
+            //   sectors for that area.
+            {
+                uint8_t flush_buf[SECTOR_BYTES];
+                int     c2_dummy = 0;
+                readSectorsWithRetry(hCD, 0, 1, flush_buf, use_c2, &c2_dummy);
+            }
+            //
+            // Step 3: Give the spindle 500 ms to fully settle at the new speed
+            //   before we start reading again.
+            Sleep(500);
+
+            std::string tmp_flac = flac_path + ".tmp";
+            std::string tmp_mp3  = mp3_path  + ".tmp";
+
+            RGResult      rg2;
+            ARTrackResult ar2 = ripTrack(hCD, trk, i, total,
+                                         i==0, i==total-1,
+                                         use_c2,
+                                         tmp_flac, tmp_mp3, rg2, cb,
+                                         log_path, mode, drive_offset,
+                                         ctdb_state.ctdb_crc,
+                                         ctdb_state.ctdb_bytes,
+                                         pressing_offset);
+            if (ar2.crc_v1 != 0 || ar2.crc_v2 != 0) {
+                ar2 = checkAR(ar2);
+                pass_count = 2;
+                {
+                    FILE* lf = _wfopen(utf8_to_wide(log_path).c_str(), L"a");
+                    if (lf) {
+                        fprintf(lf, "Track %d Pass 2: crc_v1=%08x crc_v2=%08x status=%d (%s)\n",
+                            tnum, ar2.crc_v1, ar2.crc_v2, (int)ar2.status,
+                            ar2.status==ARStatus::Matched_v2 ? "AR v2 OK" :
+                            ar2.status==ARStatus::Matched_v1 ? "AR v1 OK" :
+                            ar2.crc_v1==ar.crc_v1 && ar2.crc_v2==ar.crc_v2
+                                ? "same as pass1 (disc deterministic)" : "different from pass1 (read error)");
+                        fclose(lf);
+                    }
+                }
+                if (ar2.status != ARStatus::NotFound) {
+                    // Pass 2 verified — atomically replace Pass 1 files
+                    std::error_code ec2;
+                    fs::remove(flac_path, ec2);
+                    fs::remove(mp3_path,  ec2);
+                    fs::rename(tmp_flac, flac_path, ec2);
+                    fs::rename(tmp_mp3,  mp3_path,  ec2);
+                    ar = ar2;
+                    rg = rg2;
+                } else {
+                    // Pass 2 also failed — discard its audio, keep Pass 1
+                    std::error_code ec2;
+                    fs::remove(tmp_flac, ec2);
+                    fs::remove(tmp_mp3,  ec2);
+                }
+            } else {
+                // Pass 2 hard read failure — clean up and keep Pass 1
+                std::error_code ec2;
+                fs::remove(tmp_flac, ec2);
+                fs::remove(tmp_mp3,  ec2);
+            }
+            // Restore max speed for remaining tracks regardless of Pass 2 outcome
+            setDriveSpeed(hCD, 0xFFFF);
+        }
+
+        ar_results[i] = ar;
+        rg_results[i] = rg;
+
+        // Report AR result with Pass label matching dBpoweramp style
+        if (cb) {
+            RipProgress p; p.state=RipState::Ripping;
+            p.track=i+1; p.total=total; p.pct=100;
+            std::string pass_tag = (pass_count == 1) ? " [Pass 1]" : " [Pass 1 & 2]";
+            switch(ar.status) {
+            case ARStatus::Matched_v2:
+                p.status_msg = "Track "+std::to_string(tnum)
+                             +" Accurate (conf "+std::to_string(ar.confidence)+")"
+                             +pass_tag+" [AR v2]"; break;
+            case ARStatus::Matched_v1:
+                p.status_msg = "Track "+std::to_string(tnum)
+                             +" Accurate (conf "+std::to_string(ar.confidence)+")"
+                             +pass_tag+" [AR v1]"; break;
+            case ARStatus::NotFound:
+                p.status_msg = "Track "+std::to_string(tnum)
+                             +(pass_count>1
+                                ? " not in AccurateRip database (both passes)"
+                                : " not in AccurateRip database"); break;
+            default:
+                p.status_msg = "Track "+std::to_string(tnum)+" ripped (AR skipped)"; break;
+            }
+            cb(p);
+            Sleep(300); // brief pause so user can read each track result
+        }
+    }
+
+    // ── CTDB finalization (CUETools mode) ────────────────────────────────
+    if (mode == RipMode::CUETools && !cancel_.load() && !any_error) {
+        // Finalize CRC32: apply end-trim then XOR with 0xFFFFFFFF
+        // We need to "un-feed" the last CTDB_TRIM bytes from our running CRC.
+        // Since CRC32 isn't reversible, we recompute from the trimmed total.
+        // Simpler: recompute computeCTDBId from total disc bytes we've tracked.
+        // We stored the raw CRC state without the end-trim applied.
+        // The disc-absolute total bytes = ctdb_state.ctdb_bytes.
+        // We need to stop at (total_bytes - CTDB_TRIM).
+        // Since we can't un-apply bytes, we finalize the current state which
+        // already has the start-trim applied, then note the end-trim deficit.
+        // For now finalize what we have — end trim requires knowing total_bytes upfront.
+        // TODO: pass total_disc_bytes to properly end-trim. For now XOR to get ID.
+        uint32_t ctdb_final = ctdb_state.ctdb_crc ^ 0xFFFFFFFFu;
+        char ctdb_id[9]; snprintf(ctdb_id, sizeof(ctdb_id), "%08x", ctdb_final);
+
+        {
+            FILE* lf = _wfopen(utf8_to_wide(log_path).c_str(), L"a");
+            if (lf) {
+                fprintf(lf, "\n=== CUETools DB ===\n");
+                fprintf(lf, "Disc audio bytes processed : %zu\n", ctdb_state.ctdb_bytes);
+                fprintf(lf, "CTDB_TRIM (start)          : %zu bytes (10 sectors)\n", (size_t)(10*SECTOR_BYTES));
+                fprintf(lf, "CTDB ID (raw, no end-trim) : %s\n", ctdb_id);
+                fclose(lf);
+            }
+        }
+
+        if (cb) {
+            RipProgress p; p.state = RipState::Ripping;
+            p.status_msg = "Querying CUETools database (CTDB ID: " + std::string(ctdb_id) + ")...";
+            cb(p);
+        }
+
+        std::string ctdb_status;
+        fetchCTDBData(ctdb_id, log_path, total, ctdb_status);
+
+        if (cb) {
+            RipProgress p; p.state = RipState::Ripping;
+            p.status_msg = "CUETools: " + ctdb_status;
+            cb(p); Sleep(800);
+        }
+    }
+
+    // ── Album ReplayGain ──────────────────────────────────────────────────
+    // Compute album gain from all track ebur128 states (simplified: average)
+    double album_peak = 0;
+    for (auto& rg : rg_results) album_peak = std::max(album_peak, rg.track_peak);
+    // Album gain = average of track gains (approximation without multi-file ebur128)
+    double sum_gain = 0; int valid = 0;
+    for (auto& rg : rg_results) if (rg.valid) { sum_gain += rg.track_gain; ++valid; }
+    double album_gain = valid > 0 ? sum_gain / valid : 0.0;
+    for (auto& rg : rg_results) {
+        rg.album_gain = album_gain;
+        rg.album_peak = album_peak;
+    }
+
+    // ── Tag all files ─────────────────────────────────────────────────────
+    for (int i = 0; i < total && !cancel_.load(); ++i) {
+        const CDTrack& trk = tracks[i];
+        int tnum = trk.number;
+        const MBTrack* mt = nullptr;
+        for (const auto& m : rel.tracks) if (m.number==tnum && m.disc==current_disc) { mt=&m; break; }
+
+        std::ostringstream nn;
+        nn << std::setw(2) << std::setfill('0') << tnum;
+        std::string prefix = nn.str();
+        if (mt && !mt->title.empty()) prefix += " - " + sanitizePath(mt->title);
+
+        tagFile(out_dir+"\\"+prefix+".flac", rel, mt, tnum, art, ar_results[i], rg_results[i], mode);
+        tagFile(out_dir+"\\"+prefix+".mp3",  rel, mt, tnum, art, ar_results[i], rg_results[i], mode);
+    }
+
+    // ── Write CUE sheet ───────────────────────────────────────────────────
+    // Standard Red Book CUE sheet for FLAC rip — compatible with foobar2000,
+    // EAC, whipper and any player that supports gapless via cue index points.
+    if (!cancel_.load()) {
+        std::string cue_path = out_dir + "\\" + sanitizePath(
+            rel.artist.empty() ? rel.title
+            : rel.artist + " - " + rel.title) + ".cue";
+        FILE* cf = _wfopen(utf8_to_wide(cue_path).c_str(), L"w, ccs=UTF-8");
+        if (cf) {
+            // Header
+            if (!rel.artist.empty()) fprintf(cf, "PERFORMER \"%s\"\r\n", rel.artist.c_str());
+            if (!rel.title.empty())  fprintf(cf, "TITLE \"%s\"\r\n",     rel.title.c_str());
+            fprintf(cf, "REM DATE %s\r\n",     rel.date.substr(0,4).c_str());
+            fprintf(cf, "REM DISCID %08x\r\n", computeCDDB(tracks, full_leadout_lba, data_track_lbas));
+            fprintf(cf, "REM COMMENT \"RE-MOCT v1.0.0-rc1\"\r\n");
+
+            for (int i = 0; i < total; ++i) {
+                const CDTrack& trk = tracks[i];
+                int tnum = trk.number;
+                const MBTrack* mt = nullptr;
+                for (const auto& m : rel.tracks) if (m.number==tnum && m.disc==current_disc) { mt=&m; break; }
+
+                std::ostringstream nn;
+                nn << std::setw(2) << std::setfill('0') << tnum;
+                std::string prefix2 = nn.str();
+                if (mt && !mt->title.empty()) prefix2 += " - " + sanitizePath(mt->title);
+
+                // FILE per track (non-embedded CUE)
+                fprintf(cf, "FILE \"%s.flac\" WAVE\r\n", prefix2.c_str());
+                fprintf(cf, "  TRACK %02d AUDIO\r\n", tnum);
+                if (mt && !mt->title.empty())
+                    fprintf(cf, "    TITLE \"%s\"\r\n", mt->title.c_str());
+                std::string trk_artist = (mt && !mt->artist.empty()) ? mt->artist : rel.artist;
+                if (!trk_artist.empty())
+                    fprintf(cf, "    PERFORMER \"%s\"\r\n", trk_artist.c_str());
+                // AR status as REM
+                if (ar_results[i].status == ARStatus::Matched_v2 ||
+                    ar_results[i].status == ARStatus::Matched_v1)
+                    fprintf(cf, "    REM ACCURATERIP [%08x] CONFIDENCE %d\r\n",
+                            ar_results[i].crc_v2, ar_results[i].confidence);
+                fprintf(cf, "    INDEX 01 00:00:00\r\n");
+            }
+            fclose(cf);
+        }
+    }
+
+    // ── Write M3U playlist ────────────────────────────────────────────────
+    if (!cancel_.load()) {
+        std::string m3u_path = out_dir + "\\" + sanitizePath(
+            rel.artist.empty() ? rel.title
+            : rel.artist + " - " + rel.title) + ".m3u8";
+        FILE* mf = _wfopen(utf8_to_wide(m3u_path).c_str(), L"w, ccs=UTF-8");
+        if (mf) {
+            fprintf(mf, "#EXTM3U\r\n");
+            for (int i = 0; i < total; ++i) {
+                const CDTrack& trk = tracks[i];
+                int tnum = trk.number;
+                const MBTrack* mt = nullptr;
+                for (const auto& m : rel.tracks) if (m.number==tnum && m.disc==current_disc) { mt=&m; break; }
+
+                std::ostringstream nn;
+                nn << std::setw(2) << std::setfill('0') << tnum;
+                std::string prefix2 = nn.str();
+                if (mt && !mt->title.empty()) prefix2 += " - " + sanitizePath(mt->title);
+
+                int duration_sec = (int)trk.length_lba / 75;
+                std::string display = rel.artist.empty()
+                    ? (mt ? mt->title : prefix2)
+                    : rel.artist + " - " + (mt ? mt->title : prefix2);
+                fprintf(mf, "#EXTINF:%d,%s\r\n", duration_sec, display.c_str());
+                fprintf(mf, "%s.flac\r\n", prefix2.c_str());
+            }
+            fclose(mf);
+        }
+    }
+
+    // ── Write TOC file ────────────────────────────────────────────────────
+    // Raw disc geometry — useful for re-verification and debugging.
+    if (!cancel_.load()) {
+        std::string toc_path = out_dir + "\\disc.toc";
+        FILE* tf = _wfopen(utf8_to_wide(toc_path).c_str(), L"w");
+        if (tf) {
+            fprintf(tf, "# RE-MOCT disc TOC\r\n");
+            fprintf(tf, "# Drive     : %s:\r\n", drive_letter.c_str());
+            fprintf(tf, "# Drive off : %+d samples\r\n", drive_offset);
+            fprintf(tf, "# CDDB ID   : %08x\r\n", computeCDDB(tracks, full_leadout_lba, data_track_lbas));
+            if (!rel.mb_id.empty())
+                fprintf(tf, "# MB ID     : %s\r\n", rel.mb_id.c_str());
+            fprintf(tf, "#\r\n");
+            fprintf(tf, "# Track  Start-LBA  Length-LBA  Start-MSF    Duration\r\n");
+            for (int i = 0; i < total; ++i) {
+                const CDTrack& t = tracks[i];
+                uint32_t m = t.start_lba / 75 / 60;
+                uint32_t s = (t.start_lba / 75) % 60;
+                uint32_t f = t.start_lba % 75;
+                int dur_s = t.length_lba / 75;
+                fprintf(tf, "  %02d     %-10lu %-11lu %02u:%02u:%02u     %d:%02d\r\n",
+                    t.number, (unsigned long)t.start_lba, (unsigned long)t.length_lba,
+                    m, s, f, dur_s/60, dur_s%60);
+            }
+            // Lead-out
+            uint32_t lo = full_leadout_lba ? (uint32_t)full_leadout_lba
+                         : tracks.back().start_lba + tracks.back().length_lba;
+            fprintf(tf, "  AA     %-10lu (lead-out)\r\n", (unsigned long)lo);
+            fclose(tf);
+        }
+    }
+
+    if (hCD != INVALID_HANDLE_VALUE) CloseHandle(hCD);
+
+    // ── Write rip summary to log ──────────────────────────────────────────
+    {
+        FILE* lf = _wfopen(utf8_to_wide(log_path).c_str(), L"a");
+        if (lf) {
+            int ar_v2=0, ar_v1=0, ar_none=0;
+            for (auto& r : ar_results) {
+                if (r.status==ARStatus::Matched_v2) ++ar_v2;
+                else if (r.status==ARStatus::Matched_v1) ++ar_v1;
+                else ++ar_none;
+            }
+            fprintf(lf, "\n=== Summary ===\n");
+            fprintf(lf, "AR: %d v2 + %d v1 matched, %d not found / %d total\n",
+                    ar_v2, ar_v1, ar_none, (int)ar_results.size());
+            fprintf(lf, "ReplayGain: album gain=%.2f dB peak=%.6f\n",
+                    rg_results.empty() ? 0.0 : rg_results[0].album_gain,
+                    rg_results.empty() ? 0.0 : rg_results[0].album_peak);
+            for (int i = 0; i < (int)ar_results.size(); ++i) {
+                const char* status =
+                    ar_results[i].status==ARStatus::Matched_v2 ? "[AR v2 OK]" :
+                    ar_results[i].status==ARStatus::Matched_v1 ? "[AR v1 OK]" :
+                    ar_results[i].status==ARStatus::NetworkError ? "[AR net err]" :
+                    "[AR not found]";
+                fprintf(lf, "  Track %02d: %s conf=%d  rg=%.2fdB [%08x] [%08x]\n",
+                    i+1, status, ar_results[i].confidence,
+                    i < (int)rg_results.size() ? rg_results[i].track_gain : 0.0,
+                    ar_results[i].crc_v1, ar_results[i].crc_v2);
+            }
+            fclose(lf);
+        }
+    }
+
+    if (cancel_.load()) {
+        state_.store(RipState::Cancelled);
+        if (cb) { RipProgress p; p.state=RipState::Cancelled;
+                  p.status_msg="Rip cancelled."; cb(p); }
+    } else if (any_error) {
+        state_.store(RipState::Error);
+        if (cb) { RipProgress p; p.state=RipState::Error;
+                  p.status_msg="Rip error -- check disc."; cb(p); }
+    } else {
+        // Build summary
+        int ar_v2=0, ar_v1=0, ar_none=0;
+        for (auto& r : ar_results) {
+            if (r.status==ARStatus::Matched_v2) ++ar_v2;
+            else if (r.status==ARStatus::Matched_v1) ++ar_v1;
+            else ++ar_none;
+        }
+        state_.store(RipState::Done);
+        if (cb) {
+            RipProgress p; p.state=RipState::Done; p.track=total; p.total=total; p.pct=100;
+            std::ostringstream ss;
+            ss << "Rip complete!  AR: " << ar_v2 << "v2 + " << ar_v1 << "v1 / "
+               << total << " tracks  -> " << out_dir;
+            p.status_msg = ss.str();
+            cb(p);
+        }
+    }
+    active_.store(false);
+}
+
+// ─── Public API ──────────────────────────────────────────────────────────────
+bool CDRipper::start(AudioManager&               audio,
+                     const std::vector<CDTrack>&  tracks,
+                     const std::string&           out_dir,
+                     const MBRelease&             rel,
+                     RipMode                      mode,
+                     ProgressCb                   cb) {
+    if (active_.load()) return false;
+    active_.store(true);
+    cancel_.store(false);
+    state_.store(RipState::Idle);
+    if (thread_.joinable()) thread_.join();
+    audio.cdSource().stopReader();
+    std::string        dl            = audio.cdSource().driveLetter();
+    int                drv_offset    = audio.cdSource().driveOffset();
+    std::string        drv_model     = audio.cdSource().driveModel();
+    DWORD              full_leadout  = audio.cdSource().fullLeadoutLba();
+    std::vector<DWORD> data_trk_lbas = audio.cdSource().dataTrackLbas();
+    HANDLE hCD = openDrive(dl);
+    thread_ = std::thread(&CDRipper::worker, this,
+                          dl, tracks, out_dir, rel, mode, cb, hCD, drv_offset, drv_model,
+                          full_leadout, data_trk_lbas);
+    return true;
+}
+
+void CDRipper::cancel() {
+    cancel_.store(true);
+    if (thread_.joinable()) thread_.join();
+    active_.store(false);
+    state_.store(RipState::Idle);
+}
+
+#endif // _WIN32

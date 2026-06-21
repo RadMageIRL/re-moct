@@ -612,7 +612,7 @@ void UIManager::drawAll() {
 #ifdef _WIN32
 void UIManager::drawRipConfirm() {
     const int BOX_W = 68;
-    const int BOX_H = 14;
+    const int BOX_H = 15;
     int y0 = (screen_rows_ - BOX_H) / 2;
     int x0 = (screen_cols_ - BOX_W) / 2;
     if (y0 < 0) y0 = 0;
@@ -663,18 +663,19 @@ void UIManager::drawRipConfirm() {
     // Mode options — plain text, no color pairs on description lines
     mvwaddstr(w, 6, 3, "Select ripping mode:");
     struct { const char* key; const char* label; const char* desc; } opts[] = {
-        { "[A]", "AccurateRip", "Network CRC verify + offset correction" },
+        { "[A]", "AccurateRip ", "Network CRC verify + offset correction" },
         { "[C]", "CUETools    ", "Disc-wide CRC32, no network required" },
-        { "[Y]", "Local       ", "Best-effort rip, no verification" },
+        { "[Y]", "Local       ", "Best-effort rip, fast, no verification" },
+        { "[B]", "Local 2-pass", "Best-effort + read-twice determinism check" },
         { "[N]", "Cancel      ", "Go back" },
     };
-    for (int i = 0; i < 4; ++i)
+    for (int i = 0; i < 5; ++i)
         mvwprintw(w, 7 + i, 3, "%s %-12s  %s",
                   opts[i].key, opts[i].label, opts[i].desc);
 
     // Footer divider + output path
-    mvwhline(w, 11, 1, ACS_HLINE, BOX_W - 2);
-    mvwprintw(w, 12, 3, "Out  %s", disp_dir.c_str());
+    mvwhline(w, 12, 1, ACS_HLINE, BOX_W - 2);
+    mvwprintw(w, 13, 3, "Out  %s", disp_dir.c_str());
 
     wrefresh(w);
     delwin(w);
@@ -1119,7 +1120,7 @@ void UIManager::drawHelp() {
         { "q",              "Add track to play queue"             },
         { "Q  (Shift+Q)",   "Show / hide queue pane"              },
         { "Ctrl+R",         "Fetch CD metadata from MusicBrainz" },
-        { "Ctrl+Y",         "Rip CD  (A=AccurateRip  C=CUETools  Y=Local)" },
+        { "Ctrl+Y",         "Rip CD  (A=AccurateRip  C=CUETools  Y=Local  B=Local 2-pass)" },
     };
 
     const int n    = (int)(sizeof(entries) / sizeof(entries[0]));
@@ -2132,6 +2133,7 @@ void UIManager::handleInput(int ch) {
             case 'a': case 'A': chosen = RipMode::AccurateRip; break;
             case 'c': case 'C': chosen = RipMode::CUETools;    break;
             case 'y': case 'Y': chosen = RipMode::Local;       break;
+            case 'b': case 'B': chosen = RipMode::LocalVerify; break;
             case 'n': case 'N': case 27:
                 ui_overlay_ = UIOverlay::None;
                 redraw_needed_.store(true);

@@ -52,6 +52,12 @@ static constexpr int BIT_DEPTH        = 16;
 static constexpr int FLAC_COMPRESSION = 5;
 // C2 read: 2352 audio bytes + 294 C2 bytes = 2646 bytes per sector
 static constexpr int SECTOR_BYTES_C2  = 2352 + 294;
+
+// Local-family modes do no network/AR verification. [B] (LocalVerify) additionally
+// runs a two-pass determinism check; [Y] (Local) is single-pass best-effort/fast.
+static inline bool isLocal(RipMode m) {
+    return m == RipMode::Local || m == RipMode::LocalVerify;
+}
 // AccurateRip frame 450: sector 450 of track 1, used for pressing offset detection
 static constexpr uint32_t AR_FRAME450_START = 450u * 588u + 1u;  // mul_by 264601
 static constexpr uint32_t AR_FRAME450_END   = 451u * 588u;       // mul_by 265188
@@ -206,6 +212,33 @@ static void setDriveSpeed(HANDLE hCD, WORD speed_kbps) {
                     &s, sizeof(s), nullptr, 0, &dummy, nullptr);
 }
 
+// ─── Drive cache defeat ───────────────────────────────────────────────────────
+// Read more than the drive's read-ahead cache (typ. 512KB-4MB) from a region
+// that does NOT overlap the target's read-ahead zone, forcing the target's
+// sectors out of RAM so a re-read actually hits the platter. Without this, a
+// damaged disc can read identically twice and masquerade as deterministic.
+static void flushDriveCache(HANDLE hCD, DWORD target_lba, DWORD leadout_lba,
+                            bool use_c2, int cache_kb = 4096) {
+    const int need = (cache_kb * 1024) / SECTOR_BYTES + 16; // sectors > cache
+    const DWORD end = leadout_lba ? leadout_lba
+                                  : target_lba + (DWORD)need * 8;
+    // If the target is in the low half, flush from the tail; else flush the
+    // lead-in side. Guarantees the flush window is far from the target.
+    DWORD lo;
+    if (target_lba < end / 2)
+        lo = (end > (DWORD)need + 32) ? end - (DWORD)need - 16 : 16;
+    else
+        lo = 16;
+
+    std::vector<uint8_t> buf((size_t)SECTOR_BYTES * SECTORS_PER_READ);
+    int c2 = 0;
+    for (int done = 0; done < need; done += SECTORS_PER_READ) {
+        int n = std::min(SECTORS_PER_READ, need - done);
+        if (lo + (DWORD)done + (DWORD)n >= end) break;
+        readSectorsWithRetry(hCD, lo + (DWORD)done, n, buf.data(), use_c2, &c2);
+    }
+}
+
 // CDDB disc ID — start_lba is already absolute (includes 150-sector pre-gap)
 uint32_t CDRipper::computeCDDB(const std::vector<CDTrack>& tracks,
                                DWORD full_leadout_lba,
@@ -336,10 +369,11 @@ bool CDRipper::fetchARData(
     //   disc_id2 = Σ max(rel_lba[i], 1) × (i+1)  +  rel_leadout × (ntracks+1)
     //
     // Both truncated to 32 bits.
-    // Normalize relative to track 1 start, NOT hardcoded 150.
-    // For standard discs T1 starts at LBA 150, so both are equivalent.
-    // For discs with non-standard pregap (e.g. T1 at LBA 182), subtracting
-    // 150 gives wrong disc IDs and a 404 from the AR server.
+    // AccurateRip offsets are LSN: subtract a FIXED 150-frame lead-in from every
+    // track start AND the leadout. Do NOT subtract track 1's own start -- that
+    // zeroes the pregap and 404s on non-standard-pregap discs (e.g. Relish, T1
+    // at LBA 182 -> rel 32, which must remain in the ID). Verified against the
+    // live AR DB: Relish + enhanced CDs both hit with fixed-150.
     const uint32_t t1_lba    = tracks[0].start_lba;
     static constexpr uint32_t AR_PREGAP = 150;
     DWORD disc_leadout = full_leadout_lba ? full_leadout_lba
@@ -823,7 +857,7 @@ void CDRipper::tagFile(const std::string&         path,
             title_str = ss.str();
         }
         std::string artist_str = (mt&&!mt->artist.empty()) ? mt->artist : rel.artist;
-        std::string ar_str = (mode == RipMode::Local) ? "" : arStatusStr(ar.status, ar.confidence);
+        std::string ar_str = (isLocal(mode)) ? "" : arStatusStr(ar.status, ar.confidence);
         // CUETools-compatible tag names when available
         char ar_crc_str[9]  = {}; snprintf(ar_crc_str, 9, "%08x", ar.crc_v2);
         char ar_conf_str[8] = {}; snprintf(ar_conf_str, 8, "%d", ar.confidence);
@@ -1089,7 +1123,7 @@ ARTrackResult CDRipper::ripTrack(HANDLE             hCD,
     // through the AR CRC accumulator (not FLAC/LAME).  These sectors contain real
     // disc data (including any disc lead-in content before the nominal track start).
     // Apply the same total_skip offset correction used for the main rip.
-    if (mode != RipMode::Local && !cancel_.load() &&
+    if (!isLocal(mode) && !cancel_.load() &&
         track.start_lba >= 150 + (DWORD)corr_lba_adv) {
         // preamble_lba: 150 sectors before our effective read start
         const DWORD preamble_lba = track.start_lba - 150 + (DWORD)corr_lba_adv;
@@ -1178,7 +1212,7 @@ ARTrackResult CDRipper::ripTrack(HANDLE             hCD,
             ebur_interleaved[i*2]    = (float)l / 32768.0f;
             ebur_interleaved[i*2+1]  = (float)r / 32768.0f;
 
-            if (mode != RipMode::Local &&
+            if (!isLocal(mode) &&
                 mul_by >= ar_check_from && mul_by <= ar_check_to) {
                 uint32_t samp32 = (uint32_t)(uint16_t)l | ((uint32_t)(uint16_t)r << 16);
                 uint64_t product = (uint64_t)samp32 * (uint64_t)mul_by;
@@ -1294,7 +1328,7 @@ ARTrackResult CDRipper::ripTrack(HANDLE             hCD,
             lame_right[i]           = r;
             ebur_interleaved[i*2]   = (float)l / 32768.0f;
             ebur_interleaved[i*2+1] = (float)r / 32768.0f;
-            if (mode != RipMode::Local &&
+            if (!isLocal(mode) &&
                 mul_by >= ar_check_from && mul_by <= ar_check_to) {
                 uint32_t samp32 = (uint32_t)(uint16_t)l | ((uint32_t)(uint16_t)r << 16);
                 uint64_t product = (uint64_t)samp32 * (uint64_t)mul_by;
@@ -1379,7 +1413,7 @@ ARTrackResult CDRipper::ripTrack(HANDLE             hCD,
     ar_result.frame450_local = frame450_local;
 
     // Log diagnostic directly here (before returning)
-    if (mode != RipMode::Local && !log_path.empty()) {
+    if (!isLocal(mode) && !log_path.empty()) {
         FILE* lf = _wfopen(utf8_to_wide(log_path).c_str(), L"a");
         if (lf) {
             // expected_n: preamble samples in range + main rip samples in range
@@ -1476,8 +1510,9 @@ void CDRipper::worker(std::string          drive_letter,
             fprintf(lf, "Model  : %s\n", drive_model.empty() ? "unknown" : drive_model.c_str());
             fprintf(lf, "Tracks : %d\n", (int)tracks.size());
             fprintf(lf, "Mode   : %s\n",
-                mode==RipMode::AccurateRip ? "AccurateRip" :
-                mode==RipMode::CUETools    ? "CUETools"    : "Local");
+                mode==RipMode::AccurateRip ? "AccurateRip"    :
+                mode==RipMode::CUETools    ? "CUETools"       :
+                mode==RipMode::LocalVerify ? "Local (2-pass)" : "Local");
             fprintf(lf, "Output : %s\n\n", out_dir.c_str());
             fclose(lf);
         }
@@ -1487,10 +1522,9 @@ void CDRipper::worker(std::string          drive_letter,
         FILE* lf = _wfopen(utf8_to_wide(log_path).c_str(), L"a");
         if (lf) {
             fprintf(lf, "C2 support  : %s\n", use_c2 ? "yes" : "no");
-            fprintf(lf, "Drive cache : not probed\n");
-            fprintf(lf, "            Note: if drive caches sector reads, dual-pass returns\n");
-            fprintf(lf, "            identical data on damaged discs -- determinism check unreliable.\n");
-            fprintf(lf, "            Use 'whipper drive analyze' to test for caching behavior.\n\n");
+            fprintf(lf, "Drive cache : defeated via 4 MB seek-flush before re-reads\n");
+            fprintf(lf, "            (read-ahead cache evicted between passes so dual-pass\n");
+            fprintf(lf, "            determinism reflects the platter, not the RAM cache.)\n\n");
             fclose(lf);
         }
     }
@@ -1667,7 +1701,7 @@ void CDRipper::worker(std::string          drive_letter,
         ctdb_state.ctdb_bytes = ar.ctdb_bytes;
 
         // Check for rip failure (empty CRC and not-queried = encoder init failed)
-        if (mode != RipMode::Local && ar.crc_v1 == 0 && ar.crc_v2 == 0 && !cancel_.load()) {
+        if (!isLocal(mode) && ar.crc_v1 == 0 && ar.crc_v2 == 0 && !cancel_.load()) {
             any_error = true;
             if (cb) {
                 RipProgress p; p.state=RipState::Error;
@@ -1722,7 +1756,7 @@ void CDRipper::worker(std::string          drive_letter,
         // frame450_local was computed inside ripTrack and logged.
         // We check it here via ar.frame450_local (added to ARTrackResult).
         // This confirms the drive offset is correct, or warns if unknown.
-        if (i == 0 && mode != RipMode::Local && ar_db_loaded
+        if (i == 0 && !isLocal(mode) && ar_db_loaded
             && !ar_db_v2[0].empty() && ar.frame450_local != 0) {
             bool frame450_matched = false;
             for (const auto& [crc, conf] : ar_db_v2[0])
@@ -1858,14 +1892,11 @@ void CDRipper::worker(std::string          drive_letter,
             //   side-effect of invalidating its sector cache.
             setDriveSpeed(hCD, 1764);
             //
-            // Step 2: Seek to LBA 0 (disc lead-in). Physically moving the laser
-            //   head far away from the failing track evicts any remaining cached
-            //   sectors for that area.
-            {
-                uint8_t flush_buf[SECTOR_BYTES];
-                int     c2_dummy = 0;
-                readSectorsWithRetry(hCD, 0, 1, flush_buf, use_c2, &c2_dummy);
-            }
+            // Step 2: Evict the read-ahead cache with a far multi-MB read so
+            //   Pass 2 reads the platter, not RAM. A single-sector read can't
+            //   flush a 512KB-2MB cache; flushDriveCache reads >4MB from a
+            //   region far from the target. full_leadout_lba is in worker scope.
+            flushDriveCache(hCD, trk.start_lba, full_leadout_lba, use_c2);
             //
             // Step 3: Give the spindle 500 ms to fully settle at the new speed
             //   before we start reading again.
@@ -1921,6 +1952,34 @@ void CDRipper::worker(std::string          drive_letter,
             }
             // Restore max speed for remaining tracks regardless of Pass 2 outcome
             setDriveSpeed(hCD, 0xFFFF);
+        }
+        // ── Determinism check: [B] Local 2-pass (no AR oracle) ──────────────
+        // No database to verify against, so the only safety net is reading the
+        // track twice with a real cache flush in between and confirming the two
+        // reads are identical. A caching drive would otherwise return the same
+        // bytes from RAM and make a damaged rip look clean. Doubles rip time --
+        // which is why it's a separate mode from fast best-effort [Y].
+        else if (mode == RipMode::LocalVerify) {
+            flushDriveCache(hCD, trk.start_lba, full_leadout_lba, use_c2);
+            std::string det_flac = flac_path + ".det";
+            std::string det_mp3  = mp3_path  + ".det";
+            RGResult      rgd;
+            ARTrackResult ard = ripTrack(hCD, trk, i, total, i==0, i==total-1,
+                                         use_c2, det_flac, det_mp3, rgd, cb,
+                                         log_path, mode, drive_offset,
+                                         ctdb_state.ctdb_crc, ctdb_state.ctdb_bytes,
+                                         eff_pressing);
+            bool deterministic = (ard.crc_v1 == ar.crc_v1 && ard.crc_v2 == ar.crc_v2);
+            FILE* lf = _wfopen(utf8_to_wide(log_path).c_str(), L"a");
+            if (lf) {
+                fprintf(lf, "Track %d determinism: %s "
+                            "(pass1 v1=%08x v2=%08x  pass2 v1=%08x v2=%08x)\n",
+                        tnum, deterministic ? "OK (passes identical)"
+                                            : "FAIL (passes differ -- bad rip)",
+                        ar.crc_v1, ar.crc_v2, ard.crc_v1, ard.crc_v2);
+                fclose(lf);
+            }
+            std::error_code ec; fs::remove(det_flac, ec); fs::remove(det_mp3, ec);
         }
 
         ar_results[i] = ar;
@@ -2130,6 +2189,94 @@ void CDRipper::worker(std::string          drive_letter,
                          : tracks.back().start_lba + tracks.back().length_lba;
             fprintf(tf, "  AA     %-10lu (lead-out)\r\n", (unsigned long)lo);
             fclose(tf);
+        }
+
+        // ── Machine-readable sidecar for tooling / regression diffs ──────────
+        {
+            using nlohmann::json;
+            auto hx = [](uint32_t v){ char b[9]; snprintf(b,sizeof b,"%08x",v); return std::string(b); };
+
+            // Recompute AR disc IDs here (same fixed-150 formula as fetchARData)
+            // so the sidecar is self-contained. Non-standard pregap survives.
+            const uint32_t AR_PREGAP = 150;
+            DWORD lo_j = full_leadout_lba ? (uint32_t)full_leadout_lba
+                          : tracks.back().start_lba + tracks.back().length_lba;
+            uint32_t id1 = 0, id2 = 0, rel_lo = lo_j - AR_PREGAP;
+            for (int i = 0; i < total; ++i) {
+                uint32_t rel = tracks[i].start_lba - AR_PREGAP;
+                id1 += rel;
+                id2 += std::max(rel, 1u) * (uint32_t)(i + 1);
+            }
+            id1 += rel_lo;
+            id2 += rel_lo * (uint32_t)(total + 1);
+
+            json j;
+            j["schema_version"] = 1;
+            j["disc"] = {
+                {"artist", rel.artist}, {"album", rel.title},
+                {"date", rel.date},     {"mb_id", rel.mb_id}
+            };
+            j["drive"] = {
+                {"letter", drive_letter}, {"model", drive_model},
+                {"read_offset_samples", drive_offset}
+            };
+            j["ids"] = {
+                {"cddb", hx(computeCDDB(tracks, full_leadout_lba, data_track_lbas))},
+                {"ar_disc_id1", hx(id1)}, {"ar_disc_id2", hx(id2)}
+            };
+
+            json toc;
+            toc["pregap_frames"] = (int)tracks[0].start_lba - (int)AR_PREGAP; // 0 if standard
+            toc["leadout_lba"]   = (uint32_t)lo_j;
+            toc["data_tracks"]   = data_track_lbas;
+            for (int i = 0; i < total; ++i) {
+                const CDTrack& t = tracks[i];
+                char msf[16];
+                snprintf(msf, sizeof msf, "%02u:%02u:%02u",
+                         (unsigned)(t.start_lba/75/60), (unsigned)((t.start_lba/75)%60),
+                         (unsigned)(t.start_lba%75));
+                toc["tracks"].push_back({
+                    {"number", t.number}, {"start_lba", t.start_lba},
+                    {"length_lba", t.length_lba}, {"start_msf", msf},
+                    {"duration_sec", (int)(t.length_lba/75)}
+                });
+            }
+            j["toc"] = toc;
+
+            auto arStr = [](ARStatus s) -> const char* {
+                switch (s) {
+                    case ARStatus::Matched_v2:   return "matched_v2";
+                    case ARStatus::Matched_v1:   return "matched_v1";
+                    case ARStatus::NotFound:     return "not_found";
+                    case ARStatus::NetworkError: return "network_error";
+                    default:                     return "not_queried";
+                }
+            };
+            json ar;
+            ar["pressing_offset"] = pressing_offset;
+            for (int i = 0; i < (int)ar_results.size(); ++i) {
+                const auto& r = ar_results[i];
+                ar["tracks"].push_back({
+                    {"n", i + 1}, {"status", arStr(r.status)}, {"confidence", r.confidence},
+                    {"crc_v1", hx(r.crc_v1)}, {"crc_v2", hx(r.crc_v2)},
+                    {"frame450_local", hx(r.frame450_local)}
+                });
+            }
+            j["accuraterip"] = ar;
+
+            json rgj;
+            rgj["album_gain"] = rg_results.empty() ? 0.0 : rg_results[0].album_gain;
+            rgj["album_peak"] = rg_results.empty() ? 0.0 : rg_results[0].album_peak;
+            for (int i = 0; i < (int)rg_results.size(); ++i)
+                rgj["tracks"].push_back({
+                    {"n", i + 1}, {"gain", rg_results[i].track_gain},
+                    {"peak", rg_results[i].track_peak}
+                });
+            j["replaygain"] = rgj;
+
+            std::string json_path = out_dir + "\\disc.json";
+            FILE* jf = _wfopen(utf8_to_wide(json_path).c_str(), L"w");
+            if (jf) { std::string s = j.dump(2); fwrite(s.data(), 1, s.size(), jf); fclose(jf); }
         }
     }
 

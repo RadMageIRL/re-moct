@@ -19,6 +19,7 @@ enum class RipMode {
     AccurateRip,   // [A] Full AR network handshake, CRC verification
     CUETools,      // [C] CTDB global CRC32 verification (no Reed-Solomon repair yet)
     Local,         // [Y] Best-effort local extraction, no network verification
+    LocalVerify,   // [B] Local + two-pass determinism check (no network)
     None           // [N] Abort
 };
 

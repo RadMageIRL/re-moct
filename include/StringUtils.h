@@ -43,6 +43,18 @@ inline bool isCDTrackPath(const std::string& p) {
     return true;
 }
 
+// Returns the 1-based track number encoded in a synthetic CD path
+// ("<letter>:CD Track NN"), or -1 if `p` is not a CD-track path. Never throws —
+// isCDTrackPath() guarantees a digits-only suffix, and the try/catch guards the
+// pathological overflow case. Use this instead of a raw find("CD Track ")+stoi,
+// which throws std::invalid_argument on real paths that merely contain the
+// substring (and std::terminate when that happens on a worker thread).
+inline int cdTrackNumber(const std::string& p) {
+    if (!isCDTrackPath(p)) return -1;
+    try { return std::stoi(p.substr(11)); }   // digits begin right after "CD Track "
+    catch (...) { return -1; }
+}
+
 // Parse drive letter and track number from a CD path
 // Returns false if not a valid CD path
 inline bool parseCDPath(const std::string& p, std::string& drive, int& track_num) {
@@ -71,9 +83,21 @@ inline std::string sanitizeForDisplay(const std::string& s) {
             cp = (cp << 6) | ((unsigned char)s[i+j] & 0x3F);
         switch (cp) {
             case 0x2018: case 0x2019: case 0x201A: case 0x201B: out += '\''; break;
+            case 0x2032:                                        out += '\''; break;  // prime
             case 0x201C: case 0x201D: case 0x201E: case 0x201F: out += '"';  break;
-            case 0x2013: case 0x2014: out += '-'; break;
-            case 0x2026: out += '.'; break;
+            case 0x2033:                                        out += '"';  break;  // double prime
+            // Dash / hyphen variants — all fold to ASCII '-'. Previously only
+            // U+2013/U+2014 were handled, so look-alike dashes such as U+2010,
+            // U+2011, U+2012, U+2015 and U+2212 fell through to the '?' catch-all
+            // below (the "Prep-School" -> "Prep?School" bug).
+            case 0x2010: case 0x2011: case 0x2012: case 0x2013: case 0x2014:
+            case 0x2015: case 0x2212: case 0x00AD:              out += '-'; break;
+            case 0x2026: out += '.'; break;                                          // ellipsis
+            case 0x2022: out += '*'; break;                                          // bullet
+            // Space variants -> plain space; zero-width forms are dropped.
+            case 0x00A0: case 0x2002: case 0x2003: case 0x2009: case 0x200A:
+            case 0x202F: case 0x205F: case 0x3000:              out += ' '; break;
+            case 0x200B: case 0x200C: case 0x200D: case 0xFEFF: break;               // zero-width
             case 0x0153: out += "oe"; break;
             case 0x0152: out += "OE"; break;
             case 0x00E6: out += "ae"; break;

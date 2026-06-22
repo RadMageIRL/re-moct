@@ -180,6 +180,12 @@ private:
     std::string mb_album_;    // protected by mb_mutex_
     MBRelease   mb_release_;  // cached full release for ripping, protected by mb_mutex_
     std::mutex  mb_mutex_;
+    // Set true by a worker callback once mb_release_ is cached; the run loop then
+    // applies the track titles to playlist_ on the UI thread. playlist_ must only
+    // ever be touched by the UI thread (its entries_ vector is unsynchronised),
+    // so worker callbacks never call playlist_ methods directly.
+    std::atomic<bool> mb_titles_pending_ { false };
+    void applyReleaseTitles(const MBRelease& rel);   // UI thread only
 
     // ── MusicBrainz manual search modal (Ctrl+F) ──────────────────────────────
     struct MBSearchState {

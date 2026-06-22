@@ -1,10 +1,22 @@
 #pragma once
 #include <string>
 #include <cstdint>
+#include <ctime>
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #endif
+
+// ─── Thread-safe localtime ────────────────────────────────────────────────────
+// std::localtime returns a pointer into a shared static buffer and is not
+// thread-safe. This fills caller-owned storage instead. Returns false on failure.
+inline bool localtimeSafe(std::time_t t, std::tm& out) {
+#ifdef _WIN32
+    return ::localtime_s(&out, &t) == 0;
+#else
+    return ::localtime_r(&t, &out) != nullptr;
+#endif
+}
 
 // ─── Wide string conversion ───────────────────────────────────────────────────
 #ifdef _WIN32
@@ -19,10 +31,16 @@ inline std::wstring utf8_to_wide(const std::string& s) {
 #endif
 
 // ─── CD track path detection ──────────────────────────────────────────────────
-// Fake CD path format: "D:CD Track 01"
+// Synthetic CD path format: "<letter>:CD Track NN" (e.g. "F:CD Track 01").
+// The tag is anchored at index 2 and the suffix must be digits only, so a real
+// Windows path that merely contains the substring — e.g.
+// "D:\Music\Best CD Tracks\01.flac" — never matches.
 inline bool isCDTrackPath(const std::string& p) {
-    return p.size() > 2 && p[1] == ':' &&
-           p.find("CD Track ") != std::string::npos;
+    if (p.size() < 12 || p[1] != ':') return false;
+    if (p.compare(2, 9, "CD Track ") != 0) return false;   // must start at index 2
+    for (size_t i = 11; i < p.size(); ++i)
+        if (p[i] < '0' || p[i] > '9') return false;         // digits-only track number
+    return true;
 }
 
 // Parse drive letter and track number from a CD path

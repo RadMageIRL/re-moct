@@ -182,6 +182,14 @@ private:
 #endif
     std::atomic<bool>          replaygain_enabled_ { false };
     std::atomic<float>         replaygain_gain_    { 1.0f };
+    // The audio callback must never read current_track_ (a struct of std::strings
+    // that the main thread reassigns). The one field it needs — the track's
+    // ReplayGain value — is mirrored here as a lock-free atomic, published by
+    // play()/the deferred swap.
+    std::atomic<float>         current_rg_db_ { 0.0f };
+    // Set by initCrossfade() on the audio thread when it swaps decoders; consumed
+    // by pollEvents() on the main thread, which is the ONLY writer of current_track_.
+    std::atomic<bool>          track_swap_flag_ { false };
 
     // liveBitrateKbps() rolling VBR estimate — per-instance, reset each play().
     // Previously function-local statics: shared across instances and never reset

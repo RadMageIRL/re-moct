@@ -329,11 +329,13 @@
 
 <h1>RE-MOCT <span class="version">v1.0.0-rc1-win</span></h1>
 
-<div class="warn" style="margin-bottom:24px">
-  <strong>⚠ Work in progress — no binary release yet.</strong>
-  RE-MOCT is under active development. There are no binaries available for download yet.
-  Source code should compile and run as seen in screenshots however (needs MSYS2 and/or the relevant DLLs).
-  <a href="https://github.com/RadMageIRL/re-moct" style="color:var(--warn)">Watch the repo</a> to get notified.
+<div class="note" style="margin-bottom:24px">
+  <strong>Release candidate available.</strong>
+  A prebuilt Windows x64 binary is published as <strong>v1.0.0-RC1</strong> on the
+  <a href="https://github.com/RadMageIRL/re-moct/releases">GitHub Releases page</a> —
+  download the zip, extract it, and run <code>remoct.exe</code>. All required DLLs are bundled;
+  no separate MSYS2 install is needed to run it. Requires Windows 10 or later (x64).
+  Building from source is still fully supported — see <a href="#build">Build</a>.
 </div>
 
 <div class="badge-row">
@@ -543,7 +545,7 @@
   </div>
   <div class="card">
     <div class="card-title">MusicBrainz lookup</div>
-    <p><code>Ctrl+R</code> fetches metadata via DiscID (SHA-1 + custom Base64 from TOC). <code>Ctrl+F</code> opens a manual search modal — enter artist and album, get a ranked results list from MusicBrainz with Discogs fallback. Rate-limited to 1 req/sec.</p>
+    <p><code>Ctrl+R</code> fetches metadata via DiscID (SHA-1 + custom Base64 from TOC). <code>Ctrl+F</code> opens a manual search modal — enter artist and album, get a ranked results list from MusicBrainz, with Discogs as a fallback when MusicBrainz has no match (Discogs results are marked <code>[D]</code>). Both sources load full track titles. Rate-limited to 1 req/sec.</p>
   </div>
   <div class="card">
     <div class="card-title">Volatile isolation</div>
@@ -553,18 +555,19 @@
 
 <div class="warn"><strong>Note:</strong> CD tracks cannot be tag-edited (the <code>e</code> tag editor silently ignores them). The info pane omits "Times Played" for CD tracks. Crossfade and EQ both work in CD mode.</div>
 
+<div class="note"><strong>Enhanced CD / CD Extra:</strong> discs that carry a data session after the audio tracks are detected automatically. The data session is never listed as a bogus audio track, and when ripping, the final audio track's true end is found so the data portion is not read into the output.</div>
+
 <h3>MusicBrainz (Ctrl+R)</h3>
 <p>When a disc is loaded, <code>Ctrl+R</code> computes the MusicBrainz DiscID from the TOC and queries the database. On success, track titles and artist update in the playlist immediately and the title bar shows album name and year. If the disc is not found, an error message appears in the command bar for ~5 seconds.</p>
 
 <h3>Manual Search (Ctrl+F)</h3>
 <p><code>Ctrl+F</code> opens a search modal at any time — no disc required. Type an artist and album name, press Enter or Tab to search. RE-MOCT queries MusicBrainz first; if no results are found it falls back to Discogs automatically. Navigate results with Up/Down, press Enter to load metadata. Press Escape to close without changes.</p>
-<div class="note">Discogs results provide basic metadata (artist, album, year) but no track titles, since the Discogs search API does not return tracklists. Use Ctrl+R after a Ctrl+F Discogs load to attempt a DiscID lookup for full track data.</div>
+<div class="note">Discogs results are marked <code>[D]</code> in the list. Selecting one fetches that release's full detail from Discogs, so track titles load directly — the same as a MusicBrainz pick. Non-standard track positions (e.g. <code>A1</code>, <code>1-2</code>) are renumbered to line up with the disc, and section/heading rows that carry no audio are skipped.</div>
 
 <!-- ── Ripping ── -->
 <h2 id="ripping" class="section-anchor">CD Ripping</h2>
 
-<p>Press <code>Ctrl+Y</code> in CD mode to open the rip dialog. RE-MOCT rips to <code>FLAC level 5</code> and <code>MP3 V0 VBR</code> simultaneously. Output goes to <code>%USERPROFILE%\Music
-e-moct\Artist - Album (Year)\</code>.</p>
+<p>Press <code>Ctrl+Y</code> in CD mode to open the rip dialog. RE-MOCT rips to <code>FLAC level 5</code> and <code>MP3 V0 VBR</code> simultaneously. Output goes to <code>%USERPROFILE%\Music\re-moct\Artist - Album (Year)\</code>. Multi-disc releases nest each disc in its own <code>Disc N</code> subfolder under the album folder; single-disc albums write straight into the album folder.</p>
 
 <div class="card-grid">
   <div class="card">
@@ -581,7 +584,7 @@ e-moct\Artist - Album (Year)\</code>.</p>
   </div>
   <div class="card">
     <div class="card-title">Output &amp; tagging</div>
-    <p>FLAC and MP3 files are tagged with artist, album, title, year, track number, ReplayGain (track + album), AccurateRip result, and embedded cover art from Cover Art Archive.</p>
+    <p>FLAC and MP3 files are tagged with artist, album, title, year, track number, ReplayGain (track + album), AccurateRip result, and embedded cover art. Art comes from the Cover Art Archive first; if that has nothing, RE-MOCT falls back to iTunes, then Deezer, matched by artist and album. No API keys are required.</p>
   </div>
 </div>
 
@@ -749,7 +752,7 @@ stat=C:\Music\track.mp3|7|1718123456</pre>
 <!-- ── Build ── -->
 <h2 id="build" class="section-anchor">Build</h2>
 
-<p>Requires <a href="https://www.msys2.org/">MSYS2</a> with the UCRT64 toolchain. Dependencies installed via <code>pacman</code>:</p>
+<p>Most users can skip this section and grab the prebuilt <strong>v1.0.0-RC1</strong> zip from the <a href="https://github.com/RadMageIRL/re-moct/releases">Releases page</a>. To build from source, you need <a href="https://www.msys2.org/">MSYS2</a> with the UCRT64 toolchain. Dependencies installed via <code>pacman</code>:</p>
 
 <pre>pacman -S mingw-w64-ucrt-x86_64-gcc
 pacman -S mingw-w64-ucrt-x86_64-cmake
@@ -767,7 +770,7 @@ rm -rf build && mkdir build && cd build
 cmake .. -G Ninja
 ninja</pre>
 
-<p>Binary output: <code>build/bin/remoct.exe</code>. Copy all <code>.dll</code> files from <code>C:\msys64\ucrt64\bin\</code> alongside the executable for distribution.</p>
+<p>Binary output: <code>build/bin/remoct.exe</code>. For distribution, place its runtime DLLs from <code>C:\msys64\ucrt64\bin\</code> alongside the executable: <code>libgcc_s_seh-1</code>, <code>libstdc++-6</code>, <code>libwinpthread-1</code>, <code>libFLAC</code>, <code>libogg-0</code>, <code>libmp3lame-0</code>, <code>libebur128</code>, <code>libncursesw6</code>, <code>libtag-2</code>, and <code>zlib1</code>. (Running <code>ntldd -R build/bin/remoct.exe</code> in the UCRT64 shell lists exactly what the binary links.)</p>
 
 <hr>
 <p style="font-size:11px; color:var(--muted); text-align:center">RE-MOCT v1.0.0-rc1-win &nbsp;·&nbsp; C++20 &nbsp;·&nbsp; Built with ncurses, miniaudio, TagLib &nbsp;·&nbsp; <a href="https://github.com/RadMageIRL/re-moct" style="color:var(--accent)">github.com/RadMageIRL/re-moct</a></p>

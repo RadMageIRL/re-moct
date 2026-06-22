@@ -1,3 +1,15 @@
+## 🚧 In Development (dev branch)
+
+Features being tested, not yet in a stable release:
+
+- **Internet Radio (ICY metadata)** — parses now-playing StreamTitle from radio stream URLs
+- **Last.fm scrobbling** — auto-scrobble tracks detected via ICY metadata
+- ...
+
+Compile for DEV version
+
+
+
 # RE-MOCT - Music On Console Terminal
 
 > A homage to MOC - keyboard-driven terminal CD player and ripper for Windows.

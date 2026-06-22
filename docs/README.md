@@ -6,7 +6,7 @@
 
 ---
 
-**Status:** Work in progress - but available source compiles as v1.0.0-rc1 as seen in screenshots. Polishing the Windows client, Linux port planned.
+**Status:** Work in progress - Release candidate available. A prebuilt Windows x64 binary is published as v1.0.0-RC1 on the GitHub Releases page. Polishing the Windows client, Linux port planned.
 
 Built with C++20 · ncurses · miniaudio · TagLib · AccurateRip
 <br>

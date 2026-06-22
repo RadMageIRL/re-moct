@@ -240,11 +240,12 @@ private:
     // Live BPM for CD playback: there is no file to analyse offline, so a window of
     // playback audio is accumulated in the data callback and the same detector is
     // run on it once the window fills. CD is always 44100 Hz.
-    static constexpr int CD_BPM_WINDOW_SECS = 12;
+    static constexpr int CD_BPM_WINDOW_SECS = 20;   // match detectBpm's file window
     static constexpr int CD_BPM_FRAMES      = 44100 * CD_BPM_WINDOW_SECS;
     std::vector<float>   cd_bpm_buf_;               // mono accumulation window
     std::atomic<int>     cd_bpm_fill_   { 0 };      // frames filled (audio thread)
     std::atomic<bool>    cd_bpm_ready_  { false };  // window full → detect on UI thread
+    std::atomic<bool>    cd_bpm_reset_  { false };  // seek requested → restart window
     int                  cd_bpm_track_  { -1 };     // CD track being accumulated (cb-owned)
 
     mutable std::array<float, VIZ_BUF_SIZE> viz_buf_ {};

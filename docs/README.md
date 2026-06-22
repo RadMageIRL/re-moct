@@ -6,7 +6,7 @@ Features being tested, not yet in a stable release:
 - **Last.fm scrobbling** — auto-scrobble tracks detected via ICY metadata
 - ...
 
-Compile for DEV version
+Compile for DEV version or grab latest exe in binary-dev (need the dlls listed in this page)
 
 
 

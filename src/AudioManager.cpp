@@ -350,6 +350,8 @@ void AudioManager::togglePause() {
 #ifdef _WIN32
     if (cd_mode_.load()) {
         cd_source_.pause(!cd_source_.paused());
+        state_.store(cd_source_.paused() ? PlaybackState::Paused
+                                         : PlaybackState::Playing);
         return;
     }
 #endif
@@ -364,6 +366,7 @@ void AudioManager::stop() {
         cd_source_.stop();
         cd_source_.close();
         cd_mode_.store(false);
+        state_.store(PlaybackState::Stopped);
         if (device_initialised_) {
             ma_device_stop(&device_);
             ma_device_uninit(&device_);
@@ -502,6 +505,8 @@ void AudioManager::pollEvents() {
         current_track_ = next_track_info_;
     if (bpm_needed_flag_.exchange(false))
         startBpmDetection(current_track_.path, (int)decoder_.outputSampleRate);
+    if (cd_bpm_ready_.exchange(false))
+        startBpmDetectionFromSamples(cd_bpm_buf_, CD_BPM_FRAMES, 44100);
     if (preload_next_flag_.exchange(false))
         if (on_preload_next_) on_preload_next_();
     if (track_ended_flag_.exchange(false))
@@ -585,10 +590,10 @@ void AudioManager::onDataCallback(void* output, ma_uint32 frame_count) {
     if (cd_mode_.load()) {
         float* out = static_cast<float*>(output);
         cd_source_.readFrames(out, frame_count);
-        // Apply volume, mute, balance and EQ to CD output
-        if (muted_.load()) {
-            std::memset(out, 0, frame_count * 2 * sizeof(float));
-        } else {
+        // Apply volume, balance and EQ to the CD output. Process unconditionally
+        // (even when muted) so the visualizer is fed real audio and the EQ biquad
+        // state stays continuous across a mute toggle. Mute is applied last.
+        {
             float vol = volume_.load();
             if (vol != 1.0f)
                 for (ma_uint32 i = 0; i < frame_count * 2; ++i) out[i] *= vol;
@@ -605,6 +610,35 @@ void AudioManager::onDataCallback(void* output, ma_uint32 frame_count) {
             if (eq_enabled_.load())
                 applyEq(out, frame_count, 2, 44100.0f);
         }
+        // Feed the visualizer (before mute, so it stays alive while muted) and, on
+        // the same pass, accumulate a mono window for live BPM detection. CD is 2ch.
+        {
+            const int  cur     = cd_source_.currentTrack();
+            const bool playing = cd_source_.isPlaying();
+            if (cur != cd_bpm_track_) {     // new CD track → restart the BPM window
+                cd_bpm_track_ = cur;
+                cd_bpm_fill_.store(0,  std::memory_order_relaxed);
+                cd_bpm_ready_.store(false, std::memory_order_relaxed);
+                live_bpm_.store(0);
+            }
+            int bf = cd_bpm_fill_.load(std::memory_order_relaxed);
+            for (ma_uint32 f = 0; f < frame_count; ++f) {
+                float mono = (out[f*2] + out[f*2+1]) * 0.5f;
+                pushVizSample(mono);
+                // Only accumulate real, playing audio so a pause can't dilute the
+                // window with silence; stop once the window is full.
+                if (cur > 0 && playing && bf < CD_BPM_FRAMES)
+                    cd_bpm_buf_[(size_t)bf++] = mono;
+            }
+            if (cur > 0 && playing) {
+                cd_bpm_fill_.store(bf, std::memory_order_release);
+                if (bf >= CD_BPM_FRAMES)
+                    cd_bpm_ready_.store(true, std::memory_order_release);
+            }
+        }
+        // Mute last: zeroes only the audible output; the viz already has its copy.
+        if (muted_.load())
+            std::memset(out, 0, frame_count * 2 * sizeof(float));
         // Media removed — silence output, let UI loop handle cleanup
         if (cd_source_.mediaRemoved()) {
             std::memset(out, 0, frame_count * 2 * sizeof(float));
@@ -788,6 +822,26 @@ void AudioManager::startBpmDetection(const std::string& path, int sample_rate) {
     });
 }
 
+// CD path: run the autocorrelation detector over a window of live playback audio.
+// The window is copied first so the worker is independent of the live accumulation
+// buffer, which the audio thread may reset on the next CD track.
+void AudioManager::startBpmDetectionFromSamples(const std::vector<float>& mono,
+                                                int n, int sample_rate) {
+    bpm_cancel_.store(true);
+    if (bpm_thread_.joinable()) bpm_thread_.join();
+    bpm_cancel_.store(false);
+    live_bpm_.store(0);
+
+    int cnt = std::min(n, (int)mono.size());
+    if (cnt <= 0) return;
+    std::vector<float> snap(mono.begin(), mono.begin() + cnt);
+    bpm_thread_ = std::thread([this, snap = std::move(snap), sample_rate]() {
+        int bpm = detectBpmFromSamples(snap, sample_rate, bpm_cancel_);
+        if (!bpm_cancel_.load())
+            live_bpm_.store(bpm);
+    });
+}
+
 // Autocorrelation BPM detection.
 // Strategy:
 //   1. Decode the first ~20 seconds of audio into a mono float buffer
@@ -821,11 +875,22 @@ int AudioManager::detectBpm(const std::string& path, int sample_rate,
     ma_decoder_uninit(&dec);
 
     if (cancel.load() || frames_read < (ma_uint64)(sr * 2)) return 0;
-    raw.resize(frames_read);
+    raw.resize((size_t)frames_read);
+    return detectBpmFromSamples(raw, sr, cancel);
+}
 
-    // Downsample to ~200 Hz by computing RMS energy in windows
-    // Window size ~10ms, giving ~100 samples/sec
-    const int win = sr / 100;  // ~10ms window
+// Pure autocorrelation tempo estimate over a decoded mono buffer. Shared by the
+// file path (decoded just above) and the live CD path (accumulated during
+// playback), so both routes use identical maths.
+int AudioManager::detectBpmFromSamples(const std::vector<float>& raw, int sr,
+                                       const std::atomic<bool>& cancel) {
+    if (cancel.load()) return 0;
+    const ma_uint64 frames_read = raw.size();
+    if (frames_read < (ma_uint64)(sr * 2)) return 0;
+
+    // Downsample to ~100 Hz by computing RMS energy in ~10ms windows
+    const int win = sr / 100;
+    if (win <= 0) return 0;
     int n_env = (int)(frames_read / win);
     if (n_env < 200) return 0;
 
@@ -877,8 +942,7 @@ int AudioManager::detectBpm(const std::string& path, int sample_rate,
     int bpm = (int)std::round(60.0f / period_secs);
 
     // Sanity clamp
-    bpm = std::clamp(bpm, 50, 200);
-    return bpm;
+    return std::clamp(bpm, 50, 200);
 }
 
 // ─── Equalizer ───────────────────────────────────────────────────────────────
@@ -975,6 +1039,11 @@ bool AudioManager::openCD(const std::string& drive_letter) {
     track_ended_flag_.store(false);
     if (!cd_source_.open(drive_letter)) return false;
     cd_mode_.store(true);
+    // Live-BPM accumulation window (mono, 44100 Hz) — sized once per CD session.
+    cd_bpm_buf_.assign(CD_BPM_FRAMES, 0.0f);
+    cd_bpm_fill_.store(0);
+    cd_bpm_ready_.store(false);
+    cd_bpm_track_ = -1;
     // Init device for 44100Hz stereo float (Red Book format)
     ma_device_config cfg = ma_device_config_init(ma_device_type_playback);
     cfg.playback.format   = ma_format_f32;
@@ -1000,6 +1069,7 @@ void AudioManager::closeCD() {
     cd_source_.stop();
     cd_source_.close();
     cd_mode_.store(false);
+    state_.store(PlaybackState::Stopped);
     if (device_initialised_) {
         ma_device_stop(&device_);
         ma_device_uninit(&device_);
@@ -1009,7 +1079,9 @@ void AudioManager::closeCD() {
 
 bool AudioManager::playCDTrack(int track_number) {
     if (!cd_mode_.load() || !cd_source_.isOpen()) return false;
-    return cd_source_.playTrack(track_number);
+    bool ok = cd_source_.playTrack(track_number);
+    if (ok) state_.store(PlaybackState::Playing);   // viz / BPM / UI gate on state_
+    return ok;
 }
 const std::vector<CDTrack>& AudioManager::cdTracks() const {
     return cd_source_.tracks();

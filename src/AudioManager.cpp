@@ -404,6 +404,7 @@ void AudioManager::seekBy(double delta) {
     if (cd_mode_.load()) {
         int new_pos = std::clamp(cd_source_.positionSec() + (int)delta, 0, cd_source_.durationSec());
         cd_source_.seekTo(new_pos);
+        cd_bpm_reset_.store(true);   // discontinuity — restart the BPM window
         return;
     }
 #endif
@@ -590,6 +591,31 @@ void AudioManager::onDataCallback(void* output, ma_uint32 frame_count) {
     if (cd_mode_.load()) {
         float* out = static_cast<float*>(output);
         cd_source_.readFrames(out, frame_count);
+
+        // ── Live BPM accumulation from RAW audio (before any effect) ─────────
+        // Matches the file detector, which analyses the undecorated signal — EQ
+        // would otherwise reshape the energy envelope and bias the tempo estimate.
+        // A seek (FF/RW) restarts the window via cd_bpm_reset_ so the buffer can
+        // never splice two non-contiguous sections of the track together.
+        {
+            const int cur = cd_source_.currentTrack();
+            bool reset = (cur != cd_bpm_track_) || cd_bpm_reset_.exchange(false);
+            if (reset) {
+                cd_bpm_track_ = cur;
+                cd_bpm_fill_.store(0,  std::memory_order_relaxed);
+                cd_bpm_ready_.store(false, std::memory_order_relaxed);
+                live_bpm_.store(0);
+            }
+            if (cur > 0 && !cd_source_.paused()) {
+                int bf = cd_bpm_fill_.load(std::memory_order_relaxed);
+                for (ma_uint32 f = 0; f < frame_count && bf < CD_BPM_FRAMES; ++f)
+                    cd_bpm_buf_[(size_t)bf++] = (out[f*2] + out[f*2+1]) * 0.5f;
+                cd_bpm_fill_.store(bf, std::memory_order_release);
+                if (bf >= CD_BPM_FRAMES)
+                    cd_bpm_ready_.store(true, std::memory_order_release);
+            }
+        }
+
         // Apply volume, balance and EQ to the CD output. Process unconditionally
         // (even when muted) so the visualizer is fed real audio and the EQ biquad
         // state stays continuous across a mute toggle. Mute is applied last.
@@ -606,36 +632,18 @@ void AudioManager::onDataCallback(void* output, ma_uint32 frame_count) {
                     out[f*2+1] *= rg;
                 }
             }
-            // EQ — CD is always 44100Hz stereo
-            if (eq_enabled_.load())
+            // EQ — CD is always 44100Hz stereo. Rebuild coeffs when dirty, exactly
+            // like the file path: without this the coeffs stay at their unity default
+            // and applyEq() skips every band, so EQ never affects CD output.
+            if (eq_enabled_.load()) {
+                if (eq_dirty_) rebuildEqCoeffs();
                 applyEq(out, frame_count, 2, 44100.0f);
-        }
-        // Feed the visualizer (before mute, so it stays alive while muted) and, on
-        // the same pass, accumulate a mono window for live BPM detection. CD is 2ch.
-        {
-            const int  cur     = cd_source_.currentTrack();
-            const bool playing = cd_source_.isPlaying();
-            if (cur != cd_bpm_track_) {     // new CD track → restart the BPM window
-                cd_bpm_track_ = cur;
-                cd_bpm_fill_.store(0,  std::memory_order_relaxed);
-                cd_bpm_ready_.store(false, std::memory_order_relaxed);
-                live_bpm_.store(0);
-            }
-            int bf = cd_bpm_fill_.load(std::memory_order_relaxed);
-            for (ma_uint32 f = 0; f < frame_count; ++f) {
-                float mono = (out[f*2] + out[f*2+1]) * 0.5f;
-                pushVizSample(mono);
-                // Only accumulate real, playing audio so a pause can't dilute the
-                // window with silence; stop once the window is full.
-                if (cur > 0 && playing && bf < CD_BPM_FRAMES)
-                    cd_bpm_buf_[(size_t)bf++] = mono;
-            }
-            if (cur > 0 && playing) {
-                cd_bpm_fill_.store(bf, std::memory_order_release);
-                if (bf >= CD_BPM_FRAMES)
-                    cd_bpm_ready_.store(true, std::memory_order_release);
             }
         }
+        // Feed the visualizer from the processed output, BEFORE mute — mirrors the
+        // file path so the display stays alive while muted. CD is always 2ch.
+        for (ma_uint32 f = 0; f < frame_count; ++f)
+            pushVizSample((out[f*2] + out[f*2+1]) * 0.5f);
         // Mute last: zeroes only the audible output; the viz already has its copy.
         if (muted_.load())
             std::memset(out, 0, frame_count * 2 * sizeof(float));
@@ -912,17 +920,28 @@ int AudioManager::detectBpmFromSamples(const std::vector<float>& raw, int sr,
     mean /= n_env;
     for (float& v : env) v -= mean;
 
-    // Autocorrelation
-    // env_sr ≈ 100 samples/sec
-    // BPM range 50–200 → period range 100/200=0.5s to 100/50=2.0s
-    // lag range: 50–200 samples in env units
+    // Autocorrelation, weighted by a perceptual tempo prior.
+    // Raw autocorrelation is sub-harmonic ambiguous: a pulse near ~110 BPM also
+    // produces strong peaks at its 1/2 and 2/3 sub-multiples (~55, ~73), and tiny
+    // input differences decide which one "wins" — that is exactly why the same
+    // track landed on 72 from the file but 109 from the CD. Listeners feel tempo
+    // around ~120 BPM, so we bias peak selection toward that range with a gentle
+    // log-Gaussian weight: a clearly stronger peak elsewhere still wins, but the
+    // fundamental pulse is preferred over a sub-harmonic, and the two paths agree.
     const float env_sr   = (float)sr / win;
     const int   lag_min  = (int)(env_sr * 60.0f / 200.0f);  // 200 BPM
     const int   lag_max  = (int)(env_sr * 60.0f / 50.0f);   // 50 BPM
     if (lag_min <= 0 || lag_max >= n_env) return 0;
 
-    int    best_lag = lag_min;
-    double best_val = -1e30;
+    auto tempoWeight = [](float bpm) {
+        constexpr float center = 120.0f;  // perceptual resonance peak (BPM)
+        constexpr float sigma  = 0.75f;   // spread in natural-log space (tunable)
+        float x = std::log(bpm / center) / sigma;
+        return std::exp(-0.5f * x * x);
+    };
+
+    int    best_lag   = lag_min;
+    double best_score = -1e30;
 
     for (int lag = lag_min; lag <= lag_max; ++lag) {
         if (cancel.load()) return 0;
@@ -931,9 +950,10 @@ int AudioManager::detectBpmFromSamples(const std::vector<float>& raw, int sr,
         for (int i = 0; i < cnt; ++i)
             acc += (double)env[i] * env[i + lag];
         acc /= cnt;
-        if (acc > best_val) {
-            best_val = acc;
-            best_lag = lag;
+        double score = acc * (double)tempoWeight(60.0f * env_sr / (float)lag);
+        if (score > best_score) {
+            best_score = score;
+            best_lag   = lag;
         }
     }
 
@@ -1043,6 +1063,7 @@ bool AudioManager::openCD(const std::string& drive_letter) {
     cd_bpm_buf_.assign(CD_BPM_FRAMES, 0.0f);
     cd_bpm_fill_.store(0);
     cd_bpm_ready_.store(false);
+    cd_bpm_reset_.store(false);
     cd_bpm_track_ = -1;
     // Init device for 44100Hz stereo float (Red Book format)
     ma_device_config cfg = ma_device_config_init(ma_device_type_playback);

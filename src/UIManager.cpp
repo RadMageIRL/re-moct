@@ -2000,6 +2000,12 @@ void UIManager::drawProgress() {
 #ifdef _WIN32
     if (audio_.cdMode()) {
         meta = "1411 kbps  44.1 kHz  stereo  CD";
+        // Live BPM is detected from the playback stream just like file mode; show
+        // it here too (the CD meta string above is otherwise fixed Red Book values).
+        if (audio_.currentBpm() > 0)
+            meta += "  " + std::to_string(audio_.currentBpm()) + " bpm";
+        else if (audio_.state() == PlaybackState::Playing)
+            meta += "  bpm:...";
     } else {
 #endif
     if (track.bitrate_kbps > 0 || audio_.liveBitrateKbps() > 0) {

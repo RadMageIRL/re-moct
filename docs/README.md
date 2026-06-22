@@ -2,6 +2,12 @@
 
 > A homage to MOC - keyboard-driven terminal CD player and ripper for Windows.
 
+## Download
+
+**[⬇ RE-MOCT v1.0.0-RC1 — Windows x64](https://github.com/RadMageIRL/re-moct/releases/download/v1.0.0-RC1/re-moct-v1.0.0-RC1-win-x64.zip)** · [all releases](https://github.com/RadMageIRL/re-moct/releases)
+
+> Release candidate. Extract and run `remoct.exe` — all DLLs included. Windows 10+.
+
 📖 **[Documentation & Feature Guide](https://radmageirl.github.io/re-moct/)**
 
 ---

@@ -935,7 +935,7 @@ int AudioManager::detectBpmFromSamples(const std::vector<float>& raw, int sr,
 
     auto tempoWeight = [](float bpm) {
         constexpr float center = 120.0f;  // perceptual resonance peak (BPM)
-        constexpr float sigma  = 0.75f;   // spread in natural-log space (tunable)
+        constexpr float sigma  = 0.9f;    // spread in natural-log space (tunable)
         float x = std::log(bpm / center) / sigma;
         return std::exp(-0.5f * x * x);
     };

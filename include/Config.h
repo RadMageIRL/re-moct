@@ -14,6 +14,13 @@ struct DigiConfig {
     std::string              last_dir;
     std::vector<std::string> playlist_paths;
     std::size_t              playlist_current = 0;
+
+    // Last.fm scrobbling
+    std::string              lastfm_key;       // API key (user-provided)
+    std::string              lastfm_secret;    // shared secret (user-provided)
+    std::string              lastfm_session;   // session key (obtained via auth)
+    std::string              lastfm_user;      // username (from auth)
+    std::string              lastfm_pending;   // in-flight auth token (survives restart)
     float                    volume           = 1.0f;
     int                      repeat_mode      = 0;
     bool                     shuffle          = false;
@@ -37,6 +44,13 @@ struct DigiConfig {
     void addFavTrack(const std::string& path);
     void removeFavTrack(const std::string& path);
     bool isFav(const std::string& path) const;
+
+    // Saved internet-radio stations (URLs), max 50, FIFO on overflow
+    std::vector<std::string> radio_stations;
+    static constexpr int     RADIO_MAX = 50;
+    void addRadioStation(const std::string& url);
+    void removeRadioStation(const std::string& url);
+    bool isRadioStation(const std::string& url) const;
 
     // Per-track play statistics keyed by file path
     std::unordered_map<std::string, TrackStats> track_stats;

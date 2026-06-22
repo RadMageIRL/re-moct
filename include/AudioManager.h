@@ -13,6 +13,7 @@
 #include "miniaudio.h"
 #ifdef _WIN32
 #include "CDSource.h"
+#include "StreamSource.h"
 #endif
 
 enum class PlaybackState { Stopped, Playing, Paused };
@@ -119,6 +120,13 @@ public:
     int      cdCurrentTrack() const;
     const CDSource& cdSource() const { return cd_source_; }
           CDSource& cdSource()       { return cd_source_; }
+
+    // ── Streaming (internet radio) mode ───────────────────────────────────────
+    bool     playStream(const std::string& url);   // http(s):// audio stream
+    bool     streamMode()        const { return stream_mode_.load(); }
+    bool     streamBuffering()   const { return stream_source_.buffering(); }
+    std::string streamNowPlaying() const { return stream_source_.nowPlaying(); }
+    int      streamPositionSec() const { return stream_source_.positionSec(); }
 #endif
 
     // Called by track-end callback to pre-load next track for crossfade/gapless
@@ -179,6 +187,8 @@ private:
 #ifdef _WIN32
     std::atomic<bool>          cd_mode_  { false };
     CDSource                   cd_source_;
+    std::atomic<bool>          stream_mode_  { false };
+    StreamSource               stream_source_;
 #endif
     std::atomic<bool>          replaygain_enabled_ { false };
     std::atomic<float>         replaygain_gain_    { 1.0f };

@@ -11,9 +11,13 @@
 #include <filesystem>
 #include <chrono>
 #include <mutex>
+#include <atomic>
+#include <thread>
 #ifdef _WIN32
 #include "MBLookup.h"
 #include "CDRipper.h"
+#include "RadioBrowser.h"
+#include "LastFm.h"
 #endif
 #include "AudioManager.h"
 #include "miniaudio.h"
@@ -122,7 +126,7 @@ private:
     void computeVizBins();
 
     // Input bar state (goto dir / save M3U / load M3U)
-    enum class InputMode { Goto, SaveM3U, LoadM3U };
+    enum class InputMode { Goto, SaveM3U, LoadM3U, StreamURL, RadioSearch, LastfmKey, LastfmSecret };
     bool        goto_active_  = false;
     InputMode   input_mode_   = InputMode::Goto;
     std::string goto_input_;
@@ -214,6 +218,26 @@ private:
     // Recently played virtual dir state
     bool in_recent_      = false;
     bool in_favs_        = false;
+    bool in_radio_       = false;
+    bool in_radio_search_ = false;       // showing radio-browser results in [Radio]
+    std::string lastfm_pending_token_;   // (legacy; token now persisted in config)
+    void lastfmBeginAuth();              // request token + open browser
+
+    // Last.fm auth auto-poll: worker polls getSession; UI thread commits the result.
+    std::atomic<bool> lf_poll_active_{false};
+    std::atomic<bool> lf_poll_done_{false};
+    std::mutex        lf_poll_mtx_;
+    std::string       lf_poll_session_;
+    std::string       lf_poll_user_;
+    std::thread       lf_poll_thread_;
+    void startLastfmPoll(const std::string& token);
+
+    // Last.fm scrobble state machine
+    std::string scrob_artist_, scrob_track_, scrob_album_;
+    long        scrob_start_ = 0;        // unix time the current track started
+    bool        scrob_done_  = false;    // already scrobbled this track
+    void        updateScrobbler();       // called each tick; fires now-playing + scrobble
+    std::vector<RadioStation> radio_results_;
     int  fav_cursor_     = 0;
 
     void        refreshDir();

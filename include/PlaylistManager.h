@@ -28,6 +28,8 @@ public:
 
     // Mutation
     std::size_t addTrack(const std::string& path);
+    std::size_t addStream(const std::string& url, const std::string& title);
+    static std::string streamLabel(const std::string& url);  // "RADIO: <name>" from a URL
     std::size_t addCDTrack(const std::string& fake_path,
                            const std::string& title, int duration_sec);
     template<typename Pred>

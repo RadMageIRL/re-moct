@@ -372,12 +372,23 @@ void UIManager::run() {
 #ifdef _WIN32
         // Clear MB error message after ~5 seconds (62 ticks * 80ms)
         static int mb_err_ticks = 0;
-        if (!mb_error_.empty()) {
-            if (++mb_err_ticks > 62) {
-                std::lock_guard<std::mutex> lk(mb_mutex_);
-                mb_error_.clear(); mb_err_ticks = 0; redraw_needed_.store(true);
-            }
-        } else mb_err_ticks = 0;
+        {
+            std::lock_guard<std::mutex> lk(mb_mutex_);   // mb_error_ written by worker threads
+            if (!mb_error_.empty()) {
+                if (++mb_err_ticks > 62) {
+                    mb_error_.clear(); mb_err_ticks = 0; redraw_needed_.store(true);
+                }
+            } else mb_err_ticks = 0;
+        }
+        if (mb_titles_pending_.exchange(false)) {
+            // A worker cached a release; apply its titles to playlist_ here on the
+            // UI thread. Snapshot under the lock so a concurrent worker write to
+            // mb_release_ can't tear the copy.
+            MBRelease rel_snapshot;
+            { std::lock_guard<std::mutex> lk(mb_mutex_); rel_snapshot = mb_release_; }
+            applyReleaseTitles(rel_snapshot);
+            redraw_needed_.store(true);
+        }
         if (mb_search_close_pending_.load()) {
             mb_search_close_pending_.store(false);
             mb_search_ = {};
@@ -385,11 +396,14 @@ void UIManager::run() {
             ui_overlay_ = UIOverlay::None;
             redraw_needed_.store(true);
         }
-        if (!mb_status_.empty()) {
-            if (++mb_status_ticks_ > MB_STATUS_LIFETIME) {
-                mb_status_.clear();
-                mb_status_ticks_ = 0;
-                redraw_needed_.store(true);
+        {
+            std::lock_guard<std::mutex> lk(mb_mutex_);   // mb_status_ written by worker threads
+            if (!mb_status_.empty()) {
+                if (++mb_status_ticks_ > MB_STATUS_LIFETIME) {
+                    mb_status_.clear();
+                    mb_status_ticks_ = 0;
+                    redraw_needed_.store(true);
+                }
             }
         }
         if (!rip_status_.empty() && !cd_ripper_.isActive()) {
@@ -543,9 +557,15 @@ void UIManager::computeVizBins() {
 
         int k_lo = (int)(f_lo / sr * N);
         int k_hi = (int)(f_hi / sr * N);
-        if (k_hi <= k_lo) k_hi = k_lo + 1;
         k_lo = std::clamp(k_lo, 1, N/2);
         k_hi = std::clamp(k_hi, 1, N/2);
+        if (k_hi <= k_lo) {
+            // Empty range after clamping — happens for bands at/above Nyquist on
+            // low-sample-rate sources. No bins map here; decay and skip so the
+            // divisor below can never be zero (which produced NaN poisoning).
+            viz_smoothed_[b] *= 0.5f;
+            continue;
+        }
 
         // DFT magnitude over [k_lo, k_hi)
         float mag = 0.0f;
@@ -683,6 +703,32 @@ void UIManager::drawRipConfirm() {
 #endif
 
 
+// Apply MusicBrainz/Discogs track titles to the current CD playlist. UI THREAD
+// ONLY: this reads and mutates playlist_ (its entries_ vector and the std::strings
+// inside it), which has no internal locking, so it must never run on a worker
+// thread. Worker callbacks cache the release and raise mb_titles_pending_; the run
+// loop drains that flag and calls this with a snapshot taken under mb_mutex_.
+void UIManager::applyReleaseTitles(const MBRelease& rel) {
+    // Multi-disc: scope titles to the disc currently in the drive.
+    int n_phys_md = 0;
+    for (std::size_t k = 0; k < playlist_.size(); ++k)
+        if (isCDTrackPath(playlist_.at(k).path)) ++n_phys_md;
+    const int cur_disc = pickDiscForTrackCount(rel, n_phys_md);
+    for (std::size_t i = 0; i < playlist_.size(); ++i) {
+        int tnum = cdTrackNumber(playlist_.at(i).path);
+        if (tnum < 0) continue;
+        for (const auto& mt : rel.tracks) {
+            if (mt.number == tnum && mt.disc == cur_disc && !mt.title.empty()) {
+                std::string dt = mt.artist.empty()
+                    ? mt.title : mt.artist + " - " + mt.title;
+                playlist_.setDisplayTitle(i, sanitizeForDisplay(dt));
+                break;
+            }
+        }
+    }
+}
+
+
 void UIManager::drawTitleBar() {
     werase(win_title_);
     wattron(win_title_, COLOR_PAIR(CP_TITLE) | A_BOLD);
@@ -695,11 +741,7 @@ void UIManager::drawTitleBar() {
         std::string cd_title;
         for (std::size_t i = 0; i < playlist_.size(); ++i) {
             const auto& e = playlist_.at(i);
-            auto pos = e.path.find("CD Track ");
-            if (pos != std::string::npos) {
-                int tnum = std::stoi(e.path.substr(pos + 9));
-                if (tnum == t) { cd_title = e.display_title; break; }
-            }
+            if (cdTrackNumber(e.path) == t) { cd_title = e.display_title; break; }
         }
         // Fall back to generic "CD Track 02 [F:]" if no MB title yet
         if (cd_title.empty() || isCDTrackPath(cd_title))
@@ -2007,20 +2049,25 @@ void UIManager::drawCmdLine() {
     if (goto_active_) { drawGotoBar(); return; }
     werase(win_cmdline_);
 #ifdef _WIN32
-    if (!mb_status_.empty()) {
-        bool is_err = (mb_status_.find("No results") != std::string::npos
-                    || mb_status_.find("error")      != std::string::npos
-                    || mb_status_.find("failed")     != std::string::npos);
+    std::string mb_status_snap, mb_error_snap;
+    {
+        std::lock_guard<std::mutex> lk(mb_mutex_);   // mb_status_/mb_error_ are written by worker threads
+        mb_status_snap = mb_status_;
+        mb_error_snap  = mb_error_;
+    }
+    if (!mb_status_snap.empty()) {
+        bool is_err = (mb_status_snap.find("No results") != std::string::npos
+                    || mb_status_snap.find("error")      != std::string::npos
+                    || mb_status_snap.find("failed")     != std::string::npos);
         wattron(win_cmdline_, COLOR_PAIR(is_err ? CP_STATUS_ERR : CP_STATUS_OK) | A_BOLD);
-        mvwaddnstr(win_cmdline_, 0, 1, mb_status_.c_str(), screen_cols_ - 2);
+        mvwaddnstr(win_cmdline_, 0, 1, mb_status_snap.c_str(), screen_cols_ - 2);
         wattroff(win_cmdline_, COLOR_PAIR(is_err ? CP_STATUS_ERR : CP_STATUS_OK) | A_BOLD);
         wnoutrefresh(win_cmdline_);
         return;
     }
-    if (!mb_error_.empty()) {
+    if (!mb_error_snap.empty()) {
         wattron(win_cmdline_, COLOR_PAIR(CP_STATUS_OK) | A_BOLD);
-        std::lock_guard<std::mutex> lk(mb_mutex_);
-        mvwaddnstr(win_cmdline_, 0, 1, ("MB: " + mb_error_).c_str(), screen_cols_ - 2);
+        mvwaddnstr(win_cmdline_, 0, 1, ("MB: " + mb_error_snap).c_str(), screen_cols_ - 2);
         wattroff(win_cmdline_, COLOR_PAIR(CP_STATUS_OK) | A_BOLD);
         wnoutrefresh(win_cmdline_);
         return;
@@ -2566,28 +2613,11 @@ void UIManager::handleInput(int ch) {
                         }
                         mb_error_.clear();
                         mb_release_ = rel;  // cache for ripping
-                        // Multi-disc: scope titles to the disc currently in the drive.
-                        int n_phys_md = 0;
-                        for (std::size_t k = 0; k < playlist_.size(); ++k)
-                            if (playlist_.at(k).path.find("CD Track ") != std::string::npos) ++n_phys_md;
-                        const int cur_disc = pickDiscForTrackCount(rel, n_phys_md);
-                        for (std::size_t i = 0; i < playlist_.size(); ++i) {
-                            const std::string& p = playlist_.at(i).path;
-                            auto pos = p.find("CD Track ");
-                            if (pos == std::string::npos) continue;
-                            int tnum = std::stoi(p.substr(pos + 9));
-                            for (const auto& mt : rel.tracks) {
-                                if (mt.number == tnum && mt.disc == cur_disc && !mt.title.empty()) {
-                                    std::string dt = mt.artist.empty()
-                                        ? mt.title
-                                        : mt.artist + " - " + mt.title;
-                                    playlist_.setDisplayTitle(i, sanitizeForDisplay(dt));
-                                    break;
-                                }
-                            }
-                        }
+                        // playlist_ is UI-thread-owned: defer the title apply to
+                        // the run loop (mb_release_ is cached above).
+                        mb_titles_pending_.store(true);
                         if (!rel.title.empty())
-                            mb_album_ = rel.title + (rel.date.size() >= 4
+                            mb_album_ = sanitizeForDisplay(rel.title) + (rel.date.size() >= 4
                                        ? " (" + rel.date.substr(0,4) + ")" : "");
                         redraw_needed_.store(true);
                     });
@@ -3562,6 +3592,7 @@ void UIManager::refreshDir() {
 }
 
 std::string UIManager::formatTime(double s) const {
+    if (s < 0.0) s = 0.0;   // guard against negative (e.g. position overrun) -> "-1:-30"
     int si=(int)s, m=si/60; si%=60; int h=m/60; m%=60;
     std::ostringstream ss;
     if (h > 0) ss << h << ':' << std::setw(2) << std::setfill('0');
@@ -3700,8 +3731,13 @@ void UIManager::drawMBSearch() {
 
             std::string year  = r.date.size() >= 4 ? r.date.substr(0, 4) : r.date;
             std::string src   = r.from_discogs ? " [D]" : "";
-            std::string art_s = r.artist.size() > 20 ? r.artist.substr(0, 19) + ">" : r.artist;
-            std::string ttl_s = r.title.size()  > 22 ? r.title.substr(0, 21)  + ">" : r.title;
+            // Sanitize to ASCII first: avoids raw-multibyte mojibake under the
+            // non-UTF-8 ncurses locale, and makes the byte-based substr() below
+            // safe (it can no longer slice through a multibyte sequence).
+            std::string art_full = sanitizeForDisplay(r.artist);
+            std::string ttl_full = sanitizeForDisplay(r.title);
+            std::string art_s = art_full.size() > 20 ? art_full.substr(0, 19) + ">" : art_full;
+            std::string ttl_s = ttl_full.size() > 22 ? ttl_full.substr(0, 21) + ">" : ttl_full;
 
             char line[256];
             std::snprintf(line, sizeof(line), "%2d. %-20s  %-22s  %4s  %2s%s",
@@ -3818,33 +3854,13 @@ void UIManager::handleMBSearchInput(int ch) {
                         }
                         mb_error_.clear();
                         mb_release_ = rel;
-                        // Multi-disc: scope titles to the disc currently in the drive.
-                        int n_phys_md = 0;
-                        for (std::size_t k = 0; k < playlist_.size(); ++k)
-                            if (playlist_.at(k).path.find("CD Track ") != std::string::npos) ++n_phys_md;
-                        const int cur_disc = pickDiscForTrackCount(rel, n_phys_md);
-                        for (std::size_t i = 0; i < playlist_.size(); ++i) {
-                            const std::string& path = playlist_.at(i).path;
-                            auto pos = path.find("CD Track ");
-                            if (pos == std::string::npos) continue;
-                            try {
-                                int tnum = std::stoi(path.substr(pos + 9));
-                                for (const auto& mt : rel.tracks) {
-                                    if (mt.number == tnum && mt.disc == cur_disc && !mt.title.empty()) {
-                                        std::string dt = mt.artist.empty()
-                                            ? mt.title : mt.artist + " - " + mt.title;
-                                        playlist_.setDisplayTitle(i, sanitizeForDisplay(dt));
-                                        break;
-                                    }
-                                }
-                            } catch (...) {}
-                        }
+                        mb_titles_pending_.store(true);   // apply titles on UI thread
                         if (!rel.title.empty())
-                            mb_album_ = (rel.artist.empty() ? "" : rel.artist + " - ")
-                                      + rel.title
+                            mb_album_ = (rel.artist.empty() ? "" : sanitizeForDisplay(rel.artist) + " - ")
+                                      + sanitizeForDisplay(rel.title)
                                       + (rel.date.size() >= 4
                                           ? " (" + rel.date.substr(0, 4) + ")" : "");
-                        mb_status_       = "Discogs: Metadata loaded — " + mb_album_;
+                        mb_status_       = "Discogs: Metadata loaded - " + mb_album_;
                         mb_status_ticks_ = 0;
                         mb_search_close_pending_.store(true);
                         redraw_needed_.store(true);
@@ -3876,31 +3892,11 @@ void UIManager::handleMBSearchInput(int ch) {
                     }
                     mb_error_.clear();
                     mb_release_ = rel;
-                    // Multi-disc: scope titles to the disc currently in the drive.
-                    int n_phys_md = 0;
-                    for (std::size_t k = 0; k < playlist_.size(); ++k)
-                        if (playlist_.at(k).path.find("CD Track ") != std::string::npos) ++n_phys_md;
-                    const int cur_disc = pickDiscForTrackCount(rel, n_phys_md);
-                    for (std::size_t i = 0; i < playlist_.size(); ++i) {
-                        const std::string& path = playlist_.at(i).path;
-                        auto pos = path.find("CD Track ");
-                        if (pos == std::string::npos) continue;
-                        try {
-                            int tnum = std::stoi(path.substr(pos + 9));
-                            for (const auto& mt : rel.tracks) {
-                                if (mt.number == tnum && mt.disc == cur_disc && !mt.title.empty()) {
-                                    std::string dt = mt.artist.empty()
-                                        ? mt.title : mt.artist + " - " + mt.title;
-                                    playlist_.setDisplayTitle(i, sanitizeForDisplay(dt));
-                                    break;
-                                }
-                            }
-                        } catch (...) {}
-                    }
+                    mb_titles_pending_.store(true);   // apply titles on UI thread
                     if (!rel.title.empty())
-                        mb_album_ = rel.title + (rel.date.size() >= 4
+                        mb_album_ = sanitizeForDisplay(rel.title) + (rel.date.size() >= 4
                                    ? " (" + rel.date.substr(0, 4) + ")" : "");
-                    mb_status_       = "MB: Metadata loaded — " + mb_album_;
+                    mb_status_       = "MB: Metadata loaded - " + mb_album_;
                     mb_status_ticks_ = 0;
                     mb_search_close_pending_.store(true);
                     redraw_needed_.store(true);

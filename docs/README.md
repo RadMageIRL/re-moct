@@ -37,7 +37,7 @@ Find stations from inside the app instead of hunting for URLs elsewhere.
 
 For streams that broadcast Shoutcast/Icecast metadata, the current song is shown live.
 
-- The bottom scrubber area — meaningless for a live stream — is repurposed to display the live `Artist – Title` with a `[LIVE]` indicator.
+- The bottom scrubber area - meaningless for a live stream - is repurposed to display the live `Artist – Title` with a `[LIVE]` indicator.
 - Metadata is de-interleaved out of the byte stream before decoding, shared cleanly by both the MP3 and AAC paths.
 - Stations without metadata fall back to a simple `[LIVE]` marker.
 
@@ -45,7 +45,7 @@ For streams that broadcast Shoutcast/Icecast metadata, the current song is shown
 
 Scrobble both local files and radio to Last.fm.
 
-- **One-time in-app setup:** press **Ctrl+G**, enter your API key and secret (stored in config), approve in the browser — authentication then **completes automatically** (no second keypress).
+- **One-time in-app setup:** press **Ctrl+G**, enter your API key and secret (stored in config), approve in the browser - authentication then **completes automatically** (no second keypress).
 - Scrobbles local files (from tags) and radio tracks (from ICY metadata).
 - Sends "now playing" on track start and scrobbles once the track passes Last.fm's threshold (>30s, played to 50% or 4 minutes).
 - All calls are MD5-signed via the OS crypto API. Scrobbling silently no-ops if you haven't logged in.
@@ -58,7 +58,7 @@ Scrobble both local files and radio to Last.fm.
 
 ## New Runtime Dependency
 
-AAC playback adds one bundled DLL: **`libfdk-aac-2.dll`** (Fraunhofer FDK AAC). Note its license is the Fraunhofer FDK AAC Codec License — it must be documented in `THIRD_PARTY-NOTICES.md` before release.
+AAC playback adds one bundled DLL: **`libfdk-aac-2.dll`** (Fraunhofer FDK AAC). Note its license is the Fraunhofer FDK AAC Codec License - it must be documented in `THIRD_PARTY-NOTICES.md` before release.
 
 ## New Keys
 

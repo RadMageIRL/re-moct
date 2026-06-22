@@ -1,6 +1,7 @@
 ## 🚧 In Development (dev branch)
 
 Features being tested, not yet in a stable release:
+See current binary/exe in the binary-dev directory 
 
 # What's New in This Branch (since v1.0.0-RC1)
 

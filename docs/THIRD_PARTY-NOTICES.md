@@ -18,7 +18,7 @@ distributions.
 | nlohmann/json | JSON parsing | MIT |
 | WinINet / CryptoAPI / Shell (Win32) | HTTP transport, MD5 signing, browser launch | Microsoft Windows system APIs |
 
-## Fraunhofer FDK AAC Codec License — please read
+## Fraunhofer FDK AAC Codec License
 
 RE-MOCT dynamically links and redistributes the Fraunhofer FDK AAC Codec Library
 (`libfdk-aac-2.dll`) to decode AAC and HE-AAC internet-radio streams. This component

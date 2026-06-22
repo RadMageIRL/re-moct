@@ -2,9 +2,83 @@
 
 Features being tested, not yet in a stable release:
 
-- **Internet Radio (ICY metadata)** — parses now-playing StreamTitle from radio stream URLs
-- **Last.fm scrobbling** — auto-scrobble tracks detected via ICY metadata
-- ...
+# What's New in This Branch (since v1.0.0-RC1)
+
+This dev branch adds a complete **internet-radio subsystem** and **Last.fm scrobbling** on top of the RC1 CD player/ripper. Everything below is initially tested against live streams, but is not yet frozen for release.
+
+## Internet Radio Streaming
+
+Play HTTP/HTTPS audio streams directly in RE-MOCT, with the same keyboard-driven workflow as local files.
+
+- **MP3 and AAC/HE-AAC** stream decoding. HE-AAC (AAC+ / SBR) is fully supported via FDK-AAC, so low-bitrate stations that other players choke on work correctly.
+- Streams decode into the same lock-free audio path as CD/file playback — volume, balance, EQ, and the visualizer all apply.
+- Resilient producer: prebuffering, automatic reconnect with backoff, and graceful handling of dropped connections.
+- Output is normalized to 44.1 kHz / stereo; off-rate or mono stations are resampled transparently.
+
+## `[Radio]` Station Pane
+
+A dedicated radio view alongside the file browser.
+
+- Saved stations persist across sessions.
+- Add a stream by URL with **Ctrl+U**; remove a saved station with **d** or **Del**.
+- Stations restore with a clean `RADIO:` label after restart.
+
+## Station Discovery (radio-browser.info)
+
+Find stations from inside the app instead of hunting for URLs elsewhere.
+
+- Press **/** in the `[Radio]` pane to search the radio-browser.info directory.
+- Results appear inline, most-popular-first, with bitrate / codec / country shown.
+- Selecting a result plays it, saves it, and counts a courtesy "click" upstream.
+- Plays the resolved stream URL (playlists/redirects pre-resolved); falls through mirror servers if one is down.
+
+## Live Now-Playing (ICY Metadata)
+
+For streams that broadcast Shoutcast/Icecast metadata, the current song is shown live.
+
+- The bottom scrubber area — meaningless for a live stream — is repurposed to display the live `Artist – Title` with a `[LIVE]` indicator.
+- Metadata is de-interleaved out of the byte stream before decoding, shared cleanly by both the MP3 and AAC paths.
+- Stations without metadata fall back to a simple `[LIVE]` marker.
+
+## Last.fm Scrobbling
+
+Scrobble both local files and radio to Last.fm.
+
+- **One-time in-app setup:** press **Ctrl+G**, enter your API key and secret (stored in config), approve in the browser — authentication then **completes automatically** (no second keypress).
+- Scrobbles local files (from tags) and radio tracks (from ICY metadata).
+- Sends "now playing" on track start and scrobbles once the track passes Last.fm's threshold (>30s, played to 50% or 4 minutes).
+- All calls are MD5-signed via the OS crypto API. Scrobbling silently no-ops if you haven't logged in.
+
+## Fixes
+
+- Selecting a station no longer leaves stale file entries in the playlist (radio now replaces the playlist, matching CD behavior).
+- `RADIO:` labels survive a restart instead of reverting to the raw URL.
+- Last.fm auth no longer loops if the app is restarted mid-authorization (the in-flight token is persisted).
+
+## New Runtime Dependency
+
+AAC playback adds one bundled DLL: **`libfdk-aac-2.dll`** (Fraunhofer FDK AAC). Note its license is the Fraunhofer FDK AAC Codec License — it must be documented in `THIRD_PARTY-NOTICES.md` before release.
+
+## New Keys
+
+| Key | Action |
+| --- | --- |
+| `Ctrl+U` | Add / play a stream by URL |
+| `/` | Search radio-browser.info (in `[Radio]`) |
+| `d` / `Del` | Remove saved station (in `[Radio]`) |
+| `Ctrl+G` | Last.fm login |
+
+Build dependencies (pacman install)pacman -S \
+  mingw-w64-ucrt-x86_64-gcc \
+  mingw-w64-ucrt-x86_64-cmake \
+  mingw-w64-ucrt-x86_64-ninja \
+  mingw-w64-ucrt-x86_64-pkgconf \
+  mingw-w64-ucrt-x86_64-flac \
+  mingw-w64-ucrt-x86_64-lame \
+  mingw-w64-ucrt-x86_64-libebur128 \
+  mingw-w64-ucrt-x86_64-fdk-aac \
+  mingw-w64-ucrt-x86_64-ncurses \
+  mingw-w64-ucrt-x86_64-taglib
 
 Compile for DEV version or grab latest exe in binary-dev (need the dlls listed in this page)
 

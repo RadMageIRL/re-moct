@@ -68,7 +68,35 @@ void PlaylistManager::rebuildShuffleOrder() {
     }
 }
 
+std::size_t PlaylistManager::addStream(const std::string& url, const std::string& title) {
+    // Internet-radio entry: store the URL verbatim with an explicit label.
+    // No populateMetadata() — there is no local file to read tags from.
+    for (std::size_t i = 0; i < entries_.size(); ++i)
+        if (entries_[i].path == url) return i;     // dedup by URL
+    PlaylistEntry entry;
+    entry.path          = url;
+    entry.display_title = title;
+    entry.duration_sec  = 0;                        // live stream — continuous
+    entries_.push_back(std::move(entry));
+    rebuildShuffleOrder();
+    return entries_.size() - 1;
+}
+
+std::string PlaylistManager::streamLabel(const std::string& url) {
+    std::string rest = url;
+    auto s = rest.find("://");
+    if (s != std::string::npos) rest = rest.substr(s + 3);
+    std::string host = rest.substr(0, rest.find('/'));
+    std::string seg  = rest.substr(rest.rfind('/') + 1);
+    return "RADIO: " + (seg.empty() ? host : seg);
+}
+
 std::size_t PlaylistManager::addTrack(const std::string& path) {
+    // HTTP(S) URLs are radio streams — store with a derived label, never file I/O.
+    // (This is also how session restore re-creates the RADIO: label, since only the
+    //  URL is persisted.)
+    if (path.rfind("http://", 0) == 0 || path.rfind("https://", 0) == 0)
+        return addStream(path, streamLabel(path));
     // Reject volatile CD track paths — they can't be stored persistently
     if (isCDTrackPath(path)) return std::string::npos;
     for (std::size_t i = 0; i < entries_.size(); ++i)
@@ -258,6 +286,12 @@ int PlaylistManager::loadM3U(const std::string& path) {
         // Strip CR
         if (!line.empty() && line.back() == '\r') line.pop_back();
         if (line.empty() || line[0] == '#') continue;
+        // Radio URL — keep as a stream entry (don't filter by file existence).
+        if (line.rfind("http://", 0) == 0 || line.rfind("https://", 0) == 0) {
+            addTrack(line);   // delegates to addStream with a derived label
+            ++added;
+            continue;
+        }
         // Could be absolute or relative path
         fs::path p(line);
         if (p.is_relative())

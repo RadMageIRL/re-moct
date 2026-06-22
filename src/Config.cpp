@@ -60,6 +60,23 @@ bool DigiConfig::isFav(const std::string& path) const {
     return std::find(fav_tracks.begin(), fav_tracks.end(), path) != fav_tracks.end();
 }
 
+void DigiConfig::addRadioStation(const std::string& url) {
+    removeRadioStation(url);
+    radio_stations.insert(radio_stations.begin(), url);
+    if ((int)radio_stations.size() > RADIO_MAX)
+        radio_stations.resize((size_t)RADIO_MAX);
+}
+
+void DigiConfig::removeRadioStation(const std::string& url) {
+    radio_stations.erase(
+        std::remove(radio_stations.begin(), radio_stations.end(), url),
+        radio_stations.end());
+}
+
+bool DigiConfig::isRadioStation(const std::string& url) const {
+    return std::find(radio_stations.begin(), radio_stations.end(), url) != radio_stations.end();
+}
+
 void DigiConfig::recordPlay(const std::string& path) {
     if (path.empty()) return;
     if (isCDTrackPath(path)) return;  // CD tracks are volatile — never record stats
@@ -74,6 +91,7 @@ void DigiConfig::load() {
     playlist_paths.clear();
     bookmarks.clear();
     fav_tracks.clear();
+    radio_stations.clear();
     recent_tracks.clear();
     track_stats.clear();
 
@@ -93,6 +111,11 @@ void DigiConfig::load() {
         else if (key == "shuffle")          shuffle           = (val == "1");
         else if (key == "toast_enabled")    toast_enabled     = (val == "1");
         else if (key == "eq_enabled")       eq_enabled        = (val == "1");
+        else if (key == "lastfm-key")       lastfm_key        = val;
+        else if (key == "lastfm-secret")    lastfm_secret     = val;
+        else if (key == "lastfm-session")   lastfm_session    = val;
+        else if (key == "lastfm-user")      lastfm_user       = val;
+        else if (key == "lastfm-pending")   lastfm_pending    = val;
         else if (key.substr(0,3) == "eq_" && key.size() == 4) {
             int b = key[3] - '0';
             if (b >= 0 && b <= 9) try { eq_gains[b] = std::stof(val); } catch (...) {}
@@ -102,6 +125,9 @@ void DigiConfig::load() {
         else if (key == "fav") {
             if (!isCDTrackPath(val) && !val.empty())
                 fav_tracks.push_back(val);
+        }
+        else if (key == "station") {
+            if (!val.empty()) radio_stations.push_back(val);
         }
         else if (key == "recent") {
             // Silently drop any CD paths that leaked into a pre-fix config
@@ -143,12 +169,18 @@ void DigiConfig::save() const {
     f << "shuffle="          << (shuffle ? "1" : "0") << "\n";
     f << "toast_enabled="    << (toast_enabled ? "1" : "0") << "\n";
     f << "eq_enabled="       << (eq_enabled ? "1" : "0") << "\n";
+    if (!lastfm_key.empty())     f << "lastfm-key="     << lastfm_key     << "\n";
+    if (!lastfm_secret.empty())  f << "lastfm-secret="  << lastfm_secret  << "\n";
+    if (!lastfm_session.empty()) f << "lastfm-session=" << lastfm_session << "\n";
+    if (!lastfm_user.empty())    f << "lastfm-user="    << lastfm_user    << "\n";
+    if (!lastfm_pending.empty()) f << "lastfm-pending=" << lastfm_pending << "\n";
     for (int b = 0; b < 10; ++b)
         f << "eq_" << b << "=" << eq_gains[b] << "\n";
     for (const auto& p : playlist_paths)  f << "track="    << p << "\n";
     for (const auto& b : bookmarks)       f << "bookmark=" << b << "\n";
     for (const auto& fv : fav_tracks)
         if (!isCDTrackPath(fv))            f << "fav="     << fv << "\n";
+    for (const auto& st : radio_stations)  f << "station="  << st << "\n";
     for (const auto& r : recent_tracks)
         if (!isCDTrackPath(r))
             f << "recent=" << r << "\n";

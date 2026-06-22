@@ -150,8 +150,19 @@ static void prime_decoder(ma_decoder& dec) {
 
 // ─── play ────────────────────────────────────────────────────────────────────
 bool AudioManager::play(const std::string& path) {
+#ifdef _WIN32
+    // Scheme-branch: HTTP(S) URLs route to the streaming path.
+    if (path.rfind("http://", 0) == 0 || path.rfind("https://", 0) == 0)
+        return playStream(path);
+#endif
     std::lock_guard<std::mutex> lock(state_mutex_);
 #ifdef _WIN32
+    // Exit stream mode if switching to file playback (clear the flag first so the
+    // audio callback stops entering the stream branch, then join the producer).
+    if (stream_mode_.load()) {
+        stream_mode_.store(false);
+        stream_source_.close();
+    }
     // Exit CD mode if switching to file playback
     if (cd_mode_.load()) {
         cd_source_.stop();
@@ -354,6 +365,12 @@ void AudioManager::togglePause() {
                                          : PlaybackState::Playing);
         return;
     }
+    if (stream_mode_.load()) {
+        stream_source_.pause(!stream_source_.paused());
+        state_.store(stream_source_.paused() ? PlaybackState::Paused
+                                             : PlaybackState::Playing);
+        return;
+    }
 #endif
     if      (state_.load() == PlaybackState::Playing) pause();
     else if (state_.load() == PlaybackState::Paused)  resume();
@@ -373,6 +390,18 @@ void AudioManager::stop() {
             device_initialised_ = false;
         }
         track_ended_flag_.store(false);  // don't advance playlist on manual stop
+        return;
+    }
+    if (stream_mode_.load()) {
+        stream_source_.close();
+        stream_mode_.store(false);
+        state_.store(PlaybackState::Stopped);
+        if (device_initialised_) {
+            ma_device_stop(&device_);
+            ma_device_uninit(&device_);
+            device_initialised_ = false;
+        }
+        track_ended_flag_.store(false);
         return;
     }
 #endif
@@ -581,12 +610,40 @@ ma_result AudioManager::readVarispeed(float* out, ma_uint32 n_out, ma_uint32 ch,
 
 void AudioManager::onDataCallback(void* output, ma_uint32 frame_count) {
     const ma_uint32 ch = device_.playback.channels;
-    if (!decoder_initialised_ && !cd_mode_.load()) {
+    if (!decoder_initialised_ && !cd_mode_.load() && !stream_mode_.load()) {
         if (ch > 0) std::memset(output, 0, frame_count * ch * sizeof(float));
         return;
     }
 
 #ifdef _WIN32
+    // ── Stream mode: read from StreamSource ring buffer ──────────────────
+    if (stream_mode_.load()) {
+        float* out = static_cast<float*>(output);
+        stream_source_.readFrames(out, frame_count);  // 44100/stereo; silence while buffering
+
+        float vol = volume_.load();
+        if (vol != 1.0f)
+            for (ma_uint32 i = 0; i < frame_count * 2; ++i) out[i] *= vol;
+        float bal = balance_.load();
+        if (bal != 0.0f) {
+            float lg = (bal <= 0.0f) ? 1.0f : 1.0f - bal;
+            float rg = (bal >= 0.0f) ? 1.0f : 1.0f + bal;
+            for (ma_uint32 f = 0; f < frame_count; ++f) {
+                out[f*2]   *= lg;
+                out[f*2+1] *= rg;
+            }
+        }
+        if (eq_enabled_.load()) {
+            if (eq_dirty_) rebuildEqCoeffs();
+            applyEq(out, frame_count, 2, 44100.0f);
+        }
+        for (ma_uint32 f = 0; f < frame_count; ++f)
+            pushVizSample((out[f*2] + out[f*2+1]) * 0.5f);
+        if (muted_.load())
+            std::memset(out, 0, frame_count * 2 * sizeof(float));
+        return;
+    }
+
     // ── CD mode: read directly from CDSource ring buffer ─────────────────
     if (cd_mode_.load()) {
         float* out = static_cast<float*>(output);
@@ -1053,6 +1110,11 @@ void AudioManager::resetEq() {
 #ifdef _WIN32
 bool AudioManager::openCD(const std::string& drive_letter) {
     std::lock_guard<std::mutex> lock(state_mutex_);
+    // Exit stream mode if active before entering CD mode.
+    if (stream_mode_.load()) {
+        stream_mode_.store(false);
+        stream_source_.close();
+    }
     // teardown handles already-stopped device safely
     teardown();
     teardownNext();
@@ -1096,6 +1158,44 @@ void AudioManager::closeCD() {
         ma_device_uninit(&device_);
         device_initialised_ = false;
     }
+}
+
+bool AudioManager::playStream(const std::string& url) {
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    // Leave CD mode if active
+    if (cd_mode_.load()) {
+        cd_source_.stop();
+        cd_source_.close();
+        cd_mode_.store(false);
+    }
+    teardown();        // uninits file decoder_ AND device_ (CD or file)
+    teardownNext();
+    stream_source_.close();
+    stream_mode_.store(false);
+    track_ended_flag_.store(false);
+
+    if (!stream_source_.open(url)) return false;
+    stream_mode_.store(true);
+
+    // Fixed 44100 stereo float device — identical to the CD path.
+    ma_device_config cfg = ma_device_config_init(ma_device_type_playback);
+    cfg.playback.format   = ma_format_f32;
+    cfg.playback.channels = 2;
+    cfg.sampleRate        = 44100;
+    cfg.dataCallback      = &AudioManager::maDataCallback;
+    cfg.stopCallback      = &AudioManager::maStopCallback;
+    cfg.pUserData         = this;
+    if (has_selected_device_) cfg.playback.pDeviceID = &selected_device_id_;
+    if (ma_device_init(nullptr, &cfg, &device_) != MA_SUCCESS) {
+        stream_source_.close();
+        stream_mode_.store(false);
+        return false;
+    }
+    device_initialised_ = true;
+    ma_device_set_master_volume(&device_, volume_.load());
+    ma_device_start(&device_);
+    state_.store(PlaybackState::Playing);
+    return true;
 }
 
 bool AudioManager::playCDTrack(int track_number) {

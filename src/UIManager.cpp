@@ -18,6 +18,9 @@
 #endif
 
 #include "UIManager.h"
+#ifdef _WIN32
+#include <shellapi.h>   // ShellExecuteA for Last.fm browser auth
+#endif
 #include "StringUtils.h"
 #include "AudioManager.h"
 #include "PlaylistManager.h"
@@ -39,6 +42,19 @@
 #include <clocale>
 #include <cstdint>
 #include <ctime>
+#include <thread>
+#ifdef _WIN32
+#include <cstdarg>
+static void sclog(const char* fmt, ...) {
+    char tmp[MAX_PATH]; DWORD n = GetTempPathA(MAX_PATH, tmp);
+    std::string p = (n > 0 && n < MAX_PATH) ? std::string(tmp) + "remoct_stream.log"
+                                            : std::string("remoct_stream.log");
+    FILE* f = std::fopen(p.c_str(), "a"); if (!f) return;
+    std::fputs("[scrob] ", f);
+    va_list ap; va_start(ap, fmt); std::vfprintf(f, fmt, ap); va_end(ap);
+    std::fputc('\n', f); std::fclose(f);
+}
+#endif
 #include <cstdio>
 #include <chrono>
 
@@ -79,6 +95,8 @@ UIManager::UIManager(PlaylistManager& playlist, AudioManager& audio,
 
 UIManager::~UIManager() {
     running_ = false;
+    lf_poll_active_.store(false);
+    if (lf_poll_thread_.joinable()) lf_poll_thread_.join();
     if (mb_search_win_) { delwin(mb_search_win_); mb_search_win_ = nullptr; }
 #ifdef _WIN32
     mb_lookup_.cancel();
@@ -213,6 +231,7 @@ void UIManager::run() {
 
     while (running_) {
         audio_.pollEvents();
+        updateScrobbler();
 
         // Force periodic resize check and redraw every ~80ms
         static int resize_poll = 0;
@@ -914,6 +933,7 @@ void UIManager::drawDirBrowser() {
     if (in_drive_list_)   hdr = " [Drives] ";
     else if (in_recent_)  hdr = " [Recently Played] ";
     else if (in_favs_)    hdr = " [FAVs] (f:fav/unfav  Enter:play  Del:remove) ";
+    else if (in_radio_)   hdr = " [Radio] (Enter:play  d/Del:remove) ";
     else {
         std::string leaf = fs::path(current_dir_).filename().string();
         if (leaf.empty()) leaf = current_dir_;
@@ -936,7 +956,8 @@ void UIManager::drawDirBrowser() {
         bool is_dir = in_drive_list_
                     || name == ".." || name == "[Drives]" || name == "[Recent]"
                     || name == "[FAVs]" || name == "[Bookmarks]" || name == "[Back]"
-                    || (!in_recent_ && !in_favs_ && fs::is_directory(fs::path(current_dir_) / name));
+                    || name == "[Radio]"
+                    || (!in_recent_ && !in_favs_ && !in_radio_ && fs::is_directory(fs::path(current_dir_) / name));
 
         // Dead path check for FAVs — grey out missing files
         bool dead_path = false;
@@ -2041,6 +2062,24 @@ void UIManager::drawProgress() {
     if (bw < 4) bw = 4;
     int filled = (dur > 0) ? (int)((pos/dur)*bw) : 0;
     filled = std::clamp(filled, 0, bw);
+#ifdef _WIN32
+    if (audio_.streamMode()) {
+        // Live stream: no position/duration. Repurpose this row for the ICY
+        // now-playing title, with a [LIVE]/[BUFFERING] marker and volume.
+        std::string title = audio_.streamNowPlaying();
+        std::string right = audio_.streamBuffering() ? "[BUFFERING]" : "[LIVE]";
+        right += "  vol:" + std::to_string((int)(audio_.volume()*100.0f+0.5f)) + "%";
+        std::string left = title.empty() ? "(live stream)" : title;
+        int avail = cols - (int)right.size() - 3;
+        if (avail < 1) avail = 1;
+        if ((int)left.size() > avail) left = left.substr(0, (size_t)avail);
+        wattron(win_progress_, COLOR_PAIR(CP_TITLE));
+        mvwaddstr(win_progress_, 0, 1, left.c_str());
+        mvwaddstr(win_progress_, 0, cols - (int)right.size() - 1, right.c_str());
+        wattroff(win_progress_, COLOR_PAIR(CP_TITLE));
+        return;
+    }
+#endif
     wattron(win_progress_, COLOR_PAIR(CP_PROGRESS));
     std::string bar = "[" + std::string((size_t)filled,'#')
                           + std::string((size_t)(bw-filled),'-') + "]";
@@ -2149,6 +2188,10 @@ void UIManager::drawGotoBar() {
         case InputMode::Goto:    prompt = " goto: ";      break;
         case InputMode::SaveM3U: prompt = " save playlist (.m3u/.m3u8/.pls/.xspf): "; break;
         case InputMode::LoadM3U: prompt = " load m3u: ";  break;
+        case InputMode::StreamURL: prompt = " radio url: "; break;
+        case InputMode::RadioSearch: prompt = " search radio: "; break;
+        case InputMode::LastfmKey:    prompt = " last.fm API key: "; break;
+        case InputMode::LastfmSecret: prompt = " last.fm secret: ";  break;
     }
     wattron(win_cmdline_, COLOR_PAIR(CP_TITLE) | A_BOLD);
     mvwaddstr(win_cmdline_, 0, 0, prompt.c_str());
@@ -2175,6 +2218,151 @@ void UIManager::drawGotoBar() {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Input
+
+static std::string radioLabel(const std::string& url) {
+    return PlaylistManager::streamLabel(url);   // single source of truth
+}
+
+void UIManager::updateScrobbler() {
+#ifdef _WIN32
+    static bool announced = false;
+    if (!announced) {
+        sclog("updateScrobbler active (session=%s)",
+              config_.lastfm_session.empty() ? "EMPTY" : "set");
+        announced = true;
+    }
+
+    // Commit a completed auto-poll authorization (worker filled the slots).
+    if (lf_poll_done_.exchange(false)) {
+        std::string sk, user;
+        { std::lock_guard<std::mutex> lk(lf_poll_mtx_); sk = lf_poll_session_; user = lf_poll_user_; }
+        config_.lastfm_session = sk;
+        config_.lastfm_user    = user;
+        config_.lastfm_pending.clear();
+        config_.save();
+        lf_poll_active_.store(false);
+        if (lf_poll_thread_.joinable()) lf_poll_thread_.join();
+        sclog("auto-poll: committed session for %s", user.c_str());
+        showTrackToast("Last.fm: logged in as " + user, "", "");
+    }
+
+    if (config_.lastfm_session.empty()) return;   // not logged in -> no-op
+
+    auto st = audio_.state();
+    if (st != PlaybackState::Playing && st != PlaybackState::Paused) {
+        scrob_artist_.clear(); scrob_track_.clear();   // stopped -> reset
+        return;
+    }
+
+    std::string artist, track, album;
+    bool is_radio = false;
+    int  pos = 0, dur = 0;
+
+    if (audio_.streamMode()) {
+        is_radio = true;
+        std::string np = audio_.streamNowPlaying();    // "Artist - Title"
+        auto dash = np.find(" - ");
+        if (dash == std::string::npos) return;         // no parseable now-playing yet
+        artist = np.substr(0, dash);
+        track  = np.substr(dash + 3);
+    } else {
+        const auto& t = audio_.currentTrack();
+        artist = t.artist; track = t.title; album = t.album;
+        pos = (int)audio_.positionSec();
+        dur = (int)audio_.durationSec();
+    }
+    // Trim whitespace on radio-derived fields.
+    auto trim = [](std::string& x){
+        while (!x.empty() && (x.front()==' '||x.front()=='\t')) x.erase(x.begin());
+        while (!x.empty() && (x.back()==' '||x.back()=='\t')) x.pop_back();
+    };
+    trim(artist); trim(track);
+    if (artist.empty() || track.empty()) {
+        static bool warned = false;
+        if (!warned) { sclog("skip: empty artist/track (radio=%d) np=\"%s\"",
+                             (int)is_radio, audio_.streamMode() ? audio_.streamNowPlaying().c_str() : "(file)"); warned = true; }
+        return;
+    }
+
+    const std::string& k  = config_.lastfm_key;
+    const std::string& s  = config_.lastfm_secret;
+    const std::string& sk = config_.lastfm_session;
+
+    // New track? -> reset state + send now-playing in the background.
+    if (artist != scrob_artist_ || track != scrob_track_) {
+        scrob_artist_ = artist; scrob_track_ = track; scrob_album_ = album;
+        scrob_start_  = (long)std::time(nullptr);
+        scrob_done_   = false;
+        sclog("now-playing: %s - %s (radio=%d dur=%d)", artist.c_str(), track.c_str(), (int)is_radio, dur);
+        std::thread([=]{ LastFm::updateNowPlaying(k, s, sk, artist, track, album); }).detach();
+        return;
+    }
+
+    if (scrob_done_) return;
+
+    // Scrobble threshold: >30s track, played >=50% or 4min (files);
+    // radio has no known duration, so use a conservative 90s of listening.
+    long elapsed = (long)std::time(nullptr) - scrob_start_;
+    bool ready = false;
+    if (is_radio) {
+        ready = (elapsed >= 90);
+    } else if (dur > 30) {
+        int threshold = dur / 2;
+        if (threshold > 240) threshold = 240;
+        ready = (pos >= threshold);
+    }
+    if (ready) {
+        scrob_done_ = true;
+        sclog("scrobble: %s - %s (elapsed=%ld pos=%d dur=%d)", artist.c_str(), track.c_str(), elapsed, pos, dur);
+        long ts = scrob_start_;
+        bool chosen = !is_radio;          // radio: chosenByUser=0
+        std::string a = artist, t = track, al = album;
+        std::thread([=]{ LastFm::scrobble(k, s, sk, a, t, ts, chosen, al); }).detach();
+    }
+#endif
+}
+
+void UIManager::startLastfmPoll(const std::string& token) {
+#ifdef _WIN32
+    if (lf_poll_active_.exchange(true)) return;        // already polling
+    lf_poll_done_.store(false);
+    if (lf_poll_thread_.joinable()) lf_poll_thread_.join();
+    std::string key = config_.lastfm_key, secret = config_.lastfm_secret, tok = token;
+    lf_poll_thread_ = std::thread([this, key, secret, tok]() {
+        // Retry getSession for ~60s; the worker NEVER touches config_ — it only
+        // drops the result into guarded slots for the UI thread to commit.
+        for (int attempt = 0; attempt < 20 && lf_poll_active_.load(); ++attempt) {
+            for (int w = 0; w < 30 && lf_poll_active_.load(); ++w)   // ~3s, responsive
+                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            if (!lf_poll_active_.load()) break;
+            std::string sk, user;
+            if (LastFm::getSession(key, secret, tok, sk, user) && !sk.empty()) {
+                std::lock_guard<std::mutex> lk(lf_poll_mtx_);
+                lf_poll_session_ = sk;
+                lf_poll_user_    = user;
+                lf_poll_done_.store(true);
+                break;
+            }
+        }
+        lf_poll_active_.store(false);
+    });
+#endif
+}
+
+void UIManager::lastfmBeginAuth() {
+    std::string token, url;
+    if (LastFm::requestToken(config_.lastfm_key, config_.lastfm_secret, token, url)) {
+        config_.lastfm_pending = token;   // persisted so it survives an app restart
+        config_.save();
+        sclog("beginAuth: token acquired, browser opened, auto-poll started");
+        ShellExecuteA(nullptr, "open", url.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+        startLastfmPoll(token);           // auto-complete after you click allow
+        showTrackToast("Last.fm: approve in browser - finishes automatically", "", "");
+    } else {
+        sclog("beginAuth: requestToken FAILED");
+        showTrackToast("Last.fm: token request failed", "", "");
+    }
+}
 
 void UIManager::handleInput(int ch) {
 #ifdef _WIN32
@@ -2576,6 +2764,33 @@ void UIManager::handleInput(int ch) {
                 redraw_needed_.store(true);
             }
             break;
+        case 7:  // Ctrl+G — Last.fm login (stateful: request token, then exchange)
+            if (config_.lastfm_key.empty() || config_.lastfm_secret.empty()) {
+                openInputBar(InputMode::LastfmKey, "");   // first-time: prompt in-app
+            } else if (config_.lastfm_pending.empty()) {
+                sclog("ctrl+G: begin auth");
+                lastfmBeginAuth();
+            } else {
+                std::string sk, user;
+                bool ok = LastFm::getSession(config_.lastfm_key, config_.lastfm_secret,
+                                             config_.lastfm_pending, sk, user);
+                sclog("ctrl+G: getSession ok=%d user=%s", (int)ok, user.c_str());
+                if (ok) {
+                    config_.lastfm_session = sk;
+                    config_.lastfm_user    = user;
+                    config_.lastfm_pending.clear();
+                    config_.save();
+                    lf_poll_active_.store(false);   // stop any background poll
+                    showTrackToast("Last.fm: logged in as " + user, "", "");
+                } else {
+                    showTrackToast("Last.fm: auth failed - press Ctrl+G to retry", "", "");
+                }
+            }
+            break;
+        case 21:  // Ctrl+U — input an internet-radio stream URL
+            if (ui_overlay_ == UIOverlay::None)
+                openInputBar(InputMode::StreamURL, "");
+            break;
         case 25:  // Ctrl+Y — CD rip
             if (ui_overlay_ != UIOverlay::None) break;  // already showing modal
             if (audio_.cdMode() && !cd_ripper_.isActive()) {
@@ -2648,7 +2863,7 @@ void UIManager::handleInput(int ch) {
                 const std::string& nm = dir_entries_[(size_t)dir_cursor_];
                 // Build full path — dir_entries_ stores names, not full paths
                 std::string p;
-                if (in_recent_ || in_favs_ || fs::path(nm).is_absolute()) {
+                if (in_recent_ || in_favs_ || in_radio_ || fs::path(nm).is_absolute()) {
                     p = nm;  // recent/fav entries are already full paths
                 } else {
                     p = (fs::path(current_dir_) / nm).string();
@@ -2749,7 +2964,7 @@ void UIManager::handleInput(int ch) {
                 fav_path = dir_entries_[(size_t)dir_cursor_];
             } else if (focus_ == Pane::DirBrowser
                        && dir_cursor_ < (int)dir_entries_.size()
-                       && !in_drive_list_ && !in_recent_ && !in_favs_) {
+                       && !in_drive_list_ && !in_recent_ && !in_favs_ && !in_radio_) {
                 const std::string& nm = dir_entries_[(size_t)dir_cursor_];
                 std::string full = (fs::path(nm).is_absolute()) ? nm
                                  : (fs::path(current_dir_) / nm).string();
@@ -2785,6 +3000,21 @@ void UIManager::handleInput(int ch) {
                         dir_cursor_ = std::max(0, (int)dir_entries_.size() - 1);
                 }
             }
+            if (focus_ == Pane::DirBrowser && in_radio_
+                && dir_cursor_ < (int)dir_entries_.size()) {
+                const std::string& nm = dir_entries_[(size_t)dir_cursor_];
+                if (nm != "[Back]" && !nm.empty()) {
+                    config_.removeRadioStation(nm);
+                    dir_entries_.clear(); dir_display_.clear();
+                    dir_entries_.push_back("[Back]"); dir_display_.push_back("[Back]");
+                    for (const auto& st : config_.radio_stations) {
+                        dir_entries_.push_back(st);
+                        dir_display_.push_back(sanitizeForDisplay(radioLabel(st)));
+                    }
+                    if (dir_cursor_ >= (int)dir_entries_.size())
+                        dir_cursor_ = std::max(0, (int)dir_entries_.size() - 1);
+                }
+            }
             break;
         case 'o':
             // Cycle playlist sort mode
@@ -2799,7 +3029,7 @@ void UIManager::handleInput(int ch) {
             break;
         case 'b':
             // Add current directory to bookmarks (not available from [Drives] list)
-            if (!in_drive_list_ && !in_recent_ && !current_dir_.empty()) {
+            if (!in_drive_list_ && !in_recent_ && !in_radio_ && !current_dir_.empty()) {
                 // Don't bookmark CD drive roots — physical drives are volatile
 #ifdef _WIN32
                 std::string dp = current_dir_;
@@ -2960,6 +3190,26 @@ void UIManager::handleInput(int ch) {
                 if (pl_scroll_ > max_scroll) pl_scroll_ = max_scroll;
                 if (pl_scroll_ > pl_cursor_) pl_scroll_ = pl_cursor_;
             }
+            else if (focus_ == Pane::DirBrowser && in_radio_
+                     && dir_cursor_ < (int)dir_entries_.size()) {
+                // 'd' also removes a saved station from the [Radio] list (like Del)
+                const std::string& nm = dir_entries_[(size_t)dir_cursor_];
+                if (nm != "[Back]" && !nm.empty()) {
+                    config_.removeRadioStation(nm);
+                    dir_entries_.clear(); dir_display_.clear();
+                    dir_entries_.push_back("[Back]"); dir_display_.push_back("[Back]");
+                    for (const auto& st : config_.radio_stations) {
+                        dir_entries_.push_back(st);
+                        dir_display_.push_back(sanitizeForDisplay(radioLabel(st)));
+                    }
+                    if (dir_cursor_ >= (int)dir_entries_.size())
+                        dir_cursor_ = std::max(0, (int)dir_entries_.size() - 1);
+                }
+            }
+            break;
+        case '/':
+            if (focus_ == Pane::DirBrowser && in_radio_)
+                openInputBar(InputMode::RadioSearch, "");
             break;
         case 'a': case 'A':
             if (focus_ == Pane::DirBrowser && dir_cursor_ < (int)dir_entries_.size()) {
@@ -3080,6 +3330,84 @@ void UIManager::gotoClose(bool commit) {
                             maybePreloadNext();
                         }
                     }
+                }
+                break;
+            }
+            case InputMode::StreamURL: {
+                std::string url = goto_input_;
+                // Trim whitespace (paste artifacts)
+                while (!url.empty() && (url.front() == ' ' || url.front() == '\t'))
+                    url.erase(url.begin());
+                while (!url.empty() && (url.back() == ' ' || url.back() == '\t' ||
+                                        url.back() == '\r' || url.back() == '\n'))
+                    url.pop_back();
+                // Collapse an accidental doubled scheme (e.g. prefilled + pasted)
+                if (url.rfind("https://https://", 0) == 0)     url.erase(0, 8);
+                else if (url.rfind("http://http://", 0) == 0)  url.erase(0, 7);
+                if (!url.empty()) {
+                    std::string label = radioLabel(url);
+                    config_.addRadioStation(url);   // persist + show in [Radio]
+
+                    // Add as a playlist entry (visible, removable, re-selectable),
+                    // select it, reveal the playlist pane, then play.
+                    // Replace the playlist with just this station (same as the
+                    // [Radio] select path) so no stale file entries linger.
+                    playlist_.clear();
+                    std::size_t idx = playlist_.addStream(url, label);
+                    pl_cursor_  = (int)idx;
+                    pl_scroll_  = 0;
+                    right_pane_ = RightPane::Playlist;
+                    playlist_.selectAt(idx);
+                    bool ok = audio_.play(url);   // http(s):// routes to playStream
+                    showTrackToast(ok ? "Streaming\u2026" : "Stream connect FAILED",
+                                   label, "");
+                }
+                break;
+            }
+            case InputMode::RadioSearch: {
+                std::string q = goto_input_;
+                while (!q.empty() && (q.front() == ' ' || q.front() == '\t')) q.erase(q.begin());
+                while (!q.empty() && (q.back() == ' ' || q.back() == '\t' ||
+                                      q.back() == '\r' || q.back() == '\n')) q.pop_back();
+                if (!q.empty()) {
+                    radio_results_   = RadioBrowser::search(q, 30);   // synchronous, bounded
+                    in_radio_        = true;
+                    in_radio_search_ = true;
+                    dir_entries_.clear(); dir_display_.clear();
+                    dir_entries_.push_back("[Back]"); dir_display_.push_back("[Back]");
+                    for (const auto& r : radio_results_) {
+                        dir_entries_.push_back(r.url);
+                        std::string meta;
+                        if (r.bitrate > 0)          meta  = std::to_string(r.bitrate) + "k";
+                        if (!r.codec.empty())       meta += (meta.empty() ? "" : " ") + r.codec;
+                        if (!r.country.empty())     meta += (meta.empty() ? "" : ", ") + r.country;
+                        std::string info = r.name + (meta.empty() ? "" : "  (" + meta + ")");
+                        dir_display_.push_back(sanitizeForDisplay(info));
+                    }
+                    dir_cursor_ = 0; dir_scroll_ = 0;
+                    if (radio_results_.empty())
+                        showTrackToast("No stations found", q, "");
+                }
+                break;
+            }
+            case InputMode::LastfmKey: {
+                std::string k = goto_input_;
+                while (!k.empty() && (k.front()==' '||k.front()=='\t')) k.erase(k.begin());
+                while (!k.empty() && (k.back()==' '||k.back()=='\t'||k.back()=='\r'||k.back()=='\n')) k.pop_back();
+                if (!k.empty()) {
+                    config_.lastfm_key = k;
+                    openInputBar(InputMode::LastfmSecret, "");   // chain to secret prompt
+                }
+                break;
+            }
+            case InputMode::LastfmSecret: {
+                std::string sec = goto_input_;
+                while (!sec.empty() && (sec.front()==' '||sec.front()=='\t')) sec.erase(sec.begin());
+                while (!sec.empty() && (sec.back()==' '||sec.back()=='\t'||sec.back()=='\r'||sec.back()=='\n')) sec.pop_back();
+                if (!sec.empty()) {
+                    config_.lastfm_secret = sec;
+                    config_.save();           // creds persisted
+                    lastfmBeginAuth();        // start browser authorization
                 }
                 break;
             }
@@ -3280,6 +3608,18 @@ void UIManager::activateSelection() {
                 dir_cursor_ = 0; dir_scroll_ = 0;
                 return;
             }
+            if (name == "[Radio]") {
+                in_drive_list_ = false;
+                in_radio_      = true;
+                dir_entries_.clear(); dir_display_.clear();
+                dir_entries_.push_back("[Back]"); dir_display_.push_back("[Back]");
+                for (const auto& st : config_.radio_stations) {
+                    dir_entries_.push_back(st);
+                    dir_display_.push_back(sanitizeForDisplay(radioLabel(st)));
+                }
+                dir_cursor_ = 0; dir_scroll_ = 0;
+                return;
+            }
             if (name == "[Bookmarks]") {
                 right_pane_      = RightPane::Bookmarks;
                 bookmark_cursor_ = 0;
@@ -3304,6 +3644,49 @@ void UIManager::activateSelection() {
                     maybePreloadNext();
                 }
             }
+            return;
+        }
+        if (in_radio_) {
+            if (name == "[Back]") {
+                if (in_radio_search_) {
+                    // Return from search results to the saved-station list.
+                    in_radio_search_ = false;
+                    dir_entries_.clear(); dir_display_.clear();
+                    dir_entries_.push_back("[Back]"); dir_display_.push_back("[Back]");
+                    for (const auto& st : config_.radio_stations) {
+                        dir_entries_.push_back(st);
+                        dir_display_.push_back(sanitizeForDisplay(PlaylistManager::streamLabel(st)));
+                    }
+                    dir_cursor_ = 0; dir_scroll_ = 0;
+                    return;
+                }
+                in_radio_ = false;
+                refreshDir();
+                return;
+            }
+            // Resolve the station. Search results carry the real station name +
+            // uuid; saved stations derive their label from the URL.
+            std::string url, label, uuid;
+            if (in_radio_search_) {
+                int ri = dir_cursor_ - 1;            // [Back] occupies index 0
+                if (ri < 0 || ri >= (int)radio_results_.size()) return;
+                url   = radio_results_[(size_t)ri].url;
+                label = radio_results_[(size_t)ri].name;
+                uuid  = radio_results_[(size_t)ri].uuid;
+            } else {
+                url   = name;
+                label = radioLabel(name);
+            }
+            config_.addRadioStation(url);                       // save to [Radio]
+            if (!uuid.empty()) RadioBrowser::countClick(uuid);  // popularity courtesy
+            // Replace the playlist with just this station (mirrors CD mode).
+            playlist_.clear();
+            std::size_t idx = playlist_.addStream(url, label);
+            pl_cursor_ = (int)idx; pl_scroll_ = 0;
+            playlist_.selectAt(idx);
+            right_pane_ = RightPane::Playlist;
+            in_radio_search_ = false;
+            audio_.play(url);   // routes to playStream
             return;
         }
         if (in_favs_) {
@@ -3333,6 +3716,20 @@ void UIManager::activateSelection() {
             return;
         }
         if (name == "[Drives]") { enterDriveList(); return; }
+        if (name == "[Radio]") {
+            in_radio_  = true;
+            in_recent_ = false;
+            in_favs_   = false;
+            in_drive_list_ = false;
+            dir_entries_.clear(); dir_display_.clear();
+            dir_entries_.push_back("[Back]"); dir_display_.push_back("[Back]");
+            for (const auto& st : config_.radio_stations) {
+                dir_entries_.push_back(st);
+                dir_display_.push_back(sanitizeForDisplay(radioLabel(st)));
+            }
+            dir_cursor_ = 0; dir_scroll_ = 0;
+            return;
+        }
         if (name == "[Recent]") {
             in_recent_ = true;
             in_favs_   = false;
@@ -3434,11 +3831,14 @@ void UIManager::enterDriveList() {
     in_drive_list_ = true;
     in_recent_     = false;
     in_favs_       = false;
+    in_radio_      = false;
     dir_entries_   = listDrives();
     dir_display_   = dir_entries_;
     // Prepend virtual entries at top
     dir_entries_.insert(dir_entries_.begin(), "[Bookmarks]");
     dir_display_.insert(dir_display_.begin(), "[Bookmarks]");
+    dir_entries_.insert(dir_entries_.begin(), "[Radio]");
+    dir_display_.insert(dir_display_.begin(), "[Radio]");
     dir_entries_.insert(dir_entries_.begin(), "[FAVs]");
     dir_display_.insert(dir_display_.begin(), "[FAVs]");
     dir_entries_.insert(dir_entries_.begin(), "[Recent]");
@@ -3499,6 +3899,7 @@ void UIManager::refreshDir() {
     in_drive_list_ = false;
     in_recent_     = false;
     in_favs_       = false;
+    in_radio_      = false;
     dir_entries_.clear();
     dir_display_.clear();
     dir_poll_ticks_ = 0;
@@ -3515,6 +3916,8 @@ void UIManager::refreshDir() {
         dir_display_.push_back("[Recent]");
         dir_entries_.push_back("[FAVs]");
         dir_display_.push_back("[FAVs]");
+        dir_entries_.push_back("[Radio]");
+        dir_display_.push_back("[Radio]");
         if (!at_root) {
             dir_entries_.push_back("..");
             dir_display_.push_back("..");
@@ -3555,6 +3958,8 @@ void UIManager::refreshDir() {
                 if (eb == "[Recent]")               return false;
                 if (ea == "[FAVs]")                 return true;
                 if (eb == "[FAVs]")                 return false;
+                if (ea == "[Radio]")                return true;
+                if (eb == "[Radio]")                return false;
                 if (ea == "..")                     return true;
                 if (eb == "..")                     return false;
 

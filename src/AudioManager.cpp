@@ -132,6 +132,9 @@ void AudioManager::teardownNext() {
         next_decoder_initialised_.store(false);
     }
     next_path_.clear();
+    // Cancel any pending deferred swap: the preload it referred to is gone, so
+    // pollEvents must not install a now-stale next_track_info_ over current_track_.
+    track_swap_flag_.store(false);
 }
 
 // Prime the decoder — attempt a small read to flush any bad initial frame.
@@ -189,6 +192,7 @@ bool AudioManager::play(const std::string& path) {
     prime_decoder(decoder_);
     decoder_initialised_ = true;
     populate_track_info(current_track_, path);
+    current_rg_db_.store(current_track_.replaygain_db);  // mirror for the audio thread
 
     if (!initDevice()) { teardown(); return false; }
     ma_device_set_master_volume(&device_, volume_.load());
@@ -317,11 +321,15 @@ void AudioManager::initCrossfade() {
     next_decoder_initialised_.store(false);
     std::memset(&next_decoder_, 0, sizeof(next_decoder_));
 
-    current_track_ = next_track_info_;  // safe: acquire on next_decoder_initialised_ above
-    live_bpm_.store(0);                  // new track: clear BPM (atomic, not current_track_)
+    // Do NOT write current_track_ here — that struct (with its std::strings) is
+    // owned by the main thread. Publish what the audio thread needs via atomics and
+    // hand the string-bearing install off to pollEvents() via track_swap_flag_.
+    current_rg_db_.store(next_track_info_.replaygain_db);
+    live_bpm_.store(0);                  // new track: clear BPM (atomic)
     resetSpeedResampler();               // decoder swapped — drop stale varispeed residual
-    cached_duration_.store((double)current_track_.duration_sec);
+    cached_duration_.store((double)next_track_info_.duration_sec);
     next_path_.clear();
+    track_swap_flag_.store(true);        // main thread installs current_track_ = next_track_info_
     bpm_needed_flag_.store(true);
 }
 
@@ -484,6 +492,14 @@ void AudioManager::pushVizSample(float s) {
 
 // ─── poll ────────────────────────────────────────────────────────────────────
 void AudioManager::pollEvents() {
+    // Install a pending decoder swap FIRST: this is the only place current_track_
+    // is updated for an auto-advance, and it must happen before startBpmDetection
+    // (which reads current_track_.path) and before on_preload_next_ (which
+    // overwrites next_track_info_). next_track_info_ is stable here: the audio
+    // thread finished reading it before setting the flag, and next_decoder_
+    // initialised_ is false post-swap so no preload can overwrite it until below.
+    if (track_swap_flag_.exchange(false))
+        current_track_ = next_track_info_;
     if (bpm_needed_flag_.exchange(false))
         startBpmDetection(current_track_.path, (int)decoder_.outputSampleRate);
     if (preload_next_flag_.exchange(false))
@@ -707,7 +723,7 @@ void AudioManager::onDataCallback(void* output, ma_uint32 frame_count) {
 
     // ── ReplayGain ────────────────────────────────────────────────────────
     if (replaygain_enabled_.load()) {
-        float db   = current_track_.replaygain_db;
+        float db   = current_rg_db_.load();   // atomic mirror — never touch current_track_ here
         float gain = (db != 0.0f) ? std::pow(10.0f, db / 20.0f) : 1.0f;
         gain *= std::pow(10.0f, 6.0f / 20.0f);
         gain = std::clamp(gain, 0.0f, 4.0f);

@@ -94,7 +94,7 @@ std::string CDRipper::buildOutputDir(const MBRelease& rel) {
         folder = sanitizePath(rel.artist.empty() ? rel.title
                               : rel.artist+" - "+rel.title) + yr;
     } else {
-        std::time_t t = std::time(nullptr); std::tm* tm = std::localtime(&t);
+        std::time_t t = std::time(nullptr); std::tm tmbuf{}; localtimeSafe(t, tmbuf); std::tm* tm = &tmbuf;
         char buf[32]; std::strftime(buf,sizeof(buf),"CD_Rip_%Y-%m-%d",tm);
         folder = buf;
     }
@@ -374,7 +374,6 @@ bool CDRipper::fetchARData(
     // zeroes the pregap and 404s on non-standard-pregap discs (e.g. Relish, T1
     // at LBA 182 -> rel 32, which must remain in the ID). Verified against the
     // live AR DB: Relish + enhanced CDs both hit with fixed-150.
-    const uint32_t t1_lba    = tracks[0].start_lba;
     static constexpr uint32_t AR_PREGAP = 150;
     DWORD disc_leadout = full_leadout_lba ? full_leadout_lba
                        : tracks.back().start_lba + tracks.back().length_lba;
@@ -404,7 +403,7 @@ bool CDRipper::fetchARData(
                 i+1, (unsigned long)tracks[i].start_lba,
                 (unsigned long)(tracks[i].start_lba - AR_PREGAP));
         fprintf(dbg,"  t1_lba=%lu  leadout_rel=%lu\n",
-                (unsigned long)t1_lba, (unsigned long)rel_leadout);
+                (unsigned long)tracks[0].start_lba, (unsigned long)rel_leadout);
     }
 
     std::vector<uint8_t> ar_data;
@@ -459,7 +458,7 @@ bool CDRipper::fetchARData(
                 std::string mf_path = ar_cache_dir + "\\accuraterip-id.txt";
                 FILE* mf = _wfopen(utf8_to_wide(mf_path).c_str(), L"w");
                 if (mf) {
-                    std::time_t t = std::time(nullptr); std::tm* tm = std::localtime(&t);
+                    std::time_t t = std::time(nullptr); std::tm tmbuf{}; localtimeSafe(t, tmbuf); std::tm* tm = &tmbuf;
                     char ts[32]; std::strftime(ts, sizeof(ts), "%Y-%m-%d", tm);
                     fprintf(mf, "[AccurateRip Metadata Manifest]\n");
                     fprintf(mf, "DiscID1      : %08x\n", disc_id1);
@@ -1458,11 +1457,6 @@ ARTrackResult CDRipper::ripTrack(HANDLE             hCD,
     ar_result.crc_v2     = csum_lo + csum_hi;
     ar_result.ctdb_crc   = ctdb_crc;
     ar_result.ctdb_bytes = ctdb_bytes;
-
-    // CRC diagnostic — logged in worker after checkAR
-    // Store component values for post-check logging
-    ar_result.crc_v1        = csum_lo;
-    ar_result.crc_v2        = csum_lo + csum_hi;
     ar_result.frame450_local = frame450_local;
 
     // Preamble read failure -> the AR CRC accumulated silent zeros for the pregap
@@ -1555,7 +1549,7 @@ void CDRipper::worker(std::string          drive_letter,
     {
         fs::create_directories(log_dir, ec);
         std::time_t t = std::time(nullptr);
-        std::tm* tm = std::localtime(&t);
+        std::tm tmbuf{}; localtimeSafe(t, tmbuf); std::tm* tm = &tmbuf;
         char ts[32]; std::strftime(ts, sizeof(ts), "rip_%Y%m%d_%H%M%S", tm);
         log_path = log_dir + "\\" + ts + ".log";
         FILE* lf = _wfopen(utf8_to_wide(log_path).c_str(), L"w");

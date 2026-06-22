@@ -771,7 +771,7 @@ void UIManager::drawTitleBar() {
     // Wall clock
     if (show_clock_) {
         std::time_t now = std::time(nullptr);
-        std::tm* tm = std::localtime(&now);
+        std::tm tmbuf{}; localtimeSafe(now, tmbuf); std::tm* tm = &tmbuf;
         char clk[12];
         std::strftime(clk, sizeof(clk), " %H:%M:%S", tm);
         modes += clk;
@@ -1844,7 +1844,7 @@ void UIManager::drawTrackInfo() {
                 addInt("Times Played", it->second.play_count);
                 if (it->second.last_played > 0) {
                     char tsbuf[32];
-                    std::tm* tm = std::localtime(&it->second.last_played);
+                    std::tm tmbuf{}; localtimeSafe(it->second.last_played, tmbuf); std::tm* tm = &tmbuf;
                     std::strftime(tsbuf, sizeof(tsbuf), "%Y-%m-%d %H:%M", tm);
                     add("Last Played", tsbuf);
                 }

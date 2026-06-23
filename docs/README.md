@@ -58,7 +58,6 @@ Scrobble both local files and radio to Last.fm.
   
 ## Fixes
 
-- Selecting a station no longer leaves stale file entries in the playlist (radio now replaces the playlist, matching CD behavior).
 - `RADIO:` labels survive a restart instead of reverting to the raw URL.
 - Last.fm auth no longer loops if the app is restarted mid-authorization (the in-flight token is persisted).
 - LogRotate keep 5 days worth of logs, rotate through

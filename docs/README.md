@@ -67,6 +67,7 @@ Scrobble both local files and radio to Last.fm.
 - Dedup in playlist on loads
 - Remove UI freeze on Radio Stream Negotiation
 - Add text to UI indicating Radio Stream Negotiation in progress (and TOAST notification of same)
+- Fix empty .cue .m3u8 files on rip CD
 
 ## New Runtime Dependency
 

@@ -124,6 +124,14 @@ public:
     // ── Streaming (internet radio) mode ───────────────────────────────────────
     bool     playStream(const std::string& url);   // http(s):// audio stream
     bool     streamMode()        const { return stream_mode_.load(); }
+    // True while a stream connect is being negotiated off the UI thread.
+    bool     streamConnecting()  const { return stream_connecting_.load(); }
+    // Non-blocking radio start: stops current playback, negotiates the stream on
+    // a worker thread, and brings up the device on a later pollEvents() tick.
+    void     beginStream(const std::string& url);
+    // UI consumes these once to toast the outcome of a backgrounded connect.
+    bool     takeStreamConnected() { return stream_just_connected_.exchange(false); }
+    bool     takeStreamFailed()    { return stream_just_failed_.exchange(false); }
     bool     streamBuffering()   const { return stream_source_.buffering(); }
     std::string streamNowPlaying() const { return stream_source_.nowPlaying(); }
     int      streamPositionSec() const { return stream_source_.positionSec(); }
@@ -189,6 +197,27 @@ private:
     CDSource                   cd_source_;
     std::atomic<bool>          stream_mode_  { false };
     StreamSource               stream_source_;
+
+    // ── Async stream connect (StreamSource::open runs off the UI thread) ──
+    // beginStream() stops current playback and spawns a worker that runs the slow
+    // open() (connect + producer spawn); pollStreamConnect() (called each tick from
+    // pollEvents) brings up the device on success. A single worker ever touches
+    // stream_source_; a depth-1 "latest-wins" slot honors a station picked mid-connect;
+    // a generation counter lets a file/CD start interrupt and supersede a connect.
+    std::atomic<bool>          stream_connecting_   { false }; // worker in flight
+    std::atomic<bool>          stream_connect_done_ { false }; // worker finished; result pending
+    std::atomic<uint64_t>      stream_connect_gen_  { 0 };     // bumped by every playback start
+    std::atomic<bool>          stream_just_connected_{ false };// UI toast latch
+    std::atomic<bool>          stream_just_failed_   { false };// UI toast latch
+    std::mutex                 stream_connect_mtx_;            // guards the strings + flags below
+    std::string                stream_connect_url_;            // url the worker is opening
+    bool                       stream_connect_ok_ = false;     // worker result
+    uint64_t                   stream_connect_worker_gen_ = 0; // gen captured when the worker spawned
+    std::string                stream_pending_url_;            // latest-wins depth-1 slot
+    bool                       stream_pending_has_ = false;
+    std::thread                stream_connect_thread_;
+    void startStreamConnectLocked(const std::string& url);     // state_mutex_ must be held
+    void pollStreamConnect();                                  // main thread; from pollEvents
 #endif
     std::atomic<bool>          replaygain_enabled_ { false };
     std::atomic<float>         replaygain_gain_    { 1.0f };

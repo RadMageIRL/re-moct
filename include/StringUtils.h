@@ -43,6 +43,13 @@ inline bool isCDTrackPath(const std::string& p) {
     return true;
 }
 
+// Internet-radio playlist entry: stored verbatim as an http(s):// URL (see
+// PlaylistManager::addStream). Used to keep streams out of file-only machinery
+// (the crossfade preloader) and out of saved playlists.
+inline bool isStreamPath(const std::string& p) {
+    return p.rfind("http://", 0) == 0 || p.rfind("https://", 0) == 0;
+}
+
 // Returns the 1-based track number encoded in a synthetic CD path
 // ("<letter>:CD Track NN"), or -1 if `p` is not a CD-track path. Never throws —
 // isCDTrackPath() guarantees a digits-only suffix, and the try/catch guards the

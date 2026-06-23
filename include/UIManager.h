@@ -18,6 +18,7 @@
 #include "CDRipper.h"
 #include "RadioBrowser.h"
 #include "LastFm.h"
+#include "ListenBrainz.h"
 #endif
 #include "AudioManager.h"
 #include "miniaudio.h"
@@ -126,7 +127,7 @@ private:
     void computeVizBins();
 
     // Input bar state (goto dir / save M3U / load M3U)
-    enum class InputMode { Goto, SaveM3U, LoadM3U, StreamURL, RadioSearch, LastfmKey, LastfmSecret };
+    enum class InputMode { Goto, SaveM3U, LoadM3U, StreamURL, RadioSearch, LastfmKey, LastfmSecret, ListenBrainzToken };
     bool        goto_active_  = false;
     InputMode   input_mode_   = InputMode::Goto;
     std::string goto_input_;
@@ -231,6 +232,17 @@ private:
     std::string       lf_poll_user_;
     std::thread       lf_poll_thread_;
     void startLastfmPoll(const std::string& token);
+
+    // ListenBrainz token validation: worker validates off the UI thread; the UI
+    // thread commits the result (store token+user, save, toast) on the next tick.
+    std::atomic<bool> lb_validate_active_{false};
+    std::atomic<bool> lb_validate_done_{false};
+    std::mutex        lb_validate_mtx_;
+    std::string       lb_validate_token_;       // token that was validated (guarded)
+    std::string       lb_validate_user_;        // username on success (guarded)
+    bool              lb_validate_ok_ = false;  // result (guarded)
+    std::thread       lb_validate_thread_;
+    void startListenBrainzValidate(const std::string& token);
 
     // Last.fm scrobble state machine
     std::string scrob_artist_, scrob_track_, scrob_album_;

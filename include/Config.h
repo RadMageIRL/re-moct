@@ -21,6 +21,8 @@ struct DigiConfig {
     std::string              lastfm_session;   // session key (obtained via auth)
     std::string              lastfm_user;      // username (from auth)
     std::string              lastfm_pending;   // in-flight auth token (survives restart)
+    std::string              listenbrainz_token; // user token (listenbrainz.org/settings)
+    std::string              listenbrainz_user;  // username (from validate-token)
     float                    volume           = 1.0f;
     int                      repeat_mode      = 0;
     bool                     shuffle          = false;

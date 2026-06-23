@@ -122,7 +122,6 @@ public:
           CDSource& cdSource()       { return cd_source_; }
 
     // ── Streaming (internet radio) mode ───────────────────────────────────────
-    bool     playStream(const std::string& url);   // http(s):// audio stream
     bool     streamMode()        const { return stream_mode_.load(); }
     // True while a stream connect is being negotiated off the UI thread.
     bool     streamConnecting()  const { return stream_connecting_.load(); }

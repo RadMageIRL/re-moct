@@ -50,11 +50,18 @@ Scrobble both local files and radio to Last.fm.
 - Sends "now playing" on track start and scrobbles once the track passes Last.fm's threshold (>30s, played to 50% or 4 minutes).
 - All calls are MD5-signed via the OS crypto API. Scrobbling silently no-ops if you haven't logged in.
 
+## ListenBrainz Scrobbling
+- **One-time in-app setup:** press **Ctrl+B**, enter your API key and secret (stored in config), approve in the browser - authentication then **completes automatically** (no second keypress).
+- Scrobbles local files (from tags) and radio tracks (from ICY metadata).
+- Sends "now playing" on track start and scrobbles once the track passes Last.fm's threshold (>30s, played to 50% or 4 minutes).
+- All calls are MD5-signed via the OS crypto API. Scrobbling silently no-ops if you haven't logged in.
+  
 ## Fixes
 
 - Selecting a station no longer leaves stale file entries in the playlist (radio now replaces the playlist, matching CD behavior).
 - `RADIO:` labels survive a restart instead of reverting to the raw URL.
 - Last.fm auth no longer loops if the app is restarted mid-authorization (the in-flight token is persisted).
+- LogRotate keep 5 days worth of logs, rotate through
 
 ## New Runtime Dependency
 

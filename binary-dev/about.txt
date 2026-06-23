@@ -1,0 +1,24 @@
+The remoct.exe here is compiled with Internet Radio and Last.fm support. Requires the packages/dlls noted herein.
+
+In MSYS2
+
+pacman -S \
+  mingw-w64-ucrt-x86_64-gcc \
+  mingw-w64-ucrt-x86_64-cmake \
+  mingw-w64-ucrt-x86_64-ninja \
+  mingw-w64-ucrt-x86_64-pkgconf \
+  mingw-w64-ucrt-x86_64-flac \
+  mingw-w64-ucrt-x86_64-lame \
+  mingw-w64-ucrt-x86_64-libebur128 \
+  mingw-w64-ucrt-x86_64-fdk-aac \
+  mingw-w64-ucrt-x86_64-ncurses \
+  mingw-w64-ucrt-x86_64-taglib
+
+New Keys
+
+Key  Action
+
+Ctrl+U  Add / play a stream by URL
+/Search radio-browser.info (in [Radio])
+d / DelRemove saved station (in [Radio])
+Ctrl+GLast.fm login

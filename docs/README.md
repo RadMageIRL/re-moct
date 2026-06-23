@@ -63,6 +63,10 @@ Scrobble both local files and radio to Last.fm.
 - Last.fm auth no longer loops if the app is restarted mid-authorization (the in-flight token is persisted).
 - LogRotate keep 5 days worth of logs, rotate through
 - General Log formatting clean-up
+- Adjust playlist load behavior, account for [Radio]
+- Dedup in playlist on loads
+- Remove UI freeze on Radio Stream Negotiation
+- Add text to UI indicating Radio Stream Negotiation in progress (and TOAST notification of same)
 
 ## New Runtime Dependency
 

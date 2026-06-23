@@ -5,7 +5,7 @@ See current binary/exe in the binary-dev directory (you need to run it in a dire
 
 # What's New in This Branch (since v1.0.0-RC1)
 
-This dev branch adds a complete **internet-radio subsystem** and **Last.fm scrobbling** on top of the RC1 CD player/ripper. Everything below is initially tested against live streams, but is not yet frozen for release.
+This dev branch adds a complete **internet-radio subsystem** and **Last.fm scrobbling** on top of the RC1 CD/File player/ripper. Everything below is initially tested against live streams, but is not yet frozen for release.
 
 ## Internet Radio Streaming
 

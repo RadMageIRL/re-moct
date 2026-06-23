@@ -22,3 +22,8 @@ Ctrl+U  Add / play a stream by URL
 / - Search radio-browser.info (in [Radio])
 d - Del Remove saved station (in [Radio])
 Ctrl+G - Last.fm login
+Ctrl+B - ListenBrainz login
+
+
+6-22 - LastFM, Radio, Radio search, ICYmetadata added
+6-23 - ListenBrainz, clean up ad/commercials metadata in scrobbler feeds, implement/clean-up logrotate, general code clean-up

@@ -13,8 +13,6 @@
 #include <cstdarg>
 #include "json.hpp"
 
-#pragma comment(lib, "wininet.lib")
-#pragma comment(lib, "advapi32.lib")
 
 // Diagnostic log — routed through the shared operational logger (Log).
 static void lflog(const char* fmt, ...) {

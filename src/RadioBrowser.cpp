@@ -8,7 +8,6 @@
 #include <cctype>
 #include "json.hpp"
 
-#pragma comment(lib, "wininet.lib")
 
 namespace {
 

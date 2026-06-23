@@ -8,7 +8,6 @@
 #include <cstdio>
 #include <cstdarg>
 
-#pragma comment(lib, "wininet.lib")
 
 // ─── Diagnostic log — routed through the shared operational logger (Log) ──────
 static void slog(const char* fmt, ...) {

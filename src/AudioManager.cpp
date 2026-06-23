@@ -1173,44 +1173,6 @@ void AudioManager::closeCD() {
     }
 }
 
-bool AudioManager::playStream(const std::string& url) {
-    std::lock_guard<std::mutex> lock(state_mutex_);
-    // Leave CD mode if active
-    if (cd_mode_.load()) {
-        cd_source_.stop();
-        cd_source_.close();
-        cd_mode_.store(false);
-    }
-    teardown();        // uninits file decoder_ AND device_ (CD or file)
-    teardownNext();
-    stream_source_.close();
-    stream_mode_.store(false);
-    track_ended_flag_.store(false);
-
-    if (!stream_source_.open(url)) return false;
-    stream_mode_.store(true);
-
-    // Fixed 44100 stereo float device — identical to the CD path.
-    ma_device_config cfg = ma_device_config_init(ma_device_type_playback);
-    cfg.playback.format   = ma_format_f32;
-    cfg.playback.channels = 2;
-    cfg.sampleRate        = 44100;
-    cfg.dataCallback      = &AudioManager::maDataCallback;
-    cfg.stopCallback      = &AudioManager::maStopCallback;
-    cfg.pUserData         = this;
-    if (has_selected_device_) cfg.playback.pDeviceID = &selected_device_id_;
-    if (ma_device_init(nullptr, &cfg, &device_) != MA_SUCCESS) {
-        stream_source_.close();
-        stream_mode_.store(false);
-        return false;
-    }
-    device_initialised_ = true;
-    ma_device_set_master_volume(&device_, volume_.load());
-    ma_device_start(&device_);
-    state_.store(PlaybackState::Playing);
-    return true;
-}
-
 #ifdef _WIN32
 // Non-blocking radio start. If a connect is already running, remember the latest
 // request (depth-1, latest-wins) instead of racing a second worker.

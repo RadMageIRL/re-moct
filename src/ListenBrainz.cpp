@@ -10,7 +10,6 @@
 #include <cstdio>
 #include "json.hpp"
 
-#pragma comment(lib, "wininet.lib")
 
 static const char* kUA   = "RE-MOCT/1.0.0-rc1 (https://github.com/RadMageIRL/re-moct)";
 static const char* kHost = "api.listenbrainz.org";

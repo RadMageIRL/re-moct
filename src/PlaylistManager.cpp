@@ -301,6 +301,8 @@ int PlaylistManager::loadM3U(const std::string& path) {
         if (fs::exists(abs) && isSupportedAudio(abs)) {
             addTrack(abs);
             ++added;
+        } else if (isSupportedAudio(abs)) {
+            ++last_load_missing_;   // audio entry whose file is not on disk
         }
     }
     return added;
@@ -353,6 +355,8 @@ int PlaylistManager::loadPLS(const std::string& path) {
         if (fs::exists(abs) && isSupportedAudio(abs)) {
             addTrack(abs);
             ++added;
+        } else if (isSupportedAudio(abs)) {
+            ++last_load_missing_;   // audio entry whose file is not on disk
         }
     }
     return added;
@@ -465,6 +469,8 @@ int PlaylistManager::loadXSPF(const std::string& path) {
         if (fs::exists(abs) && isSupportedAudio(abs)) {
             addTrack(abs);
             ++added;
+        } else if (isSupportedAudio(abs)) {
+            ++last_load_missing_;   // audio entry whose file is not on disk
         }
     }
     return added;
@@ -486,6 +492,7 @@ bool PlaylistManager::savePlaylist(const std::string& path) const {
 }
 
 int PlaylistManager::loadPlaylist(const std::string& path) {
+    last_load_missing_ = 0;
     std::string ext = playlist_ext(path);
     if (ext == ".pls")               return loadPLS(path);
     if (ext == ".xspf")              return loadXSPF(path);

@@ -3434,6 +3434,8 @@ void UIManager::gotoClose(bool commit) {
                     std::size_t before = playlist_.size();
                     playlist_.loadPlaylist(target);
                     std::size_t after  = playlist_.size();
+                    if (int miss = playlist_.lastLoadMissing(); miss > 0)
+                        showTrackToast("Playlist loaded", std::to_string(miss) + " file(s) not found", "");
                     if (after > before) {
                         // Jump to the first genuinely-new entry (trust the size
                         // delta, not the line count — dedup may drop duplicates).
@@ -3473,6 +3475,8 @@ void UIManager::gotoClose(bool commit) {
                 std::size_t before = playlist_.size();
                 playlist_.loadPlaylist(target);
                 std::size_t after  = playlist_.size();
+                if (int miss = playlist_.lastLoadMissing(); miss > 0)
+                    showTrackToast("Playlist loaded", std::to_string(miss) + " file(s) not found", "");
                 if (after > before) {
                     // Jump to the first genuinely-new entry. Dedup may have
                     // dropped some lines, so trust the size delta rather than
@@ -3957,6 +3961,8 @@ void UIManager::activateSelection() {
             std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
             if (ext == ".m3u" || ext == ".m3u8" || ext == ".pls" || ext == ".xspf") {
                 playlist_.loadPlaylist(full.string());
+                if (int miss = playlist_.lastLoadMissing(); miss > 0)
+                    showTrackToast("Playlist loaded", std::to_string(miss) + " file(s) not found", "");
                 pl_cursor_ = 0; pl_scroll_ = 0;
             }
         }

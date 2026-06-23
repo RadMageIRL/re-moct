@@ -24,6 +24,8 @@ set(REMOCT_SOURCES
     src/StreamSource.cpp
     src/RadioBrowser.cpp
     src/LastFm.cpp
+    src/Log.cpp
+    src/ListenBrainz.cpp
 )
 
 add_executable(remoct ${REMOCT_SOURCES})

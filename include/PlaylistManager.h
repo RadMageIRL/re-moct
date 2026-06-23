@@ -130,6 +130,9 @@ public:
     // Unified: detect format from extension (.m3u/.m3u8/.pls/.xspf)
     bool savePlaylist(const std::string& path) const;
     int  loadPlaylist(const std::string& path);
+    // Count of audio entries in the last load whose file was not found on disk
+    // (reset at the start of each loadPlaylist; ignores non-audio entries).
+    int  lastLoadMissing() const { return last_load_missing_; }
 
     // ── Play Queue ───────────────────────────────────────────────────────────
     // FIFO queue that overrides playlist order. Consumed one entry at a time.
@@ -167,6 +170,7 @@ private:
     std::size_t              shuffle_pos_ = 0;
 
     SortMode sort_mode_ = SortMode::None;
+    int last_load_missing_ = 0;   // see lastLoadMissing()
 
     void rebuildShuffleOrder();
     static void populateMetadata(PlaylistEntry& entry);

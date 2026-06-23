@@ -19,6 +19,6 @@ New Keys
 Key  Action
 
 Ctrl+U  Add / play a stream by URL
-/Search radio-browser.info (in [Radio])
-d / DelRemove saved station (in [Radio])
-Ctrl+GLast.fm login
+/ - Search radio-browser.info (in [Radio])
+d - Del Remove saved station (in [Radio])
+Ctrl+G - Last.fm login

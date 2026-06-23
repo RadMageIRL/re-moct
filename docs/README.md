@@ -68,6 +68,7 @@ Scrobble both local files and radio to Last.fm.
 - Add text to UI indicating Radio Stream Negotiation in progress (and TOAST notification of same)
 - Fix empty .cue .m3u8 files on rip CD
 - Extend scrobbling to CDs (Once metadata is loaded from MB/Discog with Ctrl R or Ctrl F)
+- Logic to visually warn user if files missing from path on saved playlist load - Displays TOAST with mismatch count for same
 
 ## New Runtime Dependency
 

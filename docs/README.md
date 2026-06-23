@@ -63,7 +63,7 @@ Scrobble both local files and radio to Last.fm.
 - LogRotate keep 5 days worth of logs, rotate through
 - General Log formatting clean-up
 - Adjust playlist load behavior, account for [Radio]
-- Dedup in playlist on loads
+- De-dupe in playlist on loads
 - Remove UI freeze on Radio Stream Negotiation
 - Add text to UI indicating Radio Stream Negotiation in progress (and TOAST notification of same)
 - Fix empty .cue .m3u8 files on rip CD

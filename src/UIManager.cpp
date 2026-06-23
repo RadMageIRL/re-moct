@@ -234,6 +234,16 @@ void UIManager::run() {
     while (running_) {
         audio_.pollEvents();
         updateScrobbler();
+#ifdef _WIN32
+        if (audio_.takeStreamConnected()) {
+            std::string t;
+            if (!playlist_.empty() && playlist_.current() < playlist_.size())
+                t = playlist_.at(playlist_.current()).display_title;
+            showTrackToast("Streaming", t, "");
+        }
+        if (audio_.takeStreamFailed())
+            showTrackToast("Radio stream connect FAILED", "", "");
+#endif
 
         // Force periodic resize check and redraw every ~80ms
         static int resize_poll = 0;
@@ -2071,6 +2081,20 @@ void UIManager::drawProgress() {
     int filled = (dur > 0) ? (int)((pos/dur)*bw) : 0;
     filled = std::clamp(filled, 0, bw);
 #ifdef _WIN32
+    if (audio_.streamConnecting()) {
+        // Backgrounded connect in progress — make the current operation obvious.
+        std::string left  = "Negotiating Radio Stream...";
+        std::string right = "vol:" + std::to_string((int)(audio_.volume()*100.0f+0.5f)) + "%";
+        int avail = cols - (int)right.size() - 3;
+        if (avail < 1) avail = 1;
+        if ((int)left.size() > avail) left = left.substr(0, (size_t)avail);
+        wattron(win_progress_, COLOR_PAIR(CP_TITLE) | A_BOLD);
+        mvwaddstr(win_progress_, 0, 1, left.c_str());
+        wattroff(win_progress_, A_BOLD);
+        mvwaddstr(win_progress_, 0, cols - (int)right.size() - 1, right.c_str());
+        wattroff(win_progress_, COLOR_PAIR(CP_TITLE));
+        return;
+    }
     if (audio_.streamMode()) {
         // Live stream: no position/duration. Repurpose this row for the ICY
         // now-playing title, with a [LIVE]/[BUFFERING] marker and volume.
@@ -3494,9 +3518,8 @@ void UIManager::gotoClose(bool commit) {
                     pl_scroll_  = 0;
                     right_pane_ = RightPane::Playlist;
                     playlist_.selectAt(idx);
-                    bool ok = audio_.play(url);   // http(s):// routes to playStream
-                    showTrackToast(ok ? "Streaming\u2026" : "Stream connect FAILED",
-                                   label, "");
+                    audio_.beginStream(url);   // non-blocking; connects on a worker thread
+                    showTrackToast("Negotiating Radio Stream...", label, "");
                 }
                 break;
             }
@@ -3833,7 +3856,8 @@ void UIManager::activateSelection() {
             playlist_.selectAt(idx);
             right_pane_ = RightPane::Playlist;
             in_radio_search_ = false;
-            audio_.play(url);   // routes to playStream
+            audio_.beginStream(url);   // non-blocking; connects on a worker thread
+            showTrackToast("Negotiating Radio Stream...", label, "");
             return;
         }
         if (in_favs_) {

@@ -93,6 +93,9 @@ AudioManager::AudioManager()  = default;
 AudioManager::~AudioManager() {
     bpm_cancel_.store(true);
     if (bpm_thread_.joinable()) bpm_thread_.join();
+#ifdef _WIN32
+    if (stream_connect_thread_.joinable()) stream_connect_thread_.join();
+#endif
     teardown();
     teardownNext();
 }
@@ -151,11 +154,18 @@ static void prime_decoder(ma_decoder& dec) {
 // ─── play ────────────────────────────────────────────────────────────────────
 bool AudioManager::play(const std::string& path) {
 #ifdef _WIN32
-    // Scheme-branch: HTTP(S) URLs route to the streaming path.
-    if (path.rfind("http://", 0) == 0 || path.rfind("https://", 0) == 0)
-        return playStream(path);
+    // Scheme-branch: HTTP(S) URLs route to the (non-blocking) streaming path.
+    if (path.rfind("http://", 0) == 0 || path.rfind("https://", 0) == 0) {
+        beginStream(path);
+        return true;
+    }
 #endif
     std::lock_guard<std::mutex> lock(state_mutex_);
+#ifdef _WIN32
+    // Starting a file supersedes any in-flight stream connect (its result will be
+    // discarded rather than clobbering this playback).
+    stream_connect_gen_.fetch_add(1);
+#endif
 #ifdef _WIN32
     // Exit stream mode if switching to file playback (clear the flag first so the
     // audio callback stops entering the stream branch, then join the producer).
@@ -541,6 +551,9 @@ void AudioManager::pollEvents() {
         if (on_preload_next_) on_preload_next_();
     if (track_ended_flag_.exchange(false))
         if (on_track_end_) on_track_end_();
+#ifdef _WIN32
+    pollStreamConnect();   // pick up a finished background stream connect
+#endif
 }
 
 // ─── audio callback ──────────────────────────────────────────────────────────
@@ -1198,8 +1211,127 @@ bool AudioManager::playStream(const std::string& url) {
     return true;
 }
 
+#ifdef _WIN32
+// Non-blocking radio start. If a connect is already running, remember the latest
+// request (depth-1, latest-wins) instead of racing a second worker.
+void AudioManager::beginStream(const std::string& url) {
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    if (stream_connecting_.load()) {
+        std::lock_guard<std::mutex> lk(stream_connect_mtx_);
+        stream_pending_url_ = url;
+        stream_pending_has_ = true;
+        return;
+    }
+    startStreamConnectLocked(url);
+}
+
+// Stop current playback and spawn the connect worker. Caller holds state_mutex_.
+void AudioManager::startStreamConnectLocked(const std::string& url) {
+    // Stop whatever is playing so its callback releases the device before the
+    // worker touches stream_source_. (stream_mode_ is cleared first, so a prior
+    // stream's callback stops entering the stream branch.)
+    if (cd_mode_.load()) { cd_source_.stop(); cd_source_.close(); cd_mode_.store(false); }
+    stream_mode_.store(false);
+    teardown();        // stops + uninits device_ and file decoder_
+    teardownNext();
+    track_ended_flag_.store(false);
+    state_.store(PlaybackState::Stopped);
+
+    uint64_t gen = stream_connect_gen_.fetch_add(1) + 1;
+    {
+        std::lock_guard<std::mutex> lk(stream_connect_mtx_);
+        stream_connect_url_        = url;
+        stream_connect_worker_gen_ = gen;
+    }
+    stream_connect_done_.store(false);
+    stream_connecting_.store(true);
+
+    // The prior worker (if any) has already finished by the time we get here
+    // (stream_connecting_ was false), so this join is instant.
+    if (stream_connect_thread_.joinable()) stream_connect_thread_.join();
+    stream_connect_thread_ = std::thread([this, url]() {
+        // The slow part — connect + producer spawn — entirely off the UI thread.
+        // The worker touches only stream_source_; the device is brought up later
+        // on the main thread once this succeeds.
+        bool ok = stream_source_.open(url);
+        {
+            std::lock_guard<std::mutex> lk(stream_connect_mtx_);
+            stream_connect_ok_ = ok;
+        }
+        stream_connect_done_.store(true);
+    });
+}
+
+// Called every tick from pollEvents (main thread). Picks up a finished connect
+// and brings the device up, discarding the result if a newer playback superseded it.
+void AudioManager::pollStreamConnect() {
+    if (!stream_connect_done_.exchange(false)) return;
+
+    std::lock_guard<std::mutex> lock(state_mutex_);
+
+    bool ok; uint64_t wgen;
+    {
+        std::lock_guard<std::mutex> lk(stream_connect_mtx_);
+        ok = stream_connect_ok_;
+        wgen = stream_connect_worker_gen_;
+    }
+    if (stream_connect_thread_.joinable()) stream_connect_thread_.join();  // reap finished worker
+
+    const bool superseded = (wgen != stream_connect_gen_.load());
+
+    if (superseded) {
+        // A file/CD/newer stream started while we were connecting — discard this
+        // stream without touching the device or state the new playback now owns.
+        stream_source_.close();
+    } else if (!ok) {
+        stream_source_.close();
+        stream_mode_.store(false);
+        state_.store(PlaybackState::Stopped);
+        stream_just_failed_.store(true);
+    } else {
+        // Publish: bring up the device on the main thread now that the stream is open.
+        ma_device_config cfg = ma_device_config_init(ma_device_type_playback);
+        cfg.playback.format   = ma_format_f32;
+        cfg.playback.channels = 2;
+        cfg.sampleRate        = 44100;
+        cfg.dataCallback      = &AudioManager::maDataCallback;
+        cfg.stopCallback      = &AudioManager::maStopCallback;
+        cfg.pUserData         = this;
+        if (has_selected_device_) cfg.playback.pDeviceID = &selected_device_id_;
+        if (ma_device_init(nullptr, &cfg, &device_) == MA_SUCCESS) {
+            device_initialised_ = true;
+            stream_mode_.store(true);
+            ma_device_set_master_volume(&device_, volume_.load());
+            ma_device_start(&device_);
+            state_.store(PlaybackState::Playing);
+            stream_just_connected_.store(true);
+        } else {
+            stream_source_.close();
+            stream_mode_.store(false);
+            state_.store(PlaybackState::Stopped);
+            stream_just_failed_.store(true);
+        }
+    }
+
+    stream_connecting_.store(false);
+
+    // Latest-wins: honor a station selected during the connect.
+    bool has_pending = false; std::string pending;
+    {
+        std::lock_guard<std::mutex> lk(stream_connect_mtx_);
+        has_pending = stream_pending_has_;
+        pending = stream_pending_url_;
+        stream_pending_has_ = false;
+    }
+    if (has_pending) startStreamConnectLocked(pending);
+}
+#endif // _WIN32
+
 bool AudioManager::playCDTrack(int track_number) {
     if (!cd_mode_.load() || !cd_source_.isOpen()) return false;
+#ifdef _WIN32
+    stream_connect_gen_.fetch_add(1);   // supersede any in-flight stream connect
+#endif
     bool ok = cd_source_.playTrack(track_number);
     if (ok) state_.store(PlaybackState::Playing);   // viz / BPM / UI gate on state_
     return ok;

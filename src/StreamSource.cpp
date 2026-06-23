@@ -76,6 +76,13 @@ bool StreamSource::connect() {
                            INTERNET_OPEN_TYPE_PRECONFIG, nullptr, nullptr, 0);
     if (!hInet_) return false;
 
+    // Bound the connect/receive so a dead or wedged station can't block the
+    // connect worker (and thus a queued station switch) indefinitely.
+    DWORD to = 8000;  // ms
+    InternetSetOptionA(hInet_, INTERNET_OPTION_CONNECT_TIMEOUT, &to, sizeof(to));
+    InternetSetOptionA(hInet_, INTERNET_OPTION_RECEIVE_TIMEOUT, &to, sizeof(to));
+    InternetSetOptionA(hInet_, INTERNET_OPTION_SEND_TIMEOUT,    &to, sizeof(to));
+
     // InternetOpenUrlA parses the scheme; https is negotiated with TLS automatically
     // (same path the MusicBrainz/Discogs lookups already use).
     DWORD flags = INTERNET_FLAG_RELOAD | INTERNET_FLAG_NO_CACHE_WRITE |

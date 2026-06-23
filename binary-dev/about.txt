@@ -26,4 +26,4 @@ Ctrl+B - ListenBrainz login
 
 
 6-22 - LastFM, Radio, Radio search, ICYmetadata added
-6-23 - ListenBrainz, clean up ad/commercials metadata in scrobbler feeds, implement/clean-up logrotate, general code clean-up, playlist fix [Radio], radio negotiating freeze fix
+6-23 - ListenBrainz, clean up ad/commercials metadata in scrobbler feeds, implement/clean-up logrotate, general code clean-up, playlist fix [Radio], radio negotiating freeze UI for 5s fix

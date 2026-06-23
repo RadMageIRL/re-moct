@@ -2362,6 +2362,29 @@ void UIManager::updateScrobbler() {
         if (dash == std::string::npos) return;         // no parseable now-playing yet
         artist = np.substr(0, dash);
         track  = np.substr(dash + 3);
+    } else if (audio_.cdMode() && audio_.cdCurrentTrack() > 0) {
+        // CD: pull raw UTF-8 artist/title from the cached MusicBrainz release.
+        // (The playlist's display_title is combined "Artist - Title" AND
+        //  ASCII-sanitized for the terminal, so it's unsuitable for scrobbling.)
+        // No MB metadata for this track -> leave artist/track empty so the guard
+        // below skips: CD scrobbling requires a MusicBrainz lookup (Ctrl+R).
+        int tnum = audio_.cdCurrentTrack();
+        MBRelease rel;
+        { std::lock_guard<std::mutex> lk(mb_mutex_); rel = mb_release_; }
+        int n_phys = 0;
+        for (std::size_t k2 = 0; k2 < playlist_.size(); ++k2)
+            if (isCDTrackPath(playlist_.at(k2).path)) ++n_phys;
+        const int cur_disc = pickDiscForTrackCount(rel, n_phys);
+        const MBTrack* mt = nullptr;
+        for (const auto& m : rel.tracks)
+            if (m.number == tnum && m.disc == cur_disc) { mt = &m; break; }
+        if (mt && !mt->title.empty()) {
+            artist = mt->artist.empty() ? rel.artist : mt->artist;
+            track  = mt->title;
+            album  = rel.title;
+            pos = (int)audio_.cdPositionSec();
+            dur = (int)audio_.cdDurationSec();
+        }
     } else {
         const auto& t = audio_.currentTrack();
         artist = t.artist; track = t.title; album = t.album;

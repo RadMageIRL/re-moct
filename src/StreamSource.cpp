@@ -1,6 +1,7 @@
 #ifdef _WIN32
 
 #include "StreamSource.h"
+#include "Log.h"
 #include <cstring>
 #include <algorithm>
 #include <cctype>
@@ -9,17 +10,13 @@
 
 #pragma comment(lib, "wininet.lib")
 
-// ─── Diagnostic log (temp: %TEMP%\remoct_stream.log) ──────────────────────────
+// ─── Diagnostic log — routed through the shared operational logger (Log) ──────
 static void slog(const char* fmt, ...) {
-    char tmp[MAX_PATH];
-    DWORD n = GetTempPathA(MAX_PATH, tmp);
-    std::string p = (n > 0 && n < MAX_PATH) ? std::string(tmp) + "remoct_stream.log"
-                                            : std::string("remoct_stream.log");
-    FILE* f = std::fopen(p.c_str(), "a");
-    if (!f) return;
-    va_list ap; va_start(ap, fmt); std::vfprintf(f, fmt, ap); va_end(ap);
-    std::fputc('\n', f);
-    std::fclose(f);
+    char buf[2048];
+    va_list ap; va_start(ap, fmt);
+    std::vsnprintf(buf, sizeof(buf), fmt, ap);
+    va_end(ap);
+    Log::write("stream", buf);
 }
 
 // ─── Lifecycle ────────────────────────────────────────────────────────────────

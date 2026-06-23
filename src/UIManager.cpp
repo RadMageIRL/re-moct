@@ -45,14 +45,14 @@
 #include <thread>
 #ifdef _WIN32
 #include <cstdarg>
+#include <cstdio>
+#include "Log.h"
 static void sclog(const char* fmt, ...) {
-    char tmp[MAX_PATH]; DWORD n = GetTempPathA(MAX_PATH, tmp);
-    std::string p = (n > 0 && n < MAX_PATH) ? std::string(tmp) + "remoct_stream.log"
-                                            : std::string("remoct_stream.log");
-    FILE* f = std::fopen(p.c_str(), "a"); if (!f) return;
-    std::fputs("[scrob] ", f);
-    va_list ap; va_start(ap, fmt); std::vfprintf(f, fmt, ap); va_end(ap);
-    std::fputc('\n', f); std::fclose(f);
+    char buf[2048];
+    va_list ap; va_start(ap, fmt);
+    std::vsnprintf(buf, sizeof(buf), fmt, ap);
+    va_end(ap);
+    Log::write("scrob", buf);
 }
 #endif
 #include <cstdio>
@@ -97,6 +97,8 @@ UIManager::~UIManager() {
     running_ = false;
     lf_poll_active_.store(false);
     if (lf_poll_thread_.joinable()) lf_poll_thread_.join();
+    lb_validate_active_.store(false);
+    if (lb_validate_thread_.joinable()) lb_validate_thread_.join();
     if (mb_search_win_) { delwin(mb_search_win_); mb_search_win_ = nullptr; }
 #ifdef _WIN32
     mb_lookup_.cancel();
@@ -2192,6 +2194,7 @@ void UIManager::drawGotoBar() {
         case InputMode::RadioSearch: prompt = " search radio: "; break;
         case InputMode::LastfmKey:    prompt = " last.fm API key: "; break;
         case InputMode::LastfmSecret: prompt = " last.fm secret: ";  break;
+        case InputMode::ListenBrainzToken: prompt = " listenbrainz token: "; break;
     }
     wattron(win_cmdline_, COLOR_PAIR(CP_TITLE) | A_BOLD);
     mvwaddstr(win_cmdline_, 0, 0, prompt.c_str());
@@ -2223,6 +2226,50 @@ static std::string radioLabel(const std::string& url) {
     return PlaylistManager::streamLabel(url);   // single source of truth
 }
 
+// Shared junk-metadata gate for scrobbling. Real radio tracks (e.g. "Sia -
+// Unstoppable") pass; ad/station-break markers and empty/Unknown fields are
+// dropped so neither Last.fm nor ListenBrainz gets polluted. Heuristic by
+// nature — extend the marker list as new junk patterns turn up in the log.
+// De-invert "Surname, The" -> "The Surname" for cleaner scrobble metadata.
+// Strict: only fires when the entire tail after the comma is a bare article, so
+// real comma-containing names ("Tyler, The Creator", "Earth, Wind & Fire") are
+// left untouched. Verified against an isolated test of both forms.
+static std::string deinvertArtist(const std::string& a) {
+    auto pos = a.rfind(',');
+    if (pos == std::string::npos || pos == 0) return a;
+    std::string head = a.substr(0, pos);
+    std::string tail = a.substr(pos + 1);
+    size_t ts = tail.find_first_not_of(" \t");
+    if (ts == std::string::npos) return a;             // nothing after the comma
+    tail = tail.substr(ts);
+    while (!head.empty() && (head.back() == ' ' || head.back() == '\t')) head.pop_back();
+    if (head.empty()) return a;
+    std::string low = tail;
+    for (auto& c : low) c = (char)std::tolower((unsigned char)c);
+    if (low == "the" || low == "a" || low == "an")
+        return tail + " " + head;                      // preserve article casing
+    return a;
+}
+
+static bool looksLikeRealTrack(const std::string& artist, const std::string& track) {
+    auto lower = [](std::string s) {
+        for (auto& c : s) c = (char)std::tolower((unsigned char)c);
+        return s;
+    };
+    std::string a = lower(artist), t = lower(track);
+    if (a.empty() || t.empty()) return false;
+    if (a == "unknown" || t == "unknown" ||
+        a == "unknown artist" || a == "unknown_artist") return false;
+    static const char* junk[] = {
+        "ad|", "ad |", "commercial break", "commercial-break",
+        "advertisement", "station id", "station-id", "spot block", "spotblock"
+    };
+    for (const char* j : junk)
+        if (a.find(j) != std::string::npos || t.find(j) != std::string::npos)
+            return false;
+    return true;
+}
+
 void UIManager::updateScrobbler() {
 #ifdef _WIN32
     static bool announced = false;
@@ -2246,7 +2293,27 @@ void UIManager::updateScrobbler() {
         showTrackToast("Last.fm: logged in as " + user, "", "");
     }
 
-    if (config_.lastfm_session.empty()) return;   // not logged in -> no-op
+    // Commit a completed ListenBrainz token validation (worker filled the slots).
+    // Placed before the Last.fm early-return so it runs even with no Last.fm login.
+    if (lb_validate_done_.exchange(false)) {
+        std::string tok, user; bool ok;
+        { std::lock_guard<std::mutex> lk(lb_validate_mtx_);
+          tok = lb_validate_token_; user = lb_validate_user_; ok = lb_validate_ok_; }
+        if (lb_validate_thread_.joinable()) lb_validate_thread_.join();
+        if (ok) {
+            config_.listenbrainz_token = tok;
+            config_.listenbrainz_user  = user;
+            config_.save();
+            sclog("listenbrainz: token validated for %s", user.c_str());
+            showTrackToast("ListenBrainz: logged in as " + user, "", "");
+        } else {
+            sclog("listenbrainz: token validation failed");
+            showTrackToast("ListenBrainz: token invalid - press Ctrl+B to retry", "", "");
+        }
+    }
+
+    if (config_.lastfm_session.empty() && config_.listenbrainz_token.empty())
+        return;   // neither service configured -> no-op
 
     auto st = audio_.state();
     if (st != PlaybackState::Playing && st != PlaybackState::Paused) {
@@ -2283,6 +2350,7 @@ void UIManager::updateScrobbler() {
                              (int)is_radio, audio_.streamMode() ? audio_.streamNowPlaying().c_str() : "(file)"); warned = true; }
         return;
     }
+    artist = deinvertArtist(artist);   // "Shins, The" -> "The Shins" for both services
 
     const std::string& k  = config_.lastfm_key;
     const std::string& s  = config_.lastfm_secret;
@@ -2293,8 +2361,17 @@ void UIManager::updateScrobbler() {
         scrob_artist_ = artist; scrob_track_ = track; scrob_album_ = album;
         scrob_start_  = (long)std::time(nullptr);
         scrob_done_   = false;
+        if (!looksLikeRealTrack(artist, track)) {   // ad/station junk -> skip both services
+            sclog("skip now-playing (junk): %s - %s", artist.c_str(), track.c_str());
+            return;
+        }
         sclog("now-playing: %s - %s (radio=%d dur=%d)", artist.c_str(), track.c_str(), (int)is_radio, dur);
-        std::thread([=]{ LastFm::updateNowPlaying(k, s, sk, artist, track, album); }).detach();
+        if (!sk.empty())
+            std::thread([=]{ LastFm::updateNowPlaying(k, s, sk, artist, track, album); }).detach();
+        if (!config_.listenbrainz_token.empty()) {
+            std::string lbtok = config_.listenbrainz_token;
+            std::thread([=]{ ListenBrainz::playingNow(lbtok, artist, track, album); }).detach();
+        }
         return;
     }
 
@@ -2313,11 +2390,20 @@ void UIManager::updateScrobbler() {
     }
     if (ready) {
         scrob_done_ = true;
+        if (!looksLikeRealTrack(artist, track)) {   // ad/station junk -> skip both services
+            sclog("skip scrobble (junk): %s - %s", artist.c_str(), track.c_str());
+            return;
+        }
         sclog("scrobble: %s - %s (elapsed=%ld pos=%d dur=%d)", artist.c_str(), track.c_str(), elapsed, pos, dur);
         long ts = scrob_start_;
         bool chosen = !is_radio;          // radio: chosenByUser=0
         std::string a = artist, t = track, al = album;
-        std::thread([=]{ LastFm::scrobble(k, s, sk, a, t, ts, chosen, al); }).detach();
+        if (!sk.empty())
+            std::thread([=]{ LastFm::scrobble(k, s, sk, a, t, ts, chosen, al); }).detach();
+        if (!config_.listenbrainz_token.empty()) {
+            std::string lbtok = config_.listenbrainz_token;
+            std::thread([=]{ ListenBrainz::submitSingle(lbtok, a, t, ts, al); }).detach();
+        }
     }
 #endif
 }
@@ -2345,6 +2431,29 @@ void UIManager::startLastfmPoll(const std::string& token) {
             }
         }
         lf_poll_active_.store(false);
+    });
+#endif
+}
+
+void UIManager::startListenBrainzValidate(const std::string& token) {
+#ifdef _WIN32
+    if (lb_validate_active_.exchange(true)) return;     // one validation already in flight
+    lb_validate_done_.store(false);
+    if (lb_validate_thread_.joinable()) lb_validate_thread_.join();
+    std::string tok = token;
+    lb_validate_thread_ = std::thread([this, tok]() {
+        // Network call lives entirely off the UI thread; the worker NEVER touches
+        // config_ — it drops the result into guarded slots for the UI thread to commit.
+        std::string user;
+        bool ok = ListenBrainz::validateToken(tok, user);
+        {
+            std::lock_guard<std::mutex> lk(lb_validate_mtx_);
+            lb_validate_token_ = tok;
+            lb_validate_user_  = ok ? user : std::string();
+            lb_validate_ok_    = ok;
+        }
+        lb_validate_done_.store(true);
+        lb_validate_active_.store(false);
     });
 #endif
 }
@@ -2757,6 +2866,12 @@ void UIManager::handleInput(int ch) {
         case 17:  // Ctrl+Q — quit
             audio_.stop(); running_ = false; break;
 #ifdef _WIN32
+        case 2:  // Ctrl+B — ListenBrainz login (paste user token; no browser/handshake)
+            if (config_.listenbrainz_token.empty())
+                openInputBar(InputMode::ListenBrainzToken, "");
+            else
+                showTrackToast("ListenBrainz: logged in as " + config_.listenbrainz_user, "", "");
+            break;
         case 6:  // Ctrl+F — MusicBrainz / Discogs manual search
             if (ui_overlay_ == UIOverlay::None && !mb_lookup_.isActive()) {
                 mb_search_ = {};
@@ -3408,6 +3523,16 @@ void UIManager::gotoClose(bool commit) {
                     config_.lastfm_secret = sec;
                     config_.save();           // creds persisted
                     lastfmBeginAuth();        // start browser authorization
+                }
+                break;
+            }
+            case InputMode::ListenBrainzToken: {
+                std::string tok = goto_input_;
+                while (!tok.empty() && (tok.front()==' '||tok.front()=='\t')) tok.erase(tok.begin());
+                while (!tok.empty() && (tok.back()==' '||tok.back()=='\t'||tok.back()=='\r'||tok.back()=='\n')) tok.pop_back();
+                if (!tok.empty()) {
+                    showTrackToast("ListenBrainz: validating token...", "", "");
+                    startListenBrainzValidate(tok);   // async; result applied on next tick (never blocks UI)
                 }
                 break;
             }

@@ -1,6 +1,7 @@
 #ifdef _WIN32
 
 #include "LastFm.h"
+#include "Log.h"
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -15,20 +16,13 @@
 #pragma comment(lib, "wininet.lib")
 #pragma comment(lib, "advapi32.lib")
 
-// Diagnostic log — shares %TEMP%\remoct_stream.log with the streaming layer.
+// Diagnostic log — routed through the shared operational logger (Log).
 static void lflog(const char* fmt, ...) {
-    char tmp[MAX_PATH];
-    DWORD n = GetTempPathA(MAX_PATH, tmp);
-    std::string p = (n > 0 && n < MAX_PATH) ? std::string(tmp) + "remoct_stream.log"
-                                            : std::string("remoct_stream.log");
-    FILE* f = std::fopen(p.c_str(), "a");
-    if (!f) return;
-    std::fputs("[lastfm] ", f);
+    char buf[2048];
     va_list ap; va_start(ap, fmt);
-    std::vfprintf(f, fmt, ap);
+    std::vsnprintf(buf, sizeof(buf), fmt, ap);
     va_end(ap);
-    std::fputc('\n', f);
-    std::fclose(f);
+    Log::write("lastfm", buf);
 }
 
 static const char* kUA  = "RE-MOCT/1.0.0-rc1 (https://github.com/RadMageIRL/re-moct)";

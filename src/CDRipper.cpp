@@ -2200,7 +2200,10 @@ void CDRipper::worker(std::string          drive_letter,
         std::string cue_path = out_dir + "\\" + sanitizePath(
             rel.artist.empty() ? rel.title
             : rel.artist + " - " + rel.title) + ".cue";
-        FILE* cf = _wfopen(utf8_to_wide(cue_path).c_str(), L"w, ccs=UTF-8");
+        // Open binary: content is already UTF-8 and the lines carry explicit
+        // \r\n. ccs=UTF-8 would make the stream wide-oriented (narrow fprintf
+        // then writes nothing but the auto-BOM); plain "w" would double the CR.
+        FILE* cf = _wfopen(utf8_to_wide(cue_path).c_str(), L"wb");
         if (cf) {
             // Header
             if (!rel.artist.empty()) fprintf(cf, "PERFORMER \"%s\"\r\n", rel.artist.c_str());
@@ -2244,7 +2247,9 @@ void CDRipper::worker(std::string          drive_letter,
         std::string m3u_path = out_dir + "\\" + sanitizePath(
             rel.artist.empty() ? rel.title
             : rel.artist + " - " + rel.title) + ".m3u8";
-        FILE* mf = _wfopen(utf8_to_wide(m3u_path).c_str(), L"w, ccs=UTF-8");
+        // Open binary — same reasoning as the CUE writer above (UTF-8 bytes +
+        // explicit \r\n; avoid ccs=UTF-8's BOM-only output and "w"'s doubled CR).
+        FILE* mf = _wfopen(utf8_to_wide(m3u_path).c_str(), L"wb");
         if (mf) {
             fprintf(mf, "#EXTM3U\r\n");
             for (int i = 0; i < total; ++i) {

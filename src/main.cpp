@@ -81,7 +81,7 @@ int main(int argc, char* argv[]) {
                 playlist.next();
                 if (playlist.repeatMode() == RepeatMode::One) return;
                 if (auto peek = playlist.peekNext(); peek.has_value())
-                    if (!isCDTrackPath(peek.value()))
+                    if (!isCDTrackPath(peek.value()) && !isStreamPath(peek.value()))
                         audio.preloadNext(peek.value());
             }
             // If queue has items, leave playlist index where it is —
@@ -105,7 +105,7 @@ int main(int argc, char* argv[]) {
                 audio.play(p);
                 if (playlist.queueEmpty()) {
                     if (auto peek = playlist.peekNext(); peek.has_value())
-                        if (!isCDTrackPath(peek.value()))
+                        if (!isCDTrackPath(peek.value()) && !isStreamPath(peek.value()))
                             audio.preloadNext(peek.value());
                 }
             };
@@ -175,7 +175,8 @@ int main(int argc, char* argv[]) {
         // ── Preload next track ────────────────────────────────────────────
         if (playlist.repeatMode() != RepeatMode::One)
             if (auto peek = playlist.peekNext(); peek.has_value())
-                audio.preloadNext(peek.value());
+                if (!isCDTrackPath(peek.value()) && !isStreamPath(peek.value()))
+                    audio.preloadNext(peek.value());
 
         // ── Start UI ──────────────────────────────────────────────────────
         UIManager ui(playlist, audio, config,

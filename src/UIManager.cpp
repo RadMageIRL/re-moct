@@ -221,7 +221,7 @@ void UIManager::maybePreloadNext() {
     if (playlist_.repeatMode() == RepeatMode::One) return;
     if (!playlist_.queueEmpty()) return;  // queue handles next
     if (auto peek = playlist_.peekNext(); peek.has_value())
-        if (!isCDTrackPath(peek.value()))
+        if (!isCDTrackPath(peek.value()) && !isStreamPath(peek.value()))
             audio_.preloadNext(peek.value());
 }
 
@@ -1024,6 +1024,12 @@ void UIManager::drawPlaylist() {
     mvwaddnstr(win_playlist_, 0, 0, hdr.c_str(), cols);
     wattroff(win_playlist_, A_BOLD|COLOR_PAIR(CP_FOCUSED)|COLOR_PAIR(CP_BORDER));
     int visible = rows - 1;
+    // Guard against a stale scroll offset left past the end of the list (e.g.
+    // a load where every track was a duplicate) — otherwise the bounds check
+    // below fires on the first row and the pane draws blank.
+    if (pl_scroll_ >= (int)playlist_.size())
+        pl_scroll_ = std::max(0, (int)playlist_.size() - 1);
+    if (pl_scroll_ < 0) pl_scroll_ = 0;
     for (int i = 0; i < visible; ++i) {
         size_t idx = (size_t)(pl_scroll_ + i);
         if (idx >= playlist_.size()) break;
@@ -3402,8 +3408,11 @@ void UIManager::gotoClose(bool commit) {
 
                 if (is_playlist && fs::exists(target)) {
                     std::size_t before = playlist_.size();
-                    int added = playlist_.loadPlaylist(target);
-                    if (added > 0) {
+                    playlist_.loadPlaylist(target);
+                    std::size_t after  = playlist_.size();
+                    if (after > before) {
+                        // Jump to the first genuinely-new entry (trust the size
+                        // delta, not the line count — dedup may drop duplicates).
                         pl_cursor_ = (int)before;
                         pl_scroll_ = (int)before;
                         if (audio_.state() == PlaybackState::Stopped) {
@@ -3413,6 +3422,10 @@ void UIManager::gotoClose(bool commit) {
                                 maybePreloadNext();
                             }
                         }
+                    } else {
+                        // All duplicates / none on disk — keep the view valid.
+                        if (pl_cursor_ >= (int)after) pl_cursor_ = std::max(0, (int)after - 1);
+                        if (pl_scroll_ >= (int)after) pl_scroll_ = 0;
                     }
                 } else if (fs::exists(target) && fs::is_directory(target)) {
                     current_dir_   = target;
@@ -3434,8 +3447,12 @@ void UIManager::gotoClose(bool commit) {
             }
             case InputMode::LoadM3U: {
                 std::size_t before = playlist_.size();
-                int added = playlist_.loadPlaylist(target);
-                if (added > 0) {
+                playlist_.loadPlaylist(target);
+                std::size_t after  = playlist_.size();
+                if (after > before) {
+                    // Jump to the first genuinely-new entry. Dedup may have
+                    // dropped some lines, so trust the size delta rather than
+                    // the raw line count returned by loadPlaylist().
                     pl_cursor_ = (int)before;
                     pl_scroll_ = (int)before;
                     if (audio_.state() == PlaybackState::Stopped) {
@@ -3445,6 +3462,12 @@ void UIManager::gotoClose(bool commit) {
                             maybePreloadNext();
                         }
                     }
+                } else {
+                    // Nothing new was appended (every track was already present,
+                    // or none existed on disk). Keep the view on-screen instead
+                    // of scrolling past the end and blanking the pane.
+                    if (pl_cursor_ >= (int)after) pl_cursor_ = std::max(0, (int)after - 1);
+                    if (pl_scroll_ >= (int)after) pl_scroll_ = 0;
                 }
                 break;
             }
@@ -3463,11 +3486,9 @@ void UIManager::gotoClose(bool commit) {
                     std::string label = radioLabel(url);
                     config_.addRadioStation(url);   // persist + show in [Radio]
 
-                    // Add as a playlist entry (visible, removable, re-selectable),
-                    // select it, reveal the playlist pane, then play.
-                    // Replace the playlist with just this station (same as the
-                    // [Radio] select path) so no stale file entries linger.
-                    playlist_.clear();
+                    // Append as a playlist entry (visible, removable, re-selectable),
+                    // jump to it, reveal the playlist pane, then play. Coexists with
+                    // existing file/CD entries; addStream dedups by URL.
                     std::size_t idx = playlist_.addStream(url, label);
                     pl_cursor_  = (int)idx;
                     pl_scroll_  = 0;
@@ -3804,8 +3825,9 @@ void UIManager::activateSelection() {
             }
             config_.addRadioStation(url);                       // save to [Radio]
             if (!uuid.empty()) RadioBrowser::countClick(uuid);  // popularity courtesy
-            // Replace the playlist with just this station (mirrors CD mode).
-            playlist_.clear();
+            // Append the station and jump to it — coexists with existing file/CD
+            // entries (delete from the playlist to remove). addStream dedups by
+            // URL, so re-selecting a station just jumps to its existing row.
             std::size_t idx = playlist_.addStream(url, label);
             pl_cursor_ = (int)idx; pl_scroll_ = 0;
             playlist_.selectAt(idx);

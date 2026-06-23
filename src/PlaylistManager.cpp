@@ -269,8 +269,9 @@ bool PlaylistManager::saveM3U(const std::string& path) const {
     if (!f) return false;
     f << "#EXTM3U\n";
     for (const auto& e : entries_) {
-        // Skip CD audio tracks — hardware paths can't be stored in M3U
-        if (isCDTrackPath(e.path)) continue;
+        // Skip CD audio tracks (hardware paths) and live radio streams — neither
+        // belongs in a saved playlist.
+        if (isCDTrackPath(e.path) || isStreamPath(e.path)) continue;
         f << "#EXTINF:" << e.duration_sec << "," << e.display_title << "\n";
         f << e.path << "\n";
     }
@@ -313,7 +314,7 @@ bool PlaylistManager::savePLS(const std::string& path) const {
     f << "[playlist]\n";
     int n = 0;
     for (const auto& e : entries_) {
-        if (isCDTrackPath(e.path)) continue;
+        if (isCDTrackPath(e.path) || isStreamPath(e.path)) continue;  // no CD/radio in saved playlists
         ++n;
         f << "File" << n << "=" << e.path << "\n";
         f << "Title" << n << "=" << e.display_title << "\n";
@@ -401,7 +402,7 @@ bool PlaylistManager::saveXSPF(const std::string& path) const {
     f << "<playlist version=\"1\" xmlns=\"http://xspf.org/ns/0/\">\n";
     f << "  <trackList>\n";
     for (const auto& e : entries_) {
-        if (isCDTrackPath(e.path)) continue;
+        if (isCDTrackPath(e.path) || isStreamPath(e.path)) continue;  // no CD/radio in saved playlists
         // Convert path to file URI
         std::string uri = e.path;
         // Replace backslashes and prepend file:///

@@ -26,6 +26,7 @@ set(REMOCT_SOURCES
     src/LastFm.cpp
     src/Log.cpp
     src/ListenBrainz.cpp
+    src/DiscordRP.cpp
 )
 
 add_executable(remoct ${REMOCT_SOURCES})

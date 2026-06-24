@@ -82,6 +82,7 @@ AAC playback adds one bundled DLL: **`libfdk-aac-2.dll`** (Fraunhofer FDK AAC). 
 | `d` / `Del` | Remove saved station (in `[Radio]`) |
 | `Ctrl+G` | Last.fm login |
 | `Ctrl+B` | Listenbrainz login |
+| `Ctrl+D` | Discord Presence |
 
 Build dependencies (pacman install)pacman -S \
   mingw-w64-ucrt-x86_64-gcc \

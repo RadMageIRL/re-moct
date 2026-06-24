@@ -99,6 +99,9 @@ UIManager::~UIManager() {
     if (lf_poll_thread_.joinable()) lf_poll_thread_.join();
     lb_validate_active_.store(false);
     if (lb_validate_thread_.joinable()) lb_validate_thread_.join();
+#ifdef _WIN32
+    if (discord_art_thread_.joinable()) discord_art_thread_.join();
+#endif
     if (mb_search_win_) { delwin(mb_search_win_); mb_search_win_ = nullptr; }
 #ifdef _WIN32
     mb_lookup_.cancel();
@@ -1202,6 +1205,7 @@ void UIManager::drawHelp() {
         { "Q  (Shift+Q)",   "Show / hide queue pane"              },
         { "Ctrl+R",         "Fetch CD metadata from MusicBrainz" },
         { "Ctrl+Y",         "Rip CD  (A=AccurateRip  C=CUETools  Y=Local  B=Local 2-pass)" },
+        { "Ctrl+D",         "Toggle Discord Rich Presence" },
     };
 
     const int n    = (int)(sizeof(entries) / sizeof(entries[0]));
@@ -2300,6 +2304,28 @@ static bool looksLikeRealTrack(const std::string& artist, const std::string& tra
     return true;
 }
 
+#ifdef _WIN32
+// Spawn a one-shot worker to resolve an album-cover URL (iTunes/Deezer) off the
+// UI thread. Single in-flight at a time; the result is picked up by the deferred
+// art-commit in updateScrobbler. No-op if a lookup is already running.
+void UIManager::startDiscordArtLookup(const std::string& artist,
+                                      const std::string& album,
+                                      const std::string& key) {
+    if (discord_art_active_.load()) return;
+    discord_art_active_.store(true);
+    discord_art_done_.store(false);
+    { std::lock_guard<std::mutex> lk(discord_art_mtx_);
+      discord_art_key_ = key; discord_art_url_.clear(); }
+    if (discord_art_thread_.joinable()) discord_art_thread_.join();  // prior worker already done
+    std::string a = artist, al = album;
+    discord_art_thread_ = std::thread([this, a, al]() {
+        std::string u = CDRipper::fetchArtUrlByText(a, al);
+        { std::lock_guard<std::mutex> lk(discord_art_mtx_); discord_art_url_ = u; }
+        discord_art_done_.store(true);
+    });
+}
+#endif
+
 void UIManager::updateScrobbler() {
 #ifdef _WIN32
     static bool announced = false;
@@ -2342,12 +2368,20 @@ void UIManager::updateScrobbler() {
         }
     }
 
-    if (config_.lastfm_session.empty() && config_.listenbrainz_token.empty())
-        return;   // neither service configured -> no-op
+    if (config_.lastfm_session.empty() && config_.listenbrainz_token.empty()
+#ifdef _WIN32
+        && !config_.discord_presence
+#endif
+        )
+        return;   // nothing to drive (no scrobbler, no Discord) -> no-op
 
     auto st = audio_.state();
     if (st != PlaybackState::Playing && st != PlaybackState::Paused) {
         scrob_artist_.clear(); scrob_track_.clear();   // stopped -> reset
+#ifdef _WIN32
+        if (discord_active_) { discord_.clearActivity(); discord_active_ = false; }
+        discord_artist_.clear(); discord_track_.clear();
+#endif
         return;
     }
 
@@ -2404,6 +2438,61 @@ void UIManager::updateScrobbler() {
         return;
     }
     artist = deinvertArtist(artist);   // "Shins, The" -> "The Shins" for both services
+#ifdef _WIN32
+    // Discord Rich Presence — same resolved metadata, independent of scrobbling.
+    if (config_.discord_presence) {
+        if (artist != discord_artist_ || track != discord_track_ || discord_force_update_) {
+            discord_artist_ = artist; discord_track_ = track; discord_album_ = album;
+            long nowt = (long)std::time(nullptr);
+            discord_start_ = (pos > 0) ? (nowt - pos) : nowt;   // anchor the elapsed bar
+            std::string det = track;
+            std::string sta = album.empty() ? artist : (artist + " - " + album);
+
+            // Cover image: file OR cd -> async iTunes/Deezer lookup by artist+album
+            // (the cd scrobble branch already set album = rel.title). The Cover Art
+            // Archive is unreliable here (often no front cover, esp. Discogs-sourced
+            // releases) -> a bad CAA URL shows Discord's broken-image dice, so we use
+            // the same proven lookup files use. radio / no album -> the logo.
+            std::string image = "remoct_logo";
+            const std::string key = artist + "\t" + track;
+            if (!audio_.streamMode() && !album.empty()) {
+                if (key == discord_art_cache_key_ && !discord_art_cache_url_.empty())
+                    image = discord_art_cache_url_;            // resolved earlier
+                else
+                    startDiscordArtLookup(artist, album, key); // logo now, cover when it lands
+            }
+
+            discord_.setActivity(det, sta, discord_start_, image, "RE-MOCT");
+            discord_active_       = true;
+            discord_force_update_ = false;
+        }
+
+        // Deferred art commit: when an async file lookup finishes, swap the logo
+        // for the real cover on the still-current track.
+        if (discord_art_done_.exchange(false)) {
+            std::string url, forkey;
+            { std::lock_guard<std::mutex> lk(discord_art_mtx_);
+              url = discord_art_url_; forkey = discord_art_key_; }
+            if (discord_art_thread_.joinable()) discord_art_thread_.join();
+            discord_art_active_.store(false);
+            const std::string curkey = discord_artist_ + "\t" + discord_track_;
+            if (forkey == curkey) {
+                if (!url.empty()) {
+                    discord_art_cache_key_ = forkey;
+                    discord_art_cache_url_ = url;
+                    std::string sta = discord_album_.empty() ? discord_artist_
+                                    : (discord_artist_ + " - " + discord_album_);
+                    discord_.setActivity(discord_track_, sta, discord_start_, url, "RE-MOCT");
+                }
+            } else if (!audio_.streamMode() && !discord_album_.empty()) {
+                // The finished lookup was for a since-skipped track — retry for the
+                // one we actually landed on (unless already cached). Covers file+cd.
+                if (!(curkey == discord_art_cache_key_ && !discord_art_cache_url_.empty()))
+                    startDiscordArtLookup(discord_artist_, discord_album_, curkey);
+            }
+        }
+    }
+#endif
 
     const std::string& k  = config_.lastfm_key;
     const std::string& s  = config_.lastfm_secret;
@@ -2919,6 +3008,19 @@ void UIManager::handleInput(int ch) {
         case 17:  // Ctrl+Q — quit
             audio_.stop(); running_ = false; break;
 #ifdef _WIN32
+        case 4:  // Ctrl+D — toggle Discord Rich Presence
+            config_.discord_presence = !config_.discord_presence;
+            config_.save();
+            if (config_.discord_presence) {
+                discord_force_update_ = true;   // push the current track on the next tick
+                showTrackToast("Discord presence: ON", "", "");
+            } else {
+                discord_.clearActivity();
+                discord_active_ = false;
+                discord_artist_.clear(); discord_track_.clear();
+                showTrackToast("Discord presence: OFF", "", "");
+            }
+            break;
         case 2:  // Ctrl+B — ListenBrainz login (paste user token; no browser/handshake)
             if (config_.listenbrainz_token.empty())
                 openInputBar(InputMode::ListenBrainzToken, "");

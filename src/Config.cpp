@@ -111,6 +111,7 @@ void DigiConfig::load() {
         else if (key == "shuffle")          shuffle           = (val == "1");
         else if (key == "toast_enabled")    toast_enabled     = (val == "1");
         else if (key == "eq_enabled")       eq_enabled        = (val == "1");
+        else if (key == "discord_presence") discord_presence  = (val == "1");
         else if (key == "lastfm-key")       lastfm_key        = val;
         else if (key == "lastfm-secret")    lastfm_secret     = val;
         else if (key == "lastfm-session")   lastfm_session    = val;
@@ -171,6 +172,7 @@ void DigiConfig::save() const {
     f << "shuffle="          << (shuffle ? "1" : "0") << "\n";
     f << "toast_enabled="    << (toast_enabled ? "1" : "0") << "\n";
     f << "eq_enabled="       << (eq_enabled ? "1" : "0") << "\n";
+    f << "discord_presence=" << (discord_presence ? "1" : "0") << "\n";
     if (!lastfm_key.empty())     f << "lastfm-key="     << lastfm_key     << "\n";
     if (!lastfm_secret.empty())  f << "lastfm-secret="  << lastfm_secret  << "\n";
     if (!lastfm_session.empty()) f << "lastfm-session=" << lastfm_session << "\n";

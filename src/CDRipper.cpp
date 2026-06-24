@@ -839,6 +839,114 @@ static std::vector<uint8_t> fetchArtByText(const std::string& artist,
     return {};
 }
 
+// URL-only variant of fetchArtByText: same iTunes->Deezer search and matching,
+// but returns the best cover URL instead of downloading it. For Discord Rich
+// Presence, which takes an external image URL. Leaves fetchArtByText untouched.
+std::string CDRipper::fetchArtUrlByText(const std::string& artist,
+                                        const std::string& album) {
+    if (artist.empty() && album.empty()) return {};
+
+    auto enc = [](const std::string& s) {
+        static const char* hex = "0123456789ABCDEF";
+        std::string o;
+        for (unsigned char c : s) {
+            if ((c>='A'&&c<='Z')||(c>='a'&&c<='z')||(c>='0'&&c<='9')||
+                c=='-'||c=='_'||c=='.'||c=='~') o += (char)c;
+            else if (c==' ') o += '+';
+            else { o += '%'; o += hex[c>>4]; o += hex[c&0xF]; }
+        }
+        return o;
+    };
+    auto norm = [](const std::string& s) {
+        std::string o; bool sp = false;
+        for (char c : s) {
+            bool aln = (c>='A'&&c<='Z')||(c>='a'&&c<='z')||(c>='0'&&c<='9');
+            if (aln) { o += (c>='A'&&c<='Z') ? (char)(c + 32) : c; sp = false; }
+            else if (!sp && !o.empty()) { o += ' '; sp = true; }
+        }
+        while (!o.empty() && o.back() == ' ') o.pop_back();
+        if (o.rfind("the ", 0) == 0) o.erase(0, 4);
+        return o;
+    };
+    auto artist_ok = [&](const std::string& want, const std::string& got) {
+        std::string a = norm(want), b = norm(got);
+        if (a.empty() || b.empty()) return false;
+        return a == b || a.find(b) != std::string::npos
+                      || b.find(a) != std::string::npos;
+    };
+    auto album_overlap = [&](const std::string& want, const std::string& got) {
+        auto toks = [](const std::string& n) {
+            std::vector<std::string> t; std::string cur;
+            for (char c : n) { if (c==' ') { if(!cur.empty()){t.push_back(cur);cur.clear();} }
+                               else cur += c; }
+            if (!cur.empty()) t.push_back(cur);
+            return t;
+        };
+        auto ta = toks(norm(want)), tb = toks(norm(got));
+        int shared = 0;
+        for (auto& x : ta) for (auto& y : tb) if (x == y) { ++shared; break; }
+        return shared;
+    };
+
+    const std::string term = enc(artist + " " + album);
+
+    // ── iTunes Search API ──────────────────────────────────────────────────
+    {
+        std::string url = "https://itunes.apple.com/search?term=" + term
+                        + "&entity=album&limit=10";
+        std::vector<uint8_t> body;
+        if (simpleHttpGet(url, body, L"RE-MOCT/1.0.0-rc1")) {
+            try {
+                auto j = nlohmann::json::parse(
+                             std::string((char*)body.data(), body.size()));
+                std::string best_url; int best_score = -1;
+                if (j.contains("results"))
+                for (auto& r : j["results"]) {
+                    if (!artist_ok(artist, r.value("artistName", ""))) continue;
+                    std::string aurl = r.value("artworkUrl100", "");
+                    if (aurl.empty()) continue;
+                    int score = album_overlap(album, r.value("collectionName", ""));
+                    if (score > best_score) { best_score = score; best_url = aurl; }
+                }
+                if (!best_url.empty()) {
+                    auto pos = best_url.rfind("100x100");   // bump to 600x600
+                    if (pos != std::string::npos) best_url.replace(pos, 7, "600x600");
+                    return best_url;
+                }
+            } catch (...) {}
+        }
+    }
+
+    // ── Deezer API (fallback) ──────────────────────────────────────────────
+    {
+        std::string url = "https://api.deezer.com/search/album?q=" + term
+                        + "&limit=10";
+        std::vector<uint8_t> body;
+        if (simpleHttpGet(url, body, L"RE-MOCT/1.0.0-rc1")) {
+            try {
+                auto j = nlohmann::json::parse(
+                             std::string((char*)body.data(), body.size()));
+                std::string best_url; int best_score = -1;
+                if (j.contains("data"))
+                for (auto& r : j["data"]) {
+                    std::string a;
+                    if (r.contains("artist") && r["artist"].contains("name"))
+                        a = r["artist"]["name"].get<std::string>();
+                    if (!artist_ok(artist, a)) continue;
+                    std::string aurl = r.value("cover_xl", "");
+                    if (aurl.empty()) aurl = r.value("cover_big", "");
+                    if (aurl.empty()) continue;
+                    int score = album_overlap(album, r.value("title", ""));
+                    if (score > best_score) { best_score = score; best_url = aurl; }
+                }
+                if (!best_url.empty()) return best_url;
+            } catch (...) {}
+        }
+    }
+
+    return {};
+}
+
 // ─── Tag writing ──────────────────────────────────────────────────────────────
 static std::string arStatusStr(ARStatus s, int conf) {
     switch(s) {

@@ -19,6 +19,7 @@
 #include "RadioBrowser.h"
 #include "LastFm.h"
 #include "ListenBrainz.h"
+#include "DiscordRP.h"
 #endif
 #include "AudioManager.h"
 #include "miniaudio.h"
@@ -246,6 +247,27 @@ private:
 
     // Last.fm scrobble state machine
     std::string scrob_artist_, scrob_track_, scrob_album_;
+#ifdef _WIN32
+    // Discord Rich Presence (Ctrl+D). Mirrors the scrobbler's track-change moment.
+    DiscordRP   discord_{"1519141025195491338"};   // RE-MOCT application id
+    bool        discord_active_       = false;      // an activity is currently set
+    bool        discord_force_update_ = false;      // push current track on next tick
+    std::string discord_artist_, discord_track_;    // last activity sent (change gate)
+    std::string discord_album_;                     // for rebuilding state on art commit
+    long        discord_start_ = 0;
+    // Async album-art URL resolution (files: iTunes/Deezer lookup, off the UI thread).
+    std::thread       discord_art_thread_;
+    std::atomic<bool> discord_art_active_{false};   // worker in flight
+    std::atomic<bool> discord_art_done_{false};     // result ready for pickup
+    std::mutex        discord_art_mtx_;
+    std::string       discord_art_url_;             // resolved url   (guarded)
+    std::string       discord_art_key_;            // "artist\ttrack" the result is for (guarded)
+    std::string       discord_art_cache_key_;       // last resolved key (UI thread only)
+    std::string       discord_art_cache_url_;       // last resolved url (UI thread only)
+    void startDiscordArtLookup(const std::string& artist,
+                               const std::string& album,
+                               const std::string& key);
+#endif
     long        scrob_start_ = 0;        // unix time the current track started
     bool        scrob_done_  = false;    // already scrobbled this track
     void        updateScrobbler();       // called each tick; fires now-playing + scrobble

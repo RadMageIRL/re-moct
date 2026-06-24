@@ -27,10 +27,12 @@ struct DigiConfig {
     int                      repeat_mode      = 0;
     bool                     shuffle          = false;
     bool                     toast_enabled    = false;
-
     // EQ state
     bool  eq_enabled = false;
     float eq_gains[10] {};
+
+    // Discord Rich Presence toggle (Ctrl+D)
+    bool  discord_presence = false;
 
     // Bookmarks: list of saved directory paths
     std::vector<std::string> bookmarks;

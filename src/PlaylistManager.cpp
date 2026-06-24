@@ -72,7 +72,10 @@ std::size_t PlaylistManager::addStream(const std::string& url, const std::string
     // Internet-radio entry: store the URL verbatim with an explicit label.
     // No populateMetadata() — there is no local file to read tags from.
     for (std::size_t i = 0; i < entries_.size(); ++i)
-        if (entries_[i].path == url) return i;     // dedup by URL
+        if (entries_[i].path == url) {                 // dedup by URL
+            if (!title.empty()) entries_[i].display_title = title;  // refresh label on re-add (rename)
+            return i;
+        }
     PlaylistEntry entry;
     entry.path          = url;
     entry.display_title = title;
@@ -137,8 +140,9 @@ void PlaylistManager::addDirectory(const std::string& dir_path) {
 void PlaylistManager::removeAt(std::size_t index) {
     if (index >= entries_.size()) return;
     entries_.erase(entries_.begin() + (std::ptrdiff_t)index);
+    if (current_ > index) --current_;              // deleted above playing -> shift its index down
     if (current_ >= entries_.size() && !entries_.empty())
-        current_ = entries_.size() - 1;
+        current_ = entries_.size() - 1;            // clamp if playing was last (or was deleted)
     rebuildShuffleOrder();
 }
 

@@ -2,11 +2,13 @@
 
 #include "StreamSource.h"
 #include "Log.h"
+#include "StringUtils.h"
 #include <cstring>
 #include <algorithm>
 #include <cctype>
 #include <cstdio>
 #include <cstdarg>
+#include <cstdlib>
 
 
 // ─── Diagnostic log — routed through the shared operational logger (Log) ──────
@@ -41,6 +43,16 @@ bool StreamSource::open(const std::string& url) {
     codec_ = (lower.find(".aac") != std::string::npos || lower.find("aac") != std::string::npos)
              ? Codec::AAC : Codec::MP3;
 
+    // HLS detection: an .m3u8 is a manifest, not a byte stream. Route it through
+    // the segment pump (mode_=HLS) and force the AAC worker — iHeart segments are
+    // raw ADTS, so the existing FDK decode/resample path handles them unchanged.
+    if (lower.find(".m3u8") != std::string::npos) {
+        mode_  = Mode::HLS;
+        codec_ = Codec::AAC;
+    } else {
+        mode_ = Mode::Continuous;
+    }
+
     if (!connect()) {              // initial connection on the caller thread
         last_error_ = "connection failed";
         slog("open: connect FAILED url=%s", url.c_str());
@@ -71,6 +83,8 @@ void StreamSource::close() {
 // ─── Connection ───────────────────────────────────────────────────────────────
 
 bool StreamSource::connect() {
+    if (mode_ == Mode::HLS) return hlsConnect();   // segment-pump setup (no persistent ICY conn)
+
     hInet_ = InternetOpenA("RE-MOCT/1.0.0-rc1 (https://github.com/RadMageIRL/re-moct)",
                            INTERNET_OPEN_TYPE_PRECONFIG, nullptr, nullptr, 0);
     if (!hInet_) return false;
@@ -113,11 +127,482 @@ void StreamSource::disconnect() {
     if (hInet_) { InternetCloseHandle(hInet_); hInet_ = nullptr; }
 }
 
+// ─── HLS increment 1: resolve / poll / fetch (standalone, no audio path) ──────
+// Walks the same chain VLC does: master -> variant (media playlist) -> .aac
+// segments. Relative refs resolve against each response's post-redirect URL so
+// the rj-tok / 50_<session> token propagates. All output goes to slog ([stream],
+// %TEMP%\remoct-*.log). None of the continuous-stream path is touched.
+
+bool StreamSource::hlsEnsureSession() {
+    if (hInet_) return true;
+    hInet_ = InternetOpenA("RE-MOCT/1.0.0-rc1 (https://github.com/RadMageIRL/re-moct)",
+                           INTERNET_OPEN_TYPE_PRECONFIG, nullptr, nullptr, 0);
+    if (!hInet_) { slog("hlsEnsureSession: InternetOpenA FAILED err=%lu", GetLastError()); return false; }
+    DWORD to = 8000;  // mirror connect() timeouts
+    InternetSetOptionA(hInet_, INTERNET_OPTION_CONNECT_TIMEOUT, &to, sizeof(to));
+    InternetSetOptionA(hInet_, INTERNET_OPTION_RECEIVE_TIMEOUT, &to, sizeof(to));
+    InternetSetOptionA(hInet_, INTERNET_OPTION_SEND_TIMEOUT,    &to, sizeof(to));
+    return true;
+}
+
+// Short-lived GET over the shared session. Captures body (text and/or bytes)
+// and, optionally, the post-redirect URL.
+bool StreamSource::hlsHttpGet(const std::string& url, std::string* out_text,
+                              std::vector<uint8_t>* out_bytes, std::string* out_final_url) {
+    if (!hInet_) return false;
+    DWORD flags = INTERNET_FLAG_RELOAD | INTERNET_FLAG_NO_CACHE_WRITE |
+                  INTERNET_FLAG_PRAGMA_NOCACHE | INTERNET_FLAG_KEEP_CONNECTION;
+    HINTERNET h = InternetOpenUrlA(hInet_, url.c_str(), nullptr, 0, flags, 0);
+    if (!h) { slog("hlsGet: open FAILED err=%lu url=%s", GetLastError(), url.c_str()); return false; }
+
+    if (out_final_url) {                       // URL after redirects (token lives here)
+        char fbuf[2048]; DWORD flen = sizeof(fbuf);
+        if (InternetQueryOptionA(h, INTERNET_OPTION_URL, fbuf, &flen))
+            out_final_url->assign(fbuf, flen);
+        else
+            *out_final_url = url;
+    }
+
+    DWORD status = 0, slen = sizeof(status), sidx = 0;   // non-2xx => session expiry/dead
+    if (HttpQueryInfoA(h, HTTP_QUERY_STATUS_CODE | HTTP_QUERY_FLAG_NUMBER, &status, &slen, &sidx)
+        && status >= 400) {
+        slog("hlsGet: HTTP %lu url=%s", status, url.c_str());
+        InternetCloseHandle(h);
+        return false;
+    }
+
+    std::vector<uint8_t> buf;
+    uint8_t chunk[8192];
+    DWORD got = 0;
+    for (;;) {
+        if (stop_.load()) { InternetCloseHandle(h); return false; }
+        if (!InternetReadFile(h, chunk, sizeof(chunk), &got)) {
+            slog("hlsGet: read err=%lu url=%s", GetLastError(), url.c_str());
+            InternetCloseHandle(h);
+            return false;
+        }
+        if (got == 0) break;                   // EOF
+        buf.insert(buf.end(), chunk, chunk + got);
+        if (buf.size() > 8u * 1024u * 1024u) { slog("hlsGet: oversized body, abort"); break; }
+    }
+    InternetCloseHandle(h);
+
+    if (out_text)  out_text->assign(reinterpret_cast<char*>(buf.data()), buf.size());
+    if (out_bytes) *out_bytes = std::move(buf);
+    return true;
+}
+
+// First non-comment, non-blank line of a playlist (a URI).
+std::string StreamSource::hlsFirstUri(const std::string& body) {
+    size_t i = 0;
+    while (i < body.size()) {
+        size_t e = body.find('\n', i);
+        if (e == std::string::npos) e = body.size();
+        std::string line = body.substr(i, e - i);
+        while (!line.empty() && (line.back()=='\r'||line.back()==' '||line.back()=='\t')) line.pop_back();
+        size_t s = line.find_first_not_of(" \t");
+        if (s != std::string::npos) line = line.substr(s);
+        if (!line.empty() && line[0] != '#') return line;
+        i = e + 1;
+    }
+    return {};
+}
+
+std::string StreamSource::hlsResolveUrl(const std::string& base, const std::string& ref) {
+    if (ref.rfind("http://", 0) == 0 || ref.rfind("https://", 0) == 0) return ref;  // absolute
+    char out[2048]; DWORD len = sizeof(out);
+    if (InternetCombineUrlA(base.c_str(), ref.c_str(), out, &len, ICU_NO_ENCODE))
+        return std::string(out, len);
+    return ref;                                // fallback: hand back as-is
+}
+
+bool StreamSource::hlsResolveMaster() {
+    std::string body, final_url;
+    if (!hlsHttpGet(hls_.master_url, &body, nullptr, &final_url)) {
+        slog("hlsResolveMaster: GET master FAILED"); return false;
+    }
+    if (body.find("#EXT-X-STREAM-INF") != std::string::npos) {        // master w/ variants
+        std::string variant = hlsFirstUri(body);
+        if (variant.empty()) { slog("hlsResolveMaster: no variant URI"); return false; }
+        hls_.variant_url = hlsResolveUrl(final_url, variant);
+        slog("hlsResolveMaster: variant=%s", hls_.variant_url.c_str());
+    } else if (body.find("#EXTINF") != std::string::npos) {           // already a media playlist
+        hls_.variant_url = final_url;
+        slog("hlsResolveMaster: media playlist direct url=%s", final_url.c_str());
+    } else {
+        slog("hlsResolveMaster: unrecognized body (%zu bytes)", body.size());
+        return false;
+    }
+    hls_.last_seq = 0;                          // fresh session -> reset sequence baseline
+    return true;
+}
+
+bool StreamSource::hlsPollMedia() {
+    std::string body, final_url;
+    if (!hlsHttpGet(hls_.variant_url, &body, nullptr, &final_url)) {
+        slog("hlsPollMedia: GET variant FAILED (session likely expired)"); return false;
+    }
+    size_t p = body.find("#EXT-X-TARGETDURATION:");
+    if (p != std::string::npos) { int td = atoi(body.c_str()+p+22); if (td > 0) hls_.target_dur_ms = td*1000; }
+
+    bool have_seq = false; uint64_t media_seq = 0;
+    p = body.find("#EXT-X-MEDIA-SEQUENCE:");
+    if (p != std::string::npos) { media_seq = strtoull(body.c_str()+p+22, nullptr, 10); have_seq = true; }
+
+    bool disc = body.find("#EXT-X-DISCONTINUITY") != std::string::npos;
+
+    uint64_t seq = media_seq;                   // sequence of the first segment listed
+    int total = 0, new_count = 0;
+    size_t i = 0;
+    while (i < body.size()) {
+        size_t e = body.find('\n', i);
+        if (e == std::string::npos) e = body.size();
+        std::string line = body.substr(i, e - i);
+        while (!line.empty() && (line.back()=='\r'||line.back()==' '||line.back()=='\t')) line.pop_back();
+        size_t s = line.find_first_not_of(" \t");
+        std::string uri = (s == std::string::npos) ? "" : line.substr(s);
+        if (!uri.empty() && uri[0] != '#') {
+            total++;
+            if (!have_seq || seq > hls_.last_seq) {
+                hls_.pending.push_back(hlsResolveUrl(final_url, uri));
+                hls_.last_seq = seq;            // advance high-water mark
+                new_count++;
+            }
+            seq++;
+        }
+        i = e + 1;
+    }
+    hls_.last_poll = GetTickCount();
+    if (is_iheart_) iheart_manifest_ok_ = parseIHeartManifest(body);  // manifest-primary now-playing
+    slog("hlsPollMedia: target=%dms mseq=%llu total=%d new=%d disc=%d pending=%zu",
+         hls_.target_dur_ms, (unsigned long long)media_seq, total, new_count, disc?1:0, hls_.pending.size());
+    return true;
+}
+
+bool StreamSource::hlsFetchSegment(const std::string& url, std::vector<uint8_t>& out) {
+    out.clear();
+    if (!hlsHttpGet(url, nullptr, &out, nullptr)) { slog("hlsFetchSegment: FAILED url=%s", url.c_str()); return false; }
+    slog("hlsFetchSegment: %zu bytes", out.size());
+    return true;
+}
+
+// HLS branch of connect(): no persistent ICY connection — instead resolve the
+// master, poll the first media playlist, and prime near the live edge so tune-in
+// latency feels like a direct stream rather than a full window behind. Runs on
+// the caller/connect-worker thread before the producer spawns (and again on the
+// producer thread for reconnect, where re-resolving the master refreshes the
+// session token). hls_ is owned by exactly one thread at a time, so no lock.
+bool StreamSource::hlsConnect() {
+    if (!hlsEnsureSession()) { slog("hlsConnect: session FAILED"); return false; }
+    std::string master = url_;          // the canonical zc####/hls.m3u8 the user pasted
+    hls_ = HlsState{};
+    hls_.master_url = master;
+    // iHeart now-playing: primary source is the variant manifest's EXTINF tags
+    // (freeze-proof), trackHistory module as fallback. Set this up BEFORE the initial
+    // poll so hlsPollMedia parses the manifest on connect — otherwise the producer's
+    // first trackHistory fallback can clobber the (not-yet-set) manifest result on a
+    // station switch. resolve() is url-aware, so switching re-resolves cleanly.
+    is_iheart_          = IHeartRadio::isIHeartUrl(url_);
+    last_iheart_poll_   = 0;
+    iheart_manifest_ok_ = false;
+    if (is_iheart_) {
+        iheart_.setLogger([](const std::string& s){ slog("%s", s.c_str()); });
+        iheart_.resolve(url_);   // sidecar-first; cheap; gives us stationName() for the ad label
+    }
+    if (!hlsResolveMaster()) { slog("hlsConnect: resolve FAILED"); return false; }
+    if (!hlsPollMedia())     { slog("hlsConnect: initial poll FAILED"); return false; }  // also parses manifest now
+    // Prime near the live edge: keep only the last ~2 queued segments so we start
+    // close to live instead of ~a full window behind. last_seq is already at the
+    // window top from the full poll, so subsequent polls only pick up newer ones.
+    if (hls_.pending.size() > 2)
+        hls_.pending.erase(hls_.pending.begin(), hls_.pending.end() - 2);
+    icy_metaint_ = 0;                   // HLS metadata isn't ICY — readAudio passes straight through
+    icy_counter_ = 0;
+    raw_buf_.clear(); raw_pos_ = 0;
+    if (is_iheart_)
+        slog("hlsConnect: iHeart station — manifest-primary now-playing (station=\"%s\")",
+             iheart_.stationName().c_str());
+    slog("hlsConnect: primed pending=%zu variant=%s",
+         hls_.pending.size(), hls_.variant_url.c_str());
+    return true;
+}
+
+// ── iHeart manifest-primary now-playing ──────────────────────────────────────
+// iHeart embeds the live song (and ad markers) directly in the variant playlist's
+// per-segment EXTINF tags, e.g.:
+//   #EXTINF:10,title="Listen To Your Heart",artist="D.H.T.",url="song_spot=\"M\" ..."
+// Unlike trackHistory (which freezes for minutes during long breaks), the manifest
+// rides the audio — it can't go stale while music plays. We read the live-edge
+// segment's tag, classify song vs ad, and drive now_playing_ from it.
+//   song: real artist + title, not flagged spot -> "Artist - Title"
+//   ad:   song_spot="T" / blank artist / Spot Block -> "<station> - Commercial break"
+//         (the scrobbler's looksLikeRealTrack already drops "commercial break")
+// Discriminator verified against zc4366 + zc1469 song and ad captures.
+
+// Read a quoted EXTINF attribute, honoring iHeart's backslash-escaped inner quotes.
+static std::string mfAttr(const std::string& line, const char* key) {
+    size_t k = line.find(key);
+    if (k == std::string::npos) return {};
+    size_t start = k + std::strlen(key);
+    size_t i = start;
+    while (i < line.size()) {
+        if (line[i] == '"' && line[i-1] != '\\') break;   // unescaped closing quote
+        ++i;
+    }
+    std::string v = line.substr(start, i - start), out;
+    for (size_t j = 0; j < v.size(); ++j) {               // unescape \" -> "
+        if (v[j] == '\\' && j + 1 < v.size() && v[j+1] == '"') { out += '"'; ++j; }
+        else out += v[j];
+    }
+    return out;
+}
+static std::string mfTrim(const std::string& s) {
+    size_t a = s.find_first_not_of(" \t");
+    if (a == std::string::npos) return {};
+    size_t b = s.find_last_not_of(" \t");
+    return s.substr(a, b - a + 1);
+}
+
+bool StreamSource::parseIHeartManifest(const std::string& body) {
+    // Take the live-edge (last) EXTINF line that carries iHeart's title= attribute.
+    std::string last;
+    size_t i = 0;
+    while (i < body.size()) {
+        size_t e = body.find('\n', i);
+        if (e == std::string::npos) e = body.size();
+        if (body.compare(i, 7, "#EXTINF") == 0) {
+            std::string line = body.substr(i, e - i);
+            if (line.find("title=\"") != std::string::npos) last = line;
+        }
+        i = e + 1;
+    }
+    if (last.empty()) return false;                        // no inline metadata -> fallback
+
+    std::string title  = mfTrim(mfAttr(last, "title=\""));
+    std::string artist = mfTrim(mfAttr(last, "artist=\""));
+
+    char spot = 0;                                         // song_spot letter (M/F=song, T=ad)
+    size_t sp = last.find("song_spot=");
+    if (sp != std::string::npos) {
+        size_t c = sp + 10;
+        while (c < last.size() && (last[c] == '\\' || last[c] == '"')) ++c;
+        if (c < last.size()) spot = last[c];
+    }
+
+    bool spotBlock = title.find("Spot Block") != std::string::npos;
+    bool isAd   = (spot == 'T') || artist.empty() || spotBlock;
+    bool isSong = !isAd && !artist.empty() && !title.empty();
+
+    std::string disp;
+    if (isSong) {
+        disp = artist + " - " + title;
+    } else if (isAd) {
+        std::string st = iheart_.stationName();
+        disp = st.empty() ? std::string("Commercial break") : (st + " - Commercial break");
+    } else {
+        return false;                                     // ambiguous -> fallback to trackHistory
+    }
+
+    disp = sanitizeForDisplay(disp);
+    std::lock_guard<std::mutex> lk(now_playing_mtx_);
+    if (disp != now_playing_) {
+        now_playing_ = disp;
+        slog("iheart manifest: %s%s", isAd ? "[ad] " : "", disp.c_str());
+    }
+    return true;
+}
+
+// trackHistory FALLBACK — only runs when the manifest carried no usable metadata
+// (rare; most iHeart stations embed song/ad in the playlist). Throttled, producer
+// thread. Resolves url-aware (re-resolves on station switch). Empty -> clear.
+void StreamSource::maybePollIHeart() {
+    if (!is_iheart_) return;
+    if (iheart_manifest_ok_) return;   // manifest is authoritative this cycle
+    DWORD now = GetTickCount();
+    if (last_iheart_poll_ != 0 && now - last_iheart_poll_ < 10000) return;  // ~10s pace
+    last_iheart_poll_ = now;
+
+    if (!iheart_.resolve(url_)) return;   // url-aware; self-heals next cycle
+    std::string np = iheart_.pollNowPlaying();
+
+    std::lock_guard<std::mutex> lk(now_playing_mtx_);
+    if (!np.empty()) {
+        std::string s = sanitizeForDisplay(np);
+        if (s != now_playing_) { now_playing_ = s; slog("iheart now-playing: %s", s.c_str()); }
+    } else if (!now_playing_.empty()) {
+        now_playing_.clear();                                   // break -> "(live stream)"
+        slog("iheart: now-playing cleared (break/error)");
+    }
+}
+
+// HLS branch of rawRead(): serves bytes from the current segment, advancing to
+// the next as it drains and re-polling the media playlist for new segments at the
+// target-duration cadence. Recovers a stale token internally by re-resolving the
+// master; returns 0 only on stop or genuine death (the producer's reconnect path
+// is the backstop). Runs on the producer thread only.
+// Decode an ID3v2 text frame body (leading encoding byte + text) to UTF-8.
+// Handles ISO-8859-1, UTF-8, and UTF-16 (with/without BOM). Best-effort; the
+// result is sanitized to ASCII by the caller per the display invariant.
+static std::string decodeId3Text(const uint8_t* d, size_t n) {
+    if (n == 0) return {};
+    uint8_t enc = d[0];
+    const uint8_t* s = d + 1;
+    size_t m = (n > 0) ? n - 1 : 0;
+    std::string out;
+    auto put_cp = [&out](uint32_t u) {
+        if (u < 0x80) out += (char)u;
+        else if (u < 0x800) { out += (char)(0xC0|(u>>6)); out += (char)(0x80|(u&0x3F)); }
+        else { out += (char)(0xE0|(u>>12)); out += (char)(0x80|((u>>6)&0x3F)); out += (char)(0x80|(u&0x3F)); }
+    };
+    switch (enc) {
+        case 0:   // ISO-8859-1 -> UTF-8
+            for (size_t i=0;i<m;i++){ uint8_t c=s[i]; if(c==0) break; put_cp(c); }
+            break;
+        case 3:   // UTF-8 (copy through, stop at NUL)
+            for (size_t i=0;i<m;i++){ if(s[i]==0) break; out += (char)s[i]; }
+            break;
+        case 1: case 2: {   // UTF-16 (BOM or BE) -> UTF-8
+            size_t i = 0; bool le = false;
+            if (m >= 2 && ((s[0]==0xFF&&s[1]==0xFE)||(s[0]==0xFE&&s[1]==0xFF))) { le=(s[0]==0xFF); i=2; }
+            for (; i+1 < m; i+=2){
+                uint16_t u = le ? (uint16_t)(s[i] | (s[i+1]<<8)) : (uint16_t)((s[i]<<8) | s[i+1]);
+                if (u==0) break;
+                put_cp(u);
+            }
+            break;
+        }
+        default:
+            for (size_t i=0;i<m;i++){ if(s[i]==0) break; out += (char)s[i]; }
+            break;
+    }
+    return out;
+}
+
+// Parse a leading ID3v2 tag for TIT2 (title) + TPE1 (artist) and publish them to
+// the shared now-playing slot (same slot the ICY path fills), so HLS song info
+// flows to the display and scrobbler with no extra plumbing. Defensive: malformed
+// frames bail without disturbing the read path. Logs to [stream] for diagnosis.
+void StreamSource::hlsParseId3(const uint8_t* tag, size_t len) {
+    if (len < 10 || tag[0]!='I' || tag[1]!='D' || tag[2]!='3') return;
+    int     ver   = tag[3];                 // major version: 3 (v2.3) or 4 (v2.4)
+    uint8_t flags = tag[5];
+    uint32_t tagsize = ((uint32_t)(tag[6]&0x7f)<<21) | ((uint32_t)(tag[7]&0x7f)<<14) |
+                       ((uint32_t)(tag[8]&0x7f)<< 7) | ((uint32_t)(tag[9]&0x7f));
+    if (flags & 0x80)                       // unsynchronisation — rare for timed-ID3
+        slog("hls-id3: unsync flag set (parse may be partial)");
+    size_t pos = 10;
+    size_t end = len < (size_t)10 + tagsize ? len : (size_t)10 + tagsize;
+    if (flags & 0x40) {                     // extended header present — skip it
+        if (pos + 4 > end) return;
+        uint32_t extlen = (ver >= 4)
+            ? (((uint32_t)(tag[pos]&0x7f)<<21)|((uint32_t)(tag[pos+1]&0x7f)<<14)|((uint32_t)(tag[pos+2]&0x7f)<<7)|((uint32_t)(tag[pos+3]&0x7f)))
+            : (((uint32_t)tag[pos]<<24)|((uint32_t)tag[pos+1]<<16)|((uint32_t)tag[pos+2]<<8)|((uint32_t)tag[pos+3]));
+        pos += (ver >= 4) ? extlen : (4 + extlen);   // v2.4 extlen counts itself; v2.3 doesn't
+    }
+    std::string title, artist;
+    while (pos + 10 <= end) {
+        char id[5] = { (char)tag[pos], (char)tag[pos+1], (char)tag[pos+2], (char)tag[pos+3], 0 };
+        if (id[0] == 0) break;              // hit padding
+        uint32_t fsz = (ver >= 4)
+            ? (((uint32_t)(tag[pos+4]&0x7f)<<21)|((uint32_t)(tag[pos+5]&0x7f)<<14)|((uint32_t)(tag[pos+6]&0x7f)<<7)|((uint32_t)(tag[pos+7]&0x7f)))
+            : (((uint32_t)tag[pos+4]<<24)|((uint32_t)tag[pos+5]<<16)|((uint32_t)tag[pos+6]<<8)|((uint32_t)tag[pos+7]));
+        size_t fdata = pos + 10;
+        if (fsz == 0 || fdata + fsz > end) break;     // padding or malformed -> stop
+        if (!std::strcmp(id,"TIT2"))      title  = decodeId3Text(tag + fdata, fsz);
+        else if (!std::strcmp(id,"TPE1")) artist = decodeId3Text(tag + fdata, fsz);
+        pos = fdata + fsz;
+    }
+    if (title.empty() && artist.empty()) {
+        slog("hls-id3: tag found (ver=2.%d size=%u) but no TIT2/TPE1", ver, tagsize);
+        return;
+    }
+    std::string combined = artist.empty() ? title
+                         : (title.empty() ? artist : artist + " - " + title);
+    combined = sanitizeForDisplay(combined);
+    {
+        std::lock_guard<std::mutex> lk(now_playing_mtx_);
+        if (combined == now_playing_) return;         // unchanged
+        now_playing_ = combined;
+    }
+    slog("hls-id3: %s", combined.c_str());
+}
+
+DWORD StreamSource::hlsRawRead(void* dst, DWORD want) {
+    // 1. Serve from the current segment if bytes remain.
+    if (hls_.seg_pos < hls_.seg.size()) {
+        DWORD avail = (DWORD)(hls_.seg.size() - hls_.seg_pos);
+        DWORD n = (want < avail) ? want : avail;
+        std::memcpy(dst, hls_.seg.data() + hls_.seg_pos, n);
+        hls_.seg_pos += n;
+        return n;
+    }
+    // 2. Current segment drained — make sure we have a pending segment to fetch.
+    int repoll_fail = 0;
+    while (hls_.pending.empty()) {
+        if (stop_.load()) return 0;
+        DWORD since = GetTickCount() - hls_.last_poll;
+        if (since < (DWORD)hls_.target_dur_ms) { Sleep(50); continue; }   // pace polling
+        if (!hlsPollMedia()) {
+            // Variant GET failed — session token likely expired. Refresh via master.
+            if (!hlsResolveMaster() || !hlsPollMedia()) {
+                if (++repoll_fail >= 3) { slog("hlsRawRead: giving up after repoll failures"); return 0; }
+                if (stop_.load()) return 0;
+                Sleep(300);
+            }
+        }
+        // If still empty, the live edge hasn't advanced yet — loop and wait.
+    }
+    // 3. Fetch the next pending segment.
+    std::string next = hls_.pending.front();
+    hls_.pending.erase(hls_.pending.begin());
+    hls_.seg.clear(); hls_.seg_pos = 0;
+    if (!hlsFetchSegment(next, hls_.seg)) return 0;   // producer reconnect is the backstop
+
+    maybePollIHeart();   // throttled iHeart now-playing refresh (producer thread, ~10s)
+
+    // 4. Leading ID3v2 tag: parse it for timed now-playing metadata (TIT2/TPE1),
+    //    then skip past it so the byte stream the decoder sees starts on an ADTS
+    //    frame. iHeart .aac is usually bare ADTS, but HLS carries song info as a
+    //    timed-ID3 tag in front of segments when the track changes.
+    if (hls_.seg.size() >= 10 && hls_.seg[0]=='I' && hls_.seg[1]=='D' && hls_.seg[2]=='3') {
+        uint32_t sz = ((uint32_t)(hls_.seg[6] & 0x7f) << 21) |
+                      ((uint32_t)(hls_.seg[7] & 0x7f) << 14) |
+                      ((uint32_t)(hls_.seg[8] & 0x7f) <<  7) |
+                      ((uint32_t)(hls_.seg[9] & 0x7f));
+        size_t skip = 10 + (size_t)sz;
+        size_t avail = (skip <= hls_.seg.size()) ? skip : hls_.seg.size();
+        hlsParseId3(hls_.seg.data(), avail);     // extract now-playing before skipping
+        if (skip < hls_.seg.size()) hls_.seg_pos = skip;
+    }
+
+    // 5. Recurse once to serve the freshly fetched segment.
+    return hlsRawRead(dst, want);
+}
+
+bool StreamSource::hlsProbeTest(const std::string& master_url) {
+    hls_ = HlsState{};
+    hls_.master_url = master_url;
+    slog("hlsProbe: start url=%s", master_url.c_str());
+    if (!hlsEnsureSession())                 { return false; }
+    if (!hlsResolveMaster())                 { disconnect(); return false; }
+    if (!hlsPollMedia())                     { disconnect(); return false; }
+    if (hls_.pending.empty())                { slog("hlsProbe: no segments queued"); disconnect(); return false; }
+
+    std::vector<uint8_t> seg;
+    if (!hlsFetchSegment(hls_.pending.front(), seg)) { disconnect(); return false; }
+    bool adts = seg.size() >= 2 && seg[0] == 0xFF && (seg[1] & 0xF6) == 0xF0;  // ADTS sync + layer==00
+    slog("hlsProbe: OK first-seg=%zu bytes adts_sync=%d window=%zu",
+         seg.size(), adts ? 1 : 0, hls_.pending.size());
+    disconnect();
+    return true;
+}
+
 // ─── ICY metadata de-interleaving ─────────────────────────────────────────────
 // Both decoders pull audio through readAudio(); it transparently removes the
 // periodic Shoutcast/Icecast metadata blocks and parses the StreamTitle out.
 
 DWORD StreamSource::rawRead(void* dst, DWORD want) {
+    if (mode_ == Mode::HLS) return hlsRawRead(dst, want);   // segment pump backs the byte stream
     if (raw_pos_ >= raw_buf_.size()) {
         if (stop_.load() || hConn_ == nullptr) return 0;
         raw_buf_.assign(8192, 0);

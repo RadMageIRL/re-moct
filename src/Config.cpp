@@ -60,21 +60,40 @@ bool DigiConfig::isFav(const std::string& path) const {
     return std::find(fav_tracks.begin(), fav_tracks.end(), path) != fav_tracks.end();
 }
 
-void DigiConfig::addRadioStation(const std::string& url) {
+void DigiConfig::addRadioStation(const std::string& url, const std::string& name) {
+    // Preserve an existing stored name when re-added without one (e.g. replaying a
+    // saved station), but let a non-empty name overwrite (rename). removeRadioStation
+    // clears the map entry, so capture the name to keep before removing.
+    std::string keep = name;
+    if (keep.empty()) {
+        auto it = radio_station_names.find(url);
+        if (it != radio_station_names.end()) keep = it->second;
+    }
     removeRadioStation(url);
     radio_stations.insert(radio_stations.begin(), url);
-    if ((int)radio_stations.size() > RADIO_MAX)
+    if (!keep.empty()) radio_station_names[url] = keep;
+    if ((int)radio_stations.size() > RADIO_MAX) {
+        // Prune names for any URLs dropped off the FIFO tail.
+        for (size_t i = (size_t)RADIO_MAX; i < radio_stations.size(); ++i)
+            radio_station_names.erase(radio_stations[i]);
         radio_stations.resize((size_t)RADIO_MAX);
+    }
 }
 
 void DigiConfig::removeRadioStation(const std::string& url) {
     radio_stations.erase(
         std::remove(radio_stations.begin(), radio_stations.end(), url),
         radio_stations.end());
+    radio_station_names.erase(url);
 }
 
 bool DigiConfig::isRadioStation(const std::string& url) const {
     return std::find(radio_stations.begin(), radio_stations.end(), url) != radio_stations.end();
+}
+
+std::string DigiConfig::radioStationName(const std::string& url) const {
+    auto it = radio_station_names.find(url);
+    return it != radio_station_names.end() ? it->second : std::string();
 }
 
 void DigiConfig::recordPlay(const std::string& path) {
@@ -92,6 +111,7 @@ void DigiConfig::load() {
     bookmarks.clear();
     fav_tracks.clear();
     radio_stations.clear();
+    radio_station_names.clear();
     recent_tracks.clear();
     track_stats.clear();
 
@@ -130,7 +150,20 @@ void DigiConfig::load() {
                 fav_tracks.push_back(val);
         }
         else if (key == "station") {
-            if (!val.empty()) radio_stations.push_back(val);
+            if (!val.empty()) {
+                // Optional friendly name after a tab: "station=<url>\t<name>".
+                // Old name-less lines parse with tab==npos => name stays empty.
+                std::string surl = val, sname;
+                auto tab = val.find('\t');
+                if (tab != std::string::npos) {
+                    surl  = val.substr(0, tab);
+                    sname = val.substr(tab + 1);
+                }
+                if (!surl.empty()) {
+                    radio_stations.push_back(surl);
+                    if (!sname.empty()) radio_station_names[surl] = sname;
+                }
+            }
         }
         else if (key == "recent") {
             // Silently drop any CD paths that leaked into a pre-fix config
@@ -186,7 +219,13 @@ void DigiConfig::save() const {
     for (const auto& b : bookmarks)       f << "bookmark=" << b << "\n";
     for (const auto& fv : fav_tracks)
         if (!isCDTrackPath(fv))            f << "fav="     << fv << "\n";
-    for (const auto& st : radio_stations)  f << "station="  << st << "\n";
+    for (const auto& st : radio_stations) {
+        auto it = radio_station_names.find(st);
+        if (it != radio_station_names.end() && !it->second.empty())
+            f << "station="  << st << "\t" << it->second << "\n";
+        else
+            f << "station="  << st << "\n";
+    }
     for (const auto& r : recent_tracks)
         if (!isCDTrackPath(r))
             f << "recent=" << r << "\n";

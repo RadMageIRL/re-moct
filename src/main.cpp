@@ -71,6 +71,18 @@ int main(int argc, char* argv[]) {
         // Restore saved playlist
         for (const auto& path : config.playlist_paths)
             playlist.addTrack(path);
+        // Re-label restored radio entries with their persisted friendly names.
+        // addTrack derives a URL-based label ("RADIO: hls.m3u8"); the friendly
+        // name lives in config's name map. This mirrors UIManager::stationLabel's
+        // "RADIO: <name>" format so the playlist matches the [Radio] pane.
+        for (std::size_t i = 0; i < playlist.size(); ++i) {
+            const auto& e = playlist.at(i);
+            if (e.path.rfind("http://", 0) == 0 || e.path.rfind("https://", 0) == 0) {
+                std::string nm = config.radioStationName(e.path);
+                if (!nm.empty())
+                    playlist.setDisplayTitle(i, "RADIO: " + sanitizeForDisplay(nm));
+            }
+        }
         if (!config.playlist_paths.empty())
             playlist.selectAt(config.playlist_current);
 

@@ -783,6 +783,16 @@ void UIManager::drawTitleBar() {
                + " [" + cd_drive_letter_ + ":]";
         else
             np = cd_title + " [" + cd_drive_letter_ + ":]";
+    } else if (audio_.streamMode()) {
+        // Live stream: show the station identity (its RADIO: label) so the top
+        // line reflects the playing station, not the stale last-file track held
+        // in currentTrack(). The song itself (ICY/HLS now-playing) stays on the
+        // bottom progress row. Reads display_title, so it upgrades automatically
+        // once user-supplied station names land.
+        std::string label;
+        if (!playlist_.empty() && playlist_.current() < playlist_.size())
+            label = playlist_.at(playlist_.current()).display_title;
+        np = label.empty() ? "(live stream)" : label;
     } else
 #endif
     if (audio_.state() != PlaybackState::Stopped && !track.path.empty()) {
@@ -2225,6 +2235,7 @@ void UIManager::drawGotoBar() {
         case InputMode::SaveM3U: prompt = " save playlist (.m3u/.m3u8/.pls/.xspf): "; break;
         case InputMode::LoadM3U: prompt = " load m3u: ";  break;
         case InputMode::StreamURL: prompt = " radio url: "; break;
+        case InputMode::StreamName: prompt = " station name (optional, Enter to skip): "; break;
         case InputMode::RadioSearch: prompt = " search radio: "; break;
         case InputMode::LastfmKey:    prompt = " last.fm API key: "; break;
         case InputMode::LastfmSecret: prompt = " last.fm secret: ";  break;
@@ -2258,6 +2269,12 @@ void UIManager::drawGotoBar() {
 
 static std::string radioLabel(const std::string& url) {
     return PlaylistManager::streamLabel(url);   // single source of truth
+}
+
+std::string UIManager::stationLabel(const std::string& url) const {
+    std::string nm = config_.radioStationName(url);
+    if (!nm.empty()) return "RADIO: " + sanitizeForDisplay(nm);
+    return radioLabel(url);
 }
 
 // Shared junk-metadata gate for scrobbling. Real radio tracks (e.g. "Sia -
@@ -3279,7 +3296,7 @@ void UIManager::handleInput(int ch) {
                     dir_entries_.push_back("[Back]"); dir_display_.push_back("[Back]");
                     for (const auto& st : config_.radio_stations) {
                         dir_entries_.push_back(st);
-                        dir_display_.push_back(sanitizeForDisplay(radioLabel(st)));
+                        dir_display_.push_back(sanitizeForDisplay(stationLabel(st)));
                     }
                     if (dir_cursor_ >= (int)dir_entries_.size())
                         dir_cursor_ = std::max(0, (int)dir_entries_.size() - 1);
@@ -3459,6 +3476,10 @@ void UIManager::handleInput(int ch) {
                 int max_scroll = std::max(0, (int)playlist_.size() - visible);
                 if (pl_scroll_ > max_scroll) pl_scroll_ = max_scroll;
                 if (pl_scroll_ > pl_cursor_) pl_scroll_ = pl_cursor_;
+                // Deleting an entry above the playing track shifts current()'s
+                // index; resync the marker so the follow logic doesn't read it as
+                // a track change and snap the cursor to the playing row.
+                last_playlist_current_for_sync_ = (int)playlist_.current();
             }
             else if (focus_ == Pane::DirBrowser && in_radio_
                      && dir_cursor_ < (int)dir_entries_.size()) {
@@ -3470,7 +3491,7 @@ void UIManager::handleInput(int ch) {
                     dir_entries_.push_back("[Back]"); dir_display_.push_back("[Back]");
                     for (const auto& st : config_.radio_stations) {
                         dir_entries_.push_back(st);
-                        dir_display_.push_back(sanitizeForDisplay(radioLabel(st)));
+                        dir_display_.push_back(sanitizeForDisplay(stationLabel(st)));
                     }
                     if (dir_cursor_ >= (int)dir_entries_.size())
                         dir_cursor_ = std::max(0, (int)dir_entries_.size() - 1);
@@ -3636,8 +3657,31 @@ void UIManager::gotoClose(bool commit) {
                 if (url.rfind("https://https://", 0) == 0)     url.erase(0, 8);
                 else if (url.rfind("http://http://", 0) == 0)  url.erase(0, 7);
                 if (!url.empty()) {
-                    std::string label = radioLabel(url);
-                    config_.addRadioStation(url);   // persist + show in [Radio]
+                    // Stash the cleaned URL and chain to an optional name prompt.
+                    // The actual add/persist/play happens on StreamName submit so a
+                    // user-supplied name can label the station (blank = derived label).
+                    pending_stream_url_ = url;
+                    openInputBar(InputMode::StreamName, "");
+                }
+                break;
+            }
+            case InputMode::StreamName: {
+                std::string name = goto_input_;
+                while (!name.empty() && (name.front() == ' ' || name.front() == '\t'))
+                    name.erase(name.begin());
+                while (!name.empty() && (name.back() == ' ' || name.back() == '\t' ||
+                                         name.back() == '\r' || name.back() == '\n'))
+                    name.pop_back();
+                std::string url = pending_stream_url_;
+                pending_stream_url_.clear();
+                if (!url.empty()) {
+                    // Supplied name -> "RADIO: <name>" (keeps the station-signalling
+                    // prefix); blank -> today's URL-derived label. Name is in-session
+                    // only for now — persistence needs the Config schema change.
+                    std::string label = name.empty() ? radioLabel(url)
+                                                      : ("RADIO: " + sanitizeForDisplay(name));
+                    config_.addRadioStation(url, name);   // persist URL + name, show in [Radio]
+                    config_.save();                       // flush now so the name survives restart
 
                     // Append as a playlist entry (visible, removable, re-selectable),
                     // jump to it, reveal the playlist pane, then play. Coexists with
@@ -3913,7 +3957,7 @@ void UIManager::activateSelection() {
                 dir_entries_.push_back("[Back]"); dir_display_.push_back("[Back]");
                 for (const auto& st : config_.radio_stations) {
                     dir_entries_.push_back(st);
-                    dir_display_.push_back(sanitizeForDisplay(radioLabel(st)));
+                    dir_display_.push_back(sanitizeForDisplay(stationLabel(st)));
                 }
                 dir_cursor_ = 0; dir_scroll_ = 0;
                 return;
@@ -3953,7 +3997,7 @@ void UIManager::activateSelection() {
                     dir_entries_.push_back("[Back]"); dir_display_.push_back("[Back]");
                     for (const auto& st : config_.radio_stations) {
                         dir_entries_.push_back(st);
-                        dir_display_.push_back(sanitizeForDisplay(PlaylistManager::streamLabel(st)));
+                        dir_display_.push_back(sanitizeForDisplay(stationLabel(st)));
                     }
                     dir_cursor_ = 0; dir_scroll_ = 0;
                     return;
@@ -3963,19 +4007,22 @@ void UIManager::activateSelection() {
                 return;
             }
             // Resolve the station. Search results carry the real station name +
-            // uuid; saved stations derive their label from the URL.
-            std::string url, label, uuid;
+            // uuid (persist the name); saved stations keep their stored name.
+            std::string url, uuid;
             if (in_radio_search_) {
                 int ri = dir_cursor_ - 1;            // [Back] occupies index 0
                 if (ri < 0 || ri >= (int)radio_results_.size()) return;
                 url   = radio_results_[(size_t)ri].url;
-                label = radio_results_[(size_t)ri].name;
                 uuid  = radio_results_[(size_t)ri].uuid;
+                config_.addRadioStation(url, radio_results_[(size_t)ri].name);  // persist real name
             } else {
                 url   = name;
-                label = radioLabel(name);
+                config_.addRadioStation(url);        // preserve any stored name
             }
-            config_.addRadioStation(url);                       // save to [Radio]
+            config_.save();                          // flush so persisted names survive restart
+            // Unified label so search-played and saved stations read the same,
+            // now and after restart: "RADIO: <name>" if known, else derived.
+            std::string label = stationLabel(url);
             if (!uuid.empty()) RadioBrowser::countClick(uuid);  // popularity courtesy
             // Append the station and jump to it — coexists with existing file/CD
             // entries (delete from the playlist to remove). addStream dedups by
@@ -4025,7 +4072,7 @@ void UIManager::activateSelection() {
             dir_entries_.push_back("[Back]"); dir_display_.push_back("[Back]");
             for (const auto& st : config_.radio_stations) {
                 dir_entries_.push_back(st);
-                dir_display_.push_back(sanitizeForDisplay(radioLabel(st)));
+                dir_display_.push_back(sanitizeForDisplay(stationLabel(st)));
             }
             dir_cursor_ = 0; dir_scroll_ = 0;
             return;

@@ -1,4 +1,4 @@
-The remoct.exe here is compiled with Internet Radio and Last.fm support. Requires the packages/dlls noted herein.
+The remoct.exe here is compiled with Discord, Internet Radio and Last.fm support. Requires the packages/dlls noted herein.
 
 In MSYS2
 

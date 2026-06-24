@@ -30,8 +30,8 @@ public:
     // streaming branch can mirror its CD branch (44100 Hz, stereo, float out).
     static constexpr int SAMPLE_RATE   = 44100;
     static constexpr int CHANNELS      = 2;
-    static constexpr int RING_SECONDS  = 4;                                  // jitter buffer depth
-    static constexpr int PREBUFFER_SEC = 2;                                  // fill before audio flows
+    static constexpr int RING_SECONDS  = 12;                                 // jitter buffer depth (effective cushion ~half this; producer backpressures at RING_SIZE/2)
+    static constexpr int PREBUFFER_SEC = 3;                                  // fill before audio flows (per-tune-in latency; keep modest)
     static constexpr int RING_SIZE     = SAMPLE_RATE * CHANNELS * RING_SECONDS;
     static constexpr int PREBUFFER_SAMPLES = SAMPLE_RATE * CHANNELS * PREBUFFER_SEC;
 

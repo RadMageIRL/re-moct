@@ -22,10 +22,18 @@
 
 #include "miniaudio.h"   // declarations only — MINIAUDIO_IMPLEMENTATION lives in AudioManager.cpp
 #include <fdk-aac/aacdecoder_lib.h>
+#include "IHeartRadio.h"  // isolated iHeart now-playing service (HLS streams only)
 
 class StreamSource {
 public:
     std::string nowPlaying() const;   // current ICY StreamTitle (empty if none)
+
+    // ── HLS increment 1 (dev probe) ──────────────────────────────────────────
+    // Standalone, no audio path: resolve master -> poll media playlist -> fetch
+    // first segment, logging sizes + ADTS sync to %TEMP%\remoct-*.log ([stream]).
+    // Call with the canonical zc####/hls.m3u8 URL. Remove once increment 2 wires
+    // the pump into rawRead(). Returns true if the full chain resolved.
+    bool hlsProbeTest(const std::string& master_url);
     // Fixed output format — matches the CD playback device so AudioManager's
     // streaming branch can mirror its CD branch (44100 Hz, stereo, float out).
     static constexpr int SAMPLE_RATE   = 44100;
@@ -65,6 +73,47 @@ public:
 private:
     enum class Codec { MP3, AAC };
     Codec                   codec_ = Codec::MP3;   // chosen in open() from the URL
+
+    // ── HLS state (increment 1: populated only by the probe; increment 2 wires
+    //    it into the live producer via a rawRead() branch). Additive — none of
+    //    the continuous-stream members above are affected. ───────────────────
+    enum class Mode { Continuous, HLS };
+    Mode                    mode_ = Mode::Continuous;   // set in open() (increment 2)
+
+    struct HlsState {
+        std::string master_url;               // canonical zc####/hls.m3u8 (persisted)
+        std::string variant_url;              // tokenized media-playlist URL (session token lives here)
+        uint64_t    last_seq      = 0;        // highest EXT-X-MEDIA-SEQUENCE consumed
+        int         target_dur_ms = 10000;    // from EXT-X-TARGETDURATION
+        std::vector<std::string> pending;     // segment URLs not yet fetched
+        std::vector<uint8_t>     seg;         // current segment bytes (increment 2)
+        size_t                   seg_pos = 0;
+        DWORD                    last_poll = 0;// GetTickCount of last media poll
+    };
+    HlsState                hls_;
+
+    bool hlsEnsureSession();                  // open hInet_ (UA + timeouts) if needed
+    bool hlsHttpGet(const std::string& url, std::string* out_text,
+                    std::vector<uint8_t>* out_bytes, std::string* out_final_url);
+    bool hlsResolveMaster();                  // GET master -> variant_url
+    bool hlsPollMedia();                      // GET variant -> append new segments to pending
+    bool hlsFetchSegment(const std::string& url, std::vector<uint8_t>& out);
+    bool hlsConnect();                        // HLS branch of connect(): resolve + prime near live edge
+    DWORD hlsRawRead(void* dst, DWORD want);  // HLS branch of rawRead(): the segment pump
+    void hlsParseId3(const uint8_t* tag, size_t len);  // extract TIT2/TPE1 -> now_playing_
+
+    // ── iHeart now-playing (HLS only) ────────────────────────────────────────
+    // iHeart doesn't embed song info in-band (their ID3 is only the HLS timestamp
+    // PRIV frame), so for iHeart streams we poll their JSON via the isolated
+    // IHeartRadio module on the producer thread's existing ~10s cadence.
+    IHeartRadio iheart_;
+    bool        is_iheart_       = false;   // set in hlsConnect by URL sniff
+    DWORD       last_iheart_poll_ = 0;      // GetTickCount throttle
+    bool        iheart_manifest_ok_ = false;// last manifest gave a song/ad -> skip trackHistory fallback
+    void        maybePollIHeart();          // trackHistory FALLBACK (only when manifest has no metadata)
+    bool        parseIHeartManifest(const std::string& body);  // manifest-primary now-playing (freeze-proof)
+    static std::string hlsFirstUri(const std::string& body);
+    static std::string hlsResolveUrl(const std::string& base, const std::string& ref);
 
     std::string             url_;
     std::string             last_error_;

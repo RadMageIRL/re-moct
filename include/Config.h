@@ -51,10 +51,15 @@ struct DigiConfig {
 
     // Saved internet-radio stations (URLs), max 50, FIFO on overflow
     std::vector<std::string> radio_stations;
+    // Optional friendly names keyed by station URL (parallel to radio_stations).
+    // Absent entry => fall back to the URL-derived label. Persisted as a tab on
+    // the station= line; backward-compatible with old name-less entries.
+    std::unordered_map<std::string, std::string> radio_station_names;
     static constexpr int     RADIO_MAX = 50;
-    void addRadioStation(const std::string& url);
+    void addRadioStation(const std::string& url, const std::string& name = "");
     void removeRadioStation(const std::string& url);
     bool isRadioStation(const std::string& url) const;
+    std::string radioStationName(const std::string& url) const;   // "" if none
 
     // Per-track play statistics keyed by file path
     std::unordered_map<std::string, TrackStats> track_stats;

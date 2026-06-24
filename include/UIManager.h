@@ -128,10 +128,11 @@ private:
     void computeVizBins();
 
     // Input bar state (goto dir / save M3U / load M3U)
-    enum class InputMode { Goto, SaveM3U, LoadM3U, StreamURL, RadioSearch, LastfmKey, LastfmSecret, ListenBrainzToken };
+    enum class InputMode { Goto, SaveM3U, LoadM3U, StreamURL, StreamName, RadioSearch, LastfmKey, LastfmSecret, ListenBrainzToken };
     bool        goto_active_  = false;
     InputMode   input_mode_   = InputMode::Goto;
     std::string goto_input_;
+    std::string pending_stream_url_;   // URL stashed between the Ctrl+U URL prompt and its name prompt
     int         goto_cursor_  = 0;
     // Tab-completion state
     std::vector<std::string> tab_matches_;
@@ -140,6 +141,10 @@ private:
 
     void gotoOpen();
     void openInputBar(InputMode mode, const std::string& initial = "");
+    // Name-aware station label: "RADIO: <stored name>" if Config has one for this
+    // URL, else the URL-derived label. Single source of truth for [Radio]/playlist
+    // station labels so persisted names show everywhere.
+    std::string stationLabel(const std::string& url) const;
     void gotoClose(bool commit);
     void gotoTabComplete();
     std::vector<std::string> gotoGetMatches(const std::string& partial) const;

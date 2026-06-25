@@ -57,6 +57,7 @@ public:
     bool isOpen()     const { return producer_thread_.joinable(); }
     bool isPlaying()  const { return playing_.load(); }
     bool buffering()  const { return !prebuffered_.load(); }  // true while (re)filling
+    const std::string& url() const { return url_; }  // stream URL currently open ("" if none)
     void pause(bool p)      { paused_.store(p); }
     bool paused()     const { return paused_.load(); }
 

@@ -787,11 +787,14 @@ void UIManager::drawTitleBar() {
         // Live stream: show the station identity (its RADIO: label) so the top
         // line reflects the playing station, not the stale last-file track held
         // in currentTrack(). The song itself (ICY/HLS now-playing) stays on the
-        // bottom progress row. Reads display_title, so it upgrades automatically
-        // once user-supplied station names land.
-        std::string label;
-        if (!playlist_.empty() && playlist_.current() < playlist_.size())
-            label = playlist_.at(playlist_.current()).display_title;
+        // bottom progress row. Derive the label from the URL actually streaming
+        // (stationLabel -> config name or derived), NOT playlist_.current(): a
+        // station launched from the play queue never moves the playlist cursor
+        // (queue items have no playlist row), so current() still points at the
+        // previous song and would paint its stale title here. URL-based labeling
+        // is cursor-independent and still upgrades when a user-supplied station
+        // name lands in config.
+        std::string label = stationLabel(audio_.streamUrl());
         np = label.empty() ? "(live stream)" : label;
     } else
 #endif

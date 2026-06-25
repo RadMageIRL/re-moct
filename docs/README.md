@@ -1,7 +1,7 @@
 ## 🚧 In Development (dev branch)
 
 Features being tested, not yet in a stable release:
-See current binary/exe in the binary-dev directory (need to install mingw-w64-ucrt-x86_64-fdk-aac in MSYS2, which wasn't part of RC1)
+See current binary/exe in the binary-dev directory (need to install mingw-w64-ucrt-x86_64-fdk-aac in MSYS2, which wasn't part of RC1) source may be ahead of exe in binary-dev dir
 
 # What's New in This Branch (since v1.0.0-RC1)
 

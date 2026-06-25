@@ -107,11 +107,20 @@ private:
     // PRIV frame), so for iHeart streams we poll their JSON via the isolated
     // IHeartRadio module on the producer thread's existing ~10s cadence.
     IHeartRadio iheart_;
-    bool        is_iheart_       = false;   // set in hlsConnect by URL sniff
-    DWORD       last_iheart_poll_ = 0;      // GetTickCount throttle
-    bool        iheart_manifest_ok_ = false;// last manifest gave a song/ad -> skip trackHistory fallback
-    void        maybePollIHeart();          // trackHistory FALLBACK (only when manifest has no metadata)
-    bool        parseIHeartManifest(const std::string& body);  // manifest-primary now-playing (freeze-proof)
+    bool        is_iheart_        = false;  // set in hlsConnect by URL sniff
+    DWORD       last_iheart_poll_ = 0;      // trackHistory poll throttle (GetTickCount)
+    std::string iheart_th_cache_;           // cached trackHistory result between throttled polls
+    long        iheart_th_ended_  = -1;     // cached trackHistory staleness (now - endTime)
+    // Debounced reconciliation state machine. Songs interrupt instantly (trusted);
+    // ads must persist to be believed (phantom-ad-during-song protection); the murky
+    // boundary resolves to an honest "<station> - LIVE" floor.
+    enum class IHNow { Live, Song, Ad };
+    IHNow       ih_state_      = IHNow::Live;   // committed
+    std::string ih_state_disp_;                 // committed display string
+    IHNow       ih_pending_    = IHNow::Live;   // candidate awaiting confirmation
+    std::string ih_pending_disp_;
+    int         ih_streak_     = 0;             // consecutive ticks the candidate has held
+    void        updateIHeartNowPlaying(const std::string& body);
     static std::string hlsFirstUri(const std::string& body);
     static std::string hlsResolveUrl(const std::string& base, const std::string& ref);
 

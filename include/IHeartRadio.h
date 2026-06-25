@@ -16,10 +16,15 @@
 // SniffIHeartRadio probe (diagnostic). All iHeart-specific quirks live HERE, so
 // when iHeart changes their API only this one file needs to change.
 //
-// Verified endpoints (SniffIHeartRadio against zc4366, 2026-06-24):
+// Verified endpoints (SniffIHeartRadio against zc4366 / zc1469 / zc4257, 2026-06-24):
 //   identity:    GET api.iheart.com/api/v2/content/liveStations/<id>  -> hits[0].name
 //   now-playing: GET api.iheart.com/api/v3/live-meta/stream/<id>/trackHistory -> data[0]
-//   (the zc#### number IS the iHeart station id; currentTrackMeta returns 410 here.)
+//   The zc#### number IS the iHeart station id (confirmed across 3 stations:
+//   4366, 1469, 4257 -- each liveStations.hits[0].id matched the zc number).
+//   Dead ends, do not re-probe:
+//     - currentTrackMeta -> HTTP 410 ("No meta data for <id>") on BOTH
+//       api.iheart.com AND us.api.iheart.com. Platform-wide, not per-station.
+//     - track-history (hyphenated) -> HTTP 404. Only camelCase trackHistory resolves.
 //
 // Failure posture: any network/parse failure or stale window -> empty result, so
 // the caller simply shows "(live stream)". Never throws out of its public API.
@@ -43,7 +48,12 @@ public:
 
     // Poll now-playing. Returns "Artist - Title" if a track is genuinely playing
     // now (timestamp-gated), else "" (ad/talk break or error). Caller throttles.
-    std::string pollNowPlaying();
+    // Poll now-playing. Returns "Artist - Title" for data[0] (the most recent track),
+    // or "" on error/no data. If endedSecsAgo is given, it's set to (now - endTime):
+    // <=0 currently playing, >0 ended that many seconds ago, -1 unknown — and the
+    // raw song is returned regardless of staleness so the caller can judge freshness.
+    // With no out-param (probe path) a strict 30s gate applies and stale -> "".
+    std::string pollNowPlaying(long* endedSecsAgo = nullptr);
 
     bool        resolved()    const { return resolved_; }
     long        stationId()   const { return station_id_; }

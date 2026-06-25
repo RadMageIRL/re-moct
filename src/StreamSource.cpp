@@ -273,7 +273,7 @@ bool StreamSource::hlsPollMedia() {
         i = e + 1;
     }
     hls_.last_poll = GetTickCount();
-    if (is_iheart_) iheart_manifest_ok_ = parseIHeartManifest(body);  // manifest-primary now-playing
+    if (is_iheart_) updateIHeartNowPlaying(body);   // reconcile manifest + trackHistory
     slog("hlsPollMedia: target=%dms mseq=%llu total=%d new=%d disc=%d pending=%zu",
          hls_.target_dur_ms, (unsigned long long)media_seq, total, new_count, disc?1:0, hls_.pending.size());
     return true;
@@ -304,7 +304,10 @@ bool StreamSource::hlsConnect() {
     // station switch. resolve() is url-aware, so switching re-resolves cleanly.
     is_iheart_          = IHeartRadio::isIHeartUrl(url_);
     last_iheart_poll_   = 0;
-    iheart_manifest_ok_ = false;
+    iheart_th_cache_.clear();
+    iheart_th_ended_    = -1;
+    ih_state_ = ih_pending_ = IHNow::Live;
+    ih_state_disp_.clear(); ih_pending_disp_.clear(); ih_streak_ = 0;
     if (is_iheart_) {
         iheart_.setLogger([](const std::string& s){ slog("%s", s.c_str()); });
         iheart_.resolve(url_);   // sidecar-first; cheap; gives us stationName() for the ad label
@@ -363,9 +366,20 @@ static std::string mfTrim(const std::string& s) {
     return s.substr(a, b - a + 1);
 }
 
-bool StreamSource::parseIHeartManifest(const std::string& body) {
-    // Take the live-edge (last) EXTINF line that carries iHeart's title= attribute.
-    std::string last;
+// Classify the manifest's live-edge segment. iHeart embeds per-segment metadata in
+// the EXTINF tag. Three outcomes, because a blank/boundary marker is NOT an ad:
+//   Song : real artist + song_spot="M"/"F"            -> "Artist - Title"
+//   Ad   : song_spot="T", or an active "Spot Block"   -> a commercial is playing now
+//   None : "Spot Block End" / length="00:00:00" / blank with no ad flag
+//          -> the manifest can't tell us; defer to trackHistory
+// Verified: The Breeze songs are song_spot="M"; Breeze ads song_spot="T"; Z100 songs
+// leave the manifest stuck on "Spot Block End" (None) while trackHistory has the song;
+// Z100 active ads show "Spot Block" with a real length (Ad).
+enum class IHeartMfCls { None, Song, Ad };
+
+static IHeartMfCls classifyIHeartManifest(const std::string& body,
+                                          std::string& artistOut, std::string& titleOut) {
+    std::string last;                                     // live-edge EXTINF with a title= attr
     size_t i = 0;
     while (i < body.size()) {
         size_t e = body.find('\n', i);
@@ -376,12 +390,12 @@ bool StreamSource::parseIHeartManifest(const std::string& body) {
         }
         i = e + 1;
     }
-    if (last.empty()) return false;                        // no inline metadata -> fallback
+    if (last.empty()) return IHeartMfCls::None;
 
     std::string title  = mfTrim(mfAttr(last, "title=\""));
     std::string artist = mfTrim(mfAttr(last, "artist=\""));
 
-    char spot = 0;                                         // song_spot letter (M/F=song, T=ad)
+    char spot = 0;                                        // song_spot letter (M/F=song, T=ad)
     size_t sp = last.find("song_spot=");
     if (sp != std::string::npos) {
         size_t c = sp + 10;
@@ -389,49 +403,85 @@ bool StreamSource::parseIHeartManifest(const std::string& body) {
         if (c < last.size()) spot = last[c];
     }
 
-    bool spotBlock = title.find("Spot Block") != std::string::npos;
-    bool isAd   = (spot == 'T') || artist.empty() || spotBlock;
-    bool isSong = !isAd && !artist.empty() && !title.empty();
+    bool spotBlock    = title.find("Spot Block") != std::string::npos;
+    bool spotBlockEnd = title.find("Spot Block End") != std::string::npos;
+    bool zeroLen      = last.find("length=\\\"00:00:00\\\"") != std::string::npos ||
+                        last.find("length=\"00:00:00\"")     != std::string::npos;
 
-    std::string disp;
-    if (isSong) {
-        disp = artist + " - " + title;
-    } else if (isAd) {
-        std::string st = iheart_.stationName();
-        disp = st.empty() ? std::string("Commercial break") : (st + " - Commercial break");
-    } else {
-        return false;                                     // ambiguous -> fallback to trackHistory
+    // Real song: a genuine artist, not flagged as a spot.
+    if (!artist.empty() && spot != 'T' && !spotBlock) {
+        artistOut = artist; titleOut = title;
+        return IHeartMfCls::Song;
+    }
+    // Boundary / zero-length / "Spot Block End": the manifest is stuck or blank here.
+    if (spotBlockEnd || zeroLen) return IHeartMfCls::None;
+    // Confident active ad: explicit traffic flag, or a Spot Block that's actually running.
+    if (spot == 'T' || spotBlock)  return IHeartMfCls::Ad;
+    return IHeartMfCls::None;                             // blank/ambiguous -> defer
+}
+
+// Reconcile the two iHeart sources into a debounced now-playing state. Both the
+// manifest and trackHistory lie in different ways (The Breeze: manifest reliable,
+// trackHistory freezes; Z100: manifest stuck on "Spot Block End", trackHistory
+// reliable; and The Breeze's manifest can even show a PHANTOM ad over a real song).
+// So we trust confident songs instantly, make ads earn corroboration + persistence,
+// and floor everything uncertain to an honest "<station> - LIVE".
+//   Song : manifest song_spot="M"+artist, OR trackHistory song currently in-window
+//          -> committed immediately (1 tick); songs are never phantoms.
+//   Ad   : manifest says ad AND trackHistory corroborates (recently active, no
+//          current song) -> committed only after holding 3 ticks.
+//   Live : anything else — boundary, disagreement, or a manifest "ad" while
+//          trackHistory is frozen (can't confirm) -> "<station> - LIVE" after 2 ticks.
+void StreamSource::updateIHeartNowPlaying(const std::string& body) {
+    std::string mfArtist, mfTitle;
+    IHeartMfCls cls   = classifyIHeartManifest(body, mfArtist, mfTitle);
+    std::string mfSong = (cls == IHeartMfCls::Song) ? (mfArtist + " - " + mfTitle) : std::string();
+
+    // trackHistory snapshot (throttled ~9s; caches song + staleness between polls).
+    DWORD nowtick = GetTickCount();
+    if (last_iheart_poll_ == 0 || nowtick - last_iheart_poll_ >= 9000) {
+        last_iheart_poll_ = nowtick;
+        long ended = -1;
+        iheart_th_cache_ = iheart_.resolve(url_) ? iheart_.pollNowPlaying(&ended) : std::string();
+        iheart_th_ended_ = ended;
+    }
+    // CUR is compared against (serverNow - endTime), but our listener sits ~20s behind
+    // the live edge (we prime 2x10s segments on connect). So a song still audible at the
+    // speaker has, on the server clock, already passed endTime by roughly the buffer depth.
+    // CUR=20 expired the song before the audio did -> mid-song flip to "LIVE". Widen to 60
+    // to cover buffer (~20s) + normal song tail. Regression-safe: a genuine trackHistory
+    // freeze still climbs past 60 within a minute, dropping thCurrent and flooring to LIVE
+    // (or Ad) as before — just ~40s later. A real new track commits in 1 tick and overrides
+    // any just-finished-song overhang immediately.
+    const long CUR = 60, RECENT = 180;
+    bool thCurrent = !iheart_th_cache_.empty() && iheart_th_ended_ <= CUR;                       // playing now
+    bool thLive    = !iheart_th_cache_.empty() && iheart_th_ended_ >= 0 && iheart_th_ended_ <= RECENT; // recently active
+
+    // Confidence-ordered target for this tick.
+    std::string st = iheart_.stationName();
+    IHNow tgtKind; std::string tgtDisp;
+    if (!mfSong.empty())        { tgtKind = IHNow::Song; tgtDisp = mfSong; }            // manifest song (Breeze)
+    else if (thCurrent)         { tgtKind = IHNow::Song; tgtDisp = iheart_th_cache_; }  // trackHistory current song (Z100)
+    else if (cls == IHeartMfCls::Ad && thLive) {                                        // ad corroborated by live trackHistory
+        tgtKind = IHNow::Ad;   tgtDisp = st.empty() ? std::string("Commercial break") : (st + " - Commercial break");
+    } else {                                                                           // murk / uncorroborated -> honest LIVE
+        tgtKind = IHNow::Live; tgtDisp = st.empty() ? std::string("LIVE") : (st + " - LIVE");
     }
 
-    disp = sanitizeForDisplay(disp);
+    // Asymmetric debounce: Song needs 1 tick (instant), Ad 3, Live 2.
+    if (tgtKind == ih_state_ && tgtDisp == ih_state_disp_) { ih_streak_ = 0; return; }  // already committed
+    if (tgtKind == ih_pending_ && tgtDisp == ih_pending_disp_) ih_streak_++;
+    else { ih_pending_ = tgtKind; ih_pending_disp_ = tgtDisp; ih_streak_ = 1; }
+    int need = (tgtKind == IHNow::Song) ? 1 : (tgtKind == IHNow::Ad ? 3 : 2);
+    if (ih_streak_ < need) return;                                                      // hold current display
+
+    ih_state_ = tgtKind; ih_state_disp_ = tgtDisp; ih_streak_ = 0;                      // commit
+    std::string disp = sanitizeForDisplay(tgtDisp);
     std::lock_guard<std::mutex> lk(now_playing_mtx_);
     if (disp != now_playing_) {
         now_playing_ = disp;
-        slog("iheart manifest: %s%s", isAd ? "[ad] " : "", disp.c_str());
-    }
-    return true;
-}
-
-// trackHistory FALLBACK — only runs when the manifest carried no usable metadata
-// (rare; most iHeart stations embed song/ad in the playlist). Throttled, producer
-// thread. Resolves url-aware (re-resolves on station switch). Empty -> clear.
-void StreamSource::maybePollIHeart() {
-    if (!is_iheart_) return;
-    if (iheart_manifest_ok_) return;   // manifest is authoritative this cycle
-    DWORD now = GetTickCount();
-    if (last_iheart_poll_ != 0 && now - last_iheart_poll_ < 10000) return;  // ~10s pace
-    last_iheart_poll_ = now;
-
-    if (!iheart_.resolve(url_)) return;   // url-aware; self-heals next cycle
-    std::string np = iheart_.pollNowPlaying();
-
-    std::lock_guard<std::mutex> lk(now_playing_mtx_);
-    if (!np.empty()) {
-        std::string s = sanitizeForDisplay(np);
-        if (s != now_playing_) { now_playing_ = s; slog("iheart now-playing: %s", s.c_str()); }
-    } else if (!now_playing_.empty()) {
-        now_playing_.clear();                                   // break -> "(live stream)"
-        slog("iheart: now-playing cleared (break/error)");
+        const char* via = (tgtKind==IHNow::Song) ? "song" : (tgtKind==IHNow::Ad ? "ad" : "live");
+        slog("iheart [%s]: %s", via, disp.c_str());
     }
 }
 
@@ -557,8 +607,6 @@ DWORD StreamSource::hlsRawRead(void* dst, DWORD want) {
     hls_.pending.erase(hls_.pending.begin());
     hls_.seg.clear(); hls_.seg_pos = 0;
     if (!hlsFetchSegment(next, hls_.seg)) return 0;   // producer reconnect is the backstop
-
-    maybePollIHeart();   // throttled iHeart now-playing refresh (producer thread, ~10s)
 
     // 4. Leading ID3v2 tag: parse it for timed now-playing metadata (TIT2/TPE1),
     //    then skip past it so the byte stream the decoder sees starts on an ADTS

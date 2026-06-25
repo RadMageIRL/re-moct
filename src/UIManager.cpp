@@ -2311,6 +2311,7 @@ static bool looksLikeRealTrack(const std::string& artist, const std::string& tra
     if (a.empty() || t.empty()) return false;
     if (a == "unknown" || t == "unknown" ||
         a == "unknown artist" || a == "unknown_artist") return false;
+    if (t == "live") return false;   // "<station> - LIVE" floor (exact match; spares songs like "Live and Let Die")
     static const char* junk[] = {
         "ad|", "ad |", "commercial break", "commercial-break",
         "advertisement", "station id", "station-id", "spot block", "spotblock"

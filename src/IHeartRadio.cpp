@@ -197,7 +197,8 @@ bool IHeartRadio::resolve(const std::string& url) {
 }
 
 // ── Public: poll now-playing (timestamp-gated) ───────────────────────────────
-std::string IHeartRadio::pollNowPlaying() {
+std::string IHeartRadio::pollNowPlaying(long* endedSecsAgo) {
+    if (endedSecsAgo) *endedSecsAgo = -1;
     if (!resolved_ || meta_url_.empty()) return {};
     std::string body; long st = 0;
     if (!httpGet(meta_url_, body, st) || st != 200) {
@@ -214,26 +215,28 @@ std::string IHeartRadio::pollNowPlaying() {
     long dur       = t0.value("trackDuration", 0L);
     if (endTime == 0 && startTime > 0 && dur > 0) endTime = startTime + dur;
 
-    // Stale gate. iHeart's trackHistory LAGS the live audio by ~75-110s observed
-    // (logged across real song changes on zc4366): when a song ends, data[0] sits
-    // "ended N seconds ago" for over a minute before the next song registers, even
-    // though music is playing the whole time. A tight gate blanks the title on
-    // every transition. So keep the last song up across that lag (150s grace) and
-    // only blank for a genuinely long gap (real ad/talk break ran 195s+ stale).
-    // Tunable: raise if transitions still flicker, lower if breaks show stale too long.
-    const long GRACE = 150;
-    long now = (long)std::time(nullptr);
-    if (endTime > 0 && now > endTime + GRACE) {
-        logmsg("iheart: data[0] stale (ended " + std::to_string(now - endTime) + "s ago) -> live stream");
-        return {};
-    }
+    long now   = (long)std::time(nullptr);
+    long ended = (endTime > 0) ? (now - endTime) : -1;   // <=0 playing, >0 ended N ago, -1 unknown
+    if (endedSecsAgo) *endedSecsAgo = ended;
 
     std::string artist = t0.value("artist", std::string());
     std::string title  = t0.value("title",  std::string());
     if (artist.empty() && title.empty()) return {};
     std::string combined = artist.empty() ? title
                          : (title.empty() ? artist : artist + " - " + title);
+
+    // Caller wants the staleness (the reconciliation state machine) -> return the
+    // raw song and let it decide freshness. Legacy/probe path (no out-param) keeps
+    // the strict 30s gate so -M still reports "(empty)" during a break.
+    if (!endedSecsAgo) {
+        const long GRACE = 30;
+        if (endTime > 0 && ended > GRACE) {
+            logmsg("iheart: data[0] stale (ended " + std::to_string(ended) + "s ago) -> live stream");
+            return {};
+        }
+    }
     return combined;
 }
+
 
 #endif // _WIN32

@@ -2504,6 +2504,56 @@ static bool looksLikeRealTrack(const std::string& artist, const std::string& tra
     return true;
 }
 
+// Canonical track identity for scrobble dedup. iHeart sometimes relabels the SAME
+// song mid-play with a different EXTINF string — moving the featured artist between
+// the artist and title fields and/or changing spacing, e.g.:
+//     "Pink Pantheress / Zara Larsson - Stateside"
+//     "PinkPantheress - Stateside + Zara Larsson"
+// Raw-string comparison reads those as two tracks and re-arms now-playing/scrobble.
+// We collapse both to the same identity by: lowercasing the combined artist+title,
+// splitting on featuring/separator markers into name-chunks, stripping every chunk
+// to bare alphanumerics (so "pink pantheress" == "pinkpantheress"), then sorting the
+// chunks (so field position doesn't matter) and joining. Identical sets -> same id.
+static std::string normTrackId(const std::string& artist, const std::string& track) {
+    std::string blob = artist + " - " + track;
+    for (auto& c : blob) c = (char)std::tolower((unsigned char)c);
+
+    // Replace separator/featuring markers with a sentinel newline. Longest first so
+    // multi-char markers win over their substrings.
+    static const char* seps[] = {
+        " featuring ", " feat. ", " feat ", " ft. ", " ft ", " with ",
+        "(featuring ", "(feat. ", "(feat ", "(ft. ", "(ft ",
+        " vs. ", " vs ", " x ", " - ", " / ", " + ", " & ",
+        "/", "+", "&", ",", "(", ")", "[", "]"
+    };
+    for (const char* s : seps) {
+        std::string from = s;
+        size_t pos = 0;
+        while ((pos = blob.find(from, pos)) != std::string::npos) {
+            blob.replace(pos, from.size(), "\n");
+            pos += 1;
+        }
+    }
+
+    // Split on the sentinel; reduce each chunk to bare [a-z0-9].
+    std::vector<std::string> chunks;
+    size_t i = 0;
+    while (i <= blob.size()) {
+        size_t e = blob.find('\n', i);
+        if (e == std::string::npos) e = blob.size();
+        std::string c;
+        for (size_t k = i; k < e; ++k)
+            if (std::isalnum((unsigned char)blob[k])) c += blob[k];
+        if (!c.empty()) chunks.push_back(c);
+        i = e + 1;
+    }
+    std::sort(chunks.begin(), chunks.end());
+
+    std::string id;
+    for (const auto& c : chunks) { id += c; id += '|'; }
+    return id;
+}
+
 #ifdef _WIN32
 // Spawn a one-shot worker to resolve an album-cover URL (iTunes/Deezer) off the
 // UI thread. Single in-flight at a time; the result is picked up by the deferred
@@ -2699,8 +2749,15 @@ void UIManager::updateScrobbler() {
     const std::string& sk = config_.lastfm_session;
 
     // New track? -> reset state + send now-playing in the background.
-    if (artist != scrob_artist_ || track != scrob_track_) {
+    // Compare on canonical identity, not the raw string: iHeart relabels the same
+    // song mid-play (featured artist hops fields / spacing changes), which would
+    // otherwise reset the timer, re-send now-playing, and risk a duplicate scrobble.
+    // A relabel keeps the FIRST-seen (usually cleaner) strings and the original timer.
+    std::string normid = normTrackId(artist, track);
+    bool same_track = !scrob_normid_.empty() && normid == scrob_normid_;
+    if (!same_track && (artist != scrob_artist_ || track != scrob_track_)) {
         scrob_artist_ = artist; scrob_track_ = track; scrob_album_ = album;
+        scrob_normid_ = normid;
         scrob_start_  = (long)std::time(nullptr);
         scrob_done_   = false;
         if (!looksLikeRealTrack(artist, track)) {   // ad/station junk -> skip both services

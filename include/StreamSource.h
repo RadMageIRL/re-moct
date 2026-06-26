@@ -27,6 +27,7 @@
 class StreamSource {
 public:
     std::string nowPlaying() const;   // current ICY StreamTitle (empty if none)
+    std::string currentArtUrl() const; // album-art URL for the committed song (digital iHeart only; "" otherwise)
 
     // ── HLS increment 1 (dev probe) ──────────────────────────────────────────
     // Standalone, no audio path: resolve master -> poll media playlist -> fetch
@@ -121,7 +122,7 @@ private:
     DWORD       last_iheart_poll_ = 0;      // trackHistory poll throttle (GetTickCount)
     std::string iheart_th_cache_;           // cached trackHistory result between throttled polls
     long        iheart_th_ended_  = -1;     // cached trackHistory staleness (now - endTime)
-    IHeartRadio::CurrentTrack iheart_ctm_;  // cached currentTrackMeta (polled only while deep log is on)
+    IHeartRadio::CurrentTrack iheart_ctm_;  // cached currentTrackMeta (polled while deep log is on, or in digital mode for album art)
     // Debounced reconciliation state machine. Songs interrupt instantly (trusted);
     // ads must persist to be believed (phantom-ad-during-song protection); the murky
     // boundary resolves to an honest "<station> - LIVE" floor.
@@ -145,6 +146,7 @@ private:
     size_t                  raw_pos_     = 0;
     mutable std::mutex      now_playing_mtx_;
     std::string             now_playing_;
+    std::string             iheart_art_;       // album-art URL for the committed song (digital mode; "" otherwise). Guarded by now_playing_mtx_.
 
     // WinINet handles (owned by producer thread once open() returns)
     HINTERNET               hInet_ = nullptr;

@@ -135,6 +135,7 @@ public:
     bool     takeStreamFailed()    { return stream_just_failed_.exchange(false); }
     bool     streamBuffering()   const { return stream_source_.buffering(); }
     std::string streamNowPlaying() const { return stream_source_.nowPlaying(); }
+    std::string streamArtUrl()     const { return stream_source_.currentArtUrl(); } // iHeart digital cover ("" -> use logo)
     std::string streamUrl()      const { return stream_source_.url(); }   // URL actually streaming
     int      streamPositionSec() const { return stream_source_.positionSec(); }
 #endif

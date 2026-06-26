@@ -2691,7 +2691,12 @@ void UIManager::updateScrobbler() {
 #ifdef _WIN32
     // Discord Rich Presence — same resolved metadata, independent of scrobbling.
     if (config_.discord_presence) {
-        if (artist != discord_artist_ || track != discord_track_ || discord_force_update_) {
+        // iHeart digital cover (empty in raw mode / on ad breaks -> logo). Tracked so a
+        // cover that lands a tick after the track commits still refreshes the presence.
+        std::string radio_art = audio_.streamMode() ? audio_.streamArtUrl() : std::string();
+        if (artist != discord_artist_ || track != discord_track_ || discord_force_update_
+            || radio_art != discord_radio_art_) {
+            discord_radio_art_ = radio_art;
             discord_artist_ = artist; discord_track_ = track; discord_album_ = album;
             long nowt = (long)std::time(nullptr);
             discord_start_ = (pos > 0) ? (nowt - pos) : nowt;   // anchor the elapsed bar
@@ -2705,7 +2710,9 @@ void UIManager::updateScrobbler() {
             // the same proven lookup files use. radio / no album -> the logo.
             std::string image = "remoct_logo";
             const std::string key = artist + "\t" + track;
-            if (!audio_.streamMode() && !album.empty()) {
+            if (!radio_art.empty()) {
+                image = radio_art;                            // iHeart digital cover for the live song
+            } else if (!audio_.streamMode() && !album.empty()) {
                 if (key == discord_art_cache_key_ && !discord_art_cache_url_.empty())
                     image = discord_art_cache_url_;            // resolved earlier
                 else

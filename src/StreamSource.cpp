@@ -501,10 +501,35 @@ void StreamSource::updateIHeartNowPlaying(const std::string& body) {
         long ended = -1;
         iheart_th_cache_ = iheart_.resolve(url_) ? iheart_.pollNowPlaying(&ended) : std::string();
         iheart_th_ended_ = ended;
-        // Deep-log probe only: poll the web player's source of truth side-by-side with
-        // trackHistory, on the same 9s cadence. No cost in normal operation.
-        if (IHeartDeepLog::enabled()) iheart_.pollCurrentTrackMeta(&iheart_ctm_);
+        // currentTrackMeta: the web player's own now-playing source. Polled while the
+        // deep log is on (probe), OR in digital mode — there ctm rides the same timeline
+        // as the audio and carries the album-art URL we surface to Discord.
+        if (IHeartDeepLog::enabled() || digital_active_.load())
+            iheart_.pollCurrentTrackMeta(&iheart_ctm_);
     }
+    // Album art for Discord RP: in DIGITAL mode, currentTrackMeta rides the same
+    // timeline as the audio and carries a cover URL. Publish it only when a SONG is the
+    // committed state AND ctm agrees with it (title match), so ad/boundary skew never
+    // paints a wrong cover. The UI falls back to the logo whenever this is empty.
+    {
+        std::string art;
+        if (digital_active_.load() && ih_state_ == IHNow::Song &&
+            iheart_ctm_.ok && !iheart_ctm_.imagePath.empty()) {
+            auto squash = [](const std::string& s){
+                std::string o; for (unsigned char c : s)
+                    if (std::isalnum(c)) o += (char)std::tolower(c);
+                return o;
+            };
+            std::string t = squash(iheart_ctm_.title);
+            if (!t.empty() && squash(ih_state_disp_).find(t) != std::string::npos) {
+                art = iheart_ctm_.imagePath;
+                if (art.rfind("http://", 0) == 0) art = "https://" + art.substr(7); // Discord media proxy prefers https
+            }
+        }
+        std::lock_guard<std::mutex> lk(now_playing_mtx_);
+        iheart_art_ = art;
+    }
+
     // CUR is compared against (serverNow - endTime), but our listener sits ~20s behind
     // the live edge (we prime 2x10s segments on connect). So a song still audible at the
     // speaker has, on the server clock, already passed endTime by roughly the buffer depth.
@@ -832,6 +857,11 @@ void StreamSource::parseIcyMetadata(const std::string& block) {
 std::string StreamSource::nowPlaying() const {
     std::lock_guard<std::mutex> lk(now_playing_mtx_);
     return now_playing_;
+}
+
+std::string StreamSource::currentArtUrl() const {
+    std::lock_guard<std::mutex> lk(now_playing_mtx_);
+    return iheart_art_;
 }
 
 // ─── Decoder ──────────────────────────────────────────────────────────────────

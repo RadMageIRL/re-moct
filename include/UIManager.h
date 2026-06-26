@@ -260,6 +260,7 @@ private:
 
     // Last.fm scrobble state machine
     std::string scrob_artist_, scrob_track_, scrob_album_;
+    std::string scrob_normid_;           // canonical identity of the committed track (relabel dedup)
 #ifdef _WIN32
     // Discord Rich Presence (Ctrl+D). Mirrors the scrobbler's track-change moment.
     DiscordRP   discord_{"1519141025195491338"};   // RE-MOCT application id

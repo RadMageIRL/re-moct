@@ -29,3 +29,4 @@ Ctrl+B - ListenBrainz login
 6-23 - ListenBrainz, clean up ad/commercials metadata in scrobbler feeds
   implement/clean-up logrotate, general code clean-up, playlist fix [Radio], radio negotiating freeze UI for 5s fix
   ctrl - d for discord presence
+6-26 - UI updates nerd fonts, rounded corners and gaps, IHeartRadio update ctrl + K to play webplayer version, better metadata for IHeartRadio, Ctrl A for deeper log analysis info

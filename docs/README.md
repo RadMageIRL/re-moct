@@ -85,6 +85,8 @@ AAC playback adds one bundled DLL: **`libfdk-aac-2.dll`** (Fraunhofer FDK AAC). 
 | `Ctrl+D` | Discord Presence |
 | `Ctrl+T` | Rounded borders and Gaps |
 | `Ctrl+N` | Nerd Fonts (if installed and profile in cmd/powershell) |
+| `Ctrl+A` | Deep log analysis mode |
+| `Ctrl+K` | Toggle Webplayer/RAW IHeartRadio mode |
 
 Build dependencies (pacman install)pacman -S \
   mingw-w64-ucrt-x86_64-gcc \

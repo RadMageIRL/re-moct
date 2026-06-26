@@ -55,6 +55,32 @@ public:
     // With no out-param (probe path) a strict 30s gate applies and stale -> "".
     std::string pollNowPlaying(long* endedSecsAgo = nullptr);
 
+    // Structured live now-playing from the currentTrackMeta endpoint — the source
+    // the iHeart WEB PLAYER itself uses. Distinct from trackHistory: it reports the
+    // CURRENT track (not a history log) with start/end epoch times + album art, and
+    // (pending verification) stays fresh through windows where trackHistory freezes.
+    // NOTE: the bare currentTrackMeta path returns HTTP 410 ("No meta data"); adding
+    // ?defaultMetadata=true flips it to 200 — which is why the earlier "dead end"
+    // verdict was a false negative. Epochs arrive in MILLISECONDS here (trackHistory
+    // uses seconds), normalised to epoch seconds below. ok=false on HTTP/parse/empty.
+    struct CurrentTrack {
+        bool        ok            = false;
+        long        httpStatus    = 0;
+        std::string artist, title, album;
+        long long   trackId       = 0;
+        long long   startSec      = 0;   // normalised epoch seconds
+        long long   endSec        = 0;
+        long        durationSec   = 0;
+        long long   endedSecsAgo  = -1;  // now - endSec (<=0 playing, >0 ended N ago, -1 unknown)
+        std::string imagePath;
+        std::string dataSource;
+    };
+
+    // Poll currentTrackMeta?defaultMetadata=true for the resolved station. Returns
+    // true and fills *out on a 200 with a usable (artist/title) payload. Uses the
+    // same WinINet session; never throws out of its public API.
+    bool pollCurrentTrackMeta(CurrentTrack* out);
+
     bool        resolved()    const { return resolved_; }
     long        stationId()   const { return station_id_; }
     std::string stationName() const { return station_name_; }   // iHeart 'name', "" if unknown
@@ -69,6 +95,7 @@ private:
     std::string resolved_url_;          // url that resolved_ currently reflects (station-switch guard)
     std::string meta_url_;              // trackHistory endpoint
     std::string station_name_;          // iHeart 'name' (e.g. "92.5 The Breeze")
+    long        accepted_max_start_ = 0; // monotonic guard: highest trackHistory startTime accepted; reset on station switch
 
     std::function<void(const std::string&)> log_;
     void logmsg(const std::string& s) const { if (log_) log_(s); }

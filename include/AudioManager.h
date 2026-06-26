@@ -123,6 +123,8 @@ public:
 
     // ── Streaming (internet radio) mode ───────────────────────────────────────
     bool     streamMode()        const { return stream_mode_.load(); }
+    // Prefer the iHeart digital (web-player) rendition on the next stream connect.
+    void     setPreferDigital(bool b) { stream_source_.setPreferDigital(b); }
     // True while a stream connect is being negotiated off the UI thread.
     bool     streamConnecting()  const { return stream_connecting_.load(); }
     // Non-blocking radio start: stops current playback, negotiates the stream on

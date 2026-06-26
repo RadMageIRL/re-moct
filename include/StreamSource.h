@@ -52,6 +52,11 @@ public:
     // Begin streaming the given URL. Returns false if the initial connection
     // can't be opened. Audio does not flow until PREBUFFER_SEC has accumulated.
     bool open(const std::string& url);
+
+    // Prefer the iHeart web-player (ad-reduced "digital") rendition on the next
+    // connect; falls back to the raw broadcast if the handshake fails. Set before
+    // open()/reconnect. Thread-safe.
+    void setPreferDigital(bool b) { prefer_digital_.store(b); }
     void close();
 
     bool isOpen()     const { return producer_thread_.joinable(); }
@@ -97,6 +102,7 @@ private:
     bool hlsHttpGet(const std::string& url, std::string* out_text,
                     std::vector<uint8_t>* out_bytes, std::string* out_final_url);
     bool hlsResolveMaster();                  // GET master -> variant_url
+    std::string hlsBuildDigitalUrl(const std::string& base);  // append web-player params -> digital rendition URL
     bool hlsPollMedia();                      // GET variant -> append new segments to pending
     bool hlsFetchSegment(const std::string& url, std::vector<uint8_t>& out);
     bool hlsConnect();                        // HLS branch of connect(): resolve + prime near live edge
@@ -109,9 +115,13 @@ private:
     // IHeartRadio module on the producer thread's existing ~10s cadence.
     IHeartRadio iheart_;
     bool        is_iheart_        = false;  // set in hlsConnect by URL sniff
+    std::atomic<bool> prefer_digital_{ false };  // user pref: try web-player (digital) rendition
+    std::atomic<bool> digital_active_{ false };  // current connection is the digital rendition (vs raw)
+    std::atomic<int>  connect_seq_{ 0 };         // bumped per (re)connect; delimits modes in the deep log
     DWORD       last_iheart_poll_ = 0;      // trackHistory poll throttle (GetTickCount)
     std::string iheart_th_cache_;           // cached trackHistory result between throttled polls
     long        iheart_th_ended_  = -1;     // cached trackHistory staleness (now - endTime)
+    IHeartRadio::CurrentTrack iheart_ctm_;  // cached currentTrackMeta (polled only while deep log is on)
     // Debounced reconciliation state machine. Songs interrupt instantly (trusted);
     // ads must persist to be believed (phantom-ad-during-song protection); the murky
     // boundary resolves to an honest "<station> - LIVE" floor.

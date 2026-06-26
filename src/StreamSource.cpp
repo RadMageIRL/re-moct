@@ -453,20 +453,21 @@ void StreamSource::updateIHeartNowPlaying(const std::string& body) {
     // freeze still climbs past 60 within a minute, dropping thCurrent and flooring to LIVE
     // (or Ad) as before — just ~40s later. A real new track commits in 1 tick and overrides
     // any just-finished-song overhang immediately.
-    const long CUR = 60, RECENT = 180;
+    const long CUR = 60;
     bool thCurrent = !iheart_th_cache_.empty() && iheart_th_ended_ <= CUR;                       // playing now
-    bool thLive    = !iheart_th_cache_.empty() && iheart_th_ended_ >= 0 && iheart_th_ended_ <= RECENT; // recently active
 
     // Confidence-ordered target for this tick.
     std::string st = iheart_.stationName();
     IHNow tgtKind; std::string tgtDisp;
-    if (!mfSong.empty())        { tgtKind = IHNow::Song; tgtDisp = mfSong; }            // manifest song (Breeze)
-    else if (thCurrent)         { tgtKind = IHNow::Song; tgtDisp = iheart_th_cache_; }  // trackHistory current song (Z100)
-    else if (cls == IHeartMfCls::Ad && thLive) {                                        // ad corroborated by live trackHistory
-        tgtKind = IHNow::Ad;   tgtDisp = st.empty() ? std::string("Commercial break") : (st + " - Commercial break");
-    } else {                                                                           // murk / uncorroborated -> honest LIVE
-        tgtKind = IHNow::Live; tgtDisp = st.empty() ? std::string("LIVE") : (st + " - LIVE");
+    if (!mfSong.empty())             { tgtKind = IHNow::Song; tgtDisp = mfSong; }            // manifest song (Breeze) — highest confidence
+    else if (cls == IHeartMfCls::Ad) {                                                       // active in-band ad: "Spot Block" w/ real length, or song_spot="T".
+        tgtKind = IHNow::Ad;                                                                 // A commercial is airing NOW, so OVERRIDE the schedule-based
+        tgtDisp = st.empty() ? std::string("Commercial break")                               // trackHistory song (which can run ahead of the broadcast and
+                             : (st + " - Commercial break");                                 // otherwise paints a song over a live ad).
     }
+    else if (thCurrent)              { tgtKind = IHNow::Song; tgtDisp = iheart_th_cache_; }  // trackHistory current song (Z100, when no live ad signal)
+    else                             { tgtKind = IHNow::Live;                                // murk / no signal -> honest LIVE
+                                       tgtDisp = st.empty() ? std::string("LIVE") : (st + " - LIVE"); }
 
     // Asymmetric debounce: Song needs 1 tick (instant), Ad 3, Live 2.
     if (tgtKind == ih_state_ && tgtDisp == ih_state_disp_) { ih_streak_ = 0; return; }  // already committed

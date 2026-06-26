@@ -1,6 +1,7 @@
 #define MINIAUDIO_IMPLEMENTATION
 #include "AudioManager.h"
 #include "StringUtils.h"
+#include "AacDecoder.h"   // FDK-AAC custom miniaudio backend (.aac/.m4a/.mp4)
 
 #include <taglib/fileref.h>
 #include <taglib/tag.h>
@@ -80,6 +81,12 @@ static bool open_decoder(const std::string& path, ma_decoder& dec,
     // which crashes on files with bad/dual ID3 tags
     ma_decoder_config cfg = ma_decoder_config_init(ma_format_f32,
                                 hint_channels, hint_rate);
+    // Plug in the FDK-AAC backend so .aac/.m4a/.mp4 decode through the same pipeline.
+    // It fails fast for non-AAC, so flac/mp3/wav/ogg still use miniaudio's built-ins.
+    static ma_decoding_backend_vtable* k_aac_backends[] = { ma_aac_backend_vtable() };
+    cfg.ppCustomBackendVTables = k_aac_backends;
+    cfg.customBackendCount     = 1;
+    cfg.pCustomBackendUserData = nullptr;
 #ifdef _WIN32
     auto wpath = utf8_to_wide(path);
     return ma_decoder_init_file_w(wpath.c_str(), &cfg, &dec) == MA_SUCCESS;
@@ -933,6 +940,10 @@ int AudioManager::detectBpm(const std::string& path, int sample_rate,
     // Open a fresh decoder just for analysis — don't touch the playback decoder
     ma_decoder dec {};
     ma_decoder_config cfg = ma_decoder_config_init(ma_format_f32, 1, 0); // mono f32
+    static ma_decoding_backend_vtable* k_aac_backends2[] = { ma_aac_backend_vtable() };
+    cfg.ppCustomBackendVTables = k_aac_backends2;
+    cfg.customBackendCount     = 1;
+    cfg.pCustomBackendUserData = nullptr;
 #ifdef _WIN32
     {
         auto wp = utf8_to_wide(path);

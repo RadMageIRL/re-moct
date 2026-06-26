@@ -188,6 +188,7 @@ bool IHeartRadio::resolve(const std::string& url) {
     // never keep serving the previous station's meta_url/name.
     resolved_ = false;
     station_id_ = 0; meta_url_.clear(); station_name_.clear();
+    accepted_max_start_ = 0;   // new station -> forget the previous schedule's max
     std::string zc; long num = 0;
     if (!extractZc(url, zc, num)) { logmsg("iheart: resolve - not an iHeart url"); return false; }
     zc_ = zc;
@@ -209,13 +210,43 @@ std::string IHeartRadio::pollNowPlaying(long* endedSecsAgo) {
     try { j = json::parse(body); } catch (...) { return {}; }
     if (!j.contains("data") || !j["data"].is_array() || j["data"].empty()) return {};
 
-    const json& t0 = j["data"][0];   // newest-first: data[0] is most recent track
-    long startTime = t0.value("startTime", 0L);
+    const json& data = j["data"];
+    long now = (long)std::time(nullptr);
+    const long FUTURE_GRACE = 60;   // tolerate small clock skew; reject genuinely-future scheduled entries
+
+    // Pick the genuinely newest entry by startTime that has actually aired.
+    // data[] is *nominally* newest-first, but a jumbled Pnp feed (e.g. Z100) can
+    // resurface an old entry at [0] above newer ones — so scan, don't trust [0].
+    int  best = -1;
+    long bestStart = 0;
+    for (int i = 0; i < (int)data.size(); ++i) {
+        long s = data[i].value("startTime", 0L);
+        if (s <= 0 || s > now + FUTURE_GRACE) continue;          // skip undated / not-yet-aired
+        if (best < 0 || s > bestStart) { best = i; bestStart = s; }
+    }
+    if (best < 0) return {};                                     // nothing has aired yet
+
+    if (best != 0)
+        logmsg("iheart: data[0] out-of-order (start=" + std::to_string(data[0].value("startTime", 0L))
+             + ") -> using newest idx=" + std::to_string(best) + " start=" + std::to_string(bestStart));
+
+    // Monotonic guard: if even the newest available entry is older than the highest
+    // startTime we've already served, the feed has regressed (resurfacing / freeze) —
+    // hold rather than rewind to a stale song. Only ever SUPPRESSES a known-bad entry;
+    // never invents one. Provable no-op on a clean (monotonic) station like Breeze.
+    if (bestStart < accepted_max_start_) {
+        logmsg("iheart: trackHistory regressed (newest start=" + std::to_string(bestStart)
+             + " < accepted=" + std::to_string(accepted_max_start_) + ") -> hold");
+        return {};
+    }
+    accepted_max_start_ = bestStart;
+
+    const json& t0 = data[best];   // the genuine newest aired track
+    long startTime = bestStart;
     long endTime   = t0.value("endTime",   0L);
     long dur       = t0.value("trackDuration", 0L);
     if (endTime == 0 && startTime > 0 && dur > 0) endTime = startTime + dur;
 
-    long now   = (long)std::time(nullptr);
     long ended = (endTime > 0) ? (now - endTime) : -1;   // <=0 playing, >0 ended N ago, -1 unknown
     if (endedSecsAgo) *endedSecsAgo = ended;
 
@@ -231,11 +262,63 @@ std::string IHeartRadio::pollNowPlaying(long* endedSecsAgo) {
     if (!endedSecsAgo) {
         const long GRACE = 30;
         if (endTime > 0 && ended > GRACE) {
-            logmsg("iheart: data[0] stale (ended " + std::to_string(ended) + "s ago) -> live stream");
+            logmsg("iheart: data[" + std::to_string(best) + "] stale (ended " + std::to_string(ended) + "s ago) -> live stream");
             return {};
         }
     }
     return combined;
+}
+
+// ── currentTrackMeta — the iHeart web player's own now-playing source ─────────
+// GET us.api.iheart.com/api/v3/live-meta/stream/<id>/currentTrackMeta?defaultMetadata=true
+// Returns the CURRENT track (structured: artist/title/album/art + start/end epoch
+// in MILLISECONDS). Normalised to epoch seconds; endedSecsAgo lets the caller gate
+// freshness exactly like trackHistory. Unauthenticated + station-id-keyed, so it
+// generalises across stations. Probe-only for now (caller polls it only while the
+// deep-analysis log is enabled), to confirm whether it survives a trackHistory freeze.
+bool IHeartRadio::pollCurrentTrackMeta(CurrentTrack* out) {
+    if (out) *out = CurrentTrack{};
+    if (!resolved_ || station_id_ == 0) return false;
+
+    std::string id  = std::to_string(station_id_);
+    std::string url = "https://us.api.iheart.com/api/v3/live-meta/stream/" + id +
+                      "/currentTrackMeta?defaultMetadata=true";
+    std::string body; long st = 0;
+    bool got = httpGet(url, body, st);
+    if (out) out->httpStatus = st;
+    if (!got || st != 200) {
+        logmsg("iheart: currentTrackMeta HTTP " + std::to_string(st));
+        return false;
+    }
+
+    json j;
+    try { j = json::parse(body); } catch (...) { return false; }
+
+    // epoch may be ms (currentTrackMeta) or s — normalise to seconds.
+    auto toSec = [](long long v) -> long long {
+        return (v > 100000000000LL) ? (v / 1000) : v;
+    };
+
+    CurrentTrack c;
+    c.httpStatus   = st;
+    c.artist       = j.value("artist", std::string());
+    c.title        = j.value("title",  std::string());
+    c.album        = j.value("album",  std::string());
+    c.trackId      = j.value("trackId", 0LL);
+    c.startSec     = toSec(j.value("startTime", 0LL));
+    c.endSec       = toSec(j.value("endTime",   0LL));
+    c.durationSec  = j.value("trackDuration", 0L);
+    c.imagePath    = j.value("imagePath", std::string());
+    c.dataSource   = j.value("dataSource", std::string());
+    if (c.endSec == 0 && c.startSec > 0 && c.durationSec > 0)
+        c.endSec = c.startSec + c.durationSec;
+
+    long long now  = (long long)std::time(nullptr);
+    c.endedSecsAgo = (c.endSec > 0) ? (now - c.endSec) : -1;
+    c.ok           = !(c.artist.empty() && c.title.empty());
+
+    if (out) *out = c;
+    return c.ok;
 }
 
 

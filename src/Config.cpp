@@ -133,6 +133,7 @@ void DigiConfig::load() {
         else if (key == "eq_enabled")       eq_enabled        = (val == "1");
         else if (key == "discord_presence") discord_presence  = (val == "1");
         else if (key == "awesome_mode")      awesome_mode       = (val == "1");
+        else if (key == "prefer_digital_stream") prefer_digital_stream = (val == "1");
         else if (key == "nerd_icons")         nerd_icons         = (val == "1");
         else if (key == "lastfm-key")       lastfm_key        = val;
         else if (key == "lastfm-secret")    lastfm_secret     = val;
@@ -209,6 +210,7 @@ void DigiConfig::save() const {
     f << "eq_enabled="       << (eq_enabled ? "1" : "0") << "\n";
     f << "discord_presence=" << (discord_presence ? "1" : "0") << "\n";
     f << "awesome_mode="      << (awesome_mode ? "1" : "0") << "\n";
+    f << "prefer_digital_stream=" << (prefer_digital_stream ? "1" : "0") << "\n";
     f << "nerd_icons="        << (nerd_icons ? "1" : "0") << "\n";
     if (!lastfm_key.empty())     f << "lastfm-key="     << lastfm_key     << "\n";
     if (!lastfm_secret.empty())  f << "lastfm-secret="  << lastfm_secret  << "\n";

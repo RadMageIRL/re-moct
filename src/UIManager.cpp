@@ -34,6 +34,7 @@
 #include "Config.h"
 #include "LrcData.h"
 #include "Toast.h"
+#include "IHeartDeepLog.h"
 
 #include <filesystem>
 #include <algorithm>
@@ -97,6 +98,7 @@ UIManager::UIManager(PlaylistManager& playlist, AudioManager& audio,
         current_dir_ = fs::current_path().string();
 
     refreshDir();
+    audio_.setPreferDigital(config_.prefer_digital_stream);   // apply saved stream-mode pref
     running_ = true;
 }
 
@@ -1361,6 +1363,8 @@ void UIManager::drawHelp() {
         { "Ctrl+D",         "Toggle Discord Rich Presence" },
         { "Ctrl+T",         "Toggle Classic / Awesome theme" },
         { "Ctrl+N",         "Toggle Nerd Font icons (needs Nerd Font)" },
+        { "Ctrl+A",         "Toggle deep-analysis iHeart log (diagnostic)" },
+        { "Ctrl+K",         "Stream mode: Web Player (fewer ads) / Raw broadcast" },
     };
 
     const int n    = (int)(sizeof(entries) / sizeof(entries[0]));
@@ -3203,6 +3207,27 @@ void UIManager::handleInput(int ch) {
     switch (ch) {
         case 17:  // Ctrl+Q — quit
             audio_.stop(); running_ = false; break;
+#ifdef _WIN32
+        case 1:  // Ctrl+A — toggle deep-analysis iHeart capture log (diagnostic; not persisted)
+        {
+            bool on = IHeartDeepLog::toggle();
+            if (on) showTrackToast("Deep log: ON", IHeartDeepLog::path(), "");
+            else    showTrackToast("Deep log: OFF", "", "");
+        }
+            break;
+#endif
+#ifdef _WIN32
+        case 11:  // Ctrl+K — toggle iHeart stream mode: digital (web player) vs raw broadcast
+            config_.prefer_digital_stream = !config_.prefer_digital_stream;
+            config_.save();
+            audio_.setPreferDigital(config_.prefer_digital_stream);
+            showTrackToast(config_.prefer_digital_stream
+                               ? "Stream: Web Player mode (fewer ads)"
+                               : "Stream: Raw broadcast (direct)", "", "");
+            if (audio_.streamMode())                 // reconnect now so it takes effect
+                audio_.beginStream(audio_.streamUrl());
+            break;
+#endif
         case 20:  // Ctrl+T — toggle Classic / Awesome theme
             config_.awesome_mode = !config_.awesome_mode;
             config_.save();

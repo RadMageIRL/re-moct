@@ -3,6 +3,7 @@
 #include "StreamSource.h"
 #include "Log.h"
 #include "StringUtils.h"
+#include "IHeartDeepLog.h"
 #include <cstring>
 #include <algorithm>
 #include <cctype>
@@ -292,11 +293,45 @@ bool StreamSource::hlsFetchSegment(const std::string& url, std::vector<uint8_t>&
 // the caller/connect-worker thread before the producer spawns (and again on the
 // producer thread for reconnect, where re-resolving the master refreshes the
 // session token). hls_ is owned by exactly one thread at a time, so no lock.
+// Append the iHeart web-player param set to a raw zc####/hls.m3u8 base URL so the
+// edge mints a token and serves the ad-reduced DIGITAL rendition. Uses the minimal
+// anonymous param set (no profileId/skey — proven sufficient by StreamHandshakeProbe)
+// with a fresh random listenerId per connect. Returns base unchanged if it isn't a
+// bare iHeart URL we can parameterize.
+std::string StreamSource::hlsBuildDigitalUrl(const std::string& base) {
+    if (base.find('?') != std::string::npos) return base;     // already parameterized
+    std::string id;
+    size_t p = base.find("/zc");
+    if (p != std::string::npos) {
+        p += 3;
+        while (p < base.size() && std::isdigit((unsigned char)base[p])) id += base[p++];
+    }
+    if (id.empty()) return base;
+
+    static bool seeded = false;
+    if (!seeded) { std::srand(GetTickCount()); seeded = true; }
+    static const char* H = "0123456789abcdef";
+    std::string lid; lid.reserve(32);
+    for (int i = 0; i < 32; ++i) lid += H[std::rand() & 15];
+
+    return base + "?streamid=" + id +
+        "&zip=&aw_0_1st.playerid=iHeartRadioWebPlayer&clientType=web&companionAds=false"
+        "&deviceName=web-mobile&dist=iheart&host=webapp.US&listenerId=" + lid +
+        "&playedFrom=157&pname=live_profile&stationid=" + id +
+        "&terminalId=159&territory=US&us_privacy=1-N-";
+}
+
 bool StreamSource::hlsConnect() {
     if (!hlsEnsureSession()) { slog("hlsConnect: session FAILED"); return false; }
     std::string master = url_;          // the canonical zc####/hls.m3u8 the user pasted
     hls_ = HlsState{};
-    hls_.master_url = master;
+    // Stream mode: try the digital (web-player, ad-reduced) rendition first when the
+    // user prefers it on an iHeart URL; otherwise the raw broadcast. The actual
+    // fallback decision is made after resolve+poll below.
+    ++connect_seq_;
+    digital_active_.store(false);
+    bool want_digital = prefer_digital_.load() && IHeartRadio::isIHeartUrl(master);
+    hls_.master_url = want_digital ? hlsBuildDigitalUrl(master) : master;
     // iHeart now-playing: primary source is the variant manifest's EXTINF tags
     // (freeze-proof), trackHistory module as fallback. Set this up BEFORE the initial
     // poll so hlsPollMedia parses the manifest on connect — otherwise the producer's
@@ -312,8 +347,30 @@ bool StreamSource::hlsConnect() {
         iheart_.setLogger([](const std::string& s){ slog("%s", s.c_str()); });
         iheart_.resolve(url_);   // sidecar-first; cheap; gives us stationName() for the ad label
     }
-    if (!hlsResolveMaster()) { slog("hlsConnect: resolve FAILED"); return false; }
-    if (!hlsPollMedia())     { slog("hlsConnect: initial poll FAILED"); return false; }  // also parses manifest now
+    // Resolve + initial poll. If a requested DIGITAL attempt fails at any step, fall
+    // back to the raw broadcast URL once, so a changed/blocked handshake degrades to
+    // exactly today's behavior (never worse).
+    bool resolved_ok = hlsResolveMaster() && hlsPollMedia();
+    if (want_digital && resolved_ok) {
+        digital_active_.store(true);
+        slog("hlsConnect: DIGITAL rendition active (seq=%d)", connect_seq_.load());
+    } else if (want_digital && !resolved_ok) {
+        slog("hlsConnect: digital attempt FAILED -> falling back to raw broadcast");
+        hls_.master_url = master;
+        hls_.variant_url.clear();
+        hls_.pending.clear();
+        hls_.last_seq = 0;
+        if (!hlsResolveMaster() || !hlsPollMedia()) {
+            slog("hlsConnect: raw fallback also FAILED");
+            return false;
+        }
+        slog("hlsConnect: raw fallback OK (seq=%d)", connect_seq_.load());
+    } else if (!resolved_ok) {
+        slog("hlsConnect: resolve/poll FAILED");
+        return false;
+    } else {
+        slog("hlsConnect: raw rendition active (seq=%d)", connect_seq_.load());
+    }
     // Prime near the live edge: keep only the last ~2 queued segments so we start
     // close to live instead of ~a full window behind. last_seq is already at the
     // window top from the full poll, so subsequent polls only pick up newer ones.
@@ -444,6 +501,9 @@ void StreamSource::updateIHeartNowPlaying(const std::string& body) {
         long ended = -1;
         iheart_th_cache_ = iheart_.resolve(url_) ? iheart_.pollNowPlaying(&ended) : std::string();
         iheart_th_ended_ = ended;
+        // Deep-log probe only: poll the web player's source of truth side-by-side with
+        // trackHistory, on the same 9s cadence. No cost in normal operation.
+        if (IHeartDeepLog::enabled()) iheart_.pollCurrentTrackMeta(&iheart_ctm_);
     }
     // CUR is compared against (serverNow - endTime), but our listener sits ~20s behind
     // the live edge (we prime 2x10s segments on connect). So a song still audible at the
@@ -468,6 +528,50 @@ void StreamSource::updateIHeartNowPlaying(const std::string& body) {
     else if (thCurrent)              { tgtKind = IHNow::Song; tgtDisp = iheart_th_cache_; }  // trackHistory current song (Z100, when no live ad signal)
     else                             { tgtKind = IHNow::Live;                                // murk / no signal -> honest LIVE
                                        tgtDisp = st.empty() ? std::string("LIVE") : (st + " - LIVE"); }
+
+    // ── Deep-analysis capture (opt-in, Ctrl+A; no-op unless enabled). Records the
+    //    full tick — inputs, target, debounce state, and live audio position —
+    //    BEFORE the early-return debounce, so a metadata freeze still emits ticks. ──
+    {
+        IHeartDeepLog::Record dr;
+        dr.stationId = iheart_.stationId();
+        dr.station   = st;
+        dr.audioSec  = (double)frames_drained_.load(std::memory_order_relaxed) / (double)SAMPLE_RATE;
+        dr.posSec    = positionSec();
+        dr.mfCls     = (cls == IHeartMfCls::Song) ? "Song" : (cls == IHeartMfCls::Ad ? "Ad" : "None");
+        dr.mfArtist  = mfArtist;
+        dr.mfTitle   = mfTitle;
+        dr.mfSong    = mfSong;
+        dr.mfSeq     = IHeartDeepLog::extractMediaSeq(body);
+        dr.mfBodyLen = body.size();
+        dr.th        = iheart_th_cache_;
+        dr.thEnded   = iheart_th_ended_;
+        dr.thCurrent = thCurrent;
+        dr.tgtKind   = (tgtKind == IHNow::Song) ? "Song" : (tgtKind == IHNow::Ad ? "Ad" : "Live");
+        dr.tgtDisp   = tgtDisp;
+        dr.stState   = (ih_state_ == IHNow::Song) ? "Song" : (ih_state_ == IHNow::Ad ? "Ad" : "Live");
+        dr.stDisp    = ih_state_disp_;
+        dr.pendKind  = (ih_pending_ == IHNow::Song) ? "Song" : (ih_pending_ == IHNow::Ad ? "Ad" : "Live");
+        dr.pendDisp  = ih_pending_disp_;
+        dr.streak    = ih_streak_;
+        dr.ctmOk           = iheart_ctm_.ok;
+        dr.ctmStatus       = iheart_ctm_.httpStatus;
+        dr.ctmArtist       = iheart_ctm_.artist;
+        dr.ctmTitle        = iheart_ctm_.title;
+        dr.ctmAlbum        = iheart_ctm_.album;
+        dr.ctmTrackId      = iheart_ctm_.trackId;
+        dr.ctmStartSec     = iheart_ctm_.startSec;
+        dr.ctmEndSec       = iheart_ctm_.endSec;
+        dr.ctmDurationSec  = iheart_ctm_.durationSec;
+        dr.ctmEndedSecsAgo = iheart_ctm_.endedSecsAgo;
+        dr.ctmImage        = iheart_ctm_.imagePath;
+        dr.ctmDataSource   = iheart_ctm_.dataSource;
+        dr.streamMode      = digital_active_.load() ? "digital" : "raw";
+        dr.digitalRequested = prefer_digital_.load();
+        dr.digitalActive   = digital_active_.load();
+        dr.connectSeq      = connect_seq_.load();
+        IHeartDeepLog::emit(dr);
+    }
 
     // Asymmetric debounce: Song needs 1 tick (instant), Ad 3, Live 2.
     if (tgtKind == ih_state_ && tgtDisp == ih_state_disp_) { ih_streak_ = 0; return; }  // already committed

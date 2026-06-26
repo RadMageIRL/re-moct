@@ -1,4 +1,4 @@
-# RE-MOCT — iHeartRadio Stream & Metadata Engineering Debrief - use at your own risk / no affiliation
+# RE-MOCT — iHeartRadio Stream & Metadata Engineering Debrief - use at your own risk / no affiliation with IHeartRadio
 
 > **Project:** RE-MOCT (Music On Console Terminal) — a C++20 terminal music player, CD ripper, and internet-radio client
 > **Repository:** github.com/RadMageIRL/re-moct

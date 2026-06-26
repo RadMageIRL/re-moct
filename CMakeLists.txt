@@ -22,6 +22,7 @@ set(REMOCT_SOURCES
     src/MBLookup.cpp
     src/CDRipper.cpp
     src/StreamSource.cpp
+    src/AacDecoder.cpp
     src/IHeartRadio.cpp
     src/IHeartDeepLog.cpp
     src/RadioBrowser.cpp

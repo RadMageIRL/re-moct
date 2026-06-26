@@ -31,3 +31,5 @@ Ctrl+B - ListenBrainz login
   ctrl - d for discord presence
 6-26 - UI updates nerd fonts, rounded corners and gaps, IHeartRadio update ctrl + K to play webplayer version, better metadata for IHeartRadio, Ctrl A for deeper log analysis info
        Updated logic to grab album art from IHeartRadio when available in ctrl K mode (webplayer/digital) and display same in Discord RPC
+       Add AAC support for file playback
+       Fix resize windows too small crash

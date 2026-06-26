@@ -6,6 +6,13 @@
 #  endif
 #  include <windows.h>
 #endif
+// Enable the wide-character ncurses API (cchar_t / setcchar / mvwadd_wch). This
+// MUST be defined before <ncurses.h> is included. Without it, this build's
+// narrow string functions pass UTF-8 bytes through undecoded, so box-drawing
+// glyphs (╭ ╮ ╰ ╯) render as Latin-1 mojibake. Wide chars render as one cell.
+#ifndef NCURSES_WIDECHAR
+#  define NCURSES_WIDECHAR 1
+#endif
 // Use the wide-char ncurses header for mvwaddwstr support
 #ifdef __has_include
 #  if __has_include(<ncursesw/ncurses.h>)
@@ -194,14 +201,22 @@ void UIManager::initColours() {
 }
 
 void UIManager::createWindows() {
-    const int pane_rows  = screen_rows_ - 4;
-    const int left_cols  = screen_cols_ / 2;
-    const int right_cols = screen_cols_ - left_cols;
+    // Awesome theme insets the two panes: a 1-col gutter on each outer edge and
+    // a 1-col gap between them, giving the padded "floating panel" look. Classic
+    // keeps the panes flush (gut = 0), so its geometry is byte-identical to before.
+    const bool aw  = config_.awesome_mode;
+    const int  gut = aw ? 1 : 0;
+    const int  pane_rows  = screen_rows_ - 4;
+    const int  avail_cols = screen_cols_ - (aw ? 3 : 0);   // left + mid + right gutters
+    const int  left_cols  = avail_cols / 2;
+    const int  right_cols = avail_cols - left_cols;
+    const int  dir_x      = gut;                    // 0 classic, 1 awesome
+    const int  right_x    = gut + left_cols + gut;  // == left_cols when gut == 0
     win_title_    = newwin(1,         screen_cols_, 0,              0);
     win_cwd_      = newwin(1,         screen_cols_, 1,              0);
-    win_dir_      = newwin(pane_rows, left_cols,    2,              0);
-    win_playlist_ = newwin(pane_rows, right_cols,   2,              left_cols);
-    win_viz_      = newwin(pane_rows, right_cols,   2,              left_cols);
+    win_dir_      = newwin(pane_rows, left_cols,    2,              dir_x);
+    win_playlist_ = newwin(pane_rows, right_cols,   2,              right_x);
+    win_viz_      = newwin(pane_rows, right_cols,   2,              right_x);
     win_progress_ = newwin(1,         screen_cols_, screen_rows_-2, 0);
     win_cmdline_  = newwin(1,         screen_cols_, screen_rows_-1, 0);
     // Set black background on all windows so colors render correctly
@@ -215,6 +230,80 @@ void UIManager::destroyWindows() {
     auto del = [](WINDOW*& w){ if (w) { delwin(w); w = nullptr; } };
     del(win_title_); del(win_cwd_); del(win_dir_); del(win_playlist_);
     del(win_viz_);   del(win_progress_); del(win_cmdline_);
+}
+
+// Theme-aware panel border.
+//  • Classic theme: behaves exactly like the previous box(w,0,0) call — the
+//    caller's current attributes apply, so no migrated pane changes look.
+//  • Awesome theme: draws the straight edges, then rounds the four corners with
+//    ╭ ╮ ╰ ╯ in an accent colour (bright cyan when focused, dim when not). The
+//    corners are drawn with the wide-char API (setcchar/add_wch) so they render
+//    as single cells; the bottom-right uses ins_wch so writing the last cell can
+//    never advance the cursor off-window (which would scroll/ERR). An optional
+//    title is laid into the top edge, inset two cells.
+void UIManager::panelFrame(WINDOW* w, const std::string& title, bool focused,
+                           wchar_t icon) {
+    if (!w) return;
+    int rows, cols;
+    getmaxyx(w, rows, cols);
+    if (rows < 2 || cols < 2) return;
+
+    if (!config_.awesome_mode) {
+        box(w, 0, 0);                 // classic — identical to prior behaviour
+        return;
+    }
+
+    const short  pair = focused ? CP_TITLE : CP_BORDER;  // both cyan
+    const attr_t at   = focused ? A_BOLD  : A_NORMAL;     // bold vs plain (no grey dim)
+
+    wattron(w, COLOR_PAIR(pair) | at);
+    box(w, 0, 0);                                          // straight edges (ACS)
+    // Corners as true wide chars — single cells, no UTF-8 byte mojibake. The
+    // bottom-right uses ins_wch (insert, not add) so writing the final cell can
+    // never advance the cursor off-window (which would scroll/ERR, dropping it).
+    auto corner = [&](int y, int x, wchar_t glyph, bool insert) {
+        cchar_t cc;
+        wchar_t s[2] = { glyph, 0 };
+        setcchar(&cc, s, at, pair, nullptr);
+        if (insert) mvwins_wch(w, y, x, &cc);
+        else        mvwadd_wch(w, y, x, &cc);
+    };
+    corner(0,        0,        L'\u256d', false);          // ╭ top-left
+    corner(0,        cols - 1, L'\u256e', false);          // ╮ top-right
+    corner(rows - 1, 0,        L'\u2570', false);          // ╰ bottom-left
+    corner(rows - 1, cols - 1, L'\u256f', true);           // ╯ bottom-right
+    wattroff(w, COLOR_PAIR(pair) | at);
+
+    // Title sits in the top edge. Trim surrounding padding so callers may pass an
+    // already space-padded header string and still get a clean inset label.
+    if (cols > 6) {
+        int tx = 2;
+        // Optional Nerd Font icon — drawn via the wide API (the narrow path on
+        // this build doesn't decode UTF-8, so a glyph in a char string mojibakes).
+        if (config_.nerd_icons && icon) {
+            cchar_t cc;
+            wchar_t s[2] = { icon, 0 };
+            setcchar(&cc, s, A_BOLD, pair, nullptr);
+            mvwadd_wch(w, 0, 2, &cc);
+            tx = 4;   // glyph + one space
+        }
+        size_t b = title.find_first_not_of(' ');
+        size_t e = title.find_last_not_of(' ');
+        if (b != std::string::npos && tx < cols - 2) {
+            std::string t = " " + title.substr(b, e - b + 1) + " ";
+            if ((int)t.size() > cols - tx - 2) t = t.substr(0, (size_t)(cols - tx - 2));
+            wattron(w, COLOR_PAIR(pair) | A_BOLD);
+            mvwaddnstr(w, 0, tx, t.c_str(), (int)t.size());
+            wattroff(w, COLOR_PAIR(pair) | A_BOLD);
+        }
+    }
+}
+
+int UIManager::paneVisibleRows(WINDOW* w) const {
+    int r, c;
+    getmaxyx(w, r, c);
+    (void)c;
+    return config_.awesome_mode ? r - 2 : r - 1;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -463,9 +552,7 @@ void UIManager::run() {
                 }
                 if (pl_cursor_ != cur) {
                     pl_cursor_ = cur;
-                    int rows, cols2;
-                    getmaxyx(win_playlist_, rows, cols2);
-                    int visible = rows - 1;
+                    int visible = paneVisibleRows(win_playlist_);
                     if (pl_cursor_ < pl_scroll_)
                         pl_scroll_ = pl_cursor_;
                     else if (pl_cursor_ >= pl_scroll_ + visible)
@@ -677,7 +764,7 @@ void UIManager::drawRipConfirm() {
     werase(w);
 
     // Plain border + title — no wbkgd so no background color bleed
-    box(w, 0, 0);
+    panelFrame(w, "", true);
     const char* title = " SECURE AUDIO EXTRACTION ";
     mvwaddstr(w, 0, (BOX_W - (int)strlen(title)) / 2, title);
 
@@ -944,10 +1031,11 @@ void UIManager::drawCwd() {
     }
 
     std::string line = prefix + display;
-    line.resize((size_t)screen_cols_, ' ');
+    int cwx = config_.awesome_mode ? 1 : 0;   // align with inset pane frames
+    line.resize((size_t)(screen_cols_ - cwx), ' ');
 
     wattron(win_cwd_, COLOR_PAIR(CP_DIM));
-    mvwaddnstr(win_cwd_, 0, 0, line.c_str(), screen_cols_);
+    mvwaddnstr(win_cwd_, 0, cwx, line.c_str(), screen_cols_ - cwx);
     wattroff(win_cwd_, COLOR_PAIR(CP_DIM));
 }
 
@@ -956,7 +1044,9 @@ void UIManager::drawDirBrowser() {
     int rows, cols;
     getmaxyx(win_dir_, rows, cols);
     bool focused = (focus_ == Pane::DirBrowser);
-    wattron(win_dir_, focused ? (COLOR_PAIR(CP_FOCUSED)|A_BOLD) : (COLOR_PAIR(CP_BORDER)|A_BOLD));
+    const bool aw = config_.awesome_mode;
+    const int  cx = aw ? 1 : 0;             // content left column (inside frame)
+    const int  cw = aw ? cols - 2 : cols;   // content width
     std::string hdr;
     if (in_drive_list_)   hdr = " [Drives] ";
     else if (in_recent_)  hdr = " [Recently Played] ";
@@ -970,10 +1060,14 @@ void UIManager::drawDirBrowser() {
                              : "";
         hdr = " Dir: " + leaf + sortname + (show_hidden_ ? " [.hidden]" : "") + " ";
     }
-    hdr.resize((size_t)cols, ' ');
-    mvwaddnstr(win_dir_, 0, 0, hdr.c_str(), cols);
-    wattroff(win_dir_, A_BOLD|COLOR_PAIR(CP_FOCUSED)|COLOR_PAIR(CP_BORDER));
-    int visible = rows - 1;
+    if (!aw) {   // Classic: full-width coloured header bar on row 0
+        wattron(win_dir_, focused ? (COLOR_PAIR(CP_FOCUSED)|A_BOLD)
+                                  : (COLOR_PAIR(CP_BORDER)|A_BOLD));
+        std::string bar = hdr; bar.resize((size_t)cols, ' ');
+        mvwaddnstr(win_dir_, 0, 0, bar.c_str(), cols);
+        wattroff(win_dir_, A_BOLD|COLOR_PAIR(CP_FOCUSED)|COLOR_PAIR(CP_BORDER));
+    }
+    int visible = paneVisibleRows(win_dir_);
     for (int i = 0; i < visible; ++i) {
         int idx = dir_scroll_ + i;
         if (idx >= (int)dir_entries_.size()) break;
@@ -993,23 +1087,43 @@ void UIManager::drawDirBrowser() {
             dead_path = !fs::exists(name);
         }
 
-        if      (cursor && focused) wattron(win_dir_, COLOR_PAIR(CP_SELECTED)|A_BOLD);
-        else if (cursor)            wattron(win_dir_, A_REVERSE|A_BOLD);
-        else if (dead_path)         wattron(win_dir_, COLOR_PAIR(CP_DIM));  // greyed — missing file
-        else if (is_dir)            wattron(win_dir_, COLOR_PAIR(CP_TITLE)|A_BOLD);
-        else                        wattron(win_dir_, COLOR_PAIR(CP_DIM)|A_BOLD);
+        short  rpair = CP_DIM; attr_t rattr = A_BOLD;
+        if      (cursor && focused) { rpair = CP_SELECTED; rattr = A_BOLD; }
+        else if (cursor)            { rpair = 0;           rattr = A_REVERSE|A_BOLD; }
+        else if (dead_path)         { rpair = CP_DIM;      rattr = 0; }
+        else if (is_dir)            { rpair = CP_TITLE;    rattr = A_BOLD; }
+        else                        { rpair = CP_DIM;      rattr = A_BOLD; }
+        wattron(win_dir_, COLOR_PAIR(rpair) | rattr);
 
-        std::string prefix = (is_dir ? "+ " : "  ");
-        std::string full   = prefix + display;
-        int avail = cols - 1;
-        std::string d = scrolledText(full, avail);
-        d.resize((size_t)cols, ' ');
-        mvwaddnstr(win_dir_, i+1, 0, d.c_str(), cols);
+        const bool ico = config_.nerd_icons;
+        // With icons on, reserve the prefix cell (the glyph replaces the "+"/space).
+        std::string prefix = ico ? "  " : (is_dir ? "+ " : "  ");
+        int avail = cw - 1;
+        std::string d;
+        if (ico) {
+            // Keep the icon cell fixed: marquee only the name, not the prefix, so
+            // a long scrolling filename never slides under the overlaid glyph.
+            int name_w = avail - (int)prefix.size();
+            std::string nm = (name_w > 0) ? scrolledText(display, name_w) : "";
+            d = prefix + nm;
+        } else {
+            d = scrolledText(prefix + display, avail);
+        }
+        d.resize((size_t)cw, ' ');
+        mvwaddnstr(win_dir_, i+1, cx, d.c_str(), cw);
+        if (ico) {   // overlay glyph on the reserved cell (wide API → real glyph)
+            cchar_t cc;
+            wchar_t s[2] = { is_dir ? L'\uf07b' : L'\uf001', 0 };  // folder / music
+            setcchar(&cc, s, rattr, rpair, nullptr);
+            mvwadd_wch(win_dir_, i+1, cx, &cc);
+        }
 
         wattroff(win_dir_, A_BOLD|A_REVERSE|COLOR_PAIR(CP_SELECTED)
                          |COLOR_PAIR(CP_TITLE)|COLOR_PAIR(CP_DIM));
     }
-    if (!focused) {
+    if (aw) {
+        panelFrame(win_dir_, hdr, focused, L'\uf07b');
+    } else if (!focused) {
         wattron(win_dir_, COLOR_PAIR(CP_BORDER));
         box(win_dir_, 0, 0);
         wattroff(win_dir_, COLOR_PAIR(CP_BORDER));
@@ -1036,7 +1150,9 @@ void UIManager::drawPlaylist() {
             total_str = std::to_string(tm) + "m " + std::to_string(ts) + "s";
     }
 
-    wattron(win_playlist_, focused ? (COLOR_PAIR(CP_FOCUSED)|A_BOLD) : (COLOR_PAIR(CP_BORDER)|A_BOLD));
+    const bool aw = config_.awesome_mode;
+    const int  cx = aw ? 1 : 0;
+    const int  cw = aw ? cols - 2 : cols;
     std::string hdr = " Playlist [" + std::to_string(playlist_.size()) + "]";
     if (playlist_.isLoading()) {
         hdr += "  [loading " + std::to_string(playlist_.pendingCount()) + "...]";
@@ -1046,10 +1162,14 @@ void UIManager::drawPlaylist() {
     const char* slbl = playlist_.sortLabel();
     if (slbl && slbl[0]) hdr += std::string("  sort:") + slbl;
     hdr += " ";
-    hdr.resize((size_t)cols, ' ');
-    mvwaddnstr(win_playlist_, 0, 0, hdr.c_str(), cols);
-    wattroff(win_playlist_, A_BOLD|COLOR_PAIR(CP_FOCUSED)|COLOR_PAIR(CP_BORDER));
-    int visible = rows - 1;
+    if (!aw) {
+        wattron(win_playlist_, focused ? (COLOR_PAIR(CP_FOCUSED)|A_BOLD)
+                                       : (COLOR_PAIR(CP_BORDER)|A_BOLD));
+        std::string bar = hdr; bar.resize((size_t)cols, ' ');
+        mvwaddnstr(win_playlist_, 0, 0, bar.c_str(), cols);
+        wattroff(win_playlist_, A_BOLD|COLOR_PAIR(CP_FOCUSED)|COLOR_PAIR(CP_BORDER));
+    }
+    int visible = paneVisibleRows(win_playlist_);
     // Guard against a stale scroll offset left past the end of the list (e.g.
     // a load where every track was a duplicate) — otherwise the bounds check
     // below fires on the first row and the pane draws blank.
@@ -1063,21 +1183,32 @@ void UIManager::drawPlaylist() {
         bool cursor  = ((int)idx == pl_cursor_);
         bool playing = (e.path == audio_.currentTrack().path
                         && audio_.state() != PlaybackState::Stopped);
-        if      (cursor && focused) wattron(win_playlist_, COLOR_PAIR(CP_SELECTED)|A_BOLD);
-        else if (cursor)            wattron(win_playlist_, A_REVERSE|A_BOLD);
-        else if (playing)           wattron(win_playlist_, COLOR_PAIR(CP_STATUS_OK)|A_BOLD);
-        else                        wattron(win_playlist_, COLOR_PAIR(CP_DIM)|A_BOLD);
-        std::string mark = playing ? "> " : "  ";
+        short rpair = CP_DIM; attr_t rattr = A_BOLD;
+        if      (cursor && focused) { rpair = CP_SELECTED;  rattr = A_BOLD; }
+        else if (cursor)            { rpair = 0;            rattr = A_REVERSE|A_BOLD; }
+        else if (playing)           { rpair = CP_STATUS_OK; rattr = A_BOLD; }
+        else                        { rpair = CP_DIM;       rattr = A_BOLD; }
+        wattron(win_playlist_, COLOR_PAIR(rpair) | rattr);
+        const bool ico = config_.nerd_icons;
+        std::string mark = (playing && !ico) ? "> " : "  ";
         std::string dur  = formatTime(e.duration_sec);
-        int nw = cols - (int)mark.size() - (int)dur.size() - 3;
+        int nw = cw - (int)mark.size() - (int)dur.size() - 3;
         std::string name = (nw > 0) ? scrolledText(e.display_title, nw) : "";
         std::string line = " " + mark + name + " " + dur + " ";
-        line.resize((size_t)cols, ' ');
-        mvwaddnstr(win_playlist_, i+1, 0, line.c_str(), cols);
+        line.resize((size_t)cw, ' ');
+        mvwaddnstr(win_playlist_, i+1, cx, line.c_str(), cw);
+        if (ico && playing) {   // play glyph on the reserved mark cell
+            cchar_t cc;
+            wchar_t s[2] = { L'\uf04b', 0 };  // play
+            setcchar(&cc, s, rattr, rpair, nullptr);
+            mvwadd_wch(win_playlist_, i+1, cx + 1, &cc);
+        }
         wattroff(win_playlist_, A_BOLD|A_REVERSE|COLOR_PAIR(CP_SELECTED)
                               |COLOR_PAIR(CP_STATUS_OK)|COLOR_PAIR(CP_DIM));
     }
-    if (!focused) {
+    if (aw) {
+        panelFrame(win_playlist_, hdr, focused, L'\uf03a');
+    } else if (!focused) {
         wattron(win_playlist_, COLOR_PAIR(CP_BORDER));
         box(win_playlist_, 0, 0);
         wattroff(win_playlist_, COLOR_PAIR(CP_BORDER));
@@ -1090,12 +1221,15 @@ void UIManager::drawVisualizer() {
     int rows, cols;
     getmaxyx(win_viz_, rows, cols);
 
-    // Header
-    wattron(win_viz_, COLOR_PAIR(CP_FOCUSED) | A_BOLD);
-    std::string hdr = " Visualizer ";
-    hdr.resize((size_t)cols, ' ');
-    mvwaddnstr(win_viz_, 0, 0, hdr.c_str(), cols);
-    wattroff(win_viz_, COLOR_PAIR(CP_FOCUSED) | A_BOLD);
+    const bool aw = config_.awesome_mode;
+    // Header (Classic: full-width bar on row 0; Awesome: title lives in the frame)
+    if (!aw) {
+        wattron(win_viz_, COLOR_PAIR(CP_FOCUSED) | A_BOLD);
+        std::string hdr = " Visualizer ";
+        hdr.resize((size_t)cols, ' ');
+        mvwaddnstr(win_viz_, 0, 0, hdr.c_str(), cols);
+        wattroff(win_viz_, COLOR_PAIR(CP_FOCUSED) | A_BOLD);
+    }
 
     if (audio_.state() == PlaybackState::Stopped) {
         wattron(win_viz_, COLOR_PAIR(CP_DIM) | A_DIM);
@@ -1104,6 +1238,8 @@ void UIManager::drawVisualizer() {
         int my = rows / 2;
         if (mx > 0) mvwaddstr(win_viz_, my, mx, msg);
         wattroff(win_viz_, COLOR_PAIR(CP_DIM) | A_DIM);
+        if (aw) panelFrame(win_viz_, " Visualizer [v:back] ",
+                           focus_ == Pane::Playlist, L'\uf001');
         return;
     }
 
@@ -1147,16 +1283,20 @@ void UIManager::drawVisualizer() {
         }
     }
 
-    // Border
-    wattron(win_viz_, COLOR_PAIR(CP_BORDER));
-    box(win_viz_, 0, 0);
-    wattroff(win_viz_, COLOR_PAIR(CP_BORDER));
+    if (aw) {
+        panelFrame(win_viz_, " Visualizer [v:back] ", focus_ == Pane::Playlist, L'\uf001');
+    } else {
+        // Border
+        wattron(win_viz_, COLOR_PAIR(CP_BORDER));
+        box(win_viz_, 0, 0);
+        wattroff(win_viz_, COLOR_PAIR(CP_BORDER));
 
-    // Redraw header over border top
-    wattron(win_viz_, COLOR_PAIR(CP_FOCUSED) | A_BOLD);
-    std::string hdr2 = " Visualizer [v:back] ";
-    mvwaddnstr(win_viz_, 0, 0, hdr2.c_str(), cols);
-    wattroff(win_viz_, COLOR_PAIR(CP_FOCUSED) | A_BOLD);
+        // Redraw header over border top
+        wattron(win_viz_, COLOR_PAIR(CP_FOCUSED) | A_BOLD);
+        std::string hdr2 = " Visualizer [v:back] ";
+        mvwaddnstr(win_viz_, 0, 0, hdr2.c_str(), cols);
+        wattroff(win_viz_, COLOR_PAIR(CP_FOCUSED) | A_BOLD);
+    }
 }
 
 // ── Help screen ───────────────────────────────────────────────────────────────
@@ -1219,6 +1359,8 @@ void UIManager::drawHelp() {
         { "Ctrl+R",         "Fetch CD metadata from MusicBrainz" },
         { "Ctrl+Y",         "Rip CD  (A=AccurateRip  C=CUETools  Y=Local  B=Local 2-pass)" },
         { "Ctrl+D",         "Toggle Discord Rich Presence" },
+        { "Ctrl+T",         "Toggle Classic / Awesome theme" },
+        { "Ctrl+N",         "Toggle Nerd Font icons (needs Nerd Font)" },
     };
 
     const int n    = (int)(sizeof(entries) / sizeof(entries[0]));
@@ -1289,15 +1431,18 @@ void UIManager::drawHelp() {
         wattroff(w, COLOR_PAIR(CP_DIM));
     }
 
-    // Border
-    wattron(w, COLOR_PAIR(CP_BORDER));
-    box(w, 0, 0);
-    wattroff(w, COLOR_PAIR(CP_BORDER));
-
-    // Redraw header over border top
-    wattron(w, COLOR_PAIR(CP_FOCUSED) | A_BOLD);
-    mvwaddnstr(w, 0, 0, hdr.c_str(), cols);
-    wattroff(w, COLOR_PAIR(CP_FOCUSED) | A_BOLD);
+    if (config_.awesome_mode) {
+        panelFrame(w, hdr, focus_ == Pane::Playlist, L'\uf059');
+    } else {
+        // Border
+        wattron(w, COLOR_PAIR(CP_BORDER));
+        box(w, 0, 0);
+        wattroff(w, COLOR_PAIR(CP_BORDER));
+        // Redraw header over border top
+        wattron(w, COLOR_PAIR(CP_FOCUSED) | A_BOLD);
+        mvwaddnstr(w, 0, 0, hdr.c_str(), cols);
+        wattroff(w, COLOR_PAIR(CP_FOCUSED) | A_BOLD);
+    }
 }
 
 // ── Bookmarks popup ───────────────────────────────────────────────────────────
@@ -1341,12 +1486,16 @@ void UIManager::drawBookmarks() {
         }
     }
 
-    wattron(w, COLOR_PAIR(CP_BORDER));
-    box(w, 0, 0);
-    wattroff(w, COLOR_PAIR(CP_BORDER));
-    wattron(w, COLOR_PAIR(CP_FOCUSED) | A_BOLD);
-    mvwaddnstr(w, 0, 0, hdr.c_str(), cols);
-    wattroff(w, COLOR_PAIR(CP_FOCUSED) | A_BOLD);
+    if (config_.awesome_mode) {
+        panelFrame(w, hdr, focus_ == Pane::Playlist, L'\uf02e');
+    } else {
+        wattron(w, COLOR_PAIR(CP_BORDER));
+        box(w, 0, 0);
+        wattroff(w, COLOR_PAIR(CP_BORDER));
+        wattron(w, COLOR_PAIR(CP_FOCUSED) | A_BOLD);
+        mvwaddnstr(w, 0, 0, hdr.c_str(), cols);
+        wattroff(w, COLOR_PAIR(CP_FOCUSED) | A_BOLD);
+    }
 }
 
 // ── Lyrics pane ───────────────────────────────────────────────────────────────
@@ -1466,12 +1615,16 @@ void UIManager::drawLyrics() {
         }
     }
 
-    wattron(w, COLOR_PAIR(CP_BORDER));
-    box(w, 0, 0);
-    wattroff(w, COLOR_PAIR(CP_BORDER));
-    wattron(w, COLOR_PAIR(CP_FOCUSED) | A_BOLD);
-    mvwaddnstr(w, 0, 0, hdr.c_str(), cols);
-    wattroff(w, COLOR_PAIR(CP_FOCUSED) | A_BOLD);
+    if (config_.awesome_mode) {
+        panelFrame(w, hdr, focus_ == Pane::Playlist, L'\uf001');
+    } else {
+        wattron(w, COLOR_PAIR(CP_BORDER));
+        box(w, 0, 0);
+        wattroff(w, COLOR_PAIR(CP_BORDER));
+        wattron(w, COLOR_PAIR(CP_FOCUSED) | A_BOLD);
+        mvwaddnstr(w, 0, 0, hdr.c_str(), cols);
+        wattroff(w, COLOR_PAIR(CP_FOCUSED) | A_BOLD);
+    }
 }
 
 // ── About pane ────────────────────────────────────────────────────────────────
@@ -1518,18 +1671,24 @@ void UIManager::drawQueue() {
     int rows, cols;
     getmaxyx(w, rows, cols);
 
+    const bool aw = config_.awesome_mode;
+    const int  cx = aw ? 1 : 0;
+    const int  cw = aw ? cols - 2 : cols;
     int qsize = playlist_.queueSize();
     std::string hdr = " Queue [" + std::to_string(qsize) + "]  d:remove  Q:close  Ctrl+Q:quit ";
-    hdr.resize((size_t)cols, ' ');
-    wattron(w, COLOR_PAIR(CP_FOCUSED) | A_BOLD);
-    mvwaddnstr(w, 0, 0, hdr.c_str(), cols);
-    wattroff(w, COLOR_PAIR(CP_FOCUSED) | A_BOLD);
+    if (!aw) {
+        std::string bar = hdr; bar.resize((size_t)cols, ' ');
+        wattron(w, COLOR_PAIR(CP_FOCUSED) | A_BOLD);
+        mvwaddnstr(w, 0, 0, bar.c_str(), cols);
+        wattroff(w, COLOR_PAIR(CP_FOCUSED) | A_BOLD);
+    }
 
     if (qsize == 0) {
         wattron(w, COLOR_PAIR(CP_DIM) | A_BOLD);
-        mvwaddnstr(w, 2, 2, "Queue is empty.", cols - 2);
-        mvwaddnstr(w, 3, 2, "Press q on a track to add it.", cols - 2);
+        mvwaddnstr(w, 2, cx + 1, "Queue is empty.", cw - 1);
+        mvwaddnstr(w, 3, cx + 1, "Press q on a track to add it.", cw - 1);
         wattroff(w, COLOR_PAIR(CP_DIM) | A_BOLD);
+        if (aw) panelFrame(w, hdr, focus_ == Pane::Playlist, L'\uf03a');
         return;
     }
 
@@ -1537,7 +1696,7 @@ void UIManager::drawQueue() {
     if (q_cursor_ >= qsize) q_cursor_ = qsize - 1;
     if (q_cursor_ < 0)      q_cursor_ = 0;
 
-    int visible = rows - 1;
+    int visible = paneVisibleRows(w);
     int scroll  = 0;
     if (q_cursor_ >= scroll + visible) scroll = q_cursor_ - visible + 1;
 
@@ -1552,16 +1711,17 @@ void UIManager::drawQueue() {
         else           wattron(w, COLOR_PAIR(CP_DIM) | A_BOLD);
 
         std::string time_str = e.duration_sec > 0 ? formatTime(e.duration_sec) : "--:--";
-        int title_width = cols - (int)time_str.size() - 4;
+        int title_width = cw - (int)time_str.size() - 4;
         std::string line = " " + scrolledText(e.display_title, title_width);
-        line.resize((size_t)(cols - (int)time_str.size() - 1), ' ');
+        line.resize((size_t)(cw - (int)time_str.size() - 1), ' ');
         line += time_str + " ";
-        line.resize((size_t)cols, ' ');
-        mvwaddnstr(w, i + 1, 0, line.c_str(), cols);
+        line.resize((size_t)cw, ' ');
+        mvwaddnstr(w, i + 1, cx, line.c_str(), cw);
 
         if (is_cursor) wattroff(w, COLOR_PAIR(CP_SELECTED) | A_BOLD);
         else           wattroff(w, COLOR_PAIR(CP_DIM) | A_BOLD);
     }
+    if (aw) panelFrame(w, hdr, focus_ == Pane::Playlist, L'\uf03a');
 }
 
 void UIManager::drawAbout() {
@@ -1625,12 +1785,16 @@ void UIManager::drawAbout() {
         ++row;
     }
 
-    wattron(w, COLOR_PAIR(CP_BORDER));
-    box(w, 0, 0);
-    wattroff(w, COLOR_PAIR(CP_BORDER));
-    wattron(w, COLOR_PAIR(CP_FOCUSED) | A_BOLD);
-    mvwaddnstr(w, 0, 0, hdr.c_str(), cols);
-    wattroff(w, COLOR_PAIR(CP_FOCUSED) | A_BOLD);
+    if (config_.awesome_mode) {
+        panelFrame(w, hdr, focus_ == Pane::Playlist, L'\uf05a');
+    } else {
+        wattron(w, COLOR_PAIR(CP_BORDER));
+        box(w, 0, 0);
+        wattroff(w, COLOR_PAIR(CP_BORDER));
+        wattron(w, COLOR_PAIR(CP_FOCUSED) | A_BOLD);
+        mvwaddnstr(w, 0, 0, hdr.c_str(), cols);
+        wattroff(w, COLOR_PAIR(CP_FOCUSED) | A_BOLD);
+    }
 }
 // ── EQ pane ───────────────────────────────────────────────────────────────────
 void UIManager::drawEq() {
@@ -1727,12 +1891,16 @@ void UIManager::drawEq() {
         }
     }
 
-    wattron(w, COLOR_PAIR(CP_BORDER));
-    box(w, 0, 0);
-    wattroff(w, COLOR_PAIR(CP_BORDER));
-    wattron(w, COLOR_PAIR(CP_FOCUSED) | A_BOLD);
-    mvwaddnstr(w, 0, 0, hdr.c_str(), cols);
-    wattroff(w, COLOR_PAIR(CP_FOCUSED) | A_BOLD);
+    if (config_.awesome_mode) {
+        panelFrame(w, hdr, focus_ == Pane::Playlist, L'\uf1de');
+    } else {
+        wattron(w, COLOR_PAIR(CP_BORDER));
+        box(w, 0, 0);
+        wattroff(w, COLOR_PAIR(CP_BORDER));
+        wattron(w, COLOR_PAIR(CP_FOCUSED) | A_BOLD);
+        mvwaddnstr(w, 0, 0, hdr.c_str(), cols);
+        wattroff(w, COLOR_PAIR(CP_FOCUSED) | A_BOLD);
+    }
 }
 
 // ── Device picker pane ────────────────────────────────────────────────────────
@@ -1786,12 +1954,16 @@ void UIManager::drawDevices() {
         wattroff(w, COLOR_PAIR(CP_DIM));
     }
 
-    wattron(w, COLOR_PAIR(CP_BORDER));
-    box(w, 0, 0);
-    wattroff(w, COLOR_PAIR(CP_BORDER));
-    wattron(w, COLOR_PAIR(CP_FOCUSED) | A_BOLD);
-    mvwaddnstr(w, 0, 0, hdr.c_str(), cols);
-    wattroff(w, COLOR_PAIR(CP_FOCUSED) | A_BOLD);
+    if (config_.awesome_mode) {
+        panelFrame(w, hdr, focus_ == Pane::Playlist, L'\uf025');
+    } else {
+        wattron(w, COLOR_PAIR(CP_BORDER));
+        box(w, 0, 0);
+        wattroff(w, COLOR_PAIR(CP_BORDER));
+        wattron(w, COLOR_PAIR(CP_FOCUSED) | A_BOLD);
+        mvwaddnstr(w, 0, 0, hdr.c_str(), cols);
+        wattroff(w, COLOR_PAIR(CP_FOCUSED) | A_BOLD);
+    }
 }
 
 void UIManager::drawTrackInfo() {
@@ -2019,15 +2191,18 @@ void UIManager::drawTrackInfo() {
         // (already integrated above)
     }
 
-    // Border
-    wattron(w, COLOR_PAIR(CP_BORDER));
-    box(w, 0, 0);
-    wattroff(w, COLOR_PAIR(CP_BORDER));
-
-    // Redraw header over border
-    wattron(w, COLOR_PAIR(CP_FOCUSED) | A_BOLD);
-    mvwaddnstr(w, 0, 0, hdr.c_str(), cols);
-    wattroff(w, COLOR_PAIR(CP_FOCUSED) | A_BOLD);
+    if (config_.awesome_mode) {
+        panelFrame(w, hdr, focus_ == Pane::Playlist, L'\uf129');
+    } else {
+        // Border
+        wattron(w, COLOR_PAIR(CP_BORDER));
+        box(w, 0, 0);
+        wattroff(w, COLOR_PAIR(CP_BORDER));
+        // Redraw header over border
+        wattron(w, COLOR_PAIR(CP_FOCUSED) | A_BOLD);
+        mvwaddnstr(w, 0, 0, hdr.c_str(), cols);
+        wattroff(w, COLOR_PAIR(CP_FOCUSED) | A_BOLD);
+    }
 }
 
 void UIManager::drawProgress() {
@@ -3028,6 +3203,25 @@ void UIManager::handleInput(int ch) {
     switch (ch) {
         case 17:  // Ctrl+Q — quit
             audio_.stop(); running_ = false; break;
+        case 20:  // Ctrl+T — toggle Classic / Awesome theme
+            config_.awesome_mode = !config_.awesome_mode;
+            config_.save();
+            resizeWindows();        // rebuild panes with theme-aware geometry +
+            redraw_needed_.store(true);   // full shrink-safe screen wipe
+#ifdef _WIN32
+            showTrackToast(config_.awesome_mode ? "Theme: Awesome"
+                                               : "Theme: Classic", "", "");
+#endif
+            break;
+        case 14:  // Ctrl+N — toggle Nerd Font title icons (needs a Nerd Font)
+            config_.nerd_icons = !config_.nerd_icons;
+            config_.save();
+            redraw_needed_.store(true);
+#ifdef _WIN32
+            showTrackToast(config_.nerd_icons ? "Nerd icons: ON (needs Nerd Font)"
+                                              : "Nerd icons: OFF", "", "");
+#endif
+            break;
 #ifdef _WIN32
         case 4:  // Ctrl+D — toggle Discord Rich Presence
             config_.discord_presence = !config_.discord_presence;
@@ -3457,8 +3651,7 @@ void UIManager::handleInput(int ch) {
                 playlist_.moveDown((std::size_t)pl_cursor_);
                 if (pl_cursor_ + 1 < (int)playlist_.size()) {
                     ++pl_cursor_;
-                    int rows, cols2; getmaxyx(win_playlist_, rows, cols2);
-                    if (pl_cursor_ >= pl_scroll_ + rows - 1) ++pl_scroll_;
+                    if (pl_cursor_ >= pl_scroll_ + paneVisibleRows(win_playlist_)) ++pl_scroll_;
                 }
                 last_playlist_current_for_sync_ = (int)playlist_.current();
             }
@@ -3473,10 +3666,7 @@ void UIManager::handleInput(int ch) {
                 if (pl_cursor_ >= (int)playlist_.size() && pl_cursor_ > 0)
                     --pl_cursor_;
                 // Keep scroll in bounds so cursor doesn't appear to jump
-                int visible = 0;
-                if (win_playlist_) {
-                    int r, c; getmaxyx(win_playlist_, r, c); visible = r - 1;
-                }
+                int visible = win_playlist_ ? paneVisibleRows(win_playlist_) : 0;
                 int max_scroll = std::max(0, (int)playlist_.size() - visible);
                 if (pl_scroll_ > max_scroll) pl_scroll_ = max_scroll;
                 if (pl_scroll_ > pl_cursor_) pl_scroll_ = pl_cursor_;
@@ -3894,17 +4084,14 @@ void UIManager::toggleFocus() {
 }
 
 void UIManager::navigateDown() {
-    int rows, cols;
     if (focus_ == Pane::DirBrowser) {
-        getmaxyx(win_dir_, rows, cols);
-        int v = rows-1;
+        int v = paneVisibleRows(win_dir_);
         if (dir_cursor_+1 < (int)dir_entries_.size()) {
             ++dir_cursor_;
             if (dir_cursor_ >= dir_scroll_+v) ++dir_scroll_;
         }
     } else {
-        getmaxyx(win_playlist_, rows, cols);
-        int v = rows-1;
+        int v = paneVisibleRows(win_playlist_);
         if (pl_cursor_+1 < (int)playlist_.size()) {
             ++pl_cursor_;
             if (pl_cursor_ >= pl_scroll_+v) ++pl_scroll_;
@@ -4423,8 +4610,8 @@ void UIManager::drawMBSearch() {
     if (!w) return;
     werase(w);
 
-    // Plain border + title
-    box(w, 0, 0);
+    // Plain border + title (rounded in Awesome mode)
+    panelFrame(w, "", true);
     const char* title = " MUSICBRAINZ SEARCH ";
     mvwaddstr(w, 0, (BOX_W - (int)strlen(title)) / 2, title);
 

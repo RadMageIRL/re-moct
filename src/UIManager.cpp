@@ -595,6 +595,27 @@ void UIManager::run() {
         if (right_pane_ == RightPane::Visualizer)
             computeVizBins();
 
+        // Terminal too small: resizeWindows() destroyed the pane windows and
+        // returned without recreating them (see its size guard). Both draw paths
+        // below dereference those windows (getmaxyx / wnoutrefresh), which crashes
+        // on a null WINDOW*. Paint a safe notice straight onto stdscr and skip all
+        // pane drawing until the terminal grows back to a usable size.
+        if (!win_dir_ || !win_title_ || !win_playlist_ ||
+            !win_progress_ || !win_cmdline_) {
+            werase(stdscr);
+            if (screen_rows_ > 0 && screen_cols_ > 0) {
+                const char* m1 = "Terminal too small";
+                const char* m2 = "(min 40 x 9)";
+                int y  = screen_rows_ / 2;
+                int x1 = (screen_cols_ - (int)strlen(m1)) / 2; if (x1 < 0) x1 = 0;
+                int x2 = (screen_cols_ - (int)strlen(m2)) / 2; if (x2 < 0) x2 = 0;
+                mvaddnstr(y, x1, m1, screen_cols_);
+                if (y + 1 < screen_rows_) mvaddnstr(y + 1, x2, m2, screen_cols_);
+            }
+            wnoutrefresh(stdscr);
+            doupdate();
+            redraw_needed_.store(false);
+        } else
         if (redraw_needed_.load()) {
 #ifdef _WIN32
             if (ui_overlay_ != UIOverlay::None) {

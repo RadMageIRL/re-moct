@@ -56,6 +56,14 @@ private:
 
     void createWindows();
     void destroyWindows();
+    // Theme-aware panel border. Classic: identical to box(w,0,0). Awesome: rounded
+    // corners + accent colour, with an optional title embedded in the top edge.
+    void panelFrame(WINDOW* w, const std::string& title = "", bool focused = true,
+                    wchar_t icon = 0);
+    // Rows of list content actually painted inside a pane. Classic spends one row
+    // on the header bar; Awesome spends a top + bottom border row. Draw and scroll
+    // math must share this, or the last entry hides under the frame.
+    int  paneVisibleRows(WINDOW* w) const;
 
     void drawAll();
     void drawTitleBar();

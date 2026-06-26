@@ -34,6 +34,12 @@ struct DigiConfig {
     // Discord Rich Presence toggle (Ctrl+D)
     bool  discord_presence = false;
 
+    // UI theme toggle (Ctrl+T): false = Classic, true = Awesome (rounded panels)
+    bool  awesome_mode = false;
+
+    // Nerd Font pane-title icons (Ctrl+N). Requires a Nerd Font terminal font.
+    bool  nerd_icons = false;
+
     // Bookmarks: list of saved directory paths
     std::vector<std::string> bookmarks;
 

@@ -428,9 +428,10 @@ void UIManager::run() {
         updateBookProgress();
 #ifdef _WIN32
         if (audio_.takeStreamConnected()) {
-            std::string t;
-            if (!playlist_.empty() && playlist_.current() < playlist_.size())
-                t = playlist_.at(playlist_.current()).display_title;
+            // Label from the URL actually streaming, not playlist_.current(): a
+            // station launched from the override queue has no playlist row, so
+            // current() is stale (the prior file) and would mislabel the toast.
+            std::string t = stationLabel(audio_.streamUrl());
             showTrackToast("Streaming", t, "");
         }
         if (audio_.takeStreamFailed())
@@ -1404,11 +1405,14 @@ void UIManager::drawPlaylist() {
         bool cursor  = ((int)idx == pl_cursor_);
         // The lit ("playing") row. In radio mode audio_.currentTrack() still holds
         // the last file, so a stale file row would stay lit after switching to
-        // radio — key off the current playlist entry (the station) instead. In file
-        // mode, match the audio's current file path as before.
+        // radio. Key off the URL actually streaming, NOT playlist_.current(): a
+        // station launched from the override queue has no playlist row, so
+        // current() is stale. A playlist-launched station's row path == streamUrl
+        // and lights; a queue-launched station matches no row and lights nothing
+        // (it shows on the now-playing line instead). In file mode, match the file.
         bool playing = (audio_.state() != PlaybackState::Stopped) &&
                        (audio_.streamMode()
-                          ? ((int)idx == (int)playlist_.current())
+                          ? (e.path == audio_.streamUrl())
                           : (e.path == audio_.currentTrack().path));
         short rpair = CP_DIM; attr_t rattr = A_BOLD;
         if      (cursor && focused) { rpair = CP_SELECTED;  rattr = A_BOLD; }

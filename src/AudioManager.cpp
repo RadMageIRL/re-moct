@@ -1231,6 +1231,12 @@ void AudioManager::startStreamConnectLocked(const std::string& url) {
     teardownNext();
     track_ended_flag_.store(false);
     state_.store(PlaybackState::Stopped);
+    // Starting a stream means no file is the current track. Clear it so a stale
+    // file identity (e.g. a just-drained override-queue song) can't drive the
+    // file toast or the playlist play-indicator across a queue-drain -> radio
+    // advance. Safe: startStreamConnectLocked only runs on the main thread
+    // (pollEvents auto-advance, or UIManager radio-select / Ctrl+K).
+    current_track_ = {};
 
     uint64_t gen = stream_connect_gen_.fetch_add(1) + 1;
     {

@@ -7,6 +7,9 @@ See current binary/exe in the binary-dev directory (need to install mingw-w64-uc
 
 This dev branch adds a complete **internet-radio subsystem** and **Last.fm scrobbling** on top of the RC1 CD/File player/ripper. Everything below is initially tested against live streams, but is not yet frozen for release.
 
+## Nerd Fonts and Rounded Borders with GAPS
+<img width="1534" height="761" alt="image" src="https://github.com/user-attachments/assets/71198e74-5378-4763-a55b-220455aaa4d4" />
+
 ## Internet Radio Streaming
 
 Play HTTP/HTTPS audio streams directly in RE-MOCT, with the same keyboard-driven workflow as local files.

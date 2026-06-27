@@ -151,6 +151,7 @@ public:
     }
 
     static bool isSupportedAudio(const std::string& path);
+    static bool isAudiobook(const std::string& path);   // .m4b (book container)
 
     // Background loader — non-blocking addDirectory
     void addDirectoryAsync(const std::string& dir_path);

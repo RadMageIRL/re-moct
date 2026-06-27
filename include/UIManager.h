@@ -24,12 +24,13 @@
 #include "AudioManager.h"
 #include "miniaudio.h"
 #include "LrcData.h"
+#include "Mp4Chapters.h"
 
 class PlaylistManager;
 struct DigiConfig;
 
 enum class Pane      { DirBrowser, Playlist };
-enum class RightPane { Playlist, Visualizer, Help, TrackInfo, Bookmarks, Lyrics, About, Devices, EQ, Queue };
+enum class RightPane { Playlist, Visualizer, Help, TrackInfo, Bookmarks, Lyrics, About, Devices, EQ, Queue, Chapters };
 
 // Modal overlays drawn on top of the normal layout
 enum class UIOverlay { None, RipConfirm, MBSearch };
@@ -74,6 +75,7 @@ private:
     void drawHelp();
     void drawTrackInfo();
     void drawBookmarks();
+    void drawChapters();
     void drawLyrics();
     void drawAbout();
     void drawDevices();
@@ -167,6 +169,7 @@ private:
 
     // Bookmark popup state
     int bookmark_cursor_ = 0;
+    int chapter_cursor_  = 0;
 
     // Device picker state
     struct DeviceEntry { std::string name; ma_device_id id; };
@@ -235,6 +238,13 @@ private:
     bool in_favs_        = false;
     bool in_radio_       = false;
     bool in_radio_search_ = false;       // showing radio-browser results in [Radio]
+    bool in_books_       = false;        // showing the [Books] audiobook list
+    // Chapter table for the currently playing book (empty if none / not a book).
+    std::vector<Mp4Chapter> current_chapters_;
+    std::string             chapters_for_path_;   // path current_chapters_ reflects
+    void refreshChaptersIfNeeded(const std::string& path);
+    int  currentChapterIndex() const;             // index into current_chapters_, -1 if none
+    void jumpChapter(int dir);                     // -1 prev (position-aware), +1 next; ±5s fallback
     std::string lastfm_pending_token_;   // (legacy; token now persisted in config)
     void lastfmBeginAuth();              // request token + open browser
 

@@ -68,6 +68,17 @@ struct DigiConfig {
     bool isRadioStation(const std::string& url) const;
     std::string radioStationName(const std::string& url) const;   // "" if none
 
+    // Audiobooks: curated book paths (most-recent-first) + per-book resume
+    // position in seconds. Mirrors the radio storage shape (list + side map).
+    std::vector<std::string> audiobooks;
+    std::unordered_map<std::string, double> audiobook_pos;
+    static constexpr int     BOOKS_MAX = 200;
+    void   addAudiobook(const std::string& path);
+    void   removeAudiobook(const std::string& path);
+    bool   isSavedBook(const std::string& path) const;
+    void   setBookPos(const std::string& path, double sec);
+    double bookPos(const std::string& path) const;   // 0.0 if none
+
     // Per-track play statistics keyed by file path
     std::unordered_map<std::string, TrackStats> track_stats;
     static constexpr int STATS_MAX = 5000;  // cap to avoid unbounded growth

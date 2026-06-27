@@ -19,6 +19,7 @@
 #include <atomic>
 #include <mutex>
 #include <vector>
+#include <memory>
 
 #include "miniaudio.h"   // declarations only — MINIAUDIO_IMPLEMENTATION lives in AudioManager.cpp
 #include <fdk-aac/aacdecoder_lib.h>
@@ -45,6 +46,10 @@ public:
     static constexpr int PREBUFFER_SAMPLES = SAMPLE_RATE * CHANNELS * PREBUFFER_SEC;
 
     StreamSource() : ring_(RING_SIZE, 0) {}
+    // Staging-lane constructor: a second instance the coordinator owns to prebuffer
+    // a parallel session. is_lane_ stops it recursing (no staging-of-staging) and
+    // suppresses the one global side-effect it would otherwise touch (the deep log).
+    explicit StreamSource(bool lane) : ring_(RING_SIZE, 0) { is_lane_ = lane; }
     ~StreamSource() { close(); }
 
     StreamSource(const StreamSource&)            = delete;
@@ -63,6 +68,8 @@ public:
     bool isOpen()     const { return producer_thread_.joinable(); }
     bool isPlaying()  const { return playing_.load(); }
     bool buffering()  const { return !prebuffered_.load(); }  // true while (re)filling
+    bool isPrebuffered() const { return prebuffered_.load(); }   // staging-lane readiness probe
+    bool edgeIsMusic()   const { return last_cls_.load() == 1; } // newest manifest seg is music (not ad)
     const std::string& url() const { return url_; }  // stream URL currently open ("" if none)
     void pause(bool p)      { paused_.store(p); }
     bool paused()     const { return paused_.load(); }
@@ -119,6 +126,30 @@ private:
     std::atomic<bool> prefer_digital_{ false };  // user pref: try web-player (digital) rendition
     std::atomic<bool> digital_active_{ false };  // current connection is the digital rendition (vs raw)
     std::atomic<int>  connect_seq_{ 0 };         // bumped per (re)connect; delimits modes in the deep log
+    // Live-edge re-pin (digital only): on an ad-onset discontinuity, request a
+    // re-handshake so we rejoin the live program in step with the web player
+    // instead of drifting behind across our (independent, longer) SSAI ad pod.
+    std::atomic<bool> hls_repin_pending_{ false };  // producer should re-handshake at next safe point
+    bool              hls_repin_armed_ = true;      // one-shot: fire once per ad break, then re-arm
+    DWORD             hls_repin_cooldown_until_ = 0;// re-arm only after this tick (suppress mid-pod)
+    DWORD             ih_live_since_ = 0;           // tick we entered the LIVE floor (0 = not on it)
+
+    // ── Staging lane (dual-stream smooth re-pin) ─────────────────────────────
+    // The coordinator (a normal is_lane_=false instance) owns ONE staging
+    // StreamSource (is_lane_=true) and prebuffers it in parallel during an ad, so
+    // we can blend into a session whose OWN live edge has already cleared to music
+    // — instead of hard-cutting the primary to wherever its edge happens to sit
+    // (the once-an-hour mid-song clobber). Stage A: shadow observer only — arm,
+    // watch for the lane's music edge, log, tear down. No audio-path change yet;
+    // the existing re-pin still drives playback. B swaps into the lane, C blends.
+    bool                is_lane_ = false;
+    std::atomic<int>    last_cls_{ 0 };              // newest manifest seg: 0 none,1 music,2 ad,3 other
+    std::unique_ptr<StreamSource> staging_;          // parallel session (coordinator only)
+    enum class Stg { Idle, Opening, Arming };
+    Stg                 stg_state_ = Stg::Idle;
+    std::atomic<bool>   stg_opening_{ false };        // staging open() in flight on a detached thread
+    DWORD               stg_cooldown_until_ = 0;       // suppress re-arm until this tick
+    void serviceStaging();                             // coordinator-only: arm/watch/tear down the lane
     DWORD       last_iheart_poll_ = 0;      // trackHistory poll throttle (GetTickCount)
     std::string iheart_th_cache_;           // cached trackHistory result between throttled polls
     long        iheart_th_ended_  = -1;     // cached trackHistory staleness (now - endTime)
@@ -200,6 +231,7 @@ private:
     int  ringAvailable() const;
     void ringWrite(const int16_t* data, int samples);
     int  ringRead(int16_t* dst, int samples);
+    void ringClear();   // producer-side flush (re-pin): drop buffered audio, jump to live
 };
 
 #endif // _WIN32

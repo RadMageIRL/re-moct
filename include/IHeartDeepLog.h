@@ -16,7 +16,7 @@
 // Output: %APPDATA%\RE-MOCT\logs\remoct-deep-analysis-YYYYMMDD-HHMMSS.log
 //   - one JSON object per line (NDJSON); the first line of each file is a
 //     "_meta" record (schema version, sample rate, heartbeat, size cap)
-//   - size roll: a new dated file is started when the current one reaches ~2 MB
+//   - size roll: a new dated file is started when the current one reaches ~5 MB
 //   - retention: capture files older than 5 days are deleted on enable and on
 //     each roll (active file is never touched)
 //
@@ -47,6 +47,11 @@ struct Record {
     std::string mfArtist, mfTitle, mfSong;
     long        mfSeq     = -1;     // EXT-X-MEDIA-SEQUENCE (manifest-freeze detector)
     std::size_t mfBodyLen = 0;
+    bool        pdt       = false;  // manifest carries EXT-X-PROGRAM-DATE-TIME (false today)
+    bool        spotPaid  = false;  // newest seg is a PAID ad (song_spot=T, real spotInstanceId)
+    std::string spotInstanceId;     // newest seg's spotInstanceId ("-1" = station id/promo; real id = paid spot)
+    std::string cartcutId;          // newest seg's cartcutId — the ad's identity. Same id repeating across a
+                                    // block = a STUCK loop; a sequence of distinct ids = a genuine long pod.
 
     // trackHistory (the only live now-playing endpoint; currentTrackMeta is 410)
     std::string th;                 // cached "Artist - Title"

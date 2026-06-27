@@ -21,13 +21,19 @@ namespace fs = std::filesystem;
 
 static const std::vector<std::string> AUDIO_EXTS = {
     ".mp3", ".flac", ".ogg", ".opus", ".wav", ".aiff", ".aif",
-    ".m4a", ".aac", ".wma", ".mp4"
+    ".m4a", ".m4b", ".aac", ".wma", ".mp4"
 };
 
 bool PlaylistManager::isSupportedAudio(const std::string& path) {
     std::string ext = fs::path(path).extension().string();
     std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
     return std::find(AUDIO_EXTS.begin(), AUDIO_EXTS.end(), ext) != AUDIO_EXTS.end();
+}
+
+bool PlaylistManager::isAudiobook(const std::string& path) {
+    std::string ext = fs::path(path).extension().string();
+    std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
+    return ext == ".m4b";
 }
 
 void PlaylistManager::populateMetadata(PlaylistEntry& entry) {

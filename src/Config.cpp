@@ -96,6 +96,40 @@ std::string DigiConfig::radioStationName(const std::string& url) const {
     return it != radio_station_names.end() ? it->second : std::string();
 }
 
+void DigiConfig::addAudiobook(const std::string& path) {
+    if (path.empty() || isCDTrackPath(path)) return;
+    double keep = bookPos(path);                 // preserve resume across re-add
+    removeAudiobook(path);                        // dedup (also clears pos)
+    audiobooks.insert(audiobooks.begin(), path);
+    if (keep > 0) audiobook_pos[path] = keep;
+    if ((int)audiobooks.size() > BOOKS_MAX) {
+        for (size_t i = (size_t)BOOKS_MAX; i < audiobooks.size(); ++i)
+            audiobook_pos.erase(audiobooks[i]);
+        audiobooks.resize((size_t)BOOKS_MAX);
+    }
+}
+
+void DigiConfig::removeAudiobook(const std::string& path) {
+    audiobooks.erase(std::remove(audiobooks.begin(), audiobooks.end(), path),
+                     audiobooks.end());
+    audiobook_pos.erase(path);
+}
+
+bool DigiConfig::isSavedBook(const std::string& path) const {
+    return std::find(audiobooks.begin(), audiobooks.end(), path) != audiobooks.end();
+}
+
+void DigiConfig::setBookPos(const std::string& path, double sec) {
+    if (path.empty()) return;
+    if (sec < 0) sec = 0;
+    audiobook_pos[path] = sec;
+}
+
+double DigiConfig::bookPos(const std::string& path) const {
+    auto it = audiobook_pos.find(path);
+    return it != audiobook_pos.end() ? it->second : 0.0;
+}
+
 void DigiConfig::recordPlay(const std::string& path) {
     if (path.empty()) return;
     if (isCDTrackPath(path)) return;  // CD tracks are volatile — never record stats
@@ -114,6 +148,8 @@ void DigiConfig::load() {
     radio_station_names.clear();
     recent_tracks.clear();
     track_stats.clear();
+    audiobooks.clear();
+    audiobook_pos.clear();
 
     std::string line;
     while (std::getline(f, line)) {
@@ -171,6 +207,19 @@ void DigiConfig::load() {
         else if (key == "recent") {
             // Silently drop any CD paths that leaked into a pre-fix config
             if (!isCDTrackPath(val)) recent_tracks.push_back(val);
+        }
+        else if (key == "book") {
+            // Format: book=path|resume_seconds  (| is illegal in Windows paths)
+            std::string bpath = val; double bpos = 0.0;
+            auto bar = val.rfind('|');
+            if (bar != std::string::npos) {
+                bpath = val.substr(0, bar);
+                try { bpos = std::stod(val.substr(bar + 1)); } catch (...) { bpos = 0.0; }
+            }
+            if (!bpath.empty() && !isCDTrackPath(bpath)) {
+                audiobooks.push_back(bpath);
+                if (bpos > 0) audiobook_pos[bpath] = bpos;
+            }
         }
         else if (key == "stat") {
             // Format: stat=path|count|timestamp
@@ -235,6 +284,12 @@ void DigiConfig::save() const {
     for (const auto& r : recent_tracks)
         if (!isCDTrackPath(r))
             f << "recent=" << r << "\n";
+    for (const auto& bk : audiobooks)
+        if (!isCDTrackPath(bk)) {
+            auto it = audiobook_pos.find(bk);
+            double pos = (it != audiobook_pos.end()) ? it->second : 0.0;
+            f << "book=" << bk << "|" << pos << "\n";
+        }
     // Write stats — cap at STATS_MAX, skip any CD paths
     int written = 0;
     for (const auto& kv : track_stats) {

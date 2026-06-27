@@ -18,7 +18,7 @@ using json = nlohmann::json;
 namespace {
 
 // ─── Tunables ────────────────────────────────────────────────────────────────
-constexpr unsigned long long kMaxBytes   = 2ull * 1024 * 1024;  // size roll at ~2 MB
+constexpr unsigned long long kMaxBytes   = 5ull * 1024 * 1024;  // size roll at ~5 MB
 constexpr DWORD              kHeartbeatMs = 30000;               // forced record cadence
 constexpr int               kKeepDays    = 5;                    // retention (days)
 constexpr int               kSchema      = 1;
@@ -127,6 +127,8 @@ std::string sigOf(const IHeartDeepLog::Record& r) {
     s += r.ctmArtist; s += US;
     s += r.ctmTitle;  s += US;
     s += r.streamMode; s += US;
+    s += (r.spotPaid ? '1' : '0'); s += US;
+    s += r.cartcutId; s += US;   // distinct ads -> per-ad writes; a stuck loop holds one id -> heartbeat only
     s += std::to_string(r.streak);
     return s;
 }
@@ -223,6 +225,10 @@ void emit(const Record& r) {
     j["mfSong"]      = r.mfSong;
     j["mfSeq"]       = r.mfSeq;
     j["mfBodyLen"]   = (unsigned long long)r.mfBodyLen;
+    j["pdt"]         = r.pdt;
+    j["spotPaid"]    = r.spotPaid;
+    j["spotInstanceId"] = r.spotInstanceId;
+    j["cartcutId"]   = r.cartcutId;
 
     j["th"]          = r.th;
     j["thEnded"]     = r.thEnded;

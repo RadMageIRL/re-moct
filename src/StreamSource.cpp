@@ -12,6 +12,14 @@
 #include <cstdlib>
 
 
+// ── Tunables ─────────────────────────────────────────────────────────────────
+// How long the now-playing reconciler may sit on the LIVE floor (digital mode)
+// before we assume it has stalled (the dual-blind) and force a live-edge re-pin.
+// Logs show healthy ad breaks clear the floor in ≤~30s; a real stall ran 7 min.
+// 45s sits just above the healthy ceiling so normal breaks self-recover untouched
+// while a genuine stall heals fast. Tune here.
+static constexpr DWORD LIVE_STALL_MS = 35000;
+
 // ─── Diagnostic log — routed through the shared operational logger (Log) ──────
 static void slog(const char* fmt, ...) {
     char buf[2048];
@@ -252,6 +260,29 @@ bool StreamSource::hlsPollMedia() {
 
     bool disc = body.find("#EXT-X-DISCONTINUITY") != std::string::npos;
 
+    // Live-edge re-pin (digital only). An iHeart ad pod begins with a
+    // discontinuity. Because our digital session is independent (its own
+    // listenerId / SSAI stitch), our ad pod can run longer than the broadcast
+    // avail, so playing it through sequentially leaves us drifting behind the
+    // shared live program — the web player seeks back to the live edge after the
+    // pod, we don't. So on AD ONSET (first discontinuity of a break) we ask the
+    // producer to re-handshake, which re-primes to the live edge and rejoins the
+    // program in step with the web player. One-shot per break: fire on the first
+    // discontinuity, then suppress for a cooldown (covers a whole pod, which
+    // contains several discontinuities), then re-arm for the next break.
+    if (digital_active_.load()) {
+        if (disc && hls_repin_armed_) {
+            hls_repin_pending_.store(true);
+            hls_repin_armed_ = false;
+            hls_repin_cooldown_until_ = GetTickCount() + 90000;   // ~one ad pod
+            slog("hlsPollMedia: AD-ONSET discontinuity -> requesting live-edge re-pin");
+        } else if (!hls_repin_armed_ &&
+                   (long)(GetTickCount() - hls_repin_cooldown_until_) >= 0) {
+            hls_repin_armed_ = true;
+            slog("hlsPollMedia: live-edge re-pin re-armed (cooldown elapsed)");
+        }
+    }
+
     uint64_t seq = media_seq;                   // sequence of the first segment listed
     int total = 0, new_count = 0;
     size_t i = 0;
@@ -275,8 +306,57 @@ bool StreamSource::hlsPollMedia() {
     }
     hls_.last_poll = GetTickCount();
     if (is_iheart_) updateIHeartNowPlaying(body);   // reconcile manifest + trackHistory
-    slog("hlsPollMedia: target=%dms mseq=%llu total=%d new=%d disc=%d pending=%zu",
-         hls_.target_dur_ms, (unsigned long long)media_seq, total, new_count, disc?1:0, hls_.pending.size());
+    // Diagnostic: live-edge offset. newest = last seq advertised in the manifest;
+    // next_play ≈ the segment we're about to play (front of pending). edgeLag is
+    // how many segments behind the live edge our audio is — watch this across an
+    // ad break to see the drift, and confirm the re-pin collapses it.
+    uint64_t newest_seq = have_seq ? (media_seq + (uint64_t)(total > 0 ? total - 1 : 0)) : 0;
+    long long next_play = (long long)hls_.last_seq - (long long)hls_.pending.size() + 1;
+    long long edge_lag  = (long long)newest_seq - next_play;
+
+    // --- drift instrumentation (logging only; no behavior change) --------------
+    // Segment numbers are GLOBAL and clock-locked: the same number is the same
+    // broadcast instant across every session, so newest=<n> vs the line timestamp
+    // IS broadcast-now. nextPlay is the segment at the front of our queue; edgeLag
+    // is how many segments our queue sits behind the live edge. ringSec is decoded
+    // audio buffered ahead of the speaker (so true playback ≈ nextPlay minus
+    // ringSec). cls is the NEWEST segment's content: music; spot-ad (song_spot=T
+    // with a real spotInstanceId = a paid commercial); spot-id (song_spot=T,
+    // spotInstanceId=-1 = station id / promo / voice-track); or other. pdt flips
+    // to 1 only if iHeart ever starts emitting EXT-X-PROGRAM-DATE-TIME (it doesn't
+    // today) — that would unlock the web player's continuous live-pin. Across hours
+    // these let us see exactly when/how we drift and which content precedes it.
+    bool pdt = body.find("#EXT-X-PROGRAM-DATE-TIME") != std::string::npos;
+    const char* cls = "none";
+    {
+        size_t le = body.rfind("#EXTINF");           // newest segment is the last EXTINF
+        if (le != std::string::npos) {
+            std::string seg = body.substr(le);
+            char spot = 0;
+            size_t sp = seg.find("song_spot=");
+            if (sp != std::string::npos) {
+                size_t c = sp + 10;
+                while (c < seg.size() && (seg[c] == '\\' || seg[c] == '"')) ++c;
+                if (c < seg.size()) spot = seg[c];
+            }
+            bool idNeg = seg.find("spotInstanceId=\\\"-1\\\"") != std::string::npos ||
+                         seg.find("spotInstanceId=\"-1\"")     != std::string::npos;
+            if      (spot == 'M' || spot == 'F') cls = "music";
+            else if (spot == 'T')                cls = idNeg ? "spot-id" : "spot-ad";
+            else                                 cls = "other";
+        }
+    }
+    // Publish newest-segment class for the staging lane's coordinator to poll
+    // (edgeIsMusic()): 1 music, 2 ad (spot-ad/spot-id), 3 other, 0 none.
+    last_cls_.store(cls[0]=='m' ? 1 : cls[0]=='s' ? 2 : cls[0]=='o' ? 3 : 0,
+                    std::memory_order_relaxed);
+    double ring_sec = (double)ringAvailable() / (double)(SAMPLE_RATE * CHANNELS);
+
+    slog("hlsPollMedia: target=%dms mseq=%llu total=%d new=%d disc=%d pending=%zu "
+         "newest=%llu nextPlay=%lld edgeLag=%lld(~%.0fs) ringSec=%.1f cls=%s pdt=%d digital=%d armed=%d",
+         hls_.target_dur_ms, (unsigned long long)media_seq, total, new_count, disc?1:0, hls_.pending.size(),
+         (unsigned long long)newest_seq, next_play, edge_lag, edge_lag * (hls_.target_dur_ms / 1000.0),
+         ring_sec, cls, pdt?1:0, digital_active_.load()?1:0, hls_repin_armed_?1:0);
     return true;
 }
 
@@ -569,6 +649,40 @@ void StreamSource::updateIHeartNowPlaying(const std::string& body) {
         dr.mfSong    = mfSong;
         dr.mfSeq     = IHeartDeepLog::extractMediaSeq(body);
         dr.mfBodyLen = body.size();
+        dr.pdt       = body.find("#EXT-X-PROGRAM-DATE-TIME") != std::string::npos;
+        {   // newest segment paid-ad? (song_spot=T with a real, non -1 spotInstanceId)
+            size_t le = body.rfind("#EXTINF");
+            if (le != std::string::npos) {
+                std::string seg = body.substr(le);
+                char spot = 0; size_t sp = seg.find("song_spot=");
+                if (sp != std::string::npos) {
+                    size_t c = sp + 10;
+                    while (c < seg.size() && (seg[c] == '\\' || seg[c] == '"')) ++c;
+                    if (c < seg.size()) spot = seg[c];
+                }
+                bool idNeg = seg.find("spotInstanceId=\\\"-1\\\"") != std::string::npos ||
+                             seg.find("spotInstanceId=\"-1\"")     != std::string::npos;
+                dr.spotPaid = (spot == 'T' && !idNeg);
+                // Ad identity: pull the quoted value of an EXTINF attribute, honoring
+                // iHeart's backslash-escaped inner quotes (key=\"value\").
+                auto attr = [&seg](const char* key) -> std::string {
+                    size_t k = seg.find(key);
+                    if (k == std::string::npos) return {};
+                    k += std::strlen(key);
+                    // KEY=\"value\" (escaped) or KEY="value". Consume EXACTLY the opening
+                    // =, optional backslash, opening quote — not the whole quote run, or an
+                    // empty value (KEY=\"\") would swallow the next field's name.
+                    if (k < seg.size() && seg[k] == '=')  ++k;
+                    if (k < seg.size() && seg[k] == '\\') ++k;
+                    if (k < seg.size() && seg[k] == '"')  ++k;
+                    size_t e = k;
+                    while (e < seg.size() && seg[e] != '\\' && seg[e] != '"') ++e;
+                    return seg.substr(k, e - k);
+                };
+                dr.spotInstanceId = attr("spotInstanceId");
+                dr.cartcutId      = attr("cartcutId");
+            }
+        }
         dr.th        = iheart_th_cache_;
         dr.thEnded   = iheart_th_ended_;
         dr.thCurrent = thCurrent;
@@ -595,8 +709,38 @@ void StreamSource::updateIHeartNowPlaying(const std::string& body) {
         dr.digitalRequested = prefer_digital_.load();
         dr.digitalActive   = digital_active_.load();
         dr.connectSeq      = connect_seq_.load();
-        IHeartDeepLog::emit(dr);
+        if (!is_lane_) IHeartDeepLog::emit(dr);
     }
+
+    // Live-floor stall self-heal (digital only) — the second re-pin trigger,
+    // feeding the same flag/arm/cooldown as the discontinuity path. Most ad breaks
+    // drop us onto the LIVE floor briefly and the reconciler re-acquires the next
+    // song on its own; occasionally it stalls there indefinitely (the dual-blind)
+    // and only a re-handshake recovers it. So once we've held the floor past
+    // LIVE_STALL_MS, request the live-edge re-pin. Placed BEFORE the early-return
+    // below because while stalled the state never changes (that return fires every
+    // tick), so this is the only spot that runs during the stall.
+    if (digital_active_.load() && ih_state_ == IHNow::Live) {
+        if (ih_live_since_ == 0) {
+            ih_live_since_ = GetTickCount();
+        } else if (hls_repin_armed_ &&
+                   (GetTickCount() - ih_live_since_) >= LIVE_STALL_MS) {
+            hls_repin_pending_.store(true);
+            hls_repin_armed_ = false;
+            hls_repin_cooldown_until_ = GetTickCount() + 90000;
+            slog("updateIHeart: LIVE-floor stall %lus -> requesting live-edge re-pin",
+                 (unsigned long)((GetTickCount() - ih_live_since_) / 1000));
+            ih_live_since_ = 0;                 // restart floor timer after acting
+        }
+    } else {
+        ih_live_since_ = 0;                     // off the floor (or raw) -> reset timer
+    }
+
+    // Dual-stream staging lane (coordinator only). Runs every tick BEFORE the
+    // debounce early-returns below, same rationale as the LIVE-floor block: while
+    // stalled the committed state never changes, so this is the only spot that
+    // runs during an ad. Stage A: shadow observer (arm/watch/log/teardown).
+    if (!is_lane_) serviceStaging();
 
     // Asymmetric debounce: Song needs 1 tick (instant), Ad 3, Live 2.
     if (tgtKind == ih_state_ && tgtDisp == ih_state_disp_) { ih_streak_ = 0; return; }  // already committed
@@ -612,6 +756,75 @@ void StreamSource::updateIHeartNowPlaying(const std::string& body) {
         now_playing_ = disp;
         const char* via = (tgtKind==IHNow::Song) ? "song" : (tgtKind==IHNow::Ad ? "ad" : "live");
         slog("iheart [%s]: %s", via, disp.c_str());
+    }
+}
+
+// ─── Staging lane (dual-stream smooth re-pin) — Stage A: shadow observer ───────
+// Coordinator-only (guarded by !is_lane_ at the call site). Spawns a parallel
+// StreamSource on the SAME canonical URL with the digital rendition, prebuffers
+// it on a detached thread (never blocking the primary producer), and waits for
+// that lane's OWN live edge to clear to music. Stage A stops there: it logs that
+// a clean blend point was reached and tears the lane down. The primary's audio
+// and existing re-pin are untouched. Stage B replaces the teardown with a swap
+// into the lane; Stage C with an equal-power crossfade.
+//
+// Teardown always happens on a detached thread: StreamSource::close() joins the
+// lane's producer, which can take up to a read chunk — doing that inline would
+// stall the primary producer (this runs on it) and underrun audio.
+void StreamSource::serviceStaging() {
+    DWORD now = GetTickCount();
+
+    auto teardown = [&](const char* why, DWORD cooldown_ms) {
+        slog("staging: %s -> teardown", why);
+        if (staging_) {
+            StreamSource* s = staging_.release();      // hand ownership to the reaper thread
+            std::thread([s]{ s->close(); delete s; }).detach();
+        }
+        stg_cooldown_until_ = now + cooldown_ms;
+        stg_state_ = Stg::Idle;
+    };
+
+    switch (stg_state_) {
+    case Stg::Idle:
+        // Arm while a commercial is airing on the primary (LIVE floor in digital
+        // mode) and the cooldown has elapsed. One staging session per break.
+        if (digital_active_.load() && ih_state_ == IHNow::Live &&
+            (long)(now - stg_cooldown_until_) >= 0 &&
+            !stg_opening_.load() && !staging_) {
+            staging_ = std::make_unique<StreamSource>(true);   // is_lane_ = true
+            staging_->setPreferDigital(true);
+            stg_opening_.store(true);
+            stg_state_ = Stg::Opening;
+            std::string u = url_;
+            slog("staging: arming parallel digital session");
+            std::thread([this, u]{
+                bool ok = staging_ && staging_->open(u);       // blocking handshake off the primary thread
+                if (!ok) slog("staging: open FAILED");
+                stg_opening_.store(false);
+            }).detach();
+        }
+        break;
+
+    case Stg::Opening:
+        if (!stg_opening_.load()) {                             // detached open() finished
+            if (staging_ && staging_->isOpen()) {
+                stg_state_ = Stg::Arming;
+                slog("staging: open OK, prebuffering parallel session");
+            } else {
+                teardown("open did not establish", 30000);
+            }
+        }
+        break;
+
+    case Stg::Arming:
+        if (ih_state_ != IHNow::Live) {                        // primary's break cleared on its own
+            teardown("primary break cleared (no blend needed)", 15000);
+        } else if (staging_ && staging_->isPrebuffered() && staging_->edgeIsMusic()) {
+            slog("staging: READY at music edge — clean blend point reached "
+                 "(Stage A observer; B/C will swap/crossfade here)");
+            teardown("Stage A: observed only", 60000);
+        }
+        break;
     }
 }
 
@@ -934,6 +1147,17 @@ void StreamSource::producerWorker() {
     while (!stop_.load()) {
         if (paused_.load()) { Sleep(20); continue; }
 
+        if (hls_repin_pending_.exchange(false)) {
+            slog("producer: ad-onset live-edge re-pin -> re-handshake");
+            uninitDecoder();
+            disconnect();
+            prebuffered_.store(false);
+            ringClear();                      // drop stale buffered audio: jump to live + avoid backpressure deadlock
+            if (stop_.load()) break;
+            if (!connect() || !initDecoder()) { Sleep(500); continue; }
+            continue;
+        }
+
         // Backpressure: mirror CDSource — if the ring is over half full, let the
         // consumer drain before decoding more.
         if (ringAvailable() > RING_SIZE / 2) { Sleep(10); continue; }
@@ -1000,6 +1224,16 @@ void StreamSource::producerWorkerAAC() {
 
     while (!stop_.load()) {
         if (paused_.load()) { Sleep(20); continue; }
+        if (hls_repin_pending_.exchange(false)) {
+            slog("producerAAC: ad-onset live-edge re-pin -> re-handshake");
+            disconnect();
+            prebuffered_.store(false);
+            ringClear();                      // drop stale buffered audio: jump to live + avoid backpressure deadlock
+            if (stop_.load()) break;
+            if (!connect()) { Sleep(500); continue; }
+            bytes_in_buf = 0;                 // fresh session — drop stale partial frame
+            continue;
+        }
         if (ringAvailable() > RING_SIZE / 2) { Sleep(10); continue; }   // backpressure
 
         // Top up the network buffer (append after any carried-over leftover).
@@ -1151,6 +1385,16 @@ int StreamSource::ringRead(int16_t* dst, int samples) {
     }
     ring_read_.store(r, std::memory_order_release);
     return n;
+}
+
+void StreamSource::ringClear() {
+    // Producer-side flush, used on a live-edge re-pin to discard buffered audio so
+    // we restart at the live edge rather than replaying the stale (pre-ad) buffer.
+    // Safe here: the consumer is gated off (prebuffered_=false) during the re-pin,
+    // so it isn't touching ring_read_ concurrently. Snapping read up to write makes
+    // the ring read as empty, which clears the producer's backpressure wait and
+    // avoids the full-ring / not-prebuffered deadlock that silenced playback.
+    ring_read_.store(ring_write_.load(std::memory_order_acquire), std::memory_order_release);
 }
 
 #endif // _WIN32

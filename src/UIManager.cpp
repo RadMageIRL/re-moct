@@ -758,6 +758,7 @@ void UIManager::drawAll() {
     else if (right_pane_ == RightPane::Devices)     drawDevices();
     else if (right_pane_ == RightPane::EQ)          drawEq();
     else if (right_pane_ == RightPane::Queue)        drawQueue();
+    else if (right_pane_ == RightPane::Chapters)     drawChapters();
     else                                             drawHelp();
     drawProgress();
     drawCmdLine();
@@ -873,6 +874,54 @@ void UIManager::applyReleaseTitles(const MBRelease& rel) {
 }
 
 
+void UIManager::refreshChaptersIfNeeded(const std::string& path) {
+    if (path == chapters_for_path_) return;        // already reflects this path
+    chapters_for_path_ = path;
+    current_chapters_.clear();
+    if (path.empty()) return;
+    // Any MP4-family container can carry chapters: .m4b books and chaptered
+    // .m4a/.mp4 podcasts. parseMp4Chapters returns empty for everything else,
+    // so non-chaptered files simply show no chapter.
+    std::string ext = fs::path(path).extension().string();
+    std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
+    if (ext == ".m4b" || ext == ".m4a" || ext == ".mp4" || ext == ".m4v")
+        current_chapters_ = parseMp4Chapters(path);
+}
+
+int UIManager::currentChapterIndex() const {
+    if (current_chapters_.empty()) return -1;
+    double pos = audio_.positionSec();
+    int idx = 0;
+    for (size_t i = 0; i < current_chapters_.size(); ++i) {
+        if (current_chapters_[i].start_sec <= pos + 0.05) idx = (int)i;
+        else break;
+    }
+    return idx;
+}
+
+void UIManager::jumpChapter(int dir) {
+    if (current_chapters_.empty()) {               // not chaptered -> plain +/-5s seek
+        audio_.seekBy(dir < 0 ? -5.0 : 5.0);
+        redraw_needed_.store(true);
+        return;
+    }
+    int ci = currentChapterIndex();
+    if (ci < 0) ci = 0;
+    if (dir > 0) {
+        if (ci + 1 < (int)current_chapters_.size())
+            audio_.seekTo(current_chapters_[(size_t)ci + 1].start_sec);
+        // else already in the last chapter -> stay put
+    } else {
+        double curStart = current_chapters_[(size_t)ci].start_sec;
+        double pos      = audio_.positionSec();
+        if (ci == 0 || pos - curStart > 3.0)
+            audio_.seekTo(curStart);                                       // restart current
+        else
+            audio_.seekTo(current_chapters_[(size_t)ci - 1].start_sec);    // previous
+    }
+    redraw_needed_.store(true);
+}
+
 void UIManager::drawTitleBar() {
     werase(win_title_);
     wattron(win_title_, COLOR_PAIR(CP_TITLE) | A_BOLD);
@@ -911,6 +960,9 @@ void UIManager::drawTitleBar() {
     if (audio_.state() != PlaybackState::Stopped && !track.path.empty()) {
         np = track.artist.empty() ? track.title : track.artist + " - " + track.title;
         if (np.empty()) np = fs::path(track.path).filename().string();
+        refreshChaptersIfNeeded(track.path);
+        int ci = currentChapterIndex();
+        if (ci >= 0) np += "  |  " + current_chapters_[(size_t)ci].title;
     }
     std::string badge;
 #ifdef _WIN32
@@ -1075,6 +1127,7 @@ void UIManager::drawDirBrowser() {
     else if (in_recent_)  hdr = " [Recently Played] ";
     else if (in_favs_)    hdr = " [FAVs] (f:fav/unfav  Enter:play  Del:remove) ";
     else if (in_radio_)   hdr = " [Radio] (Enter:play  d/Del:remove) ";
+    else if (in_books_)   hdr = " [Books] (Enter:play  Del:remove) ";
     else {
         std::string leaf = fs::path(current_dir_).filename().string();
         if (leaf.empty()) leaf = current_dir_;
@@ -1101,12 +1154,12 @@ void UIManager::drawDirBrowser() {
         bool is_dir = in_drive_list_
                     || name == ".." || name == "[Drives]" || name == "[Recent]"
                     || name == "[FAVs]" || name == "[Bookmarks]" || name == "[Back]"
-                    || name == "[Radio]"
-                    || (!in_recent_ && !in_favs_ && !in_radio_ && fs::is_directory(fs::path(current_dir_) / name));
+                    || name == "[Radio]" || name == "[Books]"
+                    || (!in_recent_ && !in_favs_ && !in_radio_ && !in_books_ && fs::is_directory(fs::path(current_dir_) / name));
 
         // Dead path check for FAVs — grey out missing files
         bool dead_path = false;
-        if (in_favs_ && name != "[Back]" && !name.empty()) {
+        if ((in_favs_ || in_books_) && name != "[Back]" && !name.empty()) {
             dead_path = !fs::exists(name);
         }
 
@@ -1524,6 +1577,64 @@ void UIManager::drawBookmarks() {
 }
 
 // ── Lyrics pane ───────────────────────────────────────────────────────────────
+void UIManager::drawChapters() {
+    WINDOW* w = win_playlist_;
+    werase(w);
+    int rows, cols;
+    getmaxyx(w, rows, cols);
+
+    std::string hdr = " Chapters  [Enter:jump  ,/.:prev/next  ;:close] ";
+    hdr.resize((size_t)cols, ' ');
+    wattron(w, COLOR_PAIR(CP_FOCUSED) | A_BOLD);
+    mvwaddnstr(w, 0, 0, hdr.c_str(), cols);
+    wattroff(w, COLOR_PAIR(CP_FOCUSED) | A_BOLD);
+
+    if (current_chapters_.empty()) {
+        wattron(w, COLOR_PAIR(CP_DIM));
+        mvwaddstr(w, rows/2, 2, "No chapters in this track.");
+        wattroff(w, COLOR_PAIR(CP_DIM));
+    } else {
+        int playing = currentChapterIndex();
+        chapter_cursor_ = std::clamp(chapter_cursor_, 0, (int)current_chapters_.size()-1);
+        int visible = rows - 2;
+        int scroll  = std::max(0, chapter_cursor_ - visible/2);
+        scroll      = std::min(scroll, std::max(0, (int)current_chapters_.size() - visible));
+
+        for (int i = 0; i < visible; ++i) {
+            int ci = scroll + i;
+            if (ci >= (int)current_chapters_.size()) break;
+            bool cursor = (ci == chapter_cursor_);
+            bool nowpl  = (ci == playing);
+            if (cursor) wattron(w, COLOR_PAIR(CP_SELECTED)|A_BOLD);
+            else        wattron(w, COLOR_PAIR(CP_DIM)|A_BOLD);
+
+            double s = current_chapters_[(size_t)ci].start_sec;
+            int hh = (int)(s/3600), mm = ((int)s%3600)/60, ss = (int)s%60;
+            char ts[16];
+            std::snprintf(ts, sizeof(ts), "%02d:%02d:%02d", hh, mm, ss);
+            std::string mark  = nowpl ? ">" : " ";
+            std::string title = scrolledText(current_chapters_[(size_t)ci].title, cols - 14);
+            std::string line  = " " + mark + " " + ts + "  " + title;
+            line.resize((size_t)cols, ' ');
+            mvwaddnstr(w, i+1, 0, line.c_str(), cols);
+
+            if (cursor) wattroff(w, COLOR_PAIR(CP_SELECTED)|A_BOLD);
+            else        wattroff(w, COLOR_PAIR(CP_DIM)|A_BOLD);
+        }
+    }
+
+    if (config_.awesome_mode) {
+        panelFrame(w, hdr, focus_ == Pane::Playlist, L'\uf0ca');
+    } else {
+        wattron(w, COLOR_PAIR(CP_BORDER));
+        box(w, 0, 0);
+        wattroff(w, COLOR_PAIR(CP_BORDER));
+        wattron(w, COLOR_PAIR(CP_FOCUSED) | A_BOLD);
+        mvwaddnstr(w, 0, 0, hdr.c_str(), cols);
+        wattroff(w, COLOR_PAIR(CP_FOCUSED) | A_BOLD);
+    }
+}
+
 void UIManager::drawLyrics() {
     WINDOW* w = win_playlist_;
     werase(w);
@@ -3110,6 +3221,30 @@ void UIManager::handleInput(int ch) {
     }
 
     // Bookmarks popup — j/k navigate, Enter jump, x delete, B close
+    if (right_pane_ == RightPane::Chapters) {
+        switch (ch) {
+            case 17: audio_.stop(); running_ = false; return;
+            case ';': case 27: right_pane_ = RightPane::Playlist; return;
+            case 'j': case 'J': case KEY_DOWN:
+                ++chapter_cursor_; redraw_needed_.store(true); return;
+            case 'k': case 'K': case KEY_UP:
+                --chapter_cursor_; redraw_needed_.store(true); return;
+            case '\n': case KEY_ENTER: case '\r':
+                if (!current_chapters_.empty()) {
+                    chapter_cursor_ = std::clamp(chapter_cursor_, 0,
+                                       (int)current_chapters_.size()-1);
+                    audio_.seekTo(current_chapters_[(size_t)chapter_cursor_].start_sec);
+                    redraw_needed_.store(true);
+                }
+                return;
+            case ',': jumpChapter(-1); return;
+            case '.': jumpChapter(+1); return;
+            case ' ': audio_.togglePause(); return;
+            case 's': audio_.stop(); return;
+            default: return;
+        }
+    }
+
     if (right_pane_ == RightPane::Bookmarks) {
         switch (ch) {
             case 17: audio_.stop(); running_ = false; return;
@@ -3280,8 +3415,10 @@ void UIManager::handleInput(int ch) {
                     maybePreloadNext();
                 }
                 break;
-            case ',': case '[': audio_.seekBy(-5.0); break;
-            case '.': case ']': audio_.seekBy(+5.0); break;
+            case '[': audio_.seekBy(-5.0); break;
+            case ']': audio_.seekBy(+5.0); break;
+            case ',': jumpChapter(-1); break;
+            case '.': jumpChapter(+1); break;
             case 't': case 'T': show_remaining_ = !show_remaining_; break;
             case 'w': case 'W': show_clock_ = !show_clock_; break;
             default: break;
@@ -3559,7 +3696,7 @@ void UIManager::handleInput(int ch) {
                 fav_path = dir_entries_[(size_t)dir_cursor_];
             } else if (focus_ == Pane::DirBrowser
                        && dir_cursor_ < (int)dir_entries_.size()
-                       && !in_drive_list_ && !in_recent_ && !in_favs_ && !in_radio_) {
+                       && !in_drive_list_ && !in_recent_ && !in_favs_ && !in_radio_ && !in_books_) {
                 const std::string& nm = dir_entries_[(size_t)dir_cursor_];
                 std::string full = (fs::path(nm).is_absolute()) ? nm
                                  : (fs::path(current_dir_) / nm).string();
@@ -3610,6 +3747,23 @@ void UIManager::handleInput(int ch) {
                         dir_cursor_ = std::max(0, (int)dir_entries_.size() - 1);
                 }
             }
+            if (focus_ == Pane::DirBrowser && in_books_
+                && dir_cursor_ < (int)dir_entries_.size()) {
+                const std::string& nm = dir_entries_[(size_t)dir_cursor_];
+                if (nm != "[Back]" && !nm.empty()) {
+                    config_.removeAudiobook(nm);
+                    config_.save();
+                    dir_entries_.clear(); dir_display_.clear();
+                    dir_entries_.push_back("[Back]"); dir_display_.push_back("[Back]");
+                    for (const auto& bk : config_.audiobooks) {
+                        dir_entries_.push_back(bk);
+                        std::string disp = fs::path(bk).filename().string();
+                        dir_display_.push_back(sanitizeForDisplay(disp.empty() ? bk : disp));
+                    }
+                    if (dir_cursor_ >= (int)dir_entries_.size())
+                        dir_cursor_ = std::max(0, (int)dir_entries_.size() - 1);
+                }
+            }
             break;
         case 'o':
             // Cycle playlist sort mode
@@ -3623,6 +3777,25 @@ void UIManager::handleInput(int ch) {
             refreshDir();
             break;
         case 'b':
+            // Cursor on an audiobook file in the normal browser -> toggle in [Books].
+            if (focus_ == Pane::DirBrowser
+                && !in_drive_list_ && !in_recent_ && !in_favs_ && !in_radio_ && !in_books_
+                && dir_cursor_ < (int)dir_entries_.size()) {
+                const std::string& nm = dir_entries_[(size_t)dir_cursor_];
+                std::string full = fs::path(nm).is_absolute() ? nm
+                                 : (fs::path(current_dir_) / nm).string();
+                if (PlaylistManager::isAudiobook(full) && fs::exists(full)) {
+                    if (config_.isSavedBook(full)) {
+                        config_.removeAudiobook(full);
+                        showTrackToast("Removed from Books", "", "");
+                    } else {
+                        config_.addAudiobook(full);
+                        showTrackToast("Added to Books", fs::path(full).filename().string(), "");
+                    }
+                    config_.save();
+                    break;                       // handled; don't also bookmark the dir
+                }
+            }
             // Add current directory to bookmarks (not available from [Drives] list)
             if (!in_drive_list_ && !in_recent_ && !in_radio_ && !current_dir_.empty()) {
                 // Don't bookmark CD drive roots — physical drives are volatile
@@ -3733,8 +3906,21 @@ void UIManager::handleInput(int ch) {
                 play_prev(p.value());
             break;
         }
-        case ',': case '[': audio_.seekBy(-5.0); break;
-        case '.': case ']': audio_.seekBy(+5.0); break;
+        case '[': audio_.seekBy(-5.0); break;
+        case ']': audio_.seekBy(+5.0); break;
+        case ',': jumpChapter(-1); break;
+        case '.': jumpChapter(+1); break;
+        case ';':
+            // Toggle the chapter list (only opens if the file has chapters)
+            if (right_pane_ == RightPane::Chapters) {
+                right_pane_ = RightPane::Playlist;
+            } else if (!current_chapters_.empty()) {
+                chapter_cursor_ = std::max(0, currentChapterIndex());
+                right_pane_ = RightPane::Chapters;
+            } else {
+                showTrackToast("No chapters in this track", "", "");
+            }
+            break;
         case '-': case '_':
             audio_.adjustVolume(-0.05f); break;
         case '=': case '+':
@@ -4263,6 +4449,19 @@ void UIManager::activateSelection() {
                 dir_cursor_ = 0; dir_scroll_ = 0;
                 return;
             }
+            if (name == "[Books]") {
+                in_drive_list_ = false;
+                in_books_      = true;
+                dir_entries_.clear(); dir_display_.clear();
+                dir_entries_.push_back("[Back]"); dir_display_.push_back("[Back]");
+                for (const auto& bk : config_.audiobooks) {
+                    dir_entries_.push_back(bk);
+                    std::string disp = fs::path(bk).filename().string();
+                    dir_display_.push_back(sanitizeForDisplay(disp.empty() ? bk : disp));
+                }
+                dir_cursor_ = 0; dir_scroll_ = 0;
+                return;
+            }
             if (name == "[Bookmarks]") {
                 right_pane_      = RightPane::Bookmarks;
                 bookmark_cursor_ = 0;
@@ -4363,6 +4562,25 @@ void UIManager::activateSelection() {
             }
             return;
         }
+        if (in_books_) {
+            if (name == "[Back]") {
+                in_books_ = false;
+                refreshDir();
+                return;
+            }
+            if (!fs::exists(name)) return;            // dead path — ignore
+            if (PlaylistManager::isSupportedAudio(name)) {
+                size_t idx = playlist_.addTrack(name);
+                playlist_.selectAt(idx);
+                if (auto p = playlist_.currentPath(); p.has_value()) {
+                    audio_.play(p.value());
+                    config_.addAudiobook(p.value());   // keep/refresh in [Books]
+                    config_.addRecentTrack(p.value());
+                    maybePreloadNext();
+                }
+            }
+            return;
+        }
         if (name == "[Drives]") { enterDriveList(); return; }
         if (name == "[Radio]") {
             in_radio_  = true;
@@ -4402,6 +4620,21 @@ void UIManager::activateSelection() {
                 dir_entries_.push_back(fp);
                 std::string disp = fs::path(fp).filename().string();
                 dir_display_.push_back(sanitizeForDisplay(disp.empty() ? fp : disp));
+            }
+            dir_cursor_ = 0; dir_scroll_ = 0;
+            return;
+        }
+        if (name == "[Books]") {
+            in_books_  = true;
+            in_favs_   = false;
+            in_recent_ = false;
+            in_drive_list_ = false;
+            dir_entries_.clear(); dir_display_.clear();
+            dir_entries_.push_back("[Back]"); dir_display_.push_back("[Back]");
+            for (const auto& bk : config_.audiobooks) {
+                dir_entries_.push_back(bk);
+                std::string disp = fs::path(bk).filename().string();
+                dir_display_.push_back(sanitizeForDisplay(disp.empty() ? bk : disp));
             }
             dir_cursor_ = 0; dir_scroll_ = 0;
             return;
@@ -4482,11 +4715,14 @@ void UIManager::enterDriveList() {
     in_recent_     = false;
     in_favs_       = false;
     in_radio_      = false;
+    in_books_      = false;
     dir_entries_   = listDrives();
     dir_display_   = dir_entries_;
     // Prepend virtual entries at top
     dir_entries_.insert(dir_entries_.begin(), "[Bookmarks]");
     dir_display_.insert(dir_display_.begin(), "[Bookmarks]");
+    dir_entries_.insert(dir_entries_.begin(), "[Books]");
+    dir_display_.insert(dir_display_.begin(), "[Books]");
     dir_entries_.insert(dir_entries_.begin(), "[Radio]");
     dir_display_.insert(dir_display_.begin(), "[Radio]");
     dir_entries_.insert(dir_entries_.begin(), "[FAVs]");
@@ -4550,6 +4786,7 @@ void UIManager::refreshDir() {
     in_recent_     = false;
     in_favs_       = false;
     in_radio_      = false;
+    in_books_      = false;
     dir_entries_.clear();
     dir_display_.clear();
     dir_poll_ticks_ = 0;
@@ -4568,6 +4805,8 @@ void UIManager::refreshDir() {
         dir_display_.push_back("[FAVs]");
         dir_entries_.push_back("[Radio]");
         dir_display_.push_back("[Radio]");
+        dir_entries_.push_back("[Books]");
+        dir_display_.push_back("[Books]");
         if (!at_root) {
             dir_entries_.push_back("..");
             dir_display_.push_back("..");
@@ -4610,6 +4849,8 @@ void UIManager::refreshDir() {
                 if (eb == "[FAVs]")                 return false;
                 if (ea == "[Radio]")                return true;
                 if (eb == "[Radio]")                return false;
+                if (ea == "[Books]")                return true;
+                if (eb == "[Books]")                return false;
                 if (ea == "..")                     return true;
                 if (eb == "..")                     return false;
 

@@ -10,6 +10,10 @@ This dev branch adds a complete **internet-radio subsystem** and **Last.fm scrob
 ## Nerd Fonts, Color/Theme and Rounded Borders with GAPS
 <img width="1533" height="766" alt="image" src="https://github.com/user-attachments/assets/0670d8d4-e6e5-40de-9937-d587a6183d3b" />
 
+## Audiobook and Chapters
+<img width="1530" height="761" alt="image" src="https://github.com/user-attachments/assets/a574f6e9-9653-4780-9cd7-862362d00cdf" />
+
+
 ## Internet Radio Streaming
 
 Play HTTP/HTTPS audio streams directly in RE-MOCT, with the same keyboard-driven workflow as local files.

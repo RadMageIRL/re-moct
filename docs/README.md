@@ -8,7 +8,7 @@ See current binary/exe in the binary-dev directory (need to install mingw-w64-uc
 This dev branch adds a complete **internet-radio subsystem** and **Last.fm scrobbling** on top of the RC1 CD/File player/ripper. Everything below is initially tested against live streams, but is not yet frozen for release.
 
 ## Nerd Fonts, Color/Theme and Rounded Borders with GAPS
-<img width="1540" height="772" alt="image" src="https://github.com/user-attachments/assets/464efc95-0fa0-40de-bcd5-71c0a5e60c7c" />
+<img width="1533" height="766" alt="image" src="https://github.com/user-attachments/assets/0670d8d4-e6e5-40de-9937-d587a6183d3b" />
 
 ## Internet Radio Streaming
 

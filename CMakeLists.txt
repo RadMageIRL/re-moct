@@ -21,6 +21,16 @@ set(REMOCT_SOURCES
     src/CDSource.cpp
     src/MBLookup.cpp
     src/CDRipper.cpp
+    src/StreamSource.cpp
+    src/AacDecoder.cpp
+    src/Mp4Chapters.cpp
+    src/IHeartRadio.cpp
+    src/IHeartDeepLog.cpp
+    src/RadioBrowser.cpp
+    src/LastFm.cpp
+    src/Log.cpp
+    src/ListenBrainz.cpp
+    src/DiscordRP.cpp
 )
 
 add_executable(remoct ${REMOCT_SOURCES})
@@ -33,6 +43,7 @@ target_include_directories(remoct PRIVATE
     ${FLAC_INCLUDE}
     ${LAME_INCLUDE}
     ${EBUR128_INCLUDE}
+    ${FDKAAC_INCLUDE}
 )
 
 # ── Compile definitions ────────────────────────────────────────────────────
@@ -62,6 +73,13 @@ find_library(EBUR128_LIB NAMES ebur128
 find_path(EBUR128_INCLUDE NAMES ebur128.h
     PATHS "${MSYS2_PREFIX}/include" REQUIRED)
 message(STATUS "libebur128: ${EBUR128_LIB}")
+
+# ── FDK-AAC (HE-AAC/AAC+ decode for internet radio) ───────────────────────
+find_library(FDKAAC_LIB NAMES fdk-aac
+    PATHS "${MSYS2_PREFIX}/lib" REQUIRED)
+find_path(FDKAAC_INCLUDE NAMES fdk-aac/aacdecoder_lib.h
+    PATHS "${MSYS2_PREFIX}/include" REQUIRED)
+message(STATUS "fdk-aac: ${FDKAAC_LIB}")
 find_library(NCURSESW_LIB NAMES ncursesw
     PATHS "${MSYS2_PREFIX}/lib" REQUIRED)
 find_library(PANELW_LIB NAMES panelw
@@ -92,11 +110,13 @@ target_link_libraries(remoct PRIVATE
     ${FLAC_LIB}
     ${LAME_LIB}
     ${EBUR128_LIB}
+    ${FDKAAC_LIB}
     $<$<PLATFORM_ID:Windows>:winmm>
     $<$<PLATFORM_ID:Windows>:ws2_32>
     $<$<PLATFORM_ID:Windows>:ole32>
     $<$<PLATFORM_ID:Windows>:wininet>
     $<$<PLATFORM_ID:Windows>:shell32>
+    $<$<PLATFORM_ID:Windows>:advapi32>
 )
 
 # ── Compiler warnings ──────────────────────────────────────────────────────

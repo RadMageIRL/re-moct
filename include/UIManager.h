@@ -245,6 +245,14 @@ private:
     void refreshChaptersIfNeeded(const std::string& path);
     int  currentChapterIndex() const;             // index into current_chapters_, -1 if none
     void jumpChapter(int dir);                     // -1 prev (position-aware), +1 next; ±5s fallback
+    // Audiobook resume (Phase C): latch the active book's live position and
+    // persist it on stop / track-switch / exit; seek back to it on (re)start.
+    std::string book_progress_path_;
+    double      book_progress_pos_   = 0.0;
+    double      book_progress_dur_   = 0.0;
+    bool        book_resume_pending_ = false;
+    void updateBookProgress();
+    void flushBookProgress();
     std::string lastfm_pending_token_;   // (legacy; token now persisted in config)
     void lastfmBeginAuth();              // request token + open browser
 

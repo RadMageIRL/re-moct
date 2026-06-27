@@ -103,6 +103,7 @@ UIManager::UIManager(PlaylistManager& playlist, AudioManager& audio,
 }
 
 UIManager::~UIManager() {
+    flushBookProgress();       // persist resume position if quitting mid-book
     running_ = false;
     lf_poll_active_.store(false);
     if (lf_poll_thread_.joinable()) lf_poll_thread_.join();
@@ -328,6 +329,7 @@ void UIManager::run() {
     while (running_) {
         audio_.pollEvents();
         updateScrobbler();
+        updateBookProgress();
 #ifdef _WIN32
         if (audio_.takeStreamConnected()) {
             std::string t;
@@ -922,6 +924,44 @@ void UIManager::jumpChapter(int dir) {
     redraw_needed_.store(true);
 }
 
+void UIManager::flushBookProgress() {
+    if (book_progress_path_.empty()) return;
+    double pos = book_progress_pos_;
+    // Near the start -> treat as not-started; within 15s of the end -> finished,
+    // so a replay begins fresh. Otherwise store the resume point.
+    if (pos < 5.0 || (book_progress_dur_ > 0.0 && pos > book_progress_dur_ - 15.0))
+        config_.setBookPos(book_progress_path_, 0.0);
+    else
+        config_.setBookPos(book_progress_path_, pos);
+    config_.save();
+}
+
+void UIManager::updateBookProgress() {
+    const auto& tr = audio_.currentTrack();
+    bool playing = (audio_.state() != PlaybackState::Stopped);
+    bool isBook  = playing && !tr.path.empty() && PlaylistManager::isAudiobook(tr.path);
+    std::string active = isBook ? tr.path : std::string();
+
+    if (active != book_progress_path_) {           // transition: flush old, latch new
+        flushBookProgress();
+        book_progress_path_  = active;
+        book_progress_dur_   = isBook ? (double)tr.duration_sec : 0.0;
+        book_resume_pending_ = isBook;             // one-shot resume on the new book
+    }
+    if (isBook) {
+        if (book_resume_pending_) {
+            double saved = config_.bookPos(tr.path);
+            double pos   = audio_.positionSec();
+            if (saved <= 1.0)      book_resume_pending_ = false;            // nothing saved
+            else if (pos < 2.0)  { audio_.seekTo(saved); book_resume_pending_ = false; }
+            else if (pos > 3.0)    book_resume_pending_ = false;            // already moved on
+            // else 2..3s: wait a tick for the decoder to settle
+        }
+        book_progress_pos_ = audio_.positionSec();
+        if (tr.duration_sec > 0) book_progress_dur_ = (double)tr.duration_sec;
+    }
+}
+
 void UIManager::drawTitleBar() {
     werase(win_title_);
     wattron(win_title_, COLOR_PAIR(CP_TITLE) | A_BOLD);
@@ -1118,6 +1158,7 @@ void UIManager::drawDirBrowser() {
     werase(win_dir_);
     int rows, cols;
     getmaxyx(win_dir_, rows, cols);
+    (void)rows;
     bool focused = (focus_ == Pane::DirBrowser);
     const bool aw = config_.awesome_mode;
     const int  cx = aw ? 1 : 0;             // content left column (inside frame)
@@ -1210,6 +1251,7 @@ void UIManager::drawPlaylist() {
     werase(win_playlist_);
     int rows, cols;
     getmaxyx(win_playlist_, rows, cols);
+    (void)rows;
     bool focused = (focus_ == Pane::Playlist);
     // Total playlist duration
     int total_secs = 0;
@@ -1806,6 +1848,7 @@ void UIManager::drawQueue() {
     werase(w);
     int rows, cols;
     getmaxyx(w, rows, cols);
+    (void)rows;
 
     const bool aw = config_.awesome_mode;
     const int  cx = aw ? 1 : 0;

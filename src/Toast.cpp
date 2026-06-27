@@ -5,6 +5,34 @@
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#include "StringUtils.h"   // utf8_to_wide
+
+// Base64-encode raw bytes (standard alphabet, '=' padded). Used to build a
+// PowerShell -EncodedCommand argument: the payload is base64 of the UTF-16LE
+// script, so there is no outer command-line quoting for untrusted track
+// metadata to break out of (the old -Command "..." form could be terminated
+// early by a stray double-quote in a title/artist/album).
+static std::string b64encode(const unsigned char* data, size_t len) {
+    static const char* T =
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    std::string out;
+    out.reserve(((len + 2) / 3) * 4);
+    size_t i = 0;
+    for (; i + 2 < len; i += 3) {
+        unsigned v = (data[i] << 16) | (data[i+1] << 8) | data[i+2];
+        out += T[(v >> 18) & 0x3F]; out += T[(v >> 12) & 0x3F];
+        out += T[(v >>  6) & 0x3F]; out += T[v & 0x3F];
+    }
+    if (i < len) {
+        bool two = (i + 1 < len);
+        unsigned v = (data[i] << 16) | (two ? (data[i+1] << 8) : 0u);
+        out += T[(v >> 18) & 0x3F];
+        out += T[(v >> 12) & 0x3F];
+        out += two ? T[(v >> 6) & 0x3F] : '=';
+        out += '=';
+    }
+    return out;
+}
 #endif
 
 void showTrackToast(const std::string& title,
@@ -37,7 +65,16 @@ void showTrackToast(const std::string& title,
         "$toast = [Windows.UI.Notifications.ToastNotification]::new($xml);"
         "[Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('RE-MOCT').Show($toast);";
 
-    std::string cmd = "powershell -WindowStyle Hidden -NonInteractive -Command \"" + ps + "\"";
+    // Encode the script as base64 of its UTF-16LE bytes and hand it to
+    // -EncodedCommand. With no outer quoting, a double-quote or CR/LF in
+    // metadata (which can arrive from network stream tags) cannot break or
+    // inject into the command line. esc() still doubles single quotes so the
+    // PS single-quoted string literals around the metadata stay intact.
+    std::wstring wps = utf8_to_wide(ps);
+    std::string  b64 = b64encode(
+        reinterpret_cast<const unsigned char*>(wps.data()),
+        wps.size() * sizeof(wchar_t));
+    std::string cmd = "powershell -NoProfile -NonInteractive -EncodedCommand " + b64;
 
     // Fire and forget in a detached thread — don't block the audio/UI threads
     std::thread([cmd]() {

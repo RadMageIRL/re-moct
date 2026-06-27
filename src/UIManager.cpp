@@ -643,9 +643,15 @@ void UIManager::run() {
             int cur = (int)playlist_.current();
             if (cur != last_playlist_current_for_sync_) {
                 last_playlist_current_for_sync_ = cur;
-                // Toast notification for new track
+                // Toast for a new FILE track. Skip when the newly current entry is a
+                // radio stream: streams aren't reflected in audio_.currentTrack()
+                // (it still holds the last file), so toasting here re-announces the
+                // stale file — the double toast on file->radio. The radio path
+                // (beginStream -> "Negotiating/Streaming") owns stream toasts.
+                bool curIsStream = (cur >= 0 && (size_t)cur < playlist_.size()
+                                    && isStreamPath(playlist_.at((size_t)cur).path));
                 const auto& track = audio_.currentTrack();
-                if (!track.path.empty()) {
+                if (!curIsStream && !track.path.empty()) {
                     config_.recordPlay(track.path);
                     if (config_.toast_enabled)
                         showTrackToast(track.title, track.artist, track.album);
@@ -1396,8 +1402,14 @@ void UIManager::drawPlaylist() {
         if (idx >= playlist_.size()) break;
         const auto& e  = playlist_.at(idx);
         bool cursor  = ((int)idx == pl_cursor_);
-        bool playing = (e.path == audio_.currentTrack().path
-                        && audio_.state() != PlaybackState::Stopped);
+        // The lit ("playing") row. In radio mode audio_.currentTrack() still holds
+        // the last file, so a stale file row would stay lit after switching to
+        // radio — key off the current playlist entry (the station) instead. In file
+        // mode, match the audio's current file path as before.
+        bool playing = (audio_.state() != PlaybackState::Stopped) &&
+                       (audio_.streamMode()
+                          ? ((int)idx == (int)playlist_.current())
+                          : (e.path == audio_.currentTrack().path));
         short rpair = CP_DIM; attr_t rattr = A_BOLD;
         if      (cursor && focused) { rpair = CP_SELECTED;  rattr = A_BOLD; }
         else if (cursor)            { rpair = CP_SELECTED_UNFOCUSED; rattr = A_BOLD; }

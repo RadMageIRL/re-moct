@@ -44,7 +44,7 @@ bool StreamSource::open(const std::string& url) {
     frames_drained_.store(0);
     ring_write_.store(0);
     ring_read_.store(0);
-    { std::lock_guard<std::mutex> lk(now_playing_mtx_); now_playing_.clear(); }
+    { std::lock_guard<std::mutex> lk(now_playing_mtx_); now_playing_.clear(); np_pub_q_.clear(); np_published_.clear(); }
 
     // Codec choice by URL (content-type sniffing is a later refinement).
     std::string lower = url;

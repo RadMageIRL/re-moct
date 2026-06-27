@@ -87,6 +87,7 @@ struct DigiConfig {
     void recordPlay(const std::string& path);   // increment count + timestamp
 
     static std::string configPath();
+    static std::string themePath();
     void load();
     void save() const;
 };

@@ -20,6 +20,7 @@
 #include <mutex>
 #include <vector>
 #include <memory>
+#include <deque>
 
 #include "miniaudio.h"   // declarations only — MINIAUDIO_IMPLEMENTATION lives in AudioManager.cpp
 #include <fdk-aac/aacdecoder_lib.h>
@@ -177,6 +178,18 @@ private:
     size_t                  raw_pos_     = 0;
     mutable std::mutex      now_playing_mtx_;
     std::string             now_playing_;
+    // ── Audio-aligned label publish ──────────────────────────────────────────
+    // now_playing_ commits off the manifest live edge, which sits ~one buffer
+    // depth (ring + undecoded pending) AHEAD of the speaker — so the label flips
+    // to the next song / "Commercial break" while the current song's tail is still
+    // audible. We hold each committed label until the audio it describes is heard:
+    // on commit, enqueue it with a release tick = now + measured buffer depth; the
+    // getter publishes entries as they come due. Display-only — reconciliation,
+    // debounce, scrobble, and decode are untouched. Reset on ringClear() (re-pin),
+    // where the buffer is flushed and the label must snap to the live jump.
+    struct NpPub { DWORD releaseTick; std::string disp; };
+    mutable std::deque<NpPub> np_pub_q_;
+    mutable std::string       np_published_;
     std::string             iheart_art_;       // album-art URL for the committed song (digital mode; "" otherwise). Guarded by now_playing_mtx_.
 
     // WinINet handles (owned by producer thread once open() returns)

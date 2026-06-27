@@ -340,6 +340,8 @@ private:
     static constexpr short CP_VIZ_MID    = 10;
     static constexpr short CP_VIZ_HIGH   = 11;
     static constexpr short CP_VIZ_PEAK   = 12;
+    static constexpr short CP_SELECTED_UNFOCUSED = 13;
 
     void initColours();
+    void loadTheme(short* fg, short* bg);   // overrides defaults from theme.conf
 };

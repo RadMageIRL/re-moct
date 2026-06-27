@@ -27,6 +27,22 @@ std::string DigiConfig::configPath() {
     return base + "/remoct.conf";
 }
 
+std::string DigiConfig::themePath() {
+    // Same directory as remoct.conf; swap the filename. Mirrors the dir logic
+    // in configPath() rather than refactoring it, to keep this a surgical add.
+    std::string base;
+#ifdef _WIN32
+    char buf[MAX_PATH] = {};
+    DWORD len = GetEnvironmentVariableA("APPDATA", buf, MAX_PATH);
+    base = (len > 0 && len < MAX_PATH) ? std::string(buf) + "\\RE-MOCT" : ".";
+#else
+    const char* home = getenv("HOME");
+    base = home ? std::string(home) + "/.config/RE-MOCT" : ".";
+#endif
+    try { fs::create_directories(base); } catch (...) {}
+    return base + "/theme.conf";
+}
+
 void DigiConfig::addRecentTrack(const std::string& path) {
     // Never store CD audio tracks in recent list — hardware paths are volatile
     if (isCDTrackPath(path)) return;

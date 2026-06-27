@@ -40,6 +40,7 @@
 #include <algorithm>
 #include <sstream>
 #include <iomanip>
+#include <fstream>
 #include <stdexcept>
 #include <vector>
 #include <string>
@@ -187,20 +188,115 @@ void UIManager::initColours() {
     if (!has_colors()) return;
     start_color();
     use_default_colors();
-    init_pair(CP_TITLE,      COLOR_CYAN,    -1);
-    init_pair(CP_FOCUSED,    COLOR_WHITE,   COLOR_BLUE);   // white on blue — readable
-    init_pair(CP_SELECTED,   COLOR_WHITE,   COLOR_BLUE);   // white on blue — readable
-    init_pair(CP_PROGRESS,   COLOR_WHITE,   COLOR_BLUE);   // progress bar
-    init_pair(CP_STATUS_OK,  COLOR_GREEN,   -1);
-    init_pair(CP_STATUS_ERR, COLOR_RED,     -1);
-    init_pair(CP_BORDER,     COLOR_CYAN,    -1);
-    init_pair(CP_DIM,        COLOR_WHITE,   -1);
-    // Make inactive playlist text brighter — A_BOLD is applied at render time
-    // Visualizer: foreground = colour, background = same colour → solid filled cell
-    init_pair(CP_VIZ_LOW,    COLOR_GREEN,   COLOR_GREEN);
-    init_pair(CP_VIZ_MID,    COLOR_YELLOW,  COLOR_YELLOW);
-    init_pair(CP_VIZ_HIGH,   COLOR_CYAN,    COLOR_CYAN);
-    init_pair(CP_VIZ_PEAK,   COLOR_WHITE,   COLOR_WHITE);
+
+    // Built-in defaults (index 0 unused; slots 1..13 map to CP_*). These reproduce
+    // the previous hard-coded pairs exactly, so a missing theme.conf changes nothing.
+    short fg[14] = { 0,
+        COLOR_CYAN,   COLOR_WHITE,  COLOR_WHITE,  COLOR_WHITE,   // title focused selected progress
+        COLOR_GREEN,  COLOR_RED,    COLOR_CYAN,   COLOR_WHITE,   // status_ok status_err border dim
+        COLOR_GREEN,  COLOR_YELLOW, COLOR_CYAN,   COLOR_WHITE,   // viz_low viz_mid viz_high viz_peak
+        COLOR_BLACK };                                           // selected_unfocused
+    short bg[14] = { 0,
+        -1,           COLOR_BLUE,   COLOR_BLUE,   COLOR_BLUE,
+        -1,           -1,           -1,           -1,
+        COLOR_GREEN,  COLOR_YELLOW, COLOR_CYAN,   COLOR_WHITE,
+        COLOR_WHITE };
+
+    loadTheme(fg, bg);   // override in place from theme.conf (emits default on first run)
+
+    for (short s = 1; s <= 13; ++s)
+        init_pair(s, fg[s], bg[s]);
+}
+
+void UIManager::loadTheme(short* fg, short* bg) {
+    const std::string path = DigiConfig::themePath();
+
+    // element name -> colour-pair slot
+    struct Row { const char* name; short slot; };
+    static const Row rows[] = {
+        { "title",      CP_TITLE      }, { "focused",    CP_FOCUSED    },
+        { "selected",   CP_SELECTED   }, { "progress",   CP_PROGRESS   },
+        { "status_ok",  CP_STATUS_OK  }, { "status_err", CP_STATUS_ERR },
+        { "border",     CP_BORDER     }, { "dim",        CP_DIM        },
+        { "viz_low",    CP_VIZ_LOW    }, { "viz_mid",    CP_VIZ_MID    },
+        { "viz_high",   CP_VIZ_HIGH   }, { "viz_peak",   CP_VIZ_PEAK   },
+        { "selected_unfocused", CP_SELECTED_UNFOCUSED },
+    };
+
+    auto colourFromName = [](std::string s, short fallback) -> short {
+        for (auto& c : s) c = (char)std::tolower((unsigned char)c);
+        if (s == "default") return -1;
+        if (s == "black")   return COLOR_BLACK;
+        if (s == "red")     return COLOR_RED;
+        if (s == "green")   return COLOR_GREEN;
+        if (s == "yellow")  return COLOR_YELLOW;
+        if (s == "blue")    return COLOR_BLUE;
+        if (s == "magenta") return COLOR_MAGENTA;
+        if (s == "cyan")    return COLOR_CYAN;
+        if (s == "white")   return COLOR_WHITE;
+        return fallback;    // unknown token -> keep current value
+    };
+
+    std::ifstream f(path);
+    if (!f) {
+        // First run (or user deleted it): emit a commented default built from the
+        // defaults already in fg[]/bg[], so the file always matches the program.
+        auto nameOf = [](short c) -> const char* {
+            switch (c) {
+                case COLOR_BLACK:   return "black";
+                case COLOR_RED:     return "red";
+                case COLOR_GREEN:   return "green";
+                case COLOR_YELLOW:  return "yellow";
+                case COLOR_BLUE:    return "blue";
+                case COLOR_MAGENTA: return "magenta";
+                case COLOR_CYAN:    return "cyan";
+                case COLOR_WHITE:   return "white";
+                default:            return "default";   // -1 and anything else
+            }
+        };
+        std::ofstream o(path, std::ios::trunc);
+        if (o) {
+            o << "# RE-MOCT theme - colour-pair assignments (auto-generated default)\n"
+                 "#\n"
+                 "# Format:  element   fg   bg\n"
+                 "# Colours: black red green yellow blue magenta cyan white default\n"
+                 "#          'default' = the terminal's own foreground/background.\n"
+                 "#\n"
+                 "# NOTE: ncursesw on this build exposes only the 8 ANSI colours through\n"
+                 "#       the API - no hex / RGB / 256-colour. Bold/dim/reverse are applied\n"
+                 "#       by the program per-context and are not configurable here.\n"
+                 "#\n"
+                 "# NOTE: the viz_* rows intentionally use fg == bg. That paints a solid\n"
+                 "#       filled cell for the visualizer bars - it is not a mistake.\n"
+                 "#\n"
+                 "# Reload live with '~' after editing.\n\n";
+            for (const auto& r : rows)
+                o << std::left << std::setw(20) << r.name
+                  << std::setw(9) << nameOf(fg[r.slot])
+                  << nameOf(bg[r.slot]) << '\n';
+        }
+        return;   // defaults already populated in fg[]/bg[]
+    }
+
+    auto slotFor = [&](const std::string& n) -> short {
+        for (const auto& r : rows) if (n == r.name) return r.slot;
+        return -1;
+    };
+
+    std::string line;
+    while (std::getline(f, line)) {
+        if (auto h = line.find('#'); h != std::string::npos) line.erase(h);
+        std::istringstream iss(line);
+        std::string elem, fgs, bgs;
+        if (!(iss >> elem >> fgs >> bgs)) continue;   // need all three tokens
+        short slot = slotFor(elem);
+        if (slot < 0) {
+            Log::write("theme", "unknown element '" + elem + "' ignored");
+            continue;
+        }
+        fg[slot] = colourFromName(fgs, fg[slot]);
+        bg[slot] = colourFromName(bgs, bg[slot]);
+    }
 }
 
 void UIManager::createWindows() {
@@ -1206,7 +1302,7 @@ void UIManager::drawDirBrowser() {
 
         short  rpair = CP_DIM; attr_t rattr = A_BOLD;
         if      (cursor && focused) { rpair = CP_SELECTED; rattr = A_BOLD; }
-        else if (cursor)            { rpair = 0;           rattr = A_REVERSE|A_BOLD; }
+        else if (cursor)            { rpair = CP_SELECTED_UNFOCUSED; rattr = A_BOLD; }
         else if (dead_path)         { rpair = CP_DIM;      rattr = 0; }
         else if (is_dir)            { rpair = CP_TITLE;    rattr = A_BOLD; }
         else                        { rpair = CP_DIM;      rattr = A_BOLD; }
@@ -1236,6 +1332,7 @@ void UIManager::drawDirBrowser() {
         }
 
         wattroff(win_dir_, A_BOLD|A_REVERSE|COLOR_PAIR(CP_SELECTED)
+                         |COLOR_PAIR(CP_SELECTED_UNFOCUSED)
                          |COLOR_PAIR(CP_TITLE)|COLOR_PAIR(CP_DIM));
     }
     if (aw) {
@@ -1303,7 +1400,7 @@ void UIManager::drawPlaylist() {
                         && audio_.state() != PlaybackState::Stopped);
         short rpair = CP_DIM; attr_t rattr = A_BOLD;
         if      (cursor && focused) { rpair = CP_SELECTED;  rattr = A_BOLD; }
-        else if (cursor)            { rpair = 0;            rattr = A_REVERSE|A_BOLD; }
+        else if (cursor)            { rpair = CP_SELECTED_UNFOCUSED; rattr = A_BOLD; }
         else if (playing)           { rpair = CP_STATUS_OK; rattr = A_BOLD; }
         else                        { rpair = CP_DIM;       rattr = A_BOLD; }
         wattron(win_playlist_, COLOR_PAIR(rpair) | rattr);
@@ -1322,6 +1419,7 @@ void UIManager::drawPlaylist() {
             mvwadd_wch(win_playlist_, i+1, cx + 1, &cc);
         }
         wattroff(win_playlist_, A_BOLD|A_REVERSE|COLOR_PAIR(CP_SELECTED)
+                              |COLOR_PAIR(CP_SELECTED_UNFOCUSED)
                               |COLOR_PAIR(CP_STATUS_OK)|COLOR_PAIR(CP_DIM));
     }
     if (aw) {
@@ -1478,6 +1576,7 @@ void UIManager::drawHelp() {
         { "Ctrl+Y",         "Rip CD  (A=AccurateRip  C=CUETools  Y=Local  B=Local 2-pass)" },
         { "Ctrl+D",         "Toggle Discord Rich Presence" },
         { "Ctrl+T",         "Toggle Classic / Awesome theme" },
+        { "~",              "Reload theme.conf colours (live)" },
         { "Ctrl+N",         "Toggle Nerd Font icons (needs Nerd Font)" },
         { "Ctrl+A",         "Toggle deep-analysis iHeart log (diagnostic)" },
         { "Ctrl+K",         "Stream mode: Web Player (fewer ads) / Raw broadcast" },
@@ -2115,10 +2214,18 @@ void UIManager::drawDevices() {
             else if (is_current) wattron(w, COLOR_PAIR(CP_STATUS_OK) | A_BOLD);
             else                 wattron(w, COLOR_PAIR(CP_DIM) | A_BOLD);
 
-            std::string mark = is_current ? "> " : "  ";
+            const bool ico = config_.nerd_icons;
+            std::string mark = (is_current && !ico) ? "> " : "  ";
             std::string line = " " + mark + scrolledText(device_list_[(size_t)di].name, cols - 4);
             line.resize((size_t)cols, ' ');
             mvwaddnstr(w, i + 1, 0, line.c_str(), cols);
+            if (ico && is_current) {   // active-device glyph on the reserved mark cell
+                cchar_t cc;
+                wchar_t s[2] = { L'\uf028', 0 };  // speaker (volume-up)
+                short pair = is_cursor ? CP_SELECTED : CP_STATUS_OK;
+                setcchar(&cc, s, A_BOLD, pair, nullptr);
+                mvwadd_wch(w, i + 1, 1, &cc);
+            }
 
             if      (is_cursor)  wattroff(w, COLOR_PAIR(CP_SELECTED) | A_BOLD);
             else if (is_current) wattroff(w, COLOR_PAIR(CP_STATUS_OK) | A_BOLD);
@@ -3679,6 +3786,14 @@ void UIManager::handleInput(int ch) {
         }
         case '\t':
             toggleFocus(); break;
+        case '~':
+            // Live-reload theme.conf: re-init the colour pairs and force a full
+            // repaint. Pairs are global state, so re-running init_pair() updates
+            // every COLOR_PAIR() reference in place — no need to rebuild windows.
+            initColours();
+            clearok(stdscr, TRUE);
+            showTrackToast("Theme reloaded", DigiConfig::themePath(), "");
+            break;
         case ' ':
             audio_.togglePause(); break;
         case 't': case 'T':
@@ -5090,9 +5205,11 @@ void UIManager::drawMBSearch() {
                 year.c_str(), r.country.substr(0, 2).c_str(), src.c_str());
 
             if (hi) {
-                wattron(w, A_REVERSE);
+                // Selected result row — use the themeable 'selected' pair so the
+                // modal matches the playlist/dir selection instead of raw reverse.
+                wattron(w, COLOR_PAIR(CP_SELECTED) | A_BOLD);
                 mvwprintw(w, LIST_START + i, 2, "%-*s", BOX_W - 4, line);
-                wattroff(w, A_REVERSE);
+                wattroff(w, COLOR_PAIR(CP_SELECTED) | A_BOLD);
             } else {
                 mvwaddnstr(w, LIST_START + i, 2, line, BOX_W - 4);
             }

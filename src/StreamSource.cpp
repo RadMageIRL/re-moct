@@ -754,6 +754,12 @@ void StreamSource::updateIHeartNowPlaying(const std::string& body) {
     std::lock_guard<std::mutex> lk(now_playing_mtx_);
     if (disp != now_playing_) {
         now_playing_ = disp;
+        // Hold this label until its audio is heard: delay = buffer depth ahead of
+        // the speaker = ring seconds + undecoded pending segments. Self-calibrating,
+        // so it tracks rebuffers and collapses to ~0 right after a re-pin flush.
+        long ring_ms = (long)(1000.0 * (double)ringAvailable() / (double)(SAMPLE_RATE * CHANNELS));
+        long pend_ms = (long)hls_.pending.size() * (long)hls_.target_dur_ms;
+        np_pub_q_.push_back({ GetTickCount() + (DWORD)(ring_ms + pend_ms), disp });
         const char* via = (tgtKind==IHNow::Song) ? "song" : (tgtKind==IHNow::Ad ? "ad" : "live");
         slog("iheart [%s]: %s", via, disp.c_str());
     }
@@ -1069,7 +1075,14 @@ void StreamSource::parseIcyMetadata(const std::string& block) {
 
 std::string StreamSource::nowPlaying() const {
     std::lock_guard<std::mutex> lk(now_playing_mtx_);
-    return now_playing_;
+    DWORD now = GetTickCount();
+    while (!np_pub_q_.empty() && (long)(now - np_pub_q_.front().releaseTick) >= 0) {
+        np_published_ = np_pub_q_.front().disp;
+        np_pub_q_.pop_front();
+    }
+    // Before the first label comes due (startup), show the freshest commit so the
+    // UI is never blank.
+    return np_published_.empty() ? now_playing_ : np_published_;
 }
 
 std::string StreamSource::currentArtUrl() const {
@@ -1395,6 +1408,12 @@ void StreamSource::ringClear() {
     // the ring read as empty, which clears the producer's backpressure wait and
     // avoids the full-ring / not-prebuffered deadlock that silenced playback.
     ring_read_.store(ring_write_.load(std::memory_order_acquire), std::memory_order_release);
+    // The buffer just jumped to the live edge; drop labels scheduled against the
+    // discarded buffer and snap the published label to the current one so the
+    // display follows the jump instead of lagging ~a buffer behind.
+    std::lock_guard<std::mutex> lk(now_playing_mtx_);
+    np_pub_q_.clear();
+    np_published_ = now_playing_;
 }
 
 #endif // _WIN32

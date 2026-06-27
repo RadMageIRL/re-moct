@@ -284,6 +284,28 @@ void AudioManager::setDevice(const ma_device_id* id) {
         has_selected_device_ = false;
         selected_device_idx_ = -1;
     }
+    // Live sources (radio stream / CD) keep their source alive and own ma_device_
+    // directly — hot-swap just the device endpoint without tearing down the source.
+    if ((stream_mode_.load() || cd_mode_.load()) && device_initialised_) {
+        ma_device_stop(&device_);
+        ma_device_uninit(&device_);
+        device_initialised_ = false;
+
+        ma_device_config cfg = ma_device_config_init(ma_device_type_playback);
+        cfg.playback.format   = ma_format_f32;
+        cfg.playback.channels = 2;
+        cfg.sampleRate        = 44100;
+        cfg.dataCallback      = &AudioManager::maDataCallback;
+        cfg.stopCallback      = &AudioManager::maStopCallback;
+        cfg.pUserData         = this;
+        if (has_selected_device_) cfg.playback.pDeviceID = &selected_device_id_;
+        if (ma_device_init(nullptr, &cfg, &device_) == MA_SUCCESS) {
+            device_initialised_ = true;
+            ma_device_set_master_volume(&device_, volume_.load());
+            ma_device_start(&device_);
+        }
+        return;
+    }
     // If currently playing, restart on new device
     if (state_.load() != PlaybackState::Stopped && decoder_initialised_) {
         std::string path = current_track_.path;

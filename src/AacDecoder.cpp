@@ -77,7 +77,7 @@ struct Mp4Aac {
             const uint8_t* body = p + 8;
             if (sz == 1) { if (p + 16 > end) break; sz = be64(p + 8); body = p + 16; }
             else if (sz == 0) sz = (uint64_t)(end - p);
-            if (sz < (uint64_t)(body - hdr) || hdr + sz > end) break;
+            if (sz < (uint64_t)(body - hdr) || sz > (uint64_t)(end - hdr)) break;  // size-compare avoids hdr+sz pointer overflow on crafted 64-bit boxes
             if (std::memcmp(hdr + 4, type, 4) == 0) { *outBeg = body; *outEnd = hdr + sz; return true; }
             p = hdr + sz;
         }
@@ -223,7 +223,7 @@ bool decodeNext(AacBackend* b) {
     INT_PCM out[OUT_MAX];
     while (b->cur_sample < b->samples.size()) {
         const AacSample& s = b->samples[b->cur_sample++];
-        if (s.offset + s.size > b->file.size()) return false;
+        if (s.offset > b->file.size() || s.size > b->file.size() - s.offset) return false;  // overflow-safe bounds check
         UCHAR* inBuf = b->file.data() + s.offset;
         UINT   inSize = s.size, valid = s.size;
         aacDecoder_Fill(b->dec, &inBuf, &inSize, &valid);

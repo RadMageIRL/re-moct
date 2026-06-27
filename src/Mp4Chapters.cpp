@@ -58,7 +58,7 @@ bool findBox(const uint8_t* p, const uint8_t* end, const char* type,
         const uint8_t* body = p + 8;
         if (sz == 1) { if (p + 16 > end) break; sz = be64(p + 8); body = p + 16; }
         else if (sz == 0) sz = (uint64_t)(end - p);
-        if (sz < (uint64_t)(body - hdr) || hdr + sz > end) break;
+        if (sz < (uint64_t)(body - hdr) || sz > (uint64_t)(end - hdr)) break;  // size-compare avoids hdr+sz pointer overflow on crafted 64-bit boxes
         if (std::memcmp(hdr + 4, type, 4) == 0) { *outBeg = body; *outEnd = hdr + sz; return true; }
         p = hdr + sz;
     }
@@ -158,9 +158,13 @@ bool buildQtStbl(const uint8_t* b, const uint8_t* e, QtStbl& T) {
     std::vector<uint64_t> starts;
     if (findBox(b, e, "stts", &sb, &se) && sb + 8 <= se) {
         uint32_t n = be32(sb + 4); const uint8_t* q = sb + 8; uint64_t t = 0;
-        for (uint32_t i = 0; i < n && q + 8 <= se; ++i, q += 8) {
+        // Cap expansion at the sample count: a crafted stts run-count could
+        // otherwise balloon `starts` to billions of entries before it is
+        // truncated to ns below. We never need more starts than samples.
+        const size_t cap = sizes.size();
+        for (uint32_t i = 0; i < n && q + 8 <= se && starts.size() < cap; ++i, q += 8) {
             uint32_t cnt = be32(q), delta = be32(q + 4);
-            for (uint32_t k = 0; k < cnt; ++k) { starts.push_back(t); t += delta; }
+            for (uint32_t k = 0; k < cnt && starts.size() < cap; ++k) { starts.push_back(t); t += delta; }
         }
     }
 

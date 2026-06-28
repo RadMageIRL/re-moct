@@ -169,6 +169,7 @@ private:
     std::atomic<bool>  crossfading_  { false };
     std::atomic<float> xfade_pos_    { 0.0f };  // 0=start, 1=complete
     float              xfade_step_   { 0.0f };  // per-frame increment
+    std::vector<float> xfade_buf_;              // RT scratch for the next-track mix (grown once, never shrunk)
 
     void initCrossfade();    // swap decoders, start fade
     void teardownNext();     // discard preloaded decoder
@@ -285,6 +286,7 @@ private:
     static constexpr int CD_BPM_WINDOW_SECS = 20;   // match detectBpm's file window
     static constexpr int CD_BPM_FRAMES      = 44100 * CD_BPM_WINDOW_SECS;
     std::vector<float>   cd_bpm_buf_;               // mono accumulation window
+    std::vector<float>   cd_bpm_snapshot_;          // UI-owned copy of a full window (race-free detect)
     std::atomic<int>     cd_bpm_fill_   { 0 };      // frames filled (audio thread)
     std::atomic<bool>    cd_bpm_ready_  { false };  // window full → detect on UI thread
     std::atomic<bool>    cd_bpm_reset_  { false };  // seek requested → restart window

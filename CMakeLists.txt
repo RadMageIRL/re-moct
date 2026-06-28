@@ -21,6 +21,7 @@ set(REMOCT_SOURCES
     src/CDSource.cpp
     src/MBLookup.cpp
     src/CDRipper.cpp
+    src/CoverArt.cpp
     src/StreamSource.cpp
     src/AacDecoder.cpp
     src/Mp4Chapters.cpp

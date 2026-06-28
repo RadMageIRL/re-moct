@@ -45,6 +45,7 @@ public:
     static constexpr int PREBUFFER_SEC = 3;                                  // fill before audio flows (per-tune-in latency; keep modest)
     static constexpr int RING_SIZE     = SAMPLE_RATE * CHANNELS * RING_SECONDS;
     static constexpr int PREBUFFER_SAMPLES = SAMPLE_RATE * CHANNELS * PREBUFFER_SEC;
+    static constexpr int FADE_IN_FRAMES    = SAMPLE_RATE / 2;                 // re-pin fade-in (~0.5s); ramps the new song in instead of a hard cut
 
     StreamSource() : ring_(RING_SIZE, 0) {}
     // Staging-lane constructor: a second instance the coordinator owns to prebuffer
@@ -71,6 +72,11 @@ public:
     bool buffering()  const { return !prebuffered_.load(); }  // true while (re)filling
     bool isPrebuffered() const { return prebuffered_.load(); }   // staging-lane readiness probe
     bool edgeIsMusic()   const { return last_cls_.load() == 1; } // newest manifest seg is music (not ad)
+    const char* edgeClsName() const {                            // human-readable edge class (for staging peek logs)
+        switch (last_cls_.load(std::memory_order_relaxed)) {
+            case 1: return "music"; case 2: return "ad"; case 3: return "other"; default: return "none";
+        }
+    }
     const std::string& url() const { return url_; }  // stream URL currently open ("" if none)
     void pause(bool p)      { paused_.store(p); }
     bool paused()     const { return paused_.load(); }
@@ -150,6 +156,7 @@ private:
     Stg                 stg_state_ = Stg::Idle;
     std::atomic<bool>   stg_opening_{ false };        // staging open() in flight on a detached thread
     DWORD               stg_cooldown_until_ = 0;       // suppress re-arm until this tick
+    DWORD               stg_armed_tick_ = 0;            // tick the staging peek armed (for elapsed-since-arm logging)
     void serviceStaging();                             // coordinator-only: arm/watch/tear down the lane
     DWORD       last_iheart_poll_ = 0;      // trackHistory poll throttle (GetTickCount)
     std::string iheart_th_cache_;           // cached trackHistory result between throttled polls
@@ -214,6 +221,7 @@ private:
     std::atomic<bool>       prebuffered_ { false };
     std::atomic<int>        position_sec_{ 0 };
     std::atomic<uint64_t>   frames_drained_{ 0 };  // for position; advanced by readFrames
+    std::atomic<uint32_t>   fade_in_remaining_{ 0 };// frames of re-pin fade-in left (set by ringClear, consumed by readFrames)
 
     // int16 SPSC ring (single producer thread, single audio-callback consumer)
     std::vector<int16_t>    ring_;

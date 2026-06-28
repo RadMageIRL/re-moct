@@ -61,6 +61,9 @@ Scrobble both local files and radio to Last.fm.
 - **One-time in-app setup:** press **Ctrl+B**, enter your API key and secret (stored in config), authentication then **completes automatically** (no second keypress).
 - Scrobbles local files (from tags) and radio tracks (from ICY metadata).
 - Sends "now playing" on track start and scrobbles once the track passes Last.fm's threshold (>30s, played to 50% or 4 minutes).
+
+# Themes (Colors)
+- Basic Theme support via theme.conf file
   
 ## Fixes
 
@@ -75,6 +78,9 @@ Scrobble both local files and radio to Last.fm.
 - Fix empty .cue .m3u8 files on rip CD
 - Extend scrobbling to CDs (Once metadata is loaded from MB/Discog with Ctrl R or Ctrl F)
 - Logic to visually warn user if files missing from path on saved playlist load - Displays TOAST with mismatch count for same
+- Audibook playback chirp/fail on initial load
+- Improved IHeartRadio stream handling logic and metadata pass to TUI and Discord
+- Cleaned up some additional race issues and crossfade function/logic
 
 ## New Runtime Dependency
 

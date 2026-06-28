@@ -82,10 +82,6 @@ public:
     RipState state()    const { return state_.load(); }
 
     static std::string buildOutputDir(const MBRelease& rel);
-    // Resolve an album-cover URL (iTunes, Deezer fallback) WITHOUT downloading —
-    // used to hand Discord Rich Presence an external image URL. "" if no match.
-    static std::string fetchArtUrlByText(const std::string& artist,
-                                         const std::string& album);
 
 private:
     std::atomic<bool>     active_ { false };

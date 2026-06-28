@@ -13,6 +13,7 @@
 #include <mutex>
 #include <atomic>
 #include <thread>
+#include <unordered_set>
 #ifdef _WIN32
 #include "MBLookup.h"
 #include "CDRipper.h"
@@ -297,9 +298,13 @@ private:
     std::string       discord_art_key_;            // "artist\ttrack" the result is for (guarded)
     std::string       discord_art_cache_key_;       // last resolved key (UI thread only)
     std::string       discord_art_cache_url_;       // last resolved url (UI thread only)
+    std::unordered_set<std::string> discord_art_neg_; // radio keys that resolved to NO art this
+                                                      // session — skip re-querying on rotation
+                                                      // return (UI thread only). Stream-only.
     void startDiscordArtLookup(const std::string& artist,
                                const std::string& album,
-                               const std::string& key);
+                               const std::string& key,
+                               bool song = false);
 #endif
     long        scrob_start_ = 0;        // unix time the current track started
     bool        scrob_done_  = false;    // already scrobbled this track
@@ -309,7 +314,6 @@ private:
 
     void        refreshDir();
     std::string formatTime(double seconds) const;
-    std::string scrolledText(const std::string& text, int width) const;
     // Directory watch
     std::filesystem::file_time_type dir_mtime_ {};
     int dir_poll_ticks_ = 0;

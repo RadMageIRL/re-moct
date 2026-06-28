@@ -21,5 +21,5 @@ Run remoct.exe
 
 
 
-# Note: about compiling source (doesn't apply to above for just using binary)
+# Note: Compiling source - String used
 - C:\msys64\usr\bin\bash.exe -l -c 'export PATH=/ucrt64/bin:$PATH && cd /e/code/remoct && rm -rf build && mkdir build && cd build && cmake .. -G Ninja && ninja'

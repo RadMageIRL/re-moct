@@ -207,6 +207,11 @@ void UIManager::initColours() {
 
     for (short s = 1; s <= 13; ++s)
         init_pair(s, fg[s], bg[s]);
+
+    // Visualizer fractional-tip pair: peak colour on the DEFAULT background. The
+    // themed viz pairs are fg==bg solid fills (a partial block would be invisible),
+    // so the sub-cell lower-block glyphs (▁..▇) need a real bg to show their height.
+    init_pair(CP_VIZ_TIP, fg[CP_VIZ_PEAK], -1);
 }
 
 void UIManager::loadTheme(short* fg, short* bg) {
@@ -417,6 +422,31 @@ void UIManager::maybePreloadNext() {
             audio_.preloadNext(peek.value());
 }
 
+void UIManager::flushPendingSeek() {
+    if (!seek_dirty_) return;
+    double d = pending_seek_;
+    pending_seek_ = 0.0;
+    seek_dirty_   = false;
+    // Drop the buffered seek if the track changed since it was requested (e.g. n/p or
+    // auto-advance landed within the coalescing window) so it can't leak onto the new
+    // track and start it mid-way.
+    if ((int)playlist_.current() != seek_stamp_) return;
+    last_seek_apply_ = std::chrono::steady_clock::now();
+    audio_.seekBy(d);
+    redraw_needed_.store(true);
+}
+
+void UIManager::requestSeek(double delta) {
+    if (!seek_dirty_) seek_stamp_ = (int)playlist_.current();  // tie this seek to the current track
+    pending_seek_ += delta;
+    seek_dirty_    = true;
+    // Apply immediately when outside the cooldown (so a single tap is instant);
+    // otherwise accumulate and let the run loop flush once the window elapses.
+    using namespace std::chrono;
+    if (steady_clock::now() - last_seek_apply_ >= milliseconds(100))
+        flushPendingSeek();
+}
+
 void UIManager::run() {
     last_playlist_current_for_sync_ = (int)playlist_.current();
     // Directory watch — poll every ~2s for changes
@@ -425,6 +455,11 @@ void UIManager::run() {
 
     while (running_) {
         audio_.pollEvents();
+        // Flush a coalesced seek once the user stops hammering [/] (the cooldown
+        // makes single taps instant and turns held repeats into a few seeks, not many).
+        if (seek_dirty_ &&
+            std::chrono::steady_clock::now() - last_seek_apply_ >= std::chrono::milliseconds(100))
+            flushPendingSeek();
         updateScrobbler();
         updateBookProgress();
 #ifdef _WIN32
@@ -700,6 +735,11 @@ void UIManager::run() {
         // Always recompute viz bins so bars animate smoothly
         if (right_pane_ == RightPane::Visualizer)
             computeVizBins();
+
+        // Animate the breathing progress head — only in Awesome mode while playing,
+        // so Classic mode keeps its repaint-on-change cadence (no extra cost).
+        if (config_.awesome_mode && audio_.state() == PlaybackState::Playing)
+            redraw_needed_.store(true);
 
         // Terminal too small: resizeWindows() destroyed the pane windows and
         // returned without recreating them (see its size guard). Both draw paths
@@ -1491,8 +1531,13 @@ void UIManager::drawVisualizer() {
 
     for (int b = 0; b < n_bars; ++b) {
         float val = viz_smoothed_[b * VIZ_BINS / n_bars];
-        int bar_h = (int)(val * bar_area_rows);
-        bar_h = std::clamp(bar_h, 0, bar_area_rows);
+        // Fractional bar height: full cells + a sub-cell remainder in eighths, for
+        // smooth motion instead of whole-row jumps.
+        float exact   = std::clamp(val, 0.0f, 1.0f) * bar_area_rows;
+        int   full    = (int)exact;
+        int   eighths = (int)((exact - full) * 8.0f + 0.5f);
+        if (eighths >= 8) { ++full; eighths = 0; }
+        full = std::clamp(full, 0, bar_area_rows);
 
         int col = 1 + b * bar_slot;
 
@@ -1506,13 +1551,22 @@ void UIManager::drawVisualizer() {
         // Draw bar from bottom up — 2 cols wide
         for (int r = 0; r < bar_area_rows; ++r) {
             int screen_row = rows - 1 - r;
-            if (r < bar_h) {
-                short draw_pair = (r == bar_h - 1) ? CP_VIZ_PEAK : pair;
+            if (r < full) {
+                // Solid cell (space + background colour). Topmost full cell takes the
+                // peak colour only when no fractional cell rides above it.
+                short draw_pair = (r == full - 1 && eighths == 0) ? CP_VIZ_PEAK : pair;
                 wattron(win_viz_, COLOR_PAIR(draw_pair));
-                // Draw both columns of the bar
                 for (int w = 0; w < bar_w && col + w < cols - 1; ++w)
                     mvwaddch(win_viz_, screen_row, col + w, ' ');
                 wattroff(win_viz_, COLOR_PAIR(draw_pair));
+            } else if (r == full && eighths > 0) {
+                // Fractional top: a lower-block glyph (▁..▇) in the tip colour on the
+                // default background, giving 8× sub-cell vertical resolution.
+                cchar_t cc;
+                wchar_t s[2] = { (wchar_t)(0x2580 + eighths), 0 };  // U+2581..U+2587
+                setcchar(&cc, s, A_NORMAL, CP_VIZ_TIP, nullptr);
+                for (int w = 0; w < bar_w && col + w < cols - 1; ++w)
+                    mvwadd_wch(win_viz_, screen_row, col + w, &cc);
             }
         }
     }
@@ -2051,9 +2105,26 @@ void UIManager::drawAbout() {
     const int logo_rows = 5;
     int logo_x = std::max(1, (cols - logo_w) / 2);
 
+    // Render the logo as solid shade-block letters with a soft drop-shadow for
+    // depth. '#' in the art becomes █ (or ▒ for the offset shadow); spaces blank.
+    auto blockRow = [](const char* s, wchar_t fill) {
+        std::wstring o;
+        for (const char* p = s; *p; ++p) o += (*p == '#') ? fill : L' ';
+        return o;
+    };
+    // Shadow pass first (offset +1,+1, dim) so the solid letters overlay it.
+    wattron(w, COLOR_PAIR(CP_DIM));
+    for (int i = 0; i < logo_rows && i + 3 < rows; ++i) {
+        std::wstring sh = blockRow(logo[i], L'\u2592');   // ▒ soft shadow
+        mvwaddnwstr(w, i + 3, logo_x + 1, sh.c_str(), (int)sh.size());
+    }
+    wattroff(w, COLOR_PAIR(CP_DIM));
+    // Solid block letters on top.
     wattron(w, COLOR_PAIR(CP_TITLE) | A_BOLD);
-    for (int i = 0; i < logo_rows && i + 2 < rows; ++i)
-        mvwaddstr(w, i + 2, logo_x, logo[i]);
+    for (int i = 0; i < logo_rows && i + 2 < rows; ++i) {
+        std::wstring ln = blockRow(logo[i], L'\u2588');   // █ solid
+        mvwaddnwstr(w, i + 2, logo_x, ln.c_str(), (int)ln.size());
+    }
     wattroff(w, COLOR_PAIR(CP_TITLE) | A_BOLD);
 
     // Info lines
@@ -2618,9 +2689,52 @@ void UIManager::drawProgress() {
     }
 #endif
     wattron(win_progress_, COLOR_PAIR(CP_PROGRESS));
-    std::string bar = "[" + std::string((size_t)filled,'#')
-                          + std::string((size_t)(bw-filled),'-') + "]";
-    mvwaddstr(win_progress_, 0, 0, bar.c_str());
+    if (config_.awesome_mode) {
+        // Comet-style progress with a proportional gradient tail: a bright █ head at
+        // the playhead, fading back through ▓▒░ over a span sized to how much has
+        // PLAYED — so the gradient stretches across the whole track. The 2-cell head
+        // stays visible even when a crossfade hands off before 100%; ahead is blank.
+        // While playing it gently "breathes" 1↔2↔3 cells on a ~1.2s sine (the run loop
+        // forces per-tick redraws only in Awesome mode while playing).
+        int head_cells = 2;
+        if (audio_.state() == PlaybackState::Playing) {
+            using namespace std::chrono;
+            double t = duration<double>(steady_clock::now().time_since_epoch()).count();
+            double a = 0.5 * (std::sin(t * (2.0 * 3.14159265358979 / 1.2)) + 1.0);  // 0..1
+            if      (a > 0.70) head_cells = 3;   // gentle breathe out
+            else if (a < 0.30) head_cells = 1;   // gentle breathe in
+        }
+        // During a crossfade decoder_ is still the outgoing track but the swap to the
+        // next track snaps position to ~0% a beat before the head visually completes.
+        // Let the head ride to the end while crossfading; it releases the instant the
+        // next track takes over (crossfading_ clears in the same step as the swap).
+        int hfilled = audio_.isCrossfading() ? bw : filled;
+        std::wstring wbar;
+        wbar.reserve((size_t)bw + 2);
+        wbar += L'[';
+        const double played_len = (hfilled > 0) ? (double)hfilled : 1.0;
+        for (int i = 0; i < bw; ++i) {
+            wchar_t ch;
+            if (i >= hfilled) {
+                ch = L' ';                          // unplayed track (blank)
+            } else {
+                int    d = (hfilled - 1) - i;       // cells behind the head
+                double f = (double)d / played_len;  // 0 at head → ~1 at the start
+                if      (d < head_cells) ch = L'\u2588';  // █ bright (breathing) head
+                else if (f < 0.18)       ch = L'\u2593';  // ▓ near trail
+                else if (f < 0.48)       ch = L'\u2592';  // ▒ mid trail
+                else                     ch = L'\u2591';  // ░ long faint trail
+            }
+            wbar += ch;
+        }
+        wbar += L']';
+        mvwaddnwstr(win_progress_, 0, 0, wbar.c_str(), (int)wbar.size());
+    } else {
+        // Classic mode: the original plain ASCII bar.
+        std::string bar = "[" + std::string((size_t)filled, '#')
+                              + std::string((size_t)(bw - filled), '-') + "]";
+        mvwaddstr(win_progress_, 0, 0, bar.c_str());
+    }
     wattroff(win_progress_, COLOR_PAIR(CP_PROGRESS));
     wattron(win_progress_, COLOR_PAIR(CP_TITLE));
     waddstr(win_progress_, ("  "+ts+"   "+meta).c_str());
@@ -3608,8 +3722,8 @@ void UIManager::handleInput(int ch) {
                     maybePreloadNext();
                 }
                 break;
-            case '[': audio_.seekBy(-5.0); break;
-            case ']': audio_.seekBy(+5.0); break;
+            case '[': requestSeek(-5.0); break;
+            case ']': requestSeek(+5.0); break;
             case ',': jumpChapter(-1); break;
             case '.': jumpChapter(+1); break;
             case 't': case 'T': show_remaining_ = !show_remaining_; break;
@@ -4107,8 +4221,8 @@ void UIManager::handleInput(int ch) {
                 play_prev(p.value());
             break;
         }
-        case '[': audio_.seekBy(-5.0); break;
-        case ']': audio_.seekBy(+5.0); break;
+        case '[': requestSeek(-5.0); break;
+        case ']': requestSeek(+5.0); break;
         case ',': jumpChapter(-1); break;
         case '.': jumpChapter(+1); break;
         case ';':

@@ -518,11 +518,35 @@ void AudioManager::seekTo(double seconds) {
     double dur = durationSec();
     if (seconds < 0.0) seconds = 0.0;
     if (dur > 0.0 && seconds > dur) seconds = dur;
-    ma_uint64 frame = (ma_uint64)(seconds * (double)decoder_.outputSampleRate);
+    const ma_uint32 rate = decoder_.outputSampleRate;
+    const ma_uint32 ch   = decoder_.outputChannels ? decoder_.outputChannels : 2;
+    ma_uint64 frame = (ma_uint64)(seconds * (double)rate);
+
+    // Prime the decoder: land a little before the target and decode-discard up to it,
+    // so a lossy codec's inter-frame state (the MP3 bit reservoir) is warm before
+    // audio resumes. Without this the first ~50-150ms after a seek decode without
+    // their reservoir context and come out garbled. Harmless for FLAC (it just
+    // discards a few already-clean frames). Runs while the device is stopped, so the
+    // few-ms extra decode is inaudible.
+    const ma_uint64 prime = (ma_uint64)(0.18 * (double)rate);   // ~180ms of context
+    ma_uint64 land    = (frame > prime) ? (frame - prime) : 0;
+    ma_uint64 to_skip = frame - land;
+
     bool was_playing = (state_.load() == PlaybackState::Playing);
     seeking_.store(true);
     if (was_playing && device_initialised_) ma_device_stop(&device_);
-    ma_decoder_seek_to_pcm_frame(&decoder_, frame);
+    ma_decoder_seek_to_pcm_frame(&decoder_, land);
+    if (to_skip > 0) {
+        float scratch[2048];
+        const ma_uint64 cap = (ch > 0) ? (2048u / ch) : 1024u;   // frames/read for this channel count
+        while (to_skip > 0) {
+            ma_uint64 want = std::min<ma_uint64>(to_skip, cap);
+            ma_uint64 got  = 0;
+            if (ma_decoder_read_pcm_frames(&decoder_, scratch, want, &got) != MA_SUCCESS || got == 0)
+                break;                                            // EOF/short read — stop priming
+            to_skip -= got;
+        }
+    }
     resetSpeedResampler();  // drop residual from the pre-seek position
     if (was_playing && device_initialised_) ma_device_start(&device_);
     seeking_.store(false);

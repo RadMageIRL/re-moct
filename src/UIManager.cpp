@@ -25,6 +25,7 @@
 #endif
 
 #include "UIManager.h"
+#include "CoverArt.h"
 #ifdef _WIN32
 #include <shellapi.h>   // ShellExecuteA for Last.fm browser auth
 #endif
@@ -1176,7 +1177,7 @@ void UIManager::drawTitleBar() {
     std::string line = " " + badge;
 
     if (!np.empty() && max_np > 0) {
-        if ((int)np.size() <= max_np) {
+        if (dispWidth(np) <= max_np) {
             // Fits — no scroll needed, reset state
             if (marquee_last_path_ != track.path) {
                 marquee_offset_ = 0;
@@ -1194,20 +1195,14 @@ void UIManager::drawTitleBar() {
             }
 
             // Build scrollable string with padding at each end
-            const std::string pad = "   ";
-            std::string scroll_str = np + pad;
-            int slen = (int)scroll_str.size();
+            // Column-aware: marquee_offset_ counts codepoints, the visible window is
+            // measured in display columns (scrollToWidth uses the same np + 3-space
+            // gap), and the line is drawn via the wide API below. The pause/speed
+            // timing state machine is unchanged.
+            const int cyc = cpCount(np) + 3;   // np + 3-space gap, in codepoints
+            if (marquee_offset_ > cyc) marquee_offset_ = 0;
 
-            // Clamp offset
-            if (marquee_offset_ > slen) marquee_offset_ = 0;
-
-            // Extract visible window
-            std::string visible;
-            visible.reserve((size_t)max_np);
-            for (int i = 0; i < max_np; ++i)
-                visible += scroll_str[(size_t)(marquee_offset_ + i) % (size_t)slen];
-
-            line += visible;
+            line += scrollToWidth(np, max_np, marquee_offset_);
 
             // Advance scroll offset on timer
             ++marquee_ticks_;
@@ -1215,7 +1210,7 @@ void UIManager::drawTitleBar() {
             if (marquee_ticks_ >= pause + MARQUEE_SPEED) {
                 marquee_ticks_ = MARQUEE_PAUSE;
                 ++marquee_offset_;
-                if (marquee_offset_ >= slen) marquee_offset_ = 0;
+                if (marquee_offset_ >= cyc) marquee_offset_ = 0;
             }
         }
     } else {
@@ -1225,9 +1220,16 @@ void UIManager::drawTitleBar() {
         }
         line += "RE-MOCT - Music On Console Terminal";
     }
-    while ((int)line.size() < screen_cols_ - (int)right.size()) line += ' ';
+    // Pad in display columns so the right-aligned status sits at the true edge
+    // regardless of any multibyte glyphs in the title.
+    {
+        int target = screen_cols_ - dispWidth(right);
+        int cur    = dispWidth(line);
+        if (cur < target) line.append((size_t)(target - cur), ' ');
+    }
     line += right;
-    mvwaddnstr(win_title_, 0, 0, line.c_str(), screen_cols_);
+    std::wstring wtitle = utf8_to_wide(padToWidth(line, screen_cols_));
+    mvwaddnwstr(win_title_, 0, 0, wtitle.c_str(), (int)wtitle.size());
     wattroff(win_title_, COLOR_PAIR(CP_TITLE) | A_BOLD);
 }
 
@@ -1243,17 +1245,17 @@ void UIManager::drawCwd() {
     const int maxw = screen_cols_ - 4;  // 4 = " >> " prefix
     std::string display = path;
     std::string prefix  = " >> ";
-    if ((int)display.size() > maxw) {
-        display = display.substr(display.size() - (size_t)maxw);
+    if (dispWidth(display) > maxw) {
+        display = truncateToWidthRight(display, maxw);   // column-aware tail
         prefix  = " << ";  // indicate left side is cut
     }
 
     std::string line = prefix + display;
     int cwx = config_.awesome_mode ? 1 : 0;   // align with inset pane frames
-    line.resize((size_t)(screen_cols_ - cwx), ' ');
+    std::wstring wcwd = utf8_to_wide(padToWidth(line, screen_cols_ - cwx));
 
     wattron(win_cwd_, COLOR_PAIR(CP_DIM));
-    mvwaddnstr(win_cwd_, 0, cwx, line.c_str(), screen_cols_ - cwx);
+    mvwaddnwstr(win_cwd_, 0, cwx, wcwd.c_str(), (int)wcwd.size());
     wattroff(win_cwd_, COLOR_PAIR(CP_DIM));
 }
 
@@ -1324,13 +1326,13 @@ void UIManager::drawDirBrowser() {
             // Keep the icon cell fixed: marquee only the name, not the prefix, so
             // a long scrolling filename never slides under the overlaid glyph.
             int name_w = avail - (int)prefix.size();
-            std::string nm = (name_w > 0) ? scrolledText(display, name_w) : "";
+            std::string nm = (name_w > 0) ? scrollToWidth(display, name_w, text_scroll_offset_) : "";
             d = prefix + nm;
         } else {
-            d = scrolledText(prefix + display, avail);
+            d = scrollToWidth(prefix + display, avail, text_scroll_offset_);
         }
-        d.resize((size_t)cw, ' ');
-        mvwaddnstr(win_dir_, i+1, cx, d.c_str(), cw);
+        std::wstring wd = utf8_to_wide(padToWidth(d, cw));
+        mvwaddnwstr(win_dir_, i+1, cx, wd.c_str(), (int)wd.size());
         if (ico) {   // overlay glyph on the reserved cell (wide API → real glyph)
             cchar_t cc;
             wchar_t s[2] = { is_dir ? L'\uf07b' : L'\uf001', 0 };  // folder / music
@@ -1424,10 +1426,10 @@ void UIManager::drawPlaylist() {
         std::string mark = (playing && !ico) ? "> " : "  ";
         std::string dur  = formatTime(e.duration_sec);
         int nw = cw - (int)mark.size() - (int)dur.size() - 3;
-        std::string name = (nw > 0) ? scrolledText(e.display_title, nw) : "";
+        std::string name = (nw > 0) ? scrollToWidth(e.display_title, nw, text_scroll_offset_) : "";
         std::string line = " " + mark + name + " " + dur + " ";
-        line.resize((size_t)cw, ' ');
-        mvwaddnstr(win_playlist_, i+1, cx, line.c_str(), cw);
+        std::wstring wline = utf8_to_wide(padToWidth(line, cw));
+        mvwaddnwstr(win_playlist_, i+1, cx, wline.c_str(), (int)wline.size());
         if (ico && playing) {   // play glyph on the reserved mark cell
             cchar_t cc;
             wchar_t s[2] = { L'\uf04b', 0 };  // play
@@ -1712,9 +1714,11 @@ void UIManager::drawBookmarks() {
             if (cursor) wattron(w, COLOR_PAIR(CP_SELECTED)|A_BOLD);
             else        wattron(w, COLOR_PAIR(CP_DIM)|A_BOLD);
 
-            std::string line = " " + scrolledText(bm[(size_t)bi], cols - 2);
-            line.resize((size_t)cols, ' ');
-            mvwaddnstr(w, i+1, 0, line.c_str(), cols);
+            // Column-aware UTF-8: marquee + pad in DISPLAY columns (not bytes), then
+            // draw via the wide API so multibyte titles render and align correctly.
+            std::string body = " " + scrollToWidth(bm[(size_t)bi], cols - 2, text_scroll_offset_);
+            std::wstring wline = utf8_to_wide(padToWidth(body, cols));
+            mvwaddnwstr(w, i+1, 0, wline.c_str(), (int)wline.size());
 
             if (cursor) wattroff(w, COLOR_PAIR(CP_SELECTED)|A_BOLD);
             else        wattroff(w, COLOR_PAIR(CP_DIM)|A_BOLD);
@@ -1770,10 +1774,11 @@ void UIManager::drawChapters() {
             char ts[16];
             std::snprintf(ts, sizeof(ts), "%02d:%02d:%02d", hh, mm, ss);
             std::string mark  = nowpl ? ">" : " ";
-            std::string title = scrolledText(current_chapters_[(size_t)ci].title, cols - 14);
+            std::string title = scrollToWidth(current_chapters_[(size_t)ci].title, cols - 14, text_scroll_offset_);
             std::string line  = " " + mark + " " + ts + "  " + title;
-            line.resize((size_t)cols, ' ');
-            mvwaddnstr(w, i+1, 0, line.c_str(), cols);
+            // Column-aware pad + wide-API draw (ts/mark are ASCII; title may be UTF-8).
+            std::wstring wline = utf8_to_wide(padToWidth(line, cols));
+            mvwaddnwstr(w, i+1, 0, wline.c_str(), (int)wline.size());
 
             if (cursor) wattroff(w, COLOR_PAIR(CP_SELECTED)|A_BOLD);
             else        wattroff(w, COLOR_PAIR(CP_DIM)|A_BOLD);
@@ -2005,12 +2010,15 @@ void UIManager::drawQueue() {
         else           wattron(w, COLOR_PAIR(CP_DIM) | A_BOLD);
 
         std::string time_str = e.duration_sec > 0 ? formatTime(e.duration_sec) : "--:--";
-        int title_width = cw - (int)time_str.size() - 4;
-        std::string line = " " + scrolledText(e.display_title, title_width);
-        line.resize((size_t)(cw - (int)time_str.size() - 1), ' ');
-        line += time_str + " ";
-        line.resize((size_t)cw, ' ');
-        mvwaddnstr(w, i + 1, cx, line.c_str(), cw);
+        const int time_w = (int)time_str.size();          // ASCII → bytes == columns
+        int title_width = cw - time_w - 4;
+        // Left part (" " + title) padded in COLUMNS, then time + trailing space.
+        // padToWidth guards width<=0, so a very narrow pane no longer overflows the
+        // old byte resize (which cast a negative length to a huge size_t).
+        std::string left = " " + scrollToWidth(e.display_title, title_width, text_scroll_offset_);
+        left = padToWidth(left, cw - time_w - 1);
+        std::wstring wline = utf8_to_wide(padToWidth(left + time_str + " ", cw));
+        mvwaddnwstr(w, i + 1, cx, wline.c_str(), (int)wline.size());
 
         if (is_cursor) wattroff(w, COLOR_PAIR(CP_SELECTED) | A_BOLD);
         else           wattroff(w, COLOR_PAIR(CP_DIM) | A_BOLD);
@@ -2232,9 +2240,9 @@ void UIManager::drawDevices() {
 
             const bool ico = config_.nerd_icons;
             std::string mark = (is_current && !ico) ? "> " : "  ";
-            std::string line = " " + mark + scrolledText(device_list_[(size_t)di].name, cols - 4);
-            line.resize((size_t)cols, ' ');
-            mvwaddnstr(w, i + 1, 0, line.c_str(), cols);
+            std::string body = " " + mark + scrollToWidth(device_list_[(size_t)di].name, cols - 4, text_scroll_offset_);
+            std::wstring wline = utf8_to_wide(padToWidth(body, cols));
+            mvwaddnwstr(w, i + 1, 0, wline.c_str(), (int)wline.size());
             if (ico && is_current) {   // active-device glyph on the reserved mark cell
                 cchar_t cc;
                 wchar_t s[2] = { L'\uf028', 0 };  // speaker (volume-up)
@@ -2462,18 +2470,21 @@ void UIManager::drawTrackInfo() {
                 if (is_selected) {
                     // Show edit cursor at end
                     wattron(w, COLOR_PAIR(CP_SELECTED) | A_BOLD);
+                    // Tail + cursor measured in DISPLAY columns (reserve 1 col for the
+                    // cursor) so a multibyte value scrolls/positions correctly.
                     std::string disp = val;
-                    if ((int)disp.size() > val_w - 1) disp = disp.substr(disp.size() - (val_w-1));
-                    disp.resize((size_t)val_w, ' ');
-                    mvwaddnstr(w, row, label_w + 2, disp.c_str(), val_w);
+                    if (dispWidth(disp) > val_w - 1) disp = truncateToWidthRight(disp, val_w - 1);
+                    std::wstring wdisp = utf8_to_wide(padToWidth(disp, val_w));
+                    mvwaddnwstr(w, row, label_w + 2, wdisp.c_str(), (int)wdisp.size());
                     // Blink cursor position
-                    mvwaddch(w, row, label_w + 2 + (int)std::min(val.size(), (size_t)(val_w-1)), '_');
+                    int cur_col = std::min(dispWidth(val), val_w - 1);
+                    mvwaddch(w, row, label_w + 2 + cur_col, '_');
                     wattroff(w, COLOR_PAIR(CP_SELECTED) | A_BOLD);
                 } else {
                     wattron(w, edit_idx >= 0 && !tag_edit_mode_
                               ? (COLOR_PAIR(CP_DIM)|A_BOLD) : COLOR_PAIR(CP_DIM));
-                    std::string disp = scrolledText(val, val_w);
-                    mvwaddnstr(w, row, label_w + 2, disp.c_str(), val_w);
+                    std::wstring wval = utf8_to_wide(scrollToWidth(val, val_w, text_scroll_offset_));
+                    mvwaddnwstr(w, row, label_w + 2, wval.c_str(), (int)wval.size());
                     wattroff(w, edit_idx >= 0 && !tag_edit_mode_
                                ? (COLOR_PAIR(CP_DIM)|A_BOLD) : COLOR_PAIR(CP_DIM));
                 }
@@ -2858,7 +2869,8 @@ static std::string normTrackId(const std::string& artist, const std::string& tra
 // art-commit in updateScrobbler. No-op if a lookup is already running.
 void UIManager::startDiscordArtLookup(const std::string& artist,
                                       const std::string& album,
-                                      const std::string& key) {
+                                      const std::string& key,
+                                      bool song) {
     if (discord_art_active_.load()) return;
     discord_art_active_.store(true);
     discord_art_done_.store(false);
@@ -2866,8 +2878,9 @@ void UIManager::startDiscordArtLookup(const std::string& artist,
       discord_art_key_ = key; discord_art_url_.clear(); }
     if (discord_art_thread_.joinable()) discord_art_thread_.join();  // prior worker already done
     std::string a = artist, al = album;
-    discord_art_thread_ = std::thread([this, a, al]() {
-        std::string u = CDRipper::fetchArtUrlByText(a, al);
+    discord_art_thread_ = std::thread([this, a, al, song]() {
+        std::string u = song ? CoverArt::urlBySong(a, al)
+                             : CoverArt::urlByText(a, al);
         { std::lock_guard<std::mutex> lk(discord_art_mtx_); discord_art_url_ = u; }
         discord_art_done_.store(true);
     });
@@ -3015,6 +3028,15 @@ void UIManager::updateScrobbler() {
                     image = discord_art_cache_url_;            // resolved earlier
                 else
                     startDiscordArtLookup(artist, album, key); // logo now, cover when it lands
+            } else if (audio_.streamMode()) {
+                // Radio with no station-supplied cover (ICY always; iHeart raw mode;
+                // iHeart digital during ad/boundary skew). Fall back to a song-entity
+                // lookup keyed on artist+title. Logo stays until/unless one lands; a
+                // confirmed miss is remembered so rotation repeats don't re-query.
+                if (key == discord_art_cache_key_ && !discord_art_cache_url_.empty())
+                    image = discord_art_cache_url_;            // resolved earlier this session
+                else if (discord_art_neg_.find(key) == discord_art_neg_.end())
+                    startDiscordArtLookup(artist, track, key, /*song=*/true);
             }
 
             discord_.setActivity(det, sta, discord_start_, image, "RE-MOCT");
@@ -3038,6 +3060,11 @@ void UIManager::updateScrobbler() {
                     std::string sta = discord_album_.empty() ? discord_artist_
                                     : (discord_artist_ + " - " + discord_album_);
                     discord_.setActivity(discord_track_, sta, discord_start_, url, "RE-MOCT");
+                } else if (audio_.streamMode()) {
+                    // Radio lookup came back empty for the still-current track: remember
+                    // the miss so the same song returning in rotation keeps the logo
+                    // without re-hitting iTunes/Deezer. Logo is already on screen.
+                    discord_art_neg_.insert(forkey);
                 }
             } else if (!audio_.streamMode() && !discord_album_.empty()) {
                 // The finished lookup was for a since-skipped track — retry for the
@@ -5079,23 +5106,7 @@ std::string UIManager::formatTime(double s) const {
 // ── Scrolled text helper ──────────────────────────────────────────────────────
 // Returns a substring of `text` of length `width` using the shared scroll
 // offset. If text fits within width, returns it padded. If not, scrolls.
-std::string UIManager::scrolledText(const std::string& text, int width) const {
-    if (width <= 0) return "";
-    if ((int)text.size() <= width) {
-        std::string s = text;
-        s.resize((size_t)width, ' ');
-        return s;
-    }
-    const std::string pad = "   ";
-    std::string scroll_str = text + pad;
-    int slen = (int)scroll_str.size();
-    int off  = text_scroll_offset_ % slen;
-    std::string result;
-    result.reserve((size_t)width);
-    for (int i = 0; i < width; ++i)
-        result += scroll_str[(size_t)(off + i) % (size_t)slen];
-    return result;
-}
+// (Removed: all consumers now use the column-aware scrollToWidth in StringUtils.h.)
 
 void UIManager::drawMBSearch() {
     const int BOX_W = std::min(screen_cols_ - 4, 72);

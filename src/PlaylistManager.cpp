@@ -284,6 +284,22 @@ void PlaylistManager::queueRemoveAt(int i) {
     play_queue_.erase(play_queue_.begin() + i);
 }
 
+// Strip line breaks (and other C0 controls) from a single field before it is
+// written to a playlist. A stray CR/LF in a title or path otherwise splits a line
+// in the line-oriented M3U/PLS formats (corrupting every entry after it, and
+// mis-parsing on reload); in XSPF it smuggles raw whitespace into the markup. Tabs
+// fold to a space; other C0 controls are dropped. Legitimate Windows paths can't
+// contain these characters, so this is a no-op for real data.
+static std::string strip_breaks(const std::string& s) {
+    std::string o; o.reserve(s.size());
+    for (unsigned char c : s) {
+        if (c == '\t') { o += ' '; continue; }
+        if (c == '\r' || c == '\n' || c < 0x20) continue;
+        o += (char)c;
+    }
+    return o;
+}
+
 bool PlaylistManager::saveM3U(const std::string& path) const {
     std::ofstream f(path, std::ios::trunc);
     if (!f) return false;
@@ -292,8 +308,8 @@ bool PlaylistManager::saveM3U(const std::string& path) const {
         // Skip CD audio tracks (hardware paths) and live radio streams — neither
         // belongs in a saved playlist.
         if (isCDTrackPath(e.path) || isStreamPath(e.path)) continue;
-        f << "#EXTINF:" << e.duration_sec << "," << e.display_title << "\n";
-        f << e.path << "\n";
+        f << "#EXTINF:" << e.duration_sec << "," << strip_breaks(e.display_title) << "\n";
+        f << strip_breaks(e.path) << "\n";
     }
     return f.good();
 }
@@ -338,8 +354,8 @@ bool PlaylistManager::savePLS(const std::string& path) const {
     for (const auto& e : entries_) {
         if (isCDTrackPath(e.path) || isStreamPath(e.path)) continue;  // no CD/radio in saved playlists
         ++n;
-        f << "File" << n << "=" << e.path << "\n";
-        f << "Title" << n << "=" << e.display_title << "\n";
+        f << "File" << n << "=" << strip_breaks(e.path) << "\n";
+        f << "Title" << n << "=" << strip_breaks(e.display_title) << "\n";
         f << "Length" << n << "=" << e.duration_sec << "\n";
     }
     f << "NumberOfEntries=" << n << "\n";
@@ -435,9 +451,9 @@ bool PlaylistManager::saveXSPF(const std::string& path) const {
         for (char& c : uri) if (c == '\\') c = '/';
         uri = "file:///" + uri;
         f << "    <track>\n";
-        f << "      <location>" << xml_escape(uri) << "</location>\n";
+        f << "      <location>" << xml_escape(strip_breaks(uri)) << "</location>\n";
         if (!e.display_title.empty())
-            f << "      <title>" << xml_escape(e.display_title) << "</title>\n";
+            f << "      <title>" << xml_escape(strip_breaks(e.display_title)) << "</title>\n";
         if (e.duration_sec > 0)
             f << "      <duration>" << (e.duration_sec * 1000) << "</duration>\n";
         f << "    </track>\n";

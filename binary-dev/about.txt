@@ -33,4 +33,6 @@ Ctrl+B - ListenBrainz login
        Updated logic to grab album art from IHeartRadio when available in ctrl K mode (webplayer/digital) and display same in Discord RPC
        Add AAC support for file playback
        Fix resize windows too small crash
-6-28 - fix some bugs in audiobook playback and in IHeartRadio stream handling, log clean up/fixes, additional logging data to identify IHeartRadio ad/song/live edges, fixed             indicator following now playing item/content, themes work
+6-28 - fix some bugs in audiobook playback and in IHeartRadio stream handling, log clean up/fixes, additional logging data to identify IHeartRadio ad/song/live edges, fixed         
+        indicator following now playing item/content, themes work, add additional visuals to ctrl t (different progress bar), update about page and visualizer, smooth out
+        mp3 scrubbing, fix unicode display

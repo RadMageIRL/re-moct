@@ -191,6 +191,7 @@ private:
     // across callbacks so there are no per-buffer discontinuities.
     std::vector<float>         speed_res_;             // residual decoded source frames
     int                        speed_res_frames_ = 0;  // valid frames in speed_res_
+    std::vector<float>         xfade_buf_;             // crossfade next-track scratch (cb-owned, lazy-grown)
     double                     speed_pos_        = 0.0; // fractional source read position
     void      resetSpeedResampler() { speed_res_frames_ = 0; speed_pos_ = 0.0; }
     ma_result readVarispeed(float* out, ma_uint32 frame_count, ma_uint32 channels,
@@ -285,6 +286,7 @@ private:
     static constexpr int CD_BPM_WINDOW_SECS = 20;   // match detectBpm's file window
     static constexpr int CD_BPM_FRAMES      = 44100 * CD_BPM_WINDOW_SECS;
     std::vector<float>   cd_bpm_buf_;               // mono accumulation window
+    std::vector<float>   cd_bpm_snapshot_;          // UI-owned copy taken before clearing ready
     std::atomic<int>     cd_bpm_fill_   { 0 };      // frames filled (audio thread)
     std::atomic<bool>    cd_bpm_ready_  { false };  // window full → detect on UI thread
     std::atomic<bool>    cd_bpm_reset_  { false };  // seek requested → restart window

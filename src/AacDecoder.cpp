@@ -24,6 +24,16 @@
 #include <windows.h>
 #endif
 
+// 64-bit file seek/tell so files >2 GB are sized correctly rather than rejected
+// by a 32-bit ftell overflow. Same convention as Mp4Chapters.cpp.
+#ifdef _WIN32
+#  define FSEEK64 _fseeki64
+#  define FTELL64 _ftelli64
+#else
+#  define FSEEK64 fseeko
+#  define FTELL64 ftello
+#endif
+
 namespace {
 
 inline uint32_t be32(const uint8_t* p) {
@@ -350,7 +360,7 @@ bool slurpW(const wchar_t* path, std::vector<uint8_t>& out) {
     if (!f) return false;
     unsigned char hdr[12]; size_t got = fread(hdr, 1, sizeof(hdr), f);
     if (!looksAdts(hdr, got) && !looksMp4(hdr, got)) { fclose(f); return false; }
-    fseek(f, 0, SEEK_END); long sz = ftell(f); fseek(f, 0, SEEK_SET);
+    FSEEK64(f, 0, SEEK_END); long long sz = FTELL64(f); FSEEK64(f, 0, SEEK_SET);
     if (sz <= 0) { fclose(f); return false; }
     out.resize((size_t)sz);
     size_t rd = fread(out.data(), 1, (size_t)sz, f);
@@ -363,7 +373,7 @@ bool slurpA(const char* path, std::vector<uint8_t>& out) {
     if (!f) return false;
     unsigned char hdr[12]; size_t got = fread(hdr, 1, sizeof(hdr), f);
     if (!looksAdts(hdr, got) && !looksMp4(hdr, got)) { fclose(f); return false; }
-    fseek(f, 0, SEEK_END); long sz = ftell(f); fseek(f, 0, SEEK_SET);
+    FSEEK64(f, 0, SEEK_END); long long sz = FTELL64(f); FSEEK64(f, 0, SEEK_SET);
     if (sz <= 0) { fclose(f); return false; }
     out.resize((size_t)sz);
     size_t rd = fread(out.data(), 1, (size_t)sz, f);

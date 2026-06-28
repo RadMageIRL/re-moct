@@ -77,10 +77,15 @@ static void populate_track_info(TrackInfo& info, const std::string& path) {
 
 static bool open_decoder(const std::string& path, ma_decoder& dec,
                          ma_uint32 hint_channels = 0, ma_uint32 hint_rate = 0) {
-    // Use TagLib-provided hints when available to bypass miniaudio's format sniffer
-    // which crashes on files with bad/dual ID3 tags
-    ma_decoder_config cfg = ma_decoder_config_init(ma_format_f32,
-                                hint_channels, hint_rate);
+    (void)hint_channels; (void)hint_rate;
+    // Force a fixed 44100/2 output, exactly like the stream and CD paths. ma_decoder
+    // upmixes/resamples the source to it, so the playback device is ALWAYS 44100/2 and
+    // a file's odd native format (e.g. a 24000 Hz mono audiobook) never becomes the
+    // device format. Opening the device at a file's quirky native rate/channels was
+    // the cause of the chirp-then-silence on a cold first play of such a file. The
+    // non-zero channels/rate also keep miniaudio off the format-sniffer path that can
+    // crash on files with bad/dual ID3 tags (previously done via TagLib hints).
+    ma_decoder_config cfg = ma_decoder_config_init(ma_format_f32, 2, 44100);
     // Plug in the FDK-AAC backend so .aac/.m4a/.mp4 decode through the same pipeline.
     // It fails fast for non-AAC, so flac/mp3/wav/ogg still use miniaudio's built-ins.
     static ma_decoding_backend_vtable* k_aac_backends[] = { ma_aac_backend_vtable() };
@@ -265,6 +270,41 @@ bool AudioManager::play(const std::string& path) {
 }
 
 bool AudioManager::initDevice() {
+    // ── One-time audio-backend warm-up ──────────────────────────────────────
+    // The very first ma_device_init in the process brings up the shared playback
+    // backend (WASAPI/COM on Windows). When that first bring-up coincides with the
+    // custom FDK-AAC ma_decoder as the active decoder, the device ends up producing
+    // silence for the rest of the session — a chirp then nothing, on every file and
+    // stream after it. Playing a native-backend file (FLAC/MP3) or the radio path
+    // first avoids it, which is the tell: it's the *first* backend init that's
+    // fragile, not the AAC file. So prime the backend once here with a throwaway
+    // fixed-format device, before any real init — now the first bring-up never
+    // coincides with AAC, regardless of which file the user opens first. init/uninit
+    // (no start) is enough to do the COM/WASAPI bring-up; the callback never fires.
+    static bool audio_backend_warmed = false;
+    if (!audio_backend_warmed) {
+        audio_backend_warmed = true;
+        ma_device_config wc = ma_device_config_init(ma_device_type_playback);
+        wc.playback.format   = ma_format_f32;
+        wc.playback.channels = 2;
+        wc.sampleRate         = 44100;
+        wc.dataCallback      = &AudioManager::maDataCallback;
+        wc.pUserData         = this;
+        if (has_selected_device_)
+            wc.playback.pDeviceID = &selected_device_id_;
+        ma_device warm{};
+        if (ma_device_init(nullptr, &wc, &warm) == MA_SUCCESS) {
+            // Fully activate the WASAPI render client once (start/stop), not just
+            // init/uninit — init alone primes the backend enough for ordinary AAC
+            // files but not for the first-start path some files take, so do the
+            // complete bring-up here. The callback fires but decoder_initialised_
+            // is false, so it only writes a few ms of (inaudible) silence.
+            ma_device_start(&warm);
+            ma_device_stop(&warm);
+            ma_device_uninit(&warm);
+        }
+    }
+
     ma_device_config cfg = ma_device_config_init(ma_device_type_playback);
     cfg.playback.format   = ma_format_f32;
     cfg.playback.channels = decoder_.outputChannels;
@@ -595,8 +635,15 @@ void AudioManager::pollEvents() {
         current_track_ = next_track_info_;
     if (bpm_needed_flag_.exchange(false))
         startBpmDetection(current_track_.path, (int)decoder_.outputSampleRate);
-    if (cd_bpm_ready_.exchange(false))
-        startBpmDetectionFromSamples(cd_bpm_buf_, CD_BPM_FRAMES, 44100);
+    if (cd_bpm_ready_.load(std::memory_order_acquire)) {
+        // Snapshot the window before releasing the flag. While ready is set the
+        // audio thread is frozen (see fill site), so this copy is clean; clearing
+        // ready afterwards lets accumulation resume into cd_bpm_buf_ without racing
+        // the detector, which now reads the UI-owned snapshot instead.
+        cd_bpm_snapshot_.assign(cd_bpm_buf_.begin(), cd_bpm_buf_.begin() + CD_BPM_FRAMES);
+        cd_bpm_ready_.store(false, std::memory_order_release);
+        startBpmDetectionFromSamples(cd_bpm_snapshot_, CD_BPM_FRAMES, 44100);
+    }
     if (preload_next_flag_.exchange(false))
         if (on_preload_next_) on_preload_next_();
     if (track_ended_flag_.exchange(false))
@@ -726,7 +773,11 @@ void AudioManager::onDataCallback(void* output, ma_uint32 frame_count) {
                 cd_bpm_ready_.store(false, std::memory_order_relaxed);
                 live_bpm_.store(0);
             }
-            if (cur > 0 && !cd_source_.paused()) {
+            // Freeze accumulation while a full window is awaiting UI consumption
+            // (cd_bpm_ready_): the UI thread copies cd_bpm_buf_ out before clearing
+            // the flag, so not writing here keeps that copy from tearing.
+            if (cur > 0 && !cd_source_.paused() &&
+                !cd_bpm_ready_.load(std::memory_order_acquire)) {
                 int bf = cd_bpm_fill_.load(std::memory_order_relaxed);
                 for (ma_uint32 f = 0; f < frame_count && bf < CD_BPM_FRAMES; ++f)
                     cd_bpm_buf_[(size_t)bf++] = (out[f*2] + out[f*2+1]) * 0.5f;
@@ -829,12 +880,16 @@ void AudioManager::onDataCallback(void* output, ma_uint32 frame_count) {
     bool track_done = (result == MA_AT_END || frames_read_a < frame_count);
 
     if (crossfading_.load() && next_decoder_initialised_.load()) {
-        // Mix next track in, ramping up while current ramps down
-        std::vector<float> tmp((size_t)frame_count * ch, 0.0f);
+        // Mix next track in, ramping up while current ramps down. Use a member
+        // buffer grown on demand (steady-state frame_count is constant, so this is
+        // a no-op after the first crossfade) instead of a per-callback heap alloc.
+        const size_t need = (size_t)frame_count * ch;
+        if (xfade_buf_.size() < need) xfade_buf_.resize(need);
+        float* tmp = xfade_buf_.data();
 
         ma_uint64 frames_read_b = 0;
         try {
-            ma_decoder_read_pcm_frames(&next_decoder_, tmp.data(), frame_count, &frames_read_b);
+            ma_decoder_read_pcm_frames(&next_decoder_, tmp, frame_count, &frames_read_b);
         } catch (...) { frames_read_b = 0; }
 
         float xp = xfade_pos_.load();

@@ -63,6 +63,11 @@ public:
     void setRepeatOne(bool on) { repeat_one_.store(on); }
     void clearNext();  // discard preloaded next track
 
+    // True only while a crossfade is mixing (decoder_ is still the outgoing track,
+    // advancing to its end). UI reads this to let the progress head complete instead
+    // of snapping to the incoming track's 0% mid-overlap. Read-only; no side effects.
+    bool isCrossfading() const { return crossfading_.load(std::memory_order_acquire); }
+
     // Volume
     void  setVolume(float v);
     void  adjustVolume(float delta);

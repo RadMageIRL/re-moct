@@ -319,6 +319,17 @@ private:
     int dir_poll_ticks_ = 0;
     // Marquee scroll state for long track names
     int         marquee_offset_  = 0;
+
+    // Seek coalescing: holding [/] fires key-repeats, and applying a full device
+    // stop/seek/start per repeat is choppy on MP3 (bit-reservoir warm-up after each
+    // seek). Coalesce rapid repeats into ~one seek per cooldown while keeping single
+    // taps instant. The run loop flushes the tail after the key is released.
+    double      pending_seek_    = 0.0;
+    bool        seek_dirty_      = false;
+    int         seek_stamp_      = -1;   // playlist index the pending seek belongs to
+    std::chrono::steady_clock::time_point last_seek_apply_ {};
+    void        requestSeek(double delta);
+    void        flushPendingSeek();
     int         marquee_ticks_   = 0;
     std::string marquee_last_path_;  // detect track change to reset offset
     static constexpr int MARQUEE_PAUSE  = 20;
@@ -345,6 +356,7 @@ private:
     static constexpr short CP_VIZ_HIGH   = 11;
     static constexpr short CP_VIZ_PEAK   = 12;
     static constexpr short CP_SELECTED_UNFOCUSED = 13;
+    static constexpr short CP_VIZ_TIP    = 14;  // viz fractional tip: peak fg on default bg
 
     void initColours();
     void loadTheme(short* fg, short* bg);   // overrides defaults from theme.conf

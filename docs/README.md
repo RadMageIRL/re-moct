@@ -82,7 +82,8 @@ Scrobble both local files and radio to Last.fm.
 - Improved IHeartRadio stream handling logic and metadata pass to TUI and Discord
 - Cleaned up some additional race issues and crossfade function/logic
 - Improve cover art fetch for iheartradio and extend to ice/shoutcast streams so art shows in Discord RPC (fetch via itunes if not in stream metadata)
-- Put CoverArt logic/routines in CoverArt.h/cpp for easy use/reference/maintainability 
+- Put CoverArt logic/routines in CoverArt.h/cpp for easy use/reference/maintainability
+- Cleaned up code so terminal renders real Unicode now instead of hacky workarounds with sanitizeDisplay
 
 ## New Runtime Dependency
 

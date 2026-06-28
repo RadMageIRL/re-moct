@@ -9,6 +9,7 @@
 #include <map>
 
 #include <filesystem>
+#include <system_error>
 #include <algorithm>
 #include <random>
 #include <numeric>
@@ -18,6 +19,15 @@
 #endif
 
 namespace fs = std::filesystem;
+
+// Non-throwing existence check: the throwing fs::exists overload can raise
+// filesystem_error on a malformed path from a crafted playlist, which would
+// propagate out of the loaders below. The error_code overload returns false
+// on any error instead.
+static bool path_exists(const std::string& p) {
+    std::error_code ec;
+    return fs::exists(p, ec);
+}
 
 static const std::vector<std::string> AUDIO_EXTS = {
     ".mp3", ".flac", ".ogg", ".opus", ".wav", ".aiff", ".aif",
@@ -308,7 +318,7 @@ int PlaylistManager::loadM3U(const std::string& path) {
         if (p.is_relative())
             p = fs::path(path).parent_path() / p;
         std::string abs = p.string();
-        if (fs::exists(abs) && isSupportedAudio(abs)) {
+        if (path_exists(abs) && isSupportedAudio(abs)) {
             addTrack(abs);
             ++added;
         } else if (isSupportedAudio(abs)) {
@@ -362,7 +372,7 @@ int PlaylistManager::loadPLS(const std::string& path) {
         fs::path fp(p);
         if (fp.is_relative()) fp = fs::path(path).parent_path() / fp;
         std::string abs = fp.string();
-        if (fs::exists(abs) && isSupportedAudio(abs)) {
+        if (path_exists(abs) && isSupportedAudio(abs)) {
             addTrack(abs);
             ++added;
         } else if (isSupportedAudio(abs)) {
@@ -401,11 +411,13 @@ static std::string xml_unescape(const std::string& s) {
             pos += to.size();
         }
     };
-    replace_all("&amp;",  "&");
+    // &amp; must be unescaped LAST: unescaping it first would turn an escaped
+    // entity such as "&amp;lt;" into "&lt;" and then into "<" — a double-unescape.
     replace_all("&lt;",   "<");
     replace_all("&gt;",   ">");
     replace_all("&quot;", "\"");
     replace_all("&apos;", "'");
+    replace_all("&amp;",  "&");
     return out;
 }
 
@@ -476,7 +488,7 @@ int PlaylistManager::loadXSPF(const std::string& path) {
         fs::path fp(uri);
         if (fp.is_relative()) fp = fs::path(path).parent_path() / fp;
         std::string abs = fp.string();
-        if (fs::exists(abs) && isSupportedAudio(abs)) {
+        if (path_exists(abs) && isSupportedAudio(abs)) {
             addTrack(abs);
             ++added;
         } else if (isSupportedAudio(abs)) {

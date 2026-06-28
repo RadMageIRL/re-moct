@@ -68,6 +68,9 @@ bool DiscordRP::drainOneFrame() {
     uint32_t op, len;
     std::memcpy(&op,  hdr + 0, 4);
     std::memcpy(&len, hdr + 4, 4);
+    // Sanity cap: Discord IPC responses are a few KB. A garbage/huge length from
+    // a process squatting the discord-ipc pipe would otherwise resize() up to 4 GB.
+    if (len > (1u << 20)) { disconnect(); return false; }
     std::string body; body.resize(len);
     DWORD total = 0;
     while (total < len) {

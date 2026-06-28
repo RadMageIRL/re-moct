@@ -140,7 +140,7 @@ void AudioManager::teardownNext() {
     if (next_decoder_initialised_.load(std::memory_order_acquire)) {
         // Clear the published flag FIRST so the audio thread starts no new
         // crossfade or gapless read of next_decoder_ (every such read is gated on
-        // this flag). Ordering matters: free must never precede the un-publish.
+        // this flag). Ordering matters: the free must never precede the un-publish.
         next_decoder_initialised_.store(false, std::memory_order_release);
 
         // If a crossfade is actively mixing next_decoder_ across callbacks, the
@@ -148,8 +148,8 @@ void AudioManager::teardownNext() {
         // blocks until the current callback returns and guarantees it won't be
         // re-entered, so after it the decoder is safe to free. Scope the stop to the
         // crossfade window only — the common mid-track clearNext (no crossfade) frees
-        // directly with no audio glitch. (device_initialised_ + is_started guards the
-        // paused-mid-crossfade case, where the device is already stopped.)
+        // directly with no audio glitch. (device_initialised_ + is_started also guards
+        // the paused-mid-crossfade case, where the device is already stopped.)
         if (crossfading_.load(std::memory_order_acquire) &&
             device_initialised_ && ma_device_is_started(&device_)) {
             ma_device_stop(&device_);
@@ -595,14 +595,8 @@ void AudioManager::pollEvents() {
         current_track_ = next_track_info_;
     if (bpm_needed_flag_.exchange(false))
         startBpmDetection(current_track_.path, (int)decoder_.outputSampleRate);
-    if (cd_bpm_ready_.load(std::memory_order_acquire)) {
-        // Copy the frozen window into a UI-owned buffer BEFORE clearing the ready
-        // flag, so the audio thread (which is frozen while ready is set) can't
-        // overwrite cd_bpm_buf_ mid-copy. Release the freeze only after the copy.
-        cd_bpm_snapshot_.assign(cd_bpm_buf_.begin(), cd_bpm_buf_.begin() + CD_BPM_FRAMES);
-        cd_bpm_ready_.store(false, std::memory_order_release);
-        startBpmDetectionFromSamples(cd_bpm_snapshot_, CD_BPM_FRAMES, 44100);
-    }
+    if (cd_bpm_ready_.exchange(false))
+        startBpmDetectionFromSamples(cd_bpm_buf_, CD_BPM_FRAMES, 44100);
     if (preload_next_flag_.exchange(false))
         if (on_preload_next_) on_preload_next_();
     if (track_ended_flag_.exchange(false))
@@ -724,28 +718,21 @@ void AudioManager::onDataCallback(void* output, ma_uint32 frame_count) {
         // A seek (FF/RW) restarts the window via cd_bpm_reset_ so the buffer can
         // never splice two non-contiguous sections of the track together.
         {
-            // While a full window is awaiting the UI's copy (cd_bpm_ready_), freeze
-            // the buffer: don't reset, refill, or otherwise touch cd_bpm_buf_, so the
-            // UI's snapshot can't be torn by a concurrent track-change/seek rewrite.
-            // A track change or seek that lands during the freeze is handled on the
-            // next callback (cur != cd_bpm_track_ stays true; the seek flag is left
-            // unconsumed) once the UI clears cd_bpm_ready_.
-            if (!cd_bpm_ready_.load(std::memory_order_acquire)) {
-                const int cur = cd_source_.currentTrack();
-                bool reset = (cur != cd_bpm_track_) || cd_bpm_reset_.exchange(false);
-                if (reset) {
-                    cd_bpm_track_ = cur;
-                    cd_bpm_fill_.store(0,  std::memory_order_relaxed);
-                    live_bpm_.store(0);
-                }
-                if (cur > 0 && !cd_source_.paused()) {
-                    int bf = cd_bpm_fill_.load(std::memory_order_relaxed);
-                    for (ma_uint32 f = 0; f < frame_count && bf < CD_BPM_FRAMES; ++f)
-                        cd_bpm_buf_[(size_t)bf++] = (out[f*2] + out[f*2+1]) * 0.5f;
-                    cd_bpm_fill_.store(bf, std::memory_order_release);
-                    if (bf >= CD_BPM_FRAMES)
-                        cd_bpm_ready_.store(true, std::memory_order_release);
-                }
+            const int cur = cd_source_.currentTrack();
+            bool reset = (cur != cd_bpm_track_) || cd_bpm_reset_.exchange(false);
+            if (reset) {
+                cd_bpm_track_ = cur;
+                cd_bpm_fill_.store(0,  std::memory_order_relaxed);
+                cd_bpm_ready_.store(false, std::memory_order_relaxed);
+                live_bpm_.store(0);
+            }
+            if (cur > 0 && !cd_source_.paused()) {
+                int bf = cd_bpm_fill_.load(std::memory_order_relaxed);
+                for (ma_uint32 f = 0; f < frame_count && bf < CD_BPM_FRAMES; ++f)
+                    cd_bpm_buf_[(size_t)bf++] = (out[f*2] + out[f*2+1]) * 0.5f;
+                cd_bpm_fill_.store(bf, std::memory_order_release);
+                if (bf >= CD_BPM_FRAMES)
+                    cd_bpm_ready_.store(true, std::memory_order_release);
             }
         }
 
@@ -842,16 +829,12 @@ void AudioManager::onDataCallback(void* output, ma_uint32 frame_count) {
     bool track_done = (result == MA_AT_END || frames_read_a < frame_count);
 
     if (crossfading_.load() && next_decoder_initialised_.load()) {
-        // Mix next track in, ramping up while current ramps down. Reuse a member
-        // scratch buffer (grown once, never shrunk) so the real-time callback does
-        // not allocate on the heap during a fade.
-        size_t need = (size_t)frame_count * ch;
-        if (xfade_buf_.size() < need) xfade_buf_.resize(need);
-        float* tmp = xfade_buf_.data();
+        // Mix next track in, ramping up while current ramps down
+        std::vector<float> tmp((size_t)frame_count * ch, 0.0f);
 
         ma_uint64 frames_read_b = 0;
         try {
-            ma_decoder_read_pcm_frames(&next_decoder_, tmp, frame_count, &frames_read_b);
+            ma_decoder_read_pcm_frames(&next_decoder_, tmp.data(), frame_count, &frames_read_b);
         } catch (...) { frames_read_b = 0; }
 
         float xp = xfade_pos_.load();

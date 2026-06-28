@@ -619,12 +619,35 @@ void StreamSource::updateIHeartNowPlaying(const std::string& body) {
     // (or Ad) as before — just ~40s later. A real new track commits in 1 tick and overrides
     // any just-finished-song overhang immediately.
     const long CUR = 60;
-    bool thCurrent = !iheart_th_cache_.empty() && iheart_th_ended_ <= CUR;                       // playing now
+    // Overhang tolerance: a still-audible song sits ~buffer-depth behind the server
+    // clock, so allow up to CUR seconds past endTime before dropping it. BUT when we
+    // are emerging from a committed Ad, the pre-ad song is genuinely over — a
+    // trackHistory overhang there is the stale just-finished track, and painting it
+    // produces a brief "flap" back to the old song before LIVE/re-pin. So while in Ad,
+    // only accept a trackHistory song that is actively playing (ended <= 0), not one
+    // that is merely inside the overhang window.
+    const long thMax = (ih_state_ == IHNow::Ad) ? 0 : CUR;
+    bool thCurrent = !iheart_th_cache_.empty() && iheart_th_ended_ <= thMax;                      // playing now
+
+    // In DIGITAL mode currentTrackMeta rides our AUDIO timeline (not the broadcast
+    // schedule), so a ctm-confirmed, not-yet-ended song is the most reliable signal
+    // for what's actually in the speakers. iHeart's spot-id manifest markers lag the
+    // audio and linger past the ad pod; without this they paint a live song as a
+    // "Commercial break" for the whole song (mfCls=Ad overriding a real thCurrent).
+    // Trust ctm over the lagging ad marker here. (Raw mode: ctm rides the broadcast,
+    // not our audio, so this stays digital-only.)
+    std::string ctmSong;
+    if (digital_active_.load() && iheart_ctm_.ok && iheart_ctm_.httpStatus == 200 &&
+        !iheart_ctm_.title.empty() && iheart_ctm_.endedSecsAgo <= 0) {
+        ctmSong = iheart_ctm_.artist.empty() ? iheart_ctm_.title
+                                             : (iheart_ctm_.artist + " - " + iheart_ctm_.title);
+    }
 
     // Confidence-ordered target for this tick.
     std::string st = iheart_.stationName();
     IHNow tgtKind; std::string tgtDisp;
-    if (!mfSong.empty())             { tgtKind = IHNow::Song; tgtDisp = mfSong; }            // manifest song (Breeze) — highest confidence
+    if (!mfSong.empty())             { tgtKind = IHNow::Song; tgtDisp = mfSong; }            // manifest in-band song — highest confidence
+    else if (!ctmSong.empty())       { tgtKind = IHNow::Song; tgtDisp = ctmSong; }           // ctm-confirmed live song (digital) — beats a lagging ad marker
     else if (cls == IHeartMfCls::Ad) {                                                       // active in-band ad: "Spot Block" w/ real length, or song_spot="T".
         tgtKind = IHNow::Ad;                                                                 // A commercial is airing NOW, so OVERRIDE the schedule-based
         tgtDisp = st.empty() ? std::string("Commercial break")                               // trackHistory song (which can run ahead of the broadcast and
@@ -801,6 +824,7 @@ void StreamSource::serviceStaging() {
             staging_->setPreferDigital(true);
             stg_opening_.store(true);
             stg_state_ = Stg::Opening;
+            stg_armed_tick_ = now;                              // for elapsed-since-arm peek logs
             std::string u = url_;
             slog("staging: arming parallel digital session");
             std::thread([this, u]{
@@ -825,10 +849,22 @@ void StreamSource::serviceStaging() {
     case Stg::Arming:
         if (ih_state_ != IHNow::Live) {                        // primary's break cleared on its own
             teardown("primary break cleared (no blend needed)", 15000);
-        } else if (staging_ && staging_->isPrebuffered() && staging_->edgeIsMusic()) {
-            slog("staging: READY at music edge — clean blend point reached "
-                 "(Stage A observer; B/C will swap/crossfade here)");
-            teardown("Stage A: observed only", 60000);
+        } else {
+            // Step-1 visibility (logging only, no behavior change): record what the
+            // fresh-handshake peek sees at its OWN live edge each poll, with seconds
+            // since the peek armed. The primary's edge stays on slate during a
+            // break, so this is the earliest place the returning song is visible.
+            // Compare "peek cls=music +Ns" against the 40s LIVE-floor timer to size
+            // how much sooner a peek-driven re-pin could land us in the song.
+            unsigned el = (stg_armed_tick_ ? (now - stg_armed_tick_) / 1000 : 0);
+            if (staging_)
+                slog("staging: peek cls=%s prebuf=%d +%us",
+                     staging_->edgeClsName(), staging_->isPrebuffered() ? 1 : 0, el);
+            if (staging_ && staging_->isPrebuffered() && staging_->edgeIsMusic()) {
+                slog("staging: READY at music edge +%us — clean blend point reached "
+                     "(Stage A observer; B/C will swap/crossfade here)", el);
+                teardown("Stage A: observed only", 60000);
+            }
         }
         break;
     }

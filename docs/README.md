@@ -81,6 +81,8 @@ Scrobble both local files and radio to Last.fm.
 - Audibook playback chirp/fail on initial load
 - Improved IHeartRadio stream handling logic and metadata pass to TUI and Discord
 - Cleaned up some additional race issues and crossfade function/logic
+- Improve cover art fetch for iheartradio and extend to ice/shoutcast streams so art shows in Discord RPC (fetch via itunes if not in stream metadata)
+- Put CoverArt logic/routines in CoverArt.h/cpp for easy use/reference/maintainability 
 
 ## New Runtime Dependency
 

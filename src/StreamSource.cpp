@@ -18,7 +18,7 @@
 // Logs show healthy ad breaks clear the floor in ≤~30s; a real stall ran 7 min.
 // 45s sits just above the healthy ceiling so normal breaks self-recover untouched
 // while a genuine stall heals fast. Tune here.
-static constexpr DWORD LIVE_STALL_MS = 35000;
+// LIVE_STALL_MS moved to IHeartNowPlayingSM.h (used only by the now-playing SM).
 
 // ─── Diagnostic log — routed through the shared operational logger (Log) ──────
 static void slog(const char* fmt, ...) {
@@ -421,8 +421,7 @@ bool StreamSource::hlsConnect() {
     last_iheart_poll_   = 0;
     iheart_th_cache_.clear();
     iheart_th_ended_    = -1;
-    ih_state_ = ih_pending_ = IHNow::Live;
-    ih_state_disp_.clear(); ih_pending_disp_.clear(); ih_streak_ = 0;
+    ih_sm_.reset();
     if (is_iheart_) {
         iheart_.setLogger([](const std::string& s){ slog("%s", s.c_str()); });
         iheart_.resolve(url_);   // sidecar-first; cheap; gives us stationName() for the ad label
@@ -512,7 +511,7 @@ static std::string mfTrim(const std::string& s) {
 // Verified: The Breeze songs are song_spot="M"; Breeze ads song_spot="T"; Z100 songs
 // leave the manifest stuck on "Spot Block End" (None) while trackHistory has the song;
 // Z100 active ads show "Spot Block" with a real length (Ad).
-enum class IHeartMfCls { None, Song, Ad };
+// (enum IHeartMfCls now lives in IHeartNowPlayingSM.h, included via StreamSource.h.)
 
 static IHeartMfCls classifyIHeartManifest(const std::string& body,
                                           std::string& artistOut, std::string& titleOut) {
@@ -582,18 +581,17 @@ void StreamSource::updateIHeartNowPlaying(const std::string& body) {
         iheart_th_cache_ = iheart_.resolve(url_) ? iheart_.pollNowPlaying(&ended) : std::string();
         iheart_th_ended_ = ended;
         // currentTrackMeta: the web player's own now-playing source. Polled while the
-        // deep log is on (probe), OR in digital mode — there ctm rides the same timeline
+        // deep log is on (probe), OR in digital mode -- there ctm rides the same timeline
         // as the audio and carries the album-art URL we surface to Discord.
         if (IHeartDeepLog::enabled() || digital_active_.load())
             iheart_.pollCurrentTrackMeta(&iheart_ctm_);
     }
     // Album art for Discord RP: in DIGITAL mode, currentTrackMeta rides the same
-    // timeline as the audio and carries a cover URL. Publish it only when a SONG is the
-    // committed state AND ctm agrees with it (title match), so ad/boundary skew never
-    // paints a wrong cover. The UI falls back to the logo whenever this is empty.
+    // timeline as the audio. Publish only when a SONG is the committed state (read from
+    // the SM = the previous tick's commit) AND ctm agrees (title match).
     {
         std::string art;
-        if (digital_active_.load() && ih_state_ == IHNow::Song &&
+        if (digital_active_.load() && ih_sm_.state() == IHNow::Song &&
             iheart_ctm_.ok && !iheart_ctm_.imagePath.empty()) {
             auto squash = [](const std::string& s){
                 std::string o; for (unsigned char c : s)
@@ -601,7 +599,7 @@ void StreamSource::updateIHeartNowPlaying(const std::string& body) {
                 return o;
             };
             std::string t = squash(iheart_ctm_.title);
-            if (!t.empty() && squash(ih_state_disp_).find(t) != std::string::npos) {
+            if (!t.empty() && squash(ih_sm_.stateDisp()).find(t) != std::string::npos) {
                 art = iheart_ctm_.imagePath;
                 if (art.rfind("http://", 0) == 0) art = "https://" + art.substr(7); // Discord media proxy prefers https
             }
@@ -610,60 +608,35 @@ void StreamSource::updateIHeartNowPlaying(const std::string& body) {
         iheart_art_ = art;
     }
 
-    // CUR is compared against (serverNow - endTime), but our listener sits ~20s behind
-    // the live edge (we prime 2x10s segments on connect). So a song still audible at the
-    // speaker has, on the server clock, already passed endTime by roughly the buffer depth.
-    // CUR=20 expired the song before the audio did -> mid-song flip to "LIVE". Widen to 60
-    // to cover buffer (~20s) + normal song tail. Regression-safe: a genuine trackHistory
-    // freeze still climbs past 60 within a minute, dropping thCurrent and flooring to LIVE
-    // (or Ad) as before — just ~40s later. A real new track commits in 1 tick and overrides
-    // any just-finished-song overhang immediately.
-    const long CUR = 60;
-    // Overhang tolerance: a still-audible song sits ~buffer-depth behind the server
-    // clock, so allow up to CUR seconds past endTime before dropping it. BUT when we
-    // are emerging from a committed Ad, the pre-ad song is genuinely over — a
-    // trackHistory overhang there is the stale just-finished track, and painting it
-    // produces a brief "flap" back to the old song before LIVE/re-pin. So while in Ad,
-    // only accept a trackHistory song that is actively playing (ended <= 0), not one
-    // that is merely inside the overhang window.
-    const long thMax = (ih_state_ == IHNow::Ad) ? 0 : CUR;
-    bool thCurrent = !iheart_th_cache_.empty() && iheart_th_ended_ <= thMax;                      // playing now
+    // Dual-stream staging lane (coordinator only). Reads the committed state from the
+    // PREVIOUS tick (ih_sm_.state()) -- kept ahead of ih_sm_.tick() so it still observes
+    // pre-commit state, exactly as before (it used to run before the debounce commit).
+    if (!is_lane_) serviceStaging();
 
-    // In DIGITAL mode currentTrackMeta rides our AUDIO timeline (not the broadcast
-    // schedule), so a ctm-confirmed, not-yet-ended song is the most reliable signal
-    // for what's actually in the speakers. iHeart's spot-id manifest markers lag the
-    // audio and linger past the ad pod; without this they paint a live song as a
-    // "Commercial break" for the whole song (mfCls=Ad overriding a real thCurrent).
-    // Trust ctm over the lagging ad marker here. (Raw mode: ctm rides the broadcast,
-    // not our audio, so this stays digital-only.)
-    std::string ctmSong;
-    if (digital_active_.load() && iheart_ctm_.ok && iheart_ctm_.httpStatus == 200 &&
-        !iheart_ctm_.title.empty() && iheart_ctm_.endedSecsAgo <= 0) {
-        ctmSong = iheart_ctm_.artist.empty() ? iheart_ctm_.title
-                                             : (iheart_ctm_.artist + " - " + iheart_ctm_.title);
-    }
-
-    // Confidence-ordered target for this tick.
-    std::string st = iheart_.stationName();
-    IHNow tgtKind; std::string tgtDisp;
-    if (!mfSong.empty())             { tgtKind = IHNow::Song; tgtDisp = mfSong; }            // manifest in-band song — highest confidence
-    else if (!ctmSong.empty())       { tgtKind = IHNow::Song; tgtDisp = ctmSong; }           // ctm-confirmed live song (digital) — beats a lagging ad marker
-    else if (cls == IHeartMfCls::Ad) {                                                       // active in-band ad: "Spot Block" w/ real length, or song_spot="T".
-        tgtKind = IHNow::Ad;                                                                 // A commercial is airing NOW, so OVERRIDE the schedule-based
-        tgtDisp = st.empty() ? std::string("Commercial break")                               // trackHistory song (which can run ahead of the broadcast and
-                             : (st + " - Commercial break");                                 // otherwise paints a song over a live ad).
-    }
-    else if (thCurrent)              { tgtKind = IHNow::Song; tgtDisp = iheart_th_cache_; }  // trackHistory current song (Z100, when no live ad signal)
-    else                             { tgtKind = IHNow::Live;                                // murk / no signal -> honest LIVE
-                                       tgtDisp = st.empty() ? std::string("LIVE") : (st + " - LIVE"); }
+    // ── Pure reconciliation tick (target ladder + debounce + LIVE-floor stall). ──
+    IHeartTick tk;
+    tk.nowMs           = nowtick;
+    tk.mfCls           = cls;
+    tk.mfSong          = mfSong;
+    tk.thSong          = iheart_th_cache_;
+    tk.thEnded         = iheart_th_ended_;
+    tk.digitalActive   = digital_active_.load();
+    tk.ctmOk           = iheart_ctm_.ok;
+    tk.ctmStatus       = iheart_ctm_.httpStatus;
+    tk.ctmArtist       = iheart_ctm_.artist;
+    tk.ctmTitle        = iheart_ctm_.title;
+    tk.ctmEndedSecsAgo = iheart_ctm_.endedSecsAgo;
+    tk.stationName     = iheart_.stationName();
+    tk.repinArmed      = hls_repin_armed_;
+    IHeartDecision d   = ih_sm_.tick(tk);
 
     // ── Deep-analysis capture (opt-in, Ctrl+A; no-op unless enabled). Records the
-    //    full tick — inputs, target, debounce state, and live audio position —
-    //    BEFORE the early-return debounce, so a metadata freeze still emits ticks. ──
+    //    full tick's pre-commit state (from the decision snapshot), so a metadata
+    //    freeze still emits ticks. ──
     {
         IHeartDeepLog::Record dr;
         dr.stationId = iheart_.stationId();
-        dr.station   = st;
+        dr.station   = tk.stationName;
         dr.audioSec  = (double)frames_drained_.load(std::memory_order_relaxed) / (double)SAMPLE_RATE;
         dr.posSec    = positionSec();
         dr.mfCls     = (cls == IHeartMfCls::Song) ? "Song" : (cls == IHeartMfCls::Ad ? "Ad" : "None");
@@ -693,7 +666,7 @@ void StreamSource::updateIHeartNowPlaying(const std::string& body) {
                     if (k == std::string::npos) return {};
                     k += std::strlen(key);
                     // KEY=\"value\" (escaped) or KEY="value". Consume EXACTLY the opening
-                    // =, optional backslash, opening quote — not the whole quote run, or an
+                    // =, optional backslash, opening quote -- not the whole quote run, or an
                     // empty value (KEY=\"\") would swallow the next field's name.
                     if (k < seg.size() && seg[k] == '=')  ++k;
                     if (k < seg.size() && seg[k] == '\\') ++k;
@@ -708,14 +681,14 @@ void StreamSource::updateIHeartNowPlaying(const std::string& body) {
         }
         dr.th        = iheart_th_cache_;
         dr.thEnded   = iheart_th_ended_;
-        dr.thCurrent = thCurrent;
-        dr.tgtKind   = (tgtKind == IHNow::Song) ? "Song" : (tgtKind == IHNow::Ad ? "Ad" : "Live");
-        dr.tgtDisp   = tgtDisp;
-        dr.stState   = (ih_state_ == IHNow::Song) ? "Song" : (ih_state_ == IHNow::Ad ? "Ad" : "Live");
-        dr.stDisp    = ih_state_disp_;
-        dr.pendKind  = (ih_pending_ == IHNow::Song) ? "Song" : (ih_pending_ == IHNow::Ad ? "Ad" : "Live");
-        dr.pendDisp  = ih_pending_disp_;
-        dr.streak    = ih_streak_;
+        dr.thCurrent = d.thCurrent;
+        dr.tgtKind   = ihNowName(d.tgtKind);
+        dr.tgtDisp   = d.tgtDisp;
+        dr.stState   = ihNowName(d.stKind);
+        dr.stDisp    = d.stDisp;
+        dr.pendKind  = ihNowName(d.pendKind);
+        dr.pendDisp  = d.pendDisp;
+        dr.streak    = d.streak;
         dr.ctmOk           = iheart_ctm_.ok;
         dr.ctmStatus       = iheart_ctm_.httpStatus;
         dr.ctmArtist       = iheart_ctm_.artist;
@@ -735,56 +708,32 @@ void StreamSource::updateIHeartNowPlaying(const std::string& body) {
         if (!is_lane_) IHeartDeepLog::emit(dr);
     }
 
-    // Live-floor stall self-heal (digital only) — the second re-pin trigger,
-    // feeding the same flag/arm/cooldown as the discontinuity path. Most ad breaks
-    // drop us onto the LIVE floor briefly and the reconciler re-acquires the next
-    // song on its own; occasionally it stalls there indefinitely (the dual-blind)
-    // and only a re-handshake recovers it. So once we've held the floor past
-    // LIVE_STALL_MS, request the live-edge re-pin. Placed BEFORE the early-return
-    // below because while stalled the state never changes (that return fires every
-    // tick), so this is the only spot that runs during the stall.
-    if (digital_active_.load() && ih_state_ == IHNow::Live) {
-        if (ih_live_since_ == 0) {
-            ih_live_since_ = GetTickCount();
-        } else if (hls_repin_armed_ &&
-                   (GetTickCount() - ih_live_since_) >= LIVE_STALL_MS) {
-            hls_repin_pending_.store(true);
-            hls_repin_armed_ = false;
-            hls_repin_cooldown_until_ = GetTickCount() + 90000;
-            slog("updateIHeart: LIVE-floor stall %lus -> requesting live-edge re-pin",
-                 (unsigned long)((GetTickCount() - ih_live_since_) / 1000));
-            ih_live_since_ = 0;                 // restart floor timer after acting
-        }
-    } else {
-        ih_live_since_ = 0;                     // off the floor (or raw) -> reset timer
+    // Live-floor stall -> live-edge re-pin. The SM owns the floor timer and decides;
+    // the caller still owns the shared armed/cooldown/pending atomics (also driven by
+    // the discontinuity path in hlsPollMedia), so both triggers share one owner.
+    if (d.liveStallFired) {
+        hls_repin_pending_.store(true);
+        hls_repin_armed_ = false;
+        hls_repin_cooldown_until_ = GetTickCount() + 90000;
+        slog("updateIHeart: LIVE-floor stall %lus -> requesting live-edge re-pin",
+             (unsigned long)(d.liveStallElapsedMs / 1000));
     }
 
-    // Dual-stream staging lane (coordinator only). Runs every tick BEFORE the
-    // debounce early-returns below, same rationale as the LIVE-floor block: while
-    // stalled the committed state never changes, so this is the only spot that
-    // runs during an ad. Stage A: shadow observer (arm/watch/log/teardown).
-    if (!is_lane_) serviceStaging();
-
-    // Asymmetric debounce: Song needs 1 tick (instant), Ad 3, Live 2.
-    if (tgtKind == ih_state_ && tgtDisp == ih_state_disp_) { ih_streak_ = 0; return; }  // already committed
-    if (tgtKind == ih_pending_ && tgtDisp == ih_pending_disp_) ih_streak_++;
-    else { ih_pending_ = tgtKind; ih_pending_disp_ = tgtDisp; ih_streak_ = 1; }
-    int need = (tgtKind == IHNow::Song) ? 1 : (tgtKind == IHNow::Ad ? 3 : 2);
-    if (ih_streak_ < need) return;                                                      // hold current display
-
-    ih_state_ = tgtKind; ih_state_disp_ = tgtDisp; ih_streak_ = 0;                      // commit
-    std::string disp = sanitizeForDisplay(tgtDisp);
-    std::lock_guard<std::mutex> lk(now_playing_mtx_);
-    if (disp != now_playing_) {
-        now_playing_ = disp;
-        // Hold this label until its audio is heard: delay = buffer depth ahead of
-        // the speaker = ring seconds + undecoded pending segments. Self-calibrating,
-        // so it tracks rebuffers and collapses to ~0 right after a re-pin flush.
-        long ring_ms = (long)(1000.0 * (double)ringAvailable() / (double)(SAMPLE_RATE * CHANNELS));
-        long pend_ms = (long)hls_.pending.size() * (long)hls_.target_dur_ms;
-        np_pub_q_.push_back({ GetTickCount() + (DWORD)(ring_ms + pend_ms), disp });
-        const char* via = (tgtKind==IHNow::Song) ? "song" : (tgtKind==IHNow::Ad ? "ad" : "live");
-        slog("iheart [%s]: %s", via, disp.c_str());
+    // Commit publish (caller owns now_playing_ / np_pub_q_ / the mutex).
+    if (d.committed) {
+        std::string disp = sanitizeForDisplay(d.newDisp);
+        std::lock_guard<std::mutex> lk(now_playing_mtx_);
+        if (disp != now_playing_) {
+            now_playing_ = disp;
+            // Hold this label until its audio is heard: delay = buffer depth ahead of
+            // the speaker = ring seconds + undecoded pending segments. Self-calibrating,
+            // so it tracks rebuffers and collapses to ~0 right after a re-pin flush.
+            long ring_ms = (long)(1000.0 * (double)ringAvailable() / (double)(SAMPLE_RATE * CHANNELS));
+            long pend_ms = (long)hls_.pending.size() * (long)hls_.target_dur_ms;
+            np_pub_q_.push_back({ GetTickCount() + (DWORD)(ring_ms + pend_ms), disp });
+            const char* via = (d.newKind==IHNow::Song) ? "song" : (d.newKind==IHNow::Ad ? "ad" : "live");
+            slog("iheart [%s]: %s", via, disp.c_str());
+        }
     }
 }
 
@@ -817,7 +766,7 @@ void StreamSource::serviceStaging() {
     case Stg::Idle:
         // Arm while a commercial is airing on the primary (LIVE floor in digital
         // mode) and the cooldown has elapsed. One staging session per break.
-        if (digital_active_.load() && ih_state_ == IHNow::Live &&
+        if (digital_active_.load() && ih_sm_.state() == IHNow::Live &&
             (long)(now - stg_cooldown_until_) >= 0 &&
             !stg_opening_.load() && !staging_) {
             staging_ = std::make_unique<StreamSource>(true);   // is_lane_ = true
@@ -847,7 +796,7 @@ void StreamSource::serviceStaging() {
         break;
 
     case Stg::Arming:
-        if (ih_state_ != IHNow::Live) {                        // primary's break cleared on its own
+        if (ih_sm_.state() != IHNow::Live) {                   // primary's break cleared on its own
             teardown("primary break cleared (no blend needed)", 15000);
         } else {
             // Step-1 visibility (logging only, no behavior change): record what the

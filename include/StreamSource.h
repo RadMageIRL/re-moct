@@ -25,6 +25,7 @@
 #include "miniaudio.h"   // declarations only — MINIAUDIO_IMPLEMENTATION lives in AudioManager.cpp
 #include <fdk-aac/aacdecoder_lib.h>
 #include "IHeartRadio.h"  // isolated iHeart now-playing service (HLS streams only)
+#include "IHeartNowPlayingSM.h"  // pure now-playing reconciliation state machine
 
 class StreamSource {
 public:
@@ -139,7 +140,6 @@ private:
     std::atomic<bool> hls_repin_pending_{ false };  // producer should re-handshake at next safe point
     bool              hls_repin_armed_ = true;      // one-shot: fire once per ad break, then re-arm
     DWORD             hls_repin_cooldown_until_ = 0;// re-arm only after this tick (suppress mid-pod)
-    DWORD             ih_live_since_ = 0;           // tick we entered the LIVE floor (0 = not on it)
 
     // ── Staging lane (dual-stream smooth re-pin) ─────────────────────────────
     // The coordinator (a normal is_lane_=false instance) owns ONE staging
@@ -162,15 +162,8 @@ private:
     std::string iheart_th_cache_;           // cached trackHistory result between throttled polls
     long        iheart_th_ended_  = -1;     // cached trackHistory staleness (now - endTime)
     IHeartRadio::CurrentTrack iheart_ctm_;  // cached currentTrackMeta (polled while deep log is on, or in digital mode for album art)
-    // Debounced reconciliation state machine. Songs interrupt instantly (trusted);
-    // ads must persist to be believed (phantom-ad-during-song protection); the murky
-    // boundary resolves to an honest "<station> - LIVE" floor.
-    enum class IHNow { Live, Song, Ad };
-    IHNow       ih_state_      = IHNow::Live;   // committed
-    std::string ih_state_disp_;                 // committed display string
-    IHNow       ih_pending_    = IHNow::Live;   // candidate awaiting confirmation
-    std::string ih_pending_disp_;
-    int         ih_streak_     = 0;             // consecutive ticks the candidate has held
+    // Debounced reconciliation state machine (pure unit; see IHeartNowPlayingSM.h).
+    IHeartNowPlayingSM ih_sm_;
     void        updateIHeartNowPlaying(const std::string& body);
     static std::string hlsFirstUri(const std::string& body);
     static std::string hlsResolveUrl(const std::string& base, const std::string& ref);

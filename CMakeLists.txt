@@ -23,6 +23,7 @@ set(REMOCT_SOURCES
     src/CDRipper.cpp
     src/CoverArt.cpp
     src/StreamSource.cpp
+    src/IHeartNowPlayingSM.cpp
     src/AacDecoder.cpp
     src/Mp4Chapters.cpp
     src/IHeartRadio.cpp
@@ -133,3 +134,7 @@ set_target_properties(remoct PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 
 install(TARGETS remoct RUNTIME DESTINATION bin)
+
+# ── Phase 0 pure-unit tests ───────────────────────────────────────────────
+enable_testing()
+add_subdirectory(tests)

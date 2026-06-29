@@ -36,3 +36,4 @@ Ctrl+B - ListenBrainz login
 6-28 - fix some bugs in audiobook playback and in IHeartRadio stream handling, log clean up/fixes, additional logging data to identify IHeartRadio ad/song/live edges, fixed         
         indicator following now playing item/content, themes work, add additional visuals to ctrl t (different progress bar), update about page and visualizer, smooth out
         mp3 scrubbing, fix unicode display
+6-29 - fix audiobook hang on non 41khz

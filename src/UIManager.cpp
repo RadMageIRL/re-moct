@@ -32,6 +32,7 @@
 #include "StringUtils.h"
 #include "AudioManager.h"
 #include "PlaylistManager.h"
+#include "Mp4Chapters.h"
 #include "Config.h"
 #include "LrcData.h"
 #include "Toast.h"
@@ -2415,6 +2416,10 @@ void UIManager::drawTrackInfo() {
                                 info_cached_track_.sample_rate  = ap->sampleRate();
                                 info_cached_track_.channels     = ap->channels();
                             }
+                            // TagLib reports the legacy stsd channelcount for AAC (often
+                            // hardcoded to 2 even for mono); prefer the true ASC count.
+                            if (int real = mp4AacChannelCount(path); real > 0)
+                                info_cached_track_.channels = real;
                         }
                     } catch (...) {}
                 }

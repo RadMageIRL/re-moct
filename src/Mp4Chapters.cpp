@@ -264,6 +264,58 @@ bool parseQtChapters(const uint8_t* moovB, const uint8_t* moovE, FILE* f,
     return !out.empty();
 }
 
+// Walk an esds descriptor chain (ES_Descr 0x03 → DecoderConfig 0x04 →
+// DecoderSpecificInfo 0x05) to the AudioSpecificConfig and return its 4-bit
+// channelConfiguration. [p,e) is the esds body *after* its 4-byte version/flags.
+// Returns 0 on any malformed/short input.
+int ascChannelConfig(const uint8_t* p, const uint8_t* e) {
+    auto readLen = [&](const uint8_t*& q) -> uint32_t {   // expandable size (<=4 bytes)
+        uint32_t v = 0;
+        for (int i = 0; i < 4 && q < e; ++i) {
+            uint8_t c = *q++;
+            v = (v << 7) | (c & 0x7F);
+            if (!(c & 0x80)) break;
+        }
+        return v;
+    };
+    // ES_Descriptor
+    if (p >= e || *p++ != 0x03) return 0;
+    readLen(p);
+    if (p + 3 > e) return 0;
+    p += 2;                              // ES_ID
+    uint8_t esFlags = *p++;
+    if (esFlags & 0x80) { if (p + 2 > e) return 0; p += 2; }                                 // dependsOn_ES_ID
+    if (esFlags & 0x40) { if (p >= e) return 0; uint8_t ul = *p++; if (p + ul > e) return 0; p += ul; } // URL
+    if (esFlags & 0x20) { if (p + 2 > e) return 0; p += 2; }                                 // OCR_ES_ID
+    // DecoderConfigDescriptor
+    if (p >= e || *p++ != 0x04) return 0;
+    readLen(p);
+    if (p + 13 > e) return 0;
+    p += 13;                             // objType + streamType/bufferSizeDB(3) + max/avgBitrate(8)
+    // DecoderSpecificInfo == AudioSpecificConfig
+    if (p >= e || *p++ != 0x05) return 0;
+    uint32_t ascLen = readLen(p);
+    const uint8_t* ae = (ascLen && p + ascLen <= e) ? p + ascLen : e;
+    if (p >= ae) return 0;
+
+    // MSB-first bit reader over the ASC.
+    const uint8_t* bp = p; int bit = 0;
+    auto getBits = [&](int n) -> uint32_t {
+        uint32_t v = 0;
+        while (n-- > 0) {
+            uint32_t b = (bp < ae) ? ((*bp >> (7 - bit)) & 1u) : 0u;
+            v = (v << 1) | b;
+            if (bp < ae && ++bit == 8) { bit = 0; ++bp; }
+        }
+        return v;
+    };
+    uint32_t aot = getBits(5);
+    if (aot == 31) aot = 32 + getBits(6);          // AOT escape
+    uint32_t sfi = getBits(4);
+    if (sfi == 0xF) getBits(24);                    // explicit sampling frequency
+    return (int)getBits(4);                          // channelConfiguration
+}
+
 } // namespace
 
 std::vector<Mp4Chapter> parseMp4Chapters(const std::string& utf8Path) {
@@ -323,4 +375,75 @@ std::vector<Mp4Chapter> parseMp4Chapters(const std::string& utf8Path) {
     std::sort(out.begin(), out.end(),
               [](const Mp4Chapter& a, const Mp4Chapter& b) { return a.start_sec < b.start_sec; });
     return out;
+}
+
+int mp4AacChannelCount(const std::string& utf8Path) {
+    FILE* f = openRb(utf8Path);
+    if (!f) return 0;
+
+    // Stream top-level boxes; load only 'moov' (never reads mdat). Mirrors the
+    // parseMp4Chapters scan so this stays cheap even on a 300+ MB book.
+    std::vector<uint8_t> moov;
+    for (;;) {
+        off64 boxStart = FTELL64(f);
+        uint8_t hdr[16];
+        if (std::fread(hdr, 1, 8, f) != 8) break;
+        uint64_t sz = be32(hdr);
+        uint32_t hdrLen = 8;
+        if (sz == 1) {
+            if (std::fread(hdr + 8, 1, 8, f) != 8) break;
+            sz = be64(hdr + 8);
+            hdrLen = 16;
+        } else if (sz == 0) {
+            if (FSEEK64(f, 0, SEEK_END) != 0) break;
+            off64 fend = FTELL64(f);
+            if (fend <= boxStart) break;
+            sz = (uint64_t)(fend - boxStart);
+            if (FSEEK64(f, boxStart + hdrLen, SEEK_SET) != 0) break;
+        }
+        if (sz < hdrLen) break;
+        if (std::memcmp(hdr + 4, "moov", 4) == 0) {
+            uint64_t bodyLen = sz - hdrLen;
+            if (bodyLen == 0 || bodyLen > (uint64_t)128 * 1024 * 1024) break;
+            moov.resize((size_t)bodyLen);
+            if (std::fread(moov.data(), 1, (size_t)bodyLen, f) != bodyLen) moov.clear();
+            break;
+        }
+        if (FSEEK64(f, boxStart + (off64)sz, SEEK_SET) != 0) break;
+    }
+    std::fclose(f);
+    if (moov.empty()) return 0;
+
+    const uint8_t* mb = moov.data();
+    const uint8_t* me = mb + moov.size();
+
+    // Find the first trak whose stsd sample entry is 'mp4a' (skips PNG cover /
+    // chapter-text traks), descend to its esds, and read the ASC channel config.
+    const uint8_t* p = mb;
+    const uint8_t *tb, *te;
+    while (findBox(p, me, "trak", &tb, &te)) {
+        const uint8_t *mdB, *mdE, *nb, *ne, *xb, *xe, *db, *de;
+        if (findBox(tb, te, "mdia", &mdB, &mdE) &&
+            findBox(mdB, mdE, "minf", &nb, &ne) &&
+            findBox(nb, ne, "stbl", &xb, &xe) &&
+            findBox(xb, xe, "stsd", &db, &de) && db + 8 <= de) {
+            const uint8_t* entry = db + 8;                 // skip version/flags + entry_count
+            if (entry + 8 <= de) {
+                uint32_t entrySz = be32(entry);
+                const uint8_t* entryEnd = entry + entrySz;
+                if (entryEnd > de) entryEnd = de;
+                if (std::memcmp(entry + 4, "mp4a", 4) == 0 && entry + 36 <= entryEnd) {
+                    const uint8_t *eb, *ee;            // esds is a child of the AudioSampleEntry (36-byte fixed part)
+                    if (findBox(entry + 36, entryEnd, "esds", &eb, &ee) && eb + 4 <= ee) {
+                        int cc = ascChannelConfig(eb + 4, ee);
+                        if (cc >= 1 && cc <= 6) return cc;
+                        if (cc == 7)            return 8;
+                        return 0;                  // in-band (0) or reserved → caller falls back
+                    }
+                }
+            }
+        }
+        p = te;
+    }
+    return 0;
 }

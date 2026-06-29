@@ -136,12 +136,15 @@ struct Mp4Aac {
 
         if (sizes.empty() || stsc.empty() || chunks.empty()) return;
         uint32_t sIdx = 0;
+        // stsc first_chunk is strictly increasing and c increases monotonically, so the
+        // matching run only ever moves forward. A single advancing cursor makes this
+        // O(chunks + stsc) instead of O(chunks * stsc). Some muxers (e.g. LibriVox m4b)
+        // emit ~one stsc entry per chunk — ~176k chunks * ~120k entries here — where the
+        // old per-chunk inner scan went quadratic (~21B iterations) and froze on open.
+        size_t run = 0;
         for (uint32_t c = 0; c < chunks.size(); ++c) {
-            uint32_t per = stsc.back().perChunk;
-            for (size_t k = 0; k < stsc.size(); ++k) {
-                uint32_t firstNext = (k + 1 < stsc.size()) ? stsc[k + 1].first : 0xFFFFFFFFu;
-                if ((c + 1) >= stsc[k].first && (c + 1) < firstNext) { per = stsc[k].perChunk; break; }
-            }
+            while (run + 1 < stsc.size() && stsc[run + 1].first <= (c + 1)) ++run;
+            uint32_t per = stsc[run].perChunk;
             uint64_t off = chunks[c];
             for (uint32_t s = 0; s < per && sIdx < sizes.size(); ++s, ++sIdx) {
                 samples.push_back({ off, sizes[sIdx] });

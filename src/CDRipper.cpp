@@ -1,5 +1,6 @@
 #ifdef _WIN32
 #include "CDRipper.h"
+#include "ar_crc.h"
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -60,8 +61,7 @@ static inline bool isLocal(RipMode m) {
     return m == RipMode::Local || m == RipMode::LocalVerify;
 }
 // AccurateRip frame 450: sector 450 of track 1, used for pressing offset detection
-static constexpr uint32_t AR_FRAME450_START = 450u * 588u + 1u;  // mul_by 264601
-static constexpr uint32_t AR_FRAME450_END   = 451u * 588u;       // mul_by 265188
+// (AR frame-450 constants moved to ar_crc.h: ar::FRAME450_START / ar::FRAME450_END.)
 // Maximum pressing offset to scan (samples). 700 covers all known pressings.
 static constexpr int MAX_PRESSING_OFFSET = 700;
 
@@ -309,21 +309,12 @@ static bool detectPressingOffsetFrame450(
     const int buf_frames = read_count * SECTOR_SAMPLES;
     const int base_idx   = FR_FIRST - read_start_sec * SECTOR_SAMPLES;
 
-    auto sample32 = [&](int f) -> uint32_t {
-        uint16_t l = (uint16_t)pcm[f * 2 + 0];
-        uint16_t r = (uint16_t)pcm[f * 2 + 1];
-        return (uint32_t)l | ((uint32_t)r << 16);          // L low, R high
-    };
+    // (frame-450 packing now lives in ar::frame450Crcs.)
 
     for (int O = O_lo; O <= O_hi; ++O) {
         const int start = base_idx + O;
         if (start < 0 || start + FR_LEN > buf_frames) continue;
-        uint32_t crc_local = 0, crc_global = 0;
-        for (int k = 0; k < FR_LEN; ++k) {
-            uint32_t s = sample32(start + k);
-            crc_local  += s * (uint32_t)(k + 1);                    // mul 1..588
-            crc_global += s * (uint32_t)(AR_FRAME450_START + k);    // mul 264601..265188
-        }
+        const auto [crc_local, crc_global] = ar::frame450Crcs(pcm, start, FR_LEN);
         for (const auto& pr : db_frame450) {
             if (pr.first == crc_local || pr.first == crc_global) {
                 out_pressing_offset = O - drive_offset;
@@ -864,17 +855,14 @@ ARTrackResult CDRipper::ripTrack(HANDLE             hCD,
         ? (total_samples > AR_SKIP ? total_samples - AR_SKIP : 0u)
         : total_samples;
 
-    uint32_t csum_hi = 0, csum_lo = 0;
     // AccurateRip uses disc-absolute positions. Each track's CRC starts mul_by=1 at
     // the disc-relative track start (= track.start_lba - 150 sectors from disc LBA 0).
     // We read from track.start_lba so must first feed the 150 preceding sectors as a
     // "preamble" with mul_by 1..88200.  For track 1 this area contains real disc data
     // (not silence) that contributes to the CRC.
     static constexpr uint32_t PREGAP_SAMPLES = 150u * 588u;  // 88200
-    uint32_t mul_by  = 1u;
-    uint64_t n_accumulated = 0;  // diagnostic counter
-    uint32_t frame450_global = 0; // sector-450 CRC: global mul (264601..265188)
-    uint32_t frame450_local  = 0; // sector-450 CRC: local  mul (1..588)
+    // Pure AR CRC accumulator (see ar_crc.h); fed at the three sites below.
+    ar::TrackCrc arc(ar_check_from, ar_check_to, is_first, !isLocal(mode));
 
     // ── CTDB CRC32 state (incremental across entire disc) ─────────────────
     // CTDB trims first/last 10 sectors of the disc (not per track).
@@ -990,19 +978,11 @@ ARTrackResult CDRipper::ripTrack(HANDLE             hCD,
         // Skip corr_sub_skip frames (same sub-sector offset as main rip)
         const int16_t* ps = pbuf.data() + corr_sub_skip * 2;
         for (uint32_t pi = 0; pi < PREGAP_SAMPLES && !cancel_.load(); ++pi) {
-            int16_t pl = ps[pi * 2], pr = ps[pi * 2 + 1];
-            uint32_t samp32 = (uint32_t)(uint16_t)pl | ((uint32_t)(uint16_t)pr << 16);
-            if (mul_by >= ar_check_from && mul_by <= ar_check_to) {
-                uint64_t product = (uint64_t)samp32 * (uint64_t)mul_by;
-                csum_hi += (uint32_t)(product >> 32);
-                csum_lo += (uint32_t)(product);
-                ++n_accumulated;
-            }
-            ++mul_by;
+            arc.sample(ps[pi * 2], ps[pi * 2 + 1]);
         }
     } else {
         // Preamble is before disc start (shouldn't happen on normal CDs) — advance mul_by
-        mul_by += PREGAP_SAMPLES;
+        arc.skip(PREGAP_SAMPLES);
     }
 
     while (remaining > 0 && !cancel_.load()) {
@@ -1058,31 +1038,17 @@ ARTrackResult CDRipper::ripTrack(HANDLE             hCD,
             ebur_interleaved[i*2]    = (float)l / 32768.0f;
             ebur_interleaved[i*2+1]  = (float)r / 32768.0f;
 
-            if (!isLocal(mode) &&
-                mul_by >= ar_check_from && mul_by <= ar_check_to) {
-                uint32_t samp32 = (uint32_t)(uint16_t)l | ((uint32_t)(uint16_t)r << 16);
-                uint64_t product = (uint64_t)samp32 * (uint64_t)mul_by;
-                csum_hi += (uint32_t)(product >> 32);
-                csum_lo += (uint32_t)(product);
-                ++n_accumulated;
-                // Log first accumulated sample for cross-check
-                if (is_first && n_accumulated == 1) {
-                    FILE* lf = _wfopen(utf8_to_wide(log_path).c_str(), L"a");
-                    if (lf) {
-                        fprintf(lf, "  first_accum: mul_by=%u samp32=%08x "
-                                "contrib_lo=%08x total_skip=%d\n",
-                                mul_by, samp32, (uint32_t)product, total_skip);
-                        fclose(lf);
-                    }
+            const uint64_t accBefore = arc.nAccumulated();
+            arc.sample(l, r);
+            if (is_first && accBefore == 0 && arc.nAccumulated() == 1) {
+                FILE* lf = _wfopen(utf8_to_wide(log_path).c_str(), L"a");
+                if (lf) {
+                    fprintf(lf, "  first_accum: mul_by=%u samp32=%08x "
+                            "contrib_lo=%08x total_skip=%d\n",
+                            arc.firstMulBy(), arc.firstSamp32(), arc.firstContribLo(), total_skip);
+                    fclose(lf);
                 }
             }
-            // Frame450 diagnostic (track 1 only): accumulate sector 450 — both formulas
-            if (is_first && mul_by >= AR_FRAME450_START && mul_by <= AR_FRAME450_END) {
-                uint32_t samp32 = (uint32_t)(uint16_t)l | ((uint32_t)(uint16_t)r << 16);
-                frame450_global += samp32 * mul_by;
-                frame450_local  += samp32 * (mul_by - AR_FRAME450_START + 1);
-            }
-            ++mul_by;
         }
 
         // PCM CRC32 over this chunk (same bytes fed to FLAC encoder)
@@ -1177,20 +1143,7 @@ ARTrackResult CDRipper::ripTrack(HANDLE             hCD,
             lame_right[i]           = r;
             ebur_interleaved[i*2]   = (float)l / 32768.0f;
             ebur_interleaved[i*2+1] = (float)r / 32768.0f;
-            if (!isLocal(mode) &&
-                mul_by >= ar_check_from && mul_by <= ar_check_to) {
-                uint32_t samp32 = (uint32_t)(uint16_t)l | ((uint32_t)(uint16_t)r << 16);
-                uint64_t product = (uint64_t)samp32 * (uint64_t)mul_by;
-                csum_hi += (uint32_t)(product >> 32);
-                csum_lo += (uint32_t)(product);
-                ++n_accumulated;
-            }
-            if (is_first && mul_by >= AR_FRAME450_START && mul_by <= AR_FRAME450_END) {
-                uint32_t samp32 = (uint32_t)(uint16_t)l | ((uint32_t)(uint16_t)r << 16);
-                frame450_global += samp32 * mul_by;
-                frame450_local  += samp32 * (mul_by - AR_FRAME450_START + 1);
-            }
-            ++mul_by;
+            arc.sample(l, r);
         }
         // PCM CRC32 over the tail bytes
         {
@@ -1258,11 +1211,11 @@ ARTrackResult CDRipper::ripTrack(HANDLE             hCD,
         return ar_result;
     }
 
-    ar_result.crc_v1     = csum_lo;
-    ar_result.crc_v2     = csum_lo + csum_hi;
+    ar_result.crc_v1     = arc.v1();
+    ar_result.crc_v2     = arc.v2();
     ar_result.ctdb_crc   = ctdb_crc;
     ar_result.ctdb_bytes = ctdb_bytes;
-    ar_result.frame450_local = frame450_local;
+    ar_result.frame450_local = arc.frame450Local();
 
     // Preamble read failure -> the AR CRC accumulated silent zeros for the pregap
     // region and cannot be trusted. Keep the audio (already written above), but
@@ -1287,15 +1240,15 @@ ARTrackResult CDRipper::ripTrack(HANDLE             hCD,
                 expected_n += ar_check_to - main_from + 1;
             fprintf(lf, "  AR diag T%d: csum_lo=%08x csum_hi=%08x n_accum=%llu expected=%llu %s\n",
                 track.number,
-                csum_lo, csum_hi,
-                (unsigned long long)n_accumulated,
+                arc.csumLo(), arc.csumHi(),
+                (unsigned long long)arc.nAccumulated(),
                 (unsigned long long)expected_n,
-                n_accumulated == expected_n ? "COUNT OK" : "COUNT MISMATCH!");
+                arc.nAccumulated() == expected_n ? "COUNT OK" : "COUNT MISMATCH!");
             fprintf(lf, "  pcm_crc32=%08x  (dBpoweramp CRC32 for T1=b02e7e1a)\n",
                     pcm_crc32 ^ 0xFFFFFFFFu);
             if (is_first)
                 fprintf(lf, "  frame450: global=%08x local=%08x  (total_skip=%d)\n",
-                        frame450_global, frame450_local, total_skip);
+                        arc.frame450Global(), arc.frame450Local(), total_skip);
                 // Drive offset self-check on track 1: compare frame450_local
                 // against DB frame450 entries. A match confirms offset is correct;
                 // a miss with an unknown drive warns the user loudly.

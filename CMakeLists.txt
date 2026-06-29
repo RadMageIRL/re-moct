@@ -24,6 +24,7 @@ set(REMOCT_SOURCES
     src/CoverArt.cpp
     src/StreamSource.cpp
     src/IHeartNowPlayingSM.cpp
+    src/ar_crc.cpp
     src/AacDecoder.cpp
     src/Mp4Chapters.cpp
     src/IHeartRadio.cpp

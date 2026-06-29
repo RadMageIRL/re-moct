@@ -2,6 +2,7 @@
 #include "AudioManager.h"
 #include "StringUtils.h"
 #include "AacDecoder.h"   // FDK-AAC custom miniaudio backend (.aac/.m4a/.mp4)
+#include "Mp4Chapters.h"  // mp4AacChannelCount: true ASC channel count
 
 #include <taglib/fileref.h>
 #include <taglib/tag.h>
@@ -71,6 +72,10 @@ static void populate_track_info(TrackInfo& info, const std::string& path) {
         info.sample_rate  = ap->sampleRate();
         info.channels     = ap->channels();
     }
+    // TagLib reports the legacy stsd channelcount for AAC (often hardcoded to 2
+    // even for mono); prefer the true count from the AudioSpecificConfig.
+    if (int real = mp4AacChannelCount(path); real > 0)
+        info.channels = real;
     // File size for live VBR bitrate calculation
     try { info.file_size_bytes = fs::file_size(path); } catch (...) {}
 }

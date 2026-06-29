@@ -26,3 +26,12 @@ struct Mp4Chapter {
 // Returns chapters sorted by start_sec. Empty if the file has no chpl table,
 // is not an MP4 container, or cannot be opened.
 std::vector<Mp4Chapter> parseMp4Chapters(const std::string& utf8Path);
+
+// Returns the true decoded channel count of an AAC track in an MP4/M4A/M4B
+// container, read from the AudioSpecificConfig channelConfiguration
+// (1..6 → that many channels, 7 → 8). Returns 0 when the file is not mp4/aac,
+// carries an in-band (0) or reserved channel config, or cannot be parsed — in
+// which case callers should keep their existing value (e.g. TagLib's). Exists
+// because the legacy stsd AudioSampleEntry.channelcount field is widely
+// hardcoded to 2 even for mono content, which TagLib reports verbatim.
+int mp4AacChannelCount(const std::string& utf8Path);

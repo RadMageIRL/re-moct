@@ -1,0 +1,63 @@
+# RE-MOCT roadmap
+
+## Direction (decided)
+Linux-first to establish a clean core/platform boundary, **then** plugin-ability,
+with **iHeart extracted as the first real loadable plugin** as the proof of the
+plugin system. Porting forces the boundary clean; an interface proven across two
+platforms is more trustworthy. Get there in two moves: prove an internal
+compile-time Source interface first, **then** harden it into a C-ABI DLL/SO. Don't
+carve the ABI first.
+
+> **Spotify is dropped for now.** It was the thing that tempted us to pull plugins
+> ahead of the Linux port; without it, the original ordering is cleaner. The
+> Source-interface design stays transport-agnostic (see `architecture.md`) so a
+> future sidecar-style service plugin remains possible, but it is not on the plan.
+
+## Phases (in order)
+- **Phase 0 — streaming-path record/replay test harness.** NON-NEGOTIABLE FIRST.
+  Turns refactors from build-and-pray into safe. Also wrap the pure AccurateRip CRC
+  math so it's unit-testable off-disc. This is the recommended next substantive step.
+- **Phase 1 — platform abstraction / cleanup.** Replace platform-specific calls with
+  seams (interfaces), not `#ifdef`s:
+  - HTTP: consolidate the 8 per-module WinINet GET helpers into one `http_get`
+    interface (Linux = libcurl; later, host provides transport to plugins).
+  - IPC: Discord named-pipe → abstract (Linux = Unix socket).
+  - Notifications: Toast/PowerShell → abstract (Linux = libnotify/notify-send).
+  - CD access: Windows IOCTL → SG_IO on Linux.
+  - Clear the parked concurrency debt where cheap.
+- **Phase 2 — internal Source interface.** A compile-time C++ abstract base
+  (statically linked, NOT a DLL yet): `open / readFrames / seek? / metadata /
+  capabilities / close`. Refactor the EXISTING sources (local file, iHeart, ICY,
+  CD) to implement it. Prove it against what already exists, under the Phase 0
+  harness, with zero new dependencies.
+- **Phase 3 — Linux port.** Forces the boundary clean. WSL2 as the fast inner loop,
+  GitHub Actions matrix (Windows + Linux) as the source of truth.
+- **Phase 4 — plugin-ize.** Harden the Source interface into a loadable C-ABI
+  `.dll`/`.so` boundary, and **extract iHeart as the first real plugin** — the test
+  of the whole plugin system. ("Fix iHeart and ship without rebuilding the host.")
+
+## Parked / deferred (not disturbed)
+- CDRipper negative drive-offset preamble OOB read + wrong CRC phase: BLOCKED —
+  can't fire on Dos's +6 drive (HL-DT-ST GHD3N); needs a synthetic negative-offset
+  test vector + a HydrogenAudio thread. Do NOT patch blind.
+- iHeart rabbit-hole desync: needs a 15–20 min instrumented ad-block capture (see
+  `streaming.md`).
+- Scrobble back-to-back duplicate: source commits from debounced `IHNow` + TTL dedup.
+- StreamSource `isOpen()` race (consumed in staging lane, defer); `driveOffsetKnown()`
+  always-false (skip, no payoff); AAC re-pin doesn't reset FDK (defer, ADTS resyncs).
+- ICY/SHOUTcast metadata improvement (structural protocol limit); ICY ingest
+  sanitization (station-ID stripping).
+- Comb-filter / harmonic-sum tempogram for BPM (shelved).
+- Faster manifest polling + staggered-peek machinery (pending rabbit-hole capture).
+
+## Decisions log
+- **300ms post-track-change seek lockout: REJECTED.** Silent dropped seeks in every
+  track-change window were worse than the rare benign held-key leak they prevented.
+  The track-stamp guard (discard a buffered seek if the track changed) was kept — it's
+  costless and prevents the genuinely-wrong case with no deadzone.
+- **Crossfade head-completion: UI-only.** Read the existing `crossfading_` atomic via
+  `isCrossfading()` and let the comet head ride to 100% while crossfading; releases
+  cleanly when the swap clears the flag. No audio-thread changes. Awesome-mode only;
+  Classic keeps MOC's snap.
+- **Don't carve the ABI first.** Internal compile-time interface → prove → then DLL.
+- **Probe-first** for any new parsing/protocol work.

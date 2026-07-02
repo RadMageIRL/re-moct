@@ -1,0 +1,7 @@
+build/
+cache/
+cache_art.jpg
+lib/miniaudio.h
+.vscode/
+*.o
+*.a

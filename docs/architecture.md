@@ -24,6 +24,12 @@ are for streaming sources.
 notify) service rather than each plugin carrying its own WinINet. This keeps plugins
 platform-neutral and quietly does the Phase 1 HTTP consolidation at the same time.
 
+> **The HTTP seam now exists** (Phase 1 slice 1, `include/IHttp.h`): `core::IHttp` is
+> the interface the host will hand plugins — the DI target that makes the above real.
+> Its `platform::win::WinInetHttp` impl is the first concrete transport. The current
+> process-wide `core::http()` accessor is a **transitional** migration seam ONLY;
+> the endgame is injection (pass the `IHttp&` in), NOT a global. Don't enshrine it.
+
 > Spotify (dropped for now): if ever revisited, the realistic path is a **sidecar** —
 > run librespot / go-librespot as a separate process, talk control + audio over IPC
 > (reuse the Discord named-pipe muscle). Constraints: Premium-only (always), ToS gray

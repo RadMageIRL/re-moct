@@ -67,3 +67,17 @@
   isolated g++ where possible. Probe-first for new parsing/protocol logic.
 - Cosmetic iteration is fine ("dessert"), but the Phase 0 harness is the "vegetables"
   that make the next big refactor safe — don't let polish indefinitely defer it.
+
+## HTTP / platform-seam migration
+- **Parity for an HTTP migration lives at the call sites, not the seam.** The FakeHttp
+  unit test feeds canned bodies, so it proves parse logic but CANNOT catch a wrong
+  request field — body cap, timeout, user-agent, status-gating, or redirect policy. Those
+  must be eyeball-confirmed against the pre-migration baseline, per site, by hand.
+- **Verify repo structure with `ls`/`dir` before asserting file placement.** A stated
+  layout is a claim, not ground truth. Phase 1 slice 1 nearly committed `IHttp.h` /
+  `HttpWinInet.cpp` at the repo root on a false "flat layout" premise; a directory
+  listing caught that the tree already had `src/`+`include/`. Check, don't assume.
+- **`INTERNET_FLAG_SECURE` derived from the URL scheme is a no-op for all-HTTPS sites
+  but a real behavior change for a plain-HTTP one.** Harmless through group (a) (MBLookup
+  + RadioBrowser are HTTPS); flag it when CDRipper's AR/CTDB fetch (plain `http://`
+  accuraterip.com / cuetools.net) migrates in group (c).

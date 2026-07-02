@@ -19,8 +19,19 @@ carve the ABI first.
   math so it's unit-testable off-disc. This is the recommended next substantive step.
 - **Phase 1 — platform abstraction / cleanup.** Replace platform-specific calls with
   seams (interfaces), not `#ifdef`s:
-  - HTTP: consolidate the 8 per-module WinINet GET helpers into one `http_get`
-    interface (Linux = libcurl; later, host provides transport to plugins).
+  - HTTP: consolidate the per-module WinINet GET helpers behind one `core::IHttp`
+    seam (Linux = libcurl later; later still, host provides transport to plugins).
+    Migrated in groups, split by verification method:
+    - **slice 1 / group (a) — GET/JSON: ✅ DONE** (commit `94eb8cb`): MBLookup +
+      RadioBrowser. See Done section.
+    - group (b) — POST scrobble: LastFm + ListenBrainz. First exercise of the
+      `body`/`content_type` fields; verify by a real scrobble round-trip on BOTH.
+    - group (c) — bytes + redirect: CoverArt, CDRipper (AR/CTDB), StreamSource
+      `hlsHttpGet`. Exercises binary bodies + `final_url`. **CDRipper is plain-HTTP**
+      (`INTERNET_FLAG_SECURE` must derive from scheme — see `lessons.md`). The live
+      StreamSource audio read loop (`InternetReadFile`→ring) stays OUT of the seam.
+    - IHeart metadata — its OWN deferred go/no-go: persistent `KEEP_CONNECTION` on the
+      audio-poll thread; decide per-call vs keep-alive when taken (do NOT fold in).
   - IPC: Discord named-pipe → abstract (Linux = Unix socket).
   - Notifications: Toast/PowerShell → abstract (Linux = libnotify/notify-send).
   - CD access: Windows IOCTL → SG_IO on Linux.
@@ -37,6 +48,19 @@ carve the ABI first.
   of the whole plugin system. ("Fix iHeart and ship without rebuilding the host.")
 
 ## Done (restructure branch)
+- **Phase 1 slice 1 — HTTP seam, group (a): FIXED/DONE** (commit `94eb8cb`, pushed).
+  `core::IHttp` interface (`include/IHttp.h`, portable — no `windows.h`) +
+  `platform::win::WinInetHttp` impl (`src/HttpWinInet.cpp`, `if(WIN32)`). MBLookup +
+  RadioBrowser GET helpers now call `core::http().fetch()`. Parity verified vs baseline:
+  4 MB cap both, RadioBrowser 6 s timeout, MBLookup no timeout, default UA byte-identical,
+  HTTP status ignored, WinINet default redirect-follow. FakeHttp-backed `http_seam_test`
+  added (real parse shapes: RadioBrowser `url_resolved`→`url` fallback, MB nested
+  `artist-credit`). Two-layer verified: `ctest` 3/3 + real-world on 7of9 (Relish MB lookup
+  resolved metadata; RadioBrowser "kwin" search returned KWIN 97.7).
+  - `core::http()` is a TRANSITIONAL global (endgame = injection; see `architecture.md`).
+  - At the later `src/core` + `src/platform/{win,linux}` reorg, `IHttp.h` moves to
+    `include/core/` and `HttpWinInet.cpp` to `src/platform/win/`.
+  - Remaining HTTP work (groups b, c, IHeart) tracked under Phase 1 above.
 - **CDRipper negative drive-offset preamble OOB read + wrong CRC phase: FIXED**
   (commit `1a2235a`). Floored offset decomposition (`ar::normalizeSkip`) + signed
   preamble guard (`ar::arPreambleReadable`) extracted into `ar_crc.h` and wired into

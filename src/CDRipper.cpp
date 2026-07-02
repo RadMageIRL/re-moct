@@ -922,11 +922,16 @@ ARTrackResult CDRipper::ripTrack(HANDLE             hCD,
     // disc position we need — NO additional skip within the sector is needed.
     // (The lba advance already accounts for the drive's early-read margin.)
     const int total_skip    = drive_offset + pressing_offset;
-    const int corr_lba_adv  = total_skip / SECTOR_SAMPLES;
-    const int corr_sub_skip = total_skip % SECTOR_SAMPLES;
+    // Floored decomposition (ar::normalizeSkip): keeps corr_sub_skip in [0,588) for
+    // EITHER sign. Truncating / and % gave a NEGATIVE corr_sub_skip on negative-offset
+    // drives -> preamble ptr underflow (OOB) + dropped main-path skip (wrong CRC phase).
+    // For non-negative total_skip this is byte-identical to the old / and %.
+    const ar::SkipParts skip = ar::normalizeSkip(total_skip);
+    const int corr_lba_adv  = skip.lba_adv;
+    const int corr_sub_skip = skip.sub_skip;
     bool corr_first_done    = false;
 
-    DWORD lba       = track.start_lba + (DWORD)corr_lba_adv;
+    DWORD lba       = (DWORD)((long long)track.start_lba + corr_lba_adv);  // signed: adv may be < 0
     DWORD remaining = (DWORD)track.length_lba;   // always full track length
     bool  ok        = true;
     DWORD done_secs = 0;
@@ -945,9 +950,10 @@ ARTrackResult CDRipper::ripTrack(HANDLE             hCD,
     bool preamble_failed = false;
 
     if (!isLocal(mode) && !cancel_.load() &&
-        track.start_lba >= 150 + (DWORD)corr_lba_adv) {
-        // preamble_lba: 150 sectors before our effective read start
-        const DWORD preamble_lba = track.start_lba - 150 + (DWORD)corr_lba_adv;
+        ar::arPreambleReadable(track.start_lba, corr_lba_adv)) {
+        // preamble_lba: 150 sectors before our effective read start (signed: adv may be < 0)
+        const DWORD preamble_lba =
+            (DWORD)((long long)track.start_lba - 150 + corr_lba_adv);
         // Need enough sectors to produce PREGAP_SAMPLES after the sub-sector skip.
         // ceil((PREGAP_SAMPLES + corr_sub_skip) / SECTOR_SAMPLES) + 1 for safety.
         const int preamble_secs = (int)((PREGAP_SAMPLES + corr_sub_skip + SECTOR_SAMPLES - 1)
@@ -998,13 +1004,12 @@ ARTrackResult CDRipper::ripTrack(HANDLE             hCD,
         int samples = (int)this_read * SECTOR_SAMPLES;
         const int16_t* src = reinterpret_cast<const int16_t*>(raw_buf);
 
-        // On the first chunk, skip the first corr_sub_skip samples (pre-track
-        // samples delivered by a drive with positive read offset).
-        if (!corr_first_done && corr_sub_skip > 0) {
+        // On the first chunk, skip the sub-sector remainder. corr_sub_skip is now
+        // always >= 0 (ar::normalizeSkip), so no `> 0` gate: a negative skip used to
+        // be silently dropped here, misaligning the track's mul_by (wrong CRC phase).
+        if (!corr_first_done) {
             src     += corr_sub_skip * 2;
             samples -= corr_sub_skip;
-            corr_first_done = true;
-        } else {
             corr_first_done = true;
         }
 

@@ -72,4 +72,34 @@ private:
     uint32_t firstSamp32_ = 0, firstContribLo_ = 0, firstMulBy_ = 0;
 };
 
+// ── Drive / pressing offset normalization ────────────────────────────────────
+// The rip applies a signed total sample skip (drive_offset + pressing_offset) as a
+// whole-sector LBA advance PLUS a sub-sector sample skip. Decompose with FLOORED
+// division so the sub-sector remainder is ALWAYS non-negative for either sign:
+//     lba_adv * SECTOR_SAMPLES + sub_skip == total_skip,   with 0 <= sub_skip < 588.
+// The pre-fix inline math used truncating '/' and '%', which for a NEGATIVE offset
+// produced a negative sub_skip that (a) underflowed the preamble source pointer
+// (pbuf.data() + sub_skip*2) -> out-of-bounds read, and (b) was silently dropped on
+// the main-rip path (gated `> 0`) -> samples fed at the wrong disc-absolute mul_by
+// (wrong CRC phase). For NON-NEGATIVE total_skip this is byte-identical to '/' & '%'.
+inline constexpr int SECTOR_SAMPLES = 588;   // stereo frames per CD sector (2352/4)
+
+struct SkipParts { int lba_adv; int sub_skip; };
+
+inline SkipParts normalizeSkip(int total_skip) {
+    int adv = total_skip / SECTOR_SAMPLES;
+    int sub = total_skip % SECTOR_SAMPLES;
+    if (sub < 0) { sub += SECTOR_SAMPLES; --adv; }   // floor: keep 0 <= sub < 588
+    return SkipParts{ adv, sub };
+}
+
+// The AR preamble reads 150 sectors before the offset-corrected track start. With a
+// negative lba_adv that start moves earlier, so bounds-check in SIGNED space: a track
+// too close to disc LBA 0 declines gracefully instead of underflowing. (The pre-fix
+// guard cast `(DWORD)corr_lba_adv`, wrapping a negative advance to ~4e9.) 150 = the
+// physical AccurateRip lead-in preamble — unchanged, a property of the disc by design.
+inline bool arPreambleReadable(uint32_t track_start_lba, int lba_adv) {
+    return (long long)track_start_lba - 150 + lba_adv >= 0;
+}
+
 } // namespace ar

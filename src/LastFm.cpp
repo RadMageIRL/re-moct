@@ -2,10 +2,10 @@
 
 #include "LastFm.h"
 #include "Log.h"
+#include "IHttp.h"
 
 #define WIN32_LEAN_AND_MEAN
-#include <windows.h>
-#include <wininet.h>
+#include <windows.h>       // CryptoAPI (MD5 api_sig signing) still needs this
 #include <wincrypt.h>
 #include <algorithm>
 #include <cctype>
@@ -23,7 +23,6 @@ static void lflog(const char* fmt, ...) {
     Log::write("lastfm", buf);
 }
 
-static const char* kUA  = "RE-MOCT/1.0.0-rc1 (https://github.com/RadMageIRL/re-moct)";
 static const char* kHost = "ws.audioscrobbler.com";
 static const char* kPath = "/2.0/";
 
@@ -74,53 +73,26 @@ std::string LastFm::urlEncode(const std::string& s) {
     return out;
 }
 
-// ─── HTTP ──────────────────────────────────────────────────────────────────
+// ─── HTTP via the core::IHttp seam (WinINet impl) ────────────────────────────
+// Signing + body assembly stay here (md5Hex / sign / postWriteCall); only transport
+// moved. Parity: UA is the seam default (byte-identical to the app UA), 8 s
+// connect+receive timeout, HTTPS from scheme, HTTP status ignored (writes gate on
+// the JSON `error` field in postWriteCall).
 std::string LastFm::httpGet(const std::string& url) {
-    HINTERNET inet = InternetOpenA(kUA, INTERNET_OPEN_TYPE_PRECONFIG, nullptr, nullptr, 0);
-    if (!inet) return {};
-    DWORD t = 8000;
-    InternetSetOptionA(inet, INTERNET_OPTION_CONNECT_TIMEOUT, &t, sizeof(t));
-    InternetSetOptionA(inet, INTERNET_OPTION_RECEIVE_TIMEOUT, &t, sizeof(t));
-    HINTERNET conn = InternetOpenUrlA(inet, url.c_str(), nullptr, 0,
-        INTERNET_FLAG_RELOAD | INTERNET_FLAG_SECURE | INTERNET_FLAG_NO_CACHE_WRITE, 0);
-    if (!conn) { InternetCloseHandle(inet); return {}; }
-    std::string body; char buf[2048]; DWORD got = 0;
-    while (InternetReadFile(conn, buf, sizeof(buf), &got) && got > 0)
-        body.append(buf, got);
-    InternetCloseHandle(conn);
-    InternetCloseHandle(inet);
-    return body;
+    core::HttpRequest req;
+    req.url        = url;
+    req.timeout_ms = 8000;
+    return core::http().fetch(req).body;
 }
 
 std::string LastFm::httpPost(const std::string& path, const std::string& body) {
-    HINTERNET inet = InternetOpenA(kUA, INTERNET_OPEN_TYPE_PRECONFIG, nullptr, nullptr, 0);
-    if (!inet) return {};
-    DWORD t = 8000;
-    InternetSetOptionA(inet, INTERNET_OPTION_CONNECT_TIMEOUT, &t, sizeof(t));
-    InternetSetOptionA(inet, INTERNET_OPTION_RECEIVE_TIMEOUT, &t, sizeof(t));
-
-    HINTERNET conn = InternetConnectA(inet, kHost, INTERNET_DEFAULT_HTTPS_PORT,
-                                      nullptr, nullptr, INTERNET_SERVICE_HTTP, 0, 0);
-    if (!conn) { InternetCloseHandle(inet); return {}; }
-
-    HINTERNET req = HttpOpenRequestA(conn, "POST", path.c_str(), nullptr, nullptr, nullptr,
-        INTERNET_FLAG_SECURE | INTERNET_FLAG_RELOAD | INTERNET_FLAG_NO_CACHE_WRITE, 0);
-    if (!req) { InternetCloseHandle(conn); InternetCloseHandle(inet); return {}; }
-
-    const char* hdr = "Content-Type: application/x-www-form-urlencoded\r\n";
-    std::string resp;
-    if (HttpSendRequestA(req, hdr, (DWORD)-1L,
-                         (LPVOID)body.data(), (DWORD)body.size())) {
-        char buf[2048]; DWORD got = 0;
-        while (InternetReadFile(req, buf, sizeof(buf), &got) && got > 0)
-            resp.append(buf, got);
-    } else {
-        lflog("httpPost: HttpSendRequest failed err=%lu", GetLastError());
-    }
-    InternetCloseHandle(req);
-    InternetCloseHandle(conn);
-    InternetCloseHandle(inet);
-    return resp;
+    core::HttpRequest req;
+    req.method       = "POST";
+    req.url          = std::string("https://") + kHost + path;   // ws.audioscrobbler.com + /2.0/
+    req.body         = body;
+    req.content_type = "application/x-www-form-urlencoded";
+    req.timeout_ms   = 8000;
+    return core::http().fetch(req).body;
 }
 
 // Build the form body from signed params + api_sig + format=json, POST it,

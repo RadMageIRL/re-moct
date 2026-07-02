@@ -53,4 +53,10 @@ struct IHttp {
 // `IHttp&`, prefer that over reaching for this global.
 IHttp& http();
 
+// TRANSITIONAL injection hook (same status as http() above — not the endgame).
+// Overrides what http() returns process-wide; pass nullptr to restore the default
+// WinINet transport. Exists so tests can inject a fake transport to inspect the
+// request a consumer builds; do NOT use it in production code.
+void setHttp(IHttp* transport);
+
 } // namespace core

@@ -19,3 +19,21 @@ add_executable(http_seam_test http_seam_test.cpp)
 target_include_directories(http_seam_test PRIVATE
     ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/lib)
 add_test(NAME http_seam_test COMMAND http_seam_test)
+
+# core::IHttp POST seam (group b) — Windows-only end-to-end request test. Links the
+# real LastFm/ListenBrainz consumers + the WinINet impl and injects a FakeHttp to
+# assert the request each consumer builds (verb, content-type, auth header, UTF-8
+# body). Windows-only because it links the consumers; Linux CI keeps the 3 pure suites.
+if(WIN32)
+    add_executable(scrobble_request_test
+        scrobble_request_test.cpp
+        ${CMAKE_SOURCE_DIR}/src/LastFm.cpp
+        ${CMAKE_SOURCE_DIR}/src/ListenBrainz.cpp
+        ${CMAKE_SOURCE_DIR}/src/HttpWinInet.cpp
+        ${CMAKE_SOURCE_DIR}/src/Log.cpp
+    )
+    target_include_directories(scrobble_request_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/lib)
+    target_link_libraries(scrobble_request_test PRIVATE wininet advapi32)
+    add_test(NAME scrobble_request_test COMMAND scrobble_request_test)
+endif()

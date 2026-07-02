@@ -2,16 +2,13 @@
 
 #include "ListenBrainz.h"
 #include "Log.h"
+#include "IHttp.h"
 
-#define WIN32_LEAN_AND_MEAN
-#include <windows.h>
-#include <wininet.h>
 #include <cstdarg>
 #include <cstdio>
 #include "json.hpp"
 
 
-static const char* kUA   = "RE-MOCT/1.0.0-rc1 (https://github.com/RadMageIRL/re-moct)";
 static const char* kHost = "api.listenbrainz.org";
 
 // printf-style helper that funnels into the shared operational log.
@@ -50,82 +47,36 @@ std::string ListenBrainz::buildSubmitBody(const std::string& listen_type,
     return body.dump();
 }
 
-// ─── HTTP ──────────────────────────────────────────────────────────────────
+// ─── HTTP via the core::IHttp seam (WinINet impl) ────────────────────────────
+// buildSubmitBody + accepted() stay here; only transport moved. Parity: UA is the
+// seam default (byte-identical to the app UA), Content-Type application/json,
+// Authorization: Token header, 8 s connect+receive timeout. The HTTP status is
+// surfaced back through http_status — accepted() gates on status==200 (JSON fallback),
+// so status is load-bearing here (unlike LastFm, which gates on the JSON error field).
 std::string ListenBrainz::httpPost(const std::string& path, const std::string& body,
                                    const std::string& token, long* http_status) {
-    if (http_status) *http_status = 0;
-    HINTERNET inet = InternetOpenA(kUA, INTERNET_OPEN_TYPE_PRECONFIG, nullptr, nullptr, 0);
-    if (!inet) return {};
-    DWORD t = 8000;
-    InternetSetOptionA(inet, INTERNET_OPTION_CONNECT_TIMEOUT, &t, sizeof(t));
-    InternetSetOptionA(inet, INTERNET_OPTION_RECEIVE_TIMEOUT, &t, sizeof(t));
-
-    HINTERNET conn = InternetConnectA(inet, kHost, INTERNET_DEFAULT_HTTPS_PORT,
-                                      nullptr, nullptr, INTERNET_SERVICE_HTTP, 0, 0);
-    if (!conn) { InternetCloseHandle(inet); return {}; }
-
-    HINTERNET req = HttpOpenRequestA(conn, "POST", path.c_str(), nullptr, nullptr, nullptr,
-        INTERNET_FLAG_SECURE | INTERNET_FLAG_RELOAD | INTERNET_FLAG_NO_CACHE_WRITE, 0);
-    if (!req) { InternetCloseHandle(conn); InternetCloseHandle(inet); return {}; }
-
-    std::string hdr = "Content-Type: application/json\r\nAuthorization: Token " + token + "\r\n";
-    std::string resp;
-    if (HttpSendRequestA(req, hdr.c_str(), (DWORD)-1L,
-                         (LPVOID)body.data(), (DWORD)body.size())) {
-        if (http_status) {
-            DWORD code = 0, len = sizeof(code);
-            HttpQueryInfoA(req, HTTP_QUERY_STATUS_CODE | HTTP_QUERY_FLAG_NUMBER,
-                           &code, &len, nullptr);
-            *http_status = (long)code;
-        }
-        char buf[2048]; DWORD got = 0;
-        while (InternetReadFile(req, buf, sizeof(buf), &got) && got > 0)
-            resp.append(buf, got);
-    } else {
-        lblog("httpPost: HttpSendRequest failed err=%lu", GetLastError());
-    }
-    InternetCloseHandle(req);
-    InternetCloseHandle(conn);
-    InternetCloseHandle(inet);
-    return resp;
+    core::HttpRequest req;
+    req.method       = "POST";
+    req.url          = std::string("https://") + kHost + path;
+    req.body         = body;
+    req.content_type = "application/json";
+    req.headers.push_back({"Authorization", "Token " + token});
+    req.timeout_ms   = 8000;
+    core::HttpResponse r = core::http().fetch(req);
+    if (http_status) *http_status = r.status;
+    return r.body;
 }
 
 std::string ListenBrainz::httpGet(const std::string& path,
                                   const std::string& token, long* http_status) {
-    if (http_status) *http_status = 0;
-    HINTERNET inet = InternetOpenA(kUA, INTERNET_OPEN_TYPE_PRECONFIG, nullptr, nullptr, 0);
-    if (!inet) return {};
-    DWORD t = 8000;
-    InternetSetOptionA(inet, INTERNET_OPTION_CONNECT_TIMEOUT, &t, sizeof(t));
-    InternetSetOptionA(inet, INTERNET_OPTION_RECEIVE_TIMEOUT, &t, sizeof(t));
-
-    HINTERNET conn = InternetConnectA(inet, kHost, INTERNET_DEFAULT_HTTPS_PORT,
-                                      nullptr, nullptr, INTERNET_SERVICE_HTTP, 0, 0);
-    if (!conn) { InternetCloseHandle(inet); return {}; }
-
-    HINTERNET req = HttpOpenRequestA(conn, "GET", path.c_str(), nullptr, nullptr, nullptr,
-        INTERNET_FLAG_SECURE | INTERNET_FLAG_RELOAD | INTERNET_FLAG_NO_CACHE_WRITE, 0);
-    if (!req) { InternetCloseHandle(conn); InternetCloseHandle(inet); return {}; }
-
-    std::string hdr = "Authorization: Token " + token + "\r\n";
-    std::string resp;
-    if (HttpSendRequestA(req, hdr.c_str(), (DWORD)-1L, nullptr, 0)) {
-        if (http_status) {
-            DWORD code = 0, len = sizeof(code);
-            HttpQueryInfoA(req, HTTP_QUERY_STATUS_CODE | HTTP_QUERY_FLAG_NUMBER,
-                           &code, &len, nullptr);
-            *http_status = (long)code;
-        }
-        char buf[2048]; DWORD got = 0;
-        while (InternetReadFile(req, buf, sizeof(buf), &got) && got > 0)
-            resp.append(buf, got);
-    } else {
-        lblog("httpGet: HttpSendRequest failed err=%lu", GetLastError());
-    }
-    InternetCloseHandle(req);
-    InternetCloseHandle(conn);
-    InternetCloseHandle(inet);
-    return resp;
+    core::HttpRequest req;
+    req.method     = "GET";
+    req.url        = std::string("https://") + kHost + path;
+    req.headers.push_back({"Authorization", "Token " + token});
+    req.timeout_ms = 8000;
+    core::HttpResponse r = core::http().fetch(req);
+    if (http_status) *http_status = r.status;
+    return r.body;
 }
 
 // A submit is accepted on HTTP 200; some responses also carry {"status":"ok"}.

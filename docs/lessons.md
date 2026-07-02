@@ -35,6 +35,14 @@
   It's load-bearing for ad-skip re-pin crossfade — do not "clean it up."
 - `LIVE_STALL_MS = 35000`. `prebuffered_` + `ringClear()` interactions are subtle;
   changes here need explicit justification and confirmation.
+- **ICY now-playing only updates when the broadcaster actually sends a StreamTitle in
+  the metadata block on a track change.** Plenty of stations skip it on some
+  transitions (or send station IDs instead of songs). So a label that fails to update
+  across one transition is the STATION's silence, not a client parsing bug — rule out
+  the broadcaster before suspecting `readAudio`/`parseIcyMetadata`. Ruled out exactly
+  this way during the slice-4 ICY regression gate (a missed update on one transition,
+  station-side). Related parked items: ICY metadata improvement is a structural
+  protocol limit; ICY ingest sanitization (station-ID stripping) — see `roadmap.md`.
 
 ## MP3 seek (bit reservoir)
 - MP3 frames borrow main_data from up to ~511 bytes of preceding frames (the bit

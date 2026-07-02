@@ -72,7 +72,9 @@ behind `core::IHttp` via the capabilities designed and approved this session:
   separate decision); stalled-connect prompt interrupt (hardening); concurrency debt.
 
 ## Current state
-- **Branch:** `restructure`; code commit `4c72b09` + docs commit local — push when ready.
+- **Branch:** `restructure`; slice 4 = code `4c72b09` + docs `668d3da` (+ a small
+  follow-up lessons commit: ICY StreamTitle silence is station-side). Local only —
+  push when ready.
 - **Tests:** 7/7 green via `ctest` (5 prior + `http_cancel_test`, `iheart_request_test`).
 - **Build:** clean, `remoct.exe` at `build\bin\remoct.exe`.
 - **This `E:\code\remoct` clone has the full MSYS2 UCRT toolchain + deps** — full build +

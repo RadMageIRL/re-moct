@@ -145,7 +145,7 @@ curl -L https://github.com/nlohmann/json/releases/latest/download/json.hpp \
 
 ```bash
 C:\msys64\usr\bin\bash.exe -l -c \
-  'export PATH=/ucrt64/bin:$PATH && cd /e/code/digi && \
+  'export PATH=/ucrt64/bin:$PATH && cd /e/code/remoct && \
    rm -rf build && mkdir build && cd build && cmake .. -G Ninja && ninja'
 ```
 
@@ -236,37 +236,66 @@ bookmark=C:\Music\Lossless
 ## Project Structure
 
 ```
-digi/
+remoct/
 ├── CMakeLists.txt
+├── BUILD.md
 ├── README.md
 ├── lib/
-│   ├── miniaudio.h          ← download separately
-│   ├── json.hpp             ← nlohmann/json, download separately
-│   └── stb_image.h          ← included
-├── include/
-│   ├── UIManager.h          ← ncurses UI, all panes and modals
-│   ├── AudioManager.h       ← miniaudio backend, crossfade
-│   ├── PlaylistManager.h    ← playlist, queue, recent, favs
-│   ├── CDSource.h           ← Win32 IOCTL CD playback + drive offset
+│   ├── miniaudio.h          ← miniaudio, download separately
+│   └── json.hpp             ← nlohmann/json, download separately
+├── include/                 (headers; .cpp counterpart in src/ unless noted)
+│   ├── UIManager.h          ← ncurses UI: panes, modals, Classic/Awesome
+│   ├── AudioManager.h       ← miniaudio backend, lock-free ring, crossfade
+│   ├── PlaylistManager.h    ← playlist, queue, recent, favs, [Radio]/[Books]
+│   ├── CDSource.h           ← Win32 IOCTL CD playback + TOC/sector read
 │   ├── CDRipper.h           ← CD ripping (AR/CTDB/Local modes)
-│   ├── MBLookup.h           ← MusicBrainz disc ID lookup
-│   ├── AlbumArt.h           ← TagLib art extraction
-│   ├── Config.h             ← config file read/write
+│   ├── ar_crc.h             ← pure AccurateRip CRC math (off-disc testable)
+│   ├── drive_offsets.h      ← AccurateRip drive-offset table (header-only)
+│   ├── MBLookup.h           ← MusicBrainz disc ID + Discogs lookup
+│   ├── CoverArt.h           ← cover art fetch (iTunes/Deezer/CAA) + embed
+│   ├── StreamSource.h       ← HTTP/HLS radio producer, ring buffer, re-pin
+│   ├── AacDecoder.h         ← FDK-AAC / HE-AAC stream decode
+│   ├── IHeartRadio.h        ← iHeart station resolve + metadata API
+│   ├── IHeartNowPlayingSM.h ← pure now-playing reconciliation state machine
+│   ├── IHeartDeepLog.h      ← opt-in NDJSON deep-analysis log (Ctrl+A)
+│   ├── RadioBrowser.h       ← radio-browser.info station search
+│   ├── Mp4Chapters.h        ← .m4b audiobook chapter parsing
+│   ├── LastFm.h             ← Last.fm scrobbling
+│   ├── ListenBrainz.h       ← ListenBrainz scrobbling
+│   ├── DiscordRP.h          ← Discord Rich Presence (named-pipe IPC)
 │   ├── LrcData.h            ← LRC lyrics parser
+│   ├── Config.h             ← config file read/write
+│   ├── Log.h                ← logging + rotation
 │   ├── Toast.h              ← transient status messages
-│   └── StringUtils.h        ← UTF-8/wide conversion, path helpers
-└── src/
-    ├── main.cpp
-    ├── UIManager.cpp        ← ~3500 lines: all UI logic
-    ├── AudioManager.cpp     ← miniaudio device, CD audio path
-    ├── PlaylistManager.cpp
-    ├── CDSource.cpp         ← TOC read, raw sector read, drive offset DB
-    ├── CDRipper.cpp         ← FLAC+MP3 encode, AR CRC, CTDB, ReplayGain
-    ├── MBLookup.cpp         ← WinInet MB API, JSON parse
-    ├── AlbumArt.cpp
-    ├── Config.cpp
-    ├── LrcData.cpp
-    └── Toast.cpp
+│   └── StringUtils.h        ← UTF-8/wide, column-aware text (header-only)
+├── src/                     (implementations; mirror include/ + main.cpp)
+│   ├── main.cpp
+│   ├── UIManager.cpp        ← all UI logic (largest TU)
+│   ├── AudioManager.cpp     ← miniaudio device, CD + stream audio paths
+│   ├── PlaylistManager.cpp
+│   ├── CDSource.cpp         ← TOC read, raw sector read, drive-offset DB
+│   ├── CDRipper.cpp         ← FLAC+MP3 encode, AR CRC, CTDB, ReplayGain
+│   ├── ar_crc.cpp
+│   ├── MBLookup.cpp         ← WinInet MB/Discogs API, JSON parse
+│   ├── CoverArt.cpp
+│   ├── StreamSource.cpp
+│   ├── AacDecoder.cpp
+│   ├── IHeartRadio.cpp
+│   ├── IHeartNowPlayingSM.cpp
+│   ├── IHeartDeepLog.cpp
+│   ├── RadioBrowser.cpp
+│   ├── Mp4Chapters.cpp
+│   ├── LastFm.cpp
+│   ├── ListenBrainz.cpp
+│   ├── DiscordRP.cpp
+│   ├── LrcData.cpp
+│   ├── Config.cpp
+│   ├── Log.cpp
+│   └── Toast.cpp
+└── tests/                   ← Phase 0 pure-unit tests (ctest)
+    ├── CMakeLists.txt
+    ├── ar_crc_test.cpp      ← AccurateRip CRC + offset normalization
+    └── iheart_sm_test.cpp   ← now-playing state machine
 ```
 
 ## AccurateRip Implementation Notes

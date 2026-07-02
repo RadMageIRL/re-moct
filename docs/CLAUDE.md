@@ -66,13 +66,13 @@ Audiobook suite (`.m4b`, chapters, `[Books]` nav). Discord Rich Presence stage 2
 machine + ring-buffer re-pin fix. Device-switching fix. Column-aware UTF-8 pipeline.
 
 ## Next substantive step
-**Phase 1 — HTTP seam: ✅ 8/8 closed** (`4c72b09`) **+ core/platform boundary
-established** (slice 5, `1977539`): `include/core/` + `src/platform/win/` exist,
-seeded with the finished HTTP seam (pure relocation, verified). The live read loop
-(`rawRead`→ring) stays raw WinINet permanently. **Next: the remaining Phase 1
-seams** — IPC (Discord named-pipe), notifications, CD-IOCTL — each BUILT INTO the
-new structure (interface → `include/core/`, Windows impl → `src/platform/win/`).
-See `docs/roadmap.md`.
+**Phase 1 — HTTP seam ✅ 8/8** (`4c72b09`), **core/platform boundary ✅** (slice 5,
+`1977539`), **IPC seam ✅** (slice 6, `89285d8`: `core::IIpc` + `WinPipeIpc`;
+DiscordRP takes it by constructor injection — the DI endgame shape, no new global).
+The live read loop (`rawRead`→ring) stays raw WinINet permanently. **Next: the
+remaining Phase 1 seams** — notifications (Toast/PowerShell), CD-IOCTL — each BUILT
+INTO the structure (interface → `include/core/`, Windows impl →
+`src/platform/win/`). See `docs/roadmap.md`.
 
 ## Deep knowledge — read the matching file when a task touches it
 - Roadmap, phases, parked items, decisions → `docs/roadmap.md`

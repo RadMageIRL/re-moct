@@ -74,9 +74,21 @@ compiles on Linux, nothing leaked. Nothing platform-specific belongs in an inter
 > **The boundary now exists on disk** (Phase 1 slice 5): `include/core/IHttp.h` +
 > `src/platform/win/HttpWinInet.cpp`, seeded with the finished HTTP seam. Consumers
 > write `#include "core/IHttp.h"` — the layer is visible at the include site (that's
-> the audit: grep core files for platform includes). Remaining seams (IPC, notify,
-> cd_io) get built into this structure directly. `src/platform/linux/` is created
-> when Phase 3 lands the libcurl/Unix-socket/libnotify/SG_IO impls, not before.
+> the audit: grep core files for platform includes). Remaining seams (notify, cd_io)
+> get built into this structure directly. `src/platform/linux/` is created when
+> Phase 3 lands the libcurl/Unix-socket/libnotify/SG_IO impls, not before.
+>
+> **The IPC seam is in** (slice 6, the first built-into-the-boundary seam):
+> `core::IIpc`/`IIpcChannel` (`include/core/IIpc.h`) + `platform::win::WinPipeIpc`
+> (`src/platform/win/IpcWinPipe.cpp`). A local bidirectional byte channel — three
+> primitives (send/waitReadable/recvSome) shaped by the one real consumer
+> (DiscordRP); protocol (framing, endpoint probe, handshake, reconnect) stays in
+> the consumer, exactly the IHttp split. **DI precedent set:** DiscordRP takes its
+> `IIpc*` by constructor injection (production default `core::ipc()`, a link-time
+> bridge only — no `setIpc()` global). This is the endgame shape arriving early:
+> single-consumer seams get injected directly; the http()/setHttp() transitional
+> pattern is reserved for many-consumer migrations. Linux sibling = Unix domain
+> socket over the same interface (Phase 3).
 
 ## Linux port
 - WSL2 on 7of9 = fast local inner loop; CI on real Ubuntu = source of truth.

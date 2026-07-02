@@ -45,7 +45,9 @@ carve the ABI first.
     HTTP seam. See Done section. The remaining seams below BUILD INTO this
     structure (interfaces → `include/core/`, Windows impls → `src/platform/win/`);
     they are not relocated later.
-  - IPC: Discord named-pipe → abstract (Linux = Unix socket).
+  - **slice 6 — IPC: Discord named-pipe → `core::IIpc`: ✅ DONE** (commit `89285d8`):
+    the first seam built INTO the slice-5 structure. See Done section. (Linux =
+    Unix socket, Phase 3.)
   - Notifications: Toast/PowerShell → abstract (Linux = libnotify/notify-send).
   - CD access: Windows IOCTL → SG_IO on Linux.
   - Clear the parked concurrency debt where cheap.
@@ -61,6 +63,34 @@ carve the ABI first.
   of the whole plugin system. ("Fix iHeart and ship without rebuilding the host.")
 
 ## Done (restructure branch)
+- **Phase 1 slice 6 — IPC seam (Discord named-pipe → core::IIpc): DONE** (commit
+  `89285d8`). First seam BUILT INTO the slice-5 boundary: `include/core/IIpc.h` +
+  `src/platform/win/IpcWinPipe.cpp` (`platform::win::WinPipeIpc`). Interface =
+  "local bidirectional byte channel", three primitives modeled on the one real
+  consumer: `send` (whole buffer, ONE OS write — Discord's framing breaks on split
+  writes), `waitReadable(min_bytes, timeout_ms)` (bounded peek-poll, 10 ms baseline
+  granularity preserved in the impl), `recvSome` (one blocking OS read; callers
+  loop). `IIpc::connect(logical-name)` — the impl owns name→path mapping
+  (`\\.\pipe\<name>`; Linux `$XDG_RUNTIME_DIR/<name>` at Phase 3). The asymmetric
+  read shape is deliberate parity: bounded header wait, UNbounded body reads —
+  a higher-level `recvExact(timeout)` would have invented semantics the baseline
+  doesn't have. Protocol stayed consumer-side in DiscordRP (framing, the
+  discord-ipc-0..9 probe, handshake, 1 MB squatter cap, CLOSE handling, lazy
+  reconnect, payload/nonce/escape) — the IHttp protocol/transport split.
+  **Ownership: constructor injection, NOT a second transitional global** —
+  `DiscordRP(app_id, core::IIpc* = nullptr)` defaulting to `core::ipc()` (declared
+  in core, defined in the impl TU — link-time bridge only, no `setIpc()`); one
+  consumer with one obvious injection point didn't justify the http()/setHttp()
+  pattern, and the ctor param IS the DI endgame shape. DiscordRP.cpp is
+  pipe-API-free (`windows.h` only for `GetCurrentProcessId`, the IHeartRadio
+  shape); DiscordRP.h no longer includes `windows.h` at all (UIManager.h stops
+  inheriting it from this path). New `discord_ipc_test` (8th ctest target):
+  FakeIpc via ctor injection asserts handshake bytes, probe order, SET_ACTIVITY
+  framing + jsonEscape, activity-null clear, CLOSE→reject, and
+  reconnect-after-death. Two-layer verified: ctest 8/8 + live Discord on this
+  machine — RP with title/artist/art, track-change update, Discord-restart
+  reconnect, clear-on-toggle (all four gates). `src/platform/linux/` still
+  deliberately absent.
 - **Phase 1 slice 5 — core/platform directory reorg (HTTP seam only): DONE** (commit
   `1977539`). Pure relocation — `git mv include/IHttp.h include/core/IHttp.h` +
   `git mv src/HttpWinInet.cpp src/platform/win/HttpWinInet.cpp` (both true renames,

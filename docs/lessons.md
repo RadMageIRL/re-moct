@@ -135,3 +135,24 @@
   is destroyed; joining the server thread before resetting the session deadlocked until
   WinINet's ~60s idle-close (110s test run). Fix: reset the session BEFORE joining fixture
   threads, and cap accepted-socket waits with SO_RCVTIMEO/SO_SNDTIMEO (2.6s run).
+- **A fake's observation state must outlive the object the consumer destroys.** The
+  consumer discarding its channel/session on failure is often exactly the behavior under
+  test (DiscordRP drops its channel on a CLOSE reject) — a fake that stores its captured
+  data ON the discarded object hands the test a dangling pointer at the precise moment
+  it asserts. `discord_ipc_test` first shipped this bug; fix: channel state lives in
+  `shared_ptr`s owned by the Fake FACTORY, channels hold a reference. Twin of the
+  http_cancel fixture lesson above — observation belongs to the fixture, not the wire.
+- **One consumer with one obvious injection point ⇒ constructor injection, not another
+  transitional global.** `core::http()`/`setHttp()` earned their existence: eight
+  consumers scattered across seven modules. IIpc has ONE consumer (DiscordRP), so it
+  takes `IIpc*` in its ctor (tests inject there; no `setIpc()` exists) and `core::ipc()`
+  survives only as the link-time bridge to the platform TU — core code can't #include
+  the impl header, so the production default must be reached by name. Pick the pattern
+  per seam by consumer count, not by precedent.
+- **Preserve asymmetric timeout shapes; don't "clean them up" into a uniform API.**
+  DiscordRP's baseline bounds the header wait (peek ≥8 bytes, 1000 ms — a wedged Discord
+  must never hang the UI) but deliberately does NOT bound body reads. A tidier
+  `recvExact(len, timeout)` seam would have either invented a body timeout (behavior
+  change) or hidden the baseline's loop inside the impl (unauditable parity). The
+  3-primitive channel (send/waitReadable/recvSome) keeps the consumer's loops verbatim —
+  the read-loop twin of "diff the read loops, not just the flags."

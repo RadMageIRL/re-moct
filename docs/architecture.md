@@ -29,6 +29,9 @@ platform-neutral and quietly does the Phase 1 HTTP consolidation at the same tim
 > Its `platform::win::WinInetHttp` impl is the first concrete transport. The current
 > process-wide `core::http()` accessor is a **transitional** migration seam ONLY;
 > the endgame is injection (pass the `IHttp&` in), NOT a global. Don't enshrine it.
+> A `core::setHttp(IHttp*)` injection hook (slice 2) now exists — a concrete step toward
+> that DI endgame: it swaps the transport process-wide (used today by tests to inject a
+> fake; tomorrow by the host to hand plugins the service).
 
 > Spotify (dropped for now): if ever revisited, the realistic path is a **sidecar** —
 > run librespot / go-librespot as a separate process, talk control + audio over IPC

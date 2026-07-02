@@ -29,8 +29,8 @@ carve the ABI first.
     Migrated in groups, split by verification method:
     - **slice 1 / group (a) — GET/JSON: ✅ DONE** (commit `94eb8cb`): MBLookup +
       RadioBrowser. See Done section.
-    - group (b) — POST scrobble: LastFm + ListenBrainz. First exercise of the
-      `body`/`content_type` fields; verify by a real scrobble round-trip on BOTH.
+    - **group (b) — POST scrobble: ✅ DONE** (commit `7c13baf`): LastFm + ListenBrainz.
+      See Done section.
     - group (c) — bytes + redirect: CoverArt, CDRipper (AR/CTDB), StreamSource
       `hlsHttpGet`. Exercises binary bodies + `final_url`. **CDRipper is plain-HTTP**
       (`INTERNET_FLAG_SECURE` must derive from scheme — see `lessons.md`). The live
@@ -53,6 +53,20 @@ carve the ABI first.
   of the whole plugin system. ("Fix iHeart and ship without rebuilding the host.")
 
 ## Done (restructure branch)
+- **Phase 1 slice 2 — HTTP seam, group (b): DONE** (commit `7c13baf`, pushed). LastFm +
+  ListenBrainz GET/POST helpers migrated to `core::http().fetch()`; **both files now
+  WinINet-free** (ListenBrainz has no `windows.h` at all — portable). Added the seam's
+  **non-GET path** (`InternetCrackUrlW`→`InternetConnectW`→`HttpOpenRequestW`→
+  `HttpSendRequestW`); the request **body is sent as raw UTF-8 bytes, never widened**.
+  Signing (md5 `api_sig`), body-building, and status gating (`accepted()` on HTTP 200)
+  stay consumer-side. POST path sets CONNECT+RECEIVE only (no SEND — matches the scrobble
+  baseline). Interface unchanged — the slice-1 `body`/`content_type`/`headers` fields
+  covered it. Added transitional `core::setHttp()` injection hook + Windows-only
+  `scrobble_request_test`. Two-layer verified: `ctest` 4/4 + real-world Björk/Jóga scrobble
+  round-trip on Last.fm + ListenBrainz (accents intact — raw-UTF-8 wire path confirmed;
+  ListenBrainz status gate exercised on a live submit).
+  - Remaining HTTP: group (c) — CoverArt, CDRipper (AR/CTDB, plain-HTTP), StreamSource
+    `hlsHttpGet` (bytes + `final_url`); IHeart metadata still its own deferred go/no-go.
 - **Phase 1 slice 1 — HTTP seam, group (a): FIXED/DONE** (commit `94eb8cb`, pushed).
   `core::IHttp` interface (`include/IHttp.h`, portable — no `windows.h`) +
   `platform::win::WinInetHttp` impl (`src/HttpWinInet.cpp`, `if(WIN32)`). MBLookup +
@@ -77,6 +91,11 @@ carve the ABI first.
     cross-check item — the synthetic suite proves the logic, not on-drive behavior.
 
 ## Parked / deferred (not disturbed)
+- **Track Info album tag decode:** an album field with accented chars (`é`) renders as
+  `??` in the Track Info panel (same neighborhood as the earlier `¿` on the 4 Non Blondes
+  filename) — a local tag-read/display decode artifact. **NOT in the scrobble path** (album
+  isn't scrobbled to Recent Tracks; artist/title were clean over the wire — confirmed in
+  group (b)). A separate local tag-decode thread to look at later.
 - iHeart rabbit-hole desync: needs a 15–20 min instrumented ad-block capture (see
   `streaming.md`).
 - Scrobble back-to-back duplicate: source commits from debounced `IHNow` + TTL dedup.

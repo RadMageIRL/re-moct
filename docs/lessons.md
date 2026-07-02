@@ -81,3 +81,14 @@
   but a real behavior change for a plain-HTTP one.** Harmless through group (a) (MBLookup
   + RadioBrowser are HTTPS); flag it when CDRipper's AR/CTDB fetch (plain `http://`
   accuraterip.com / cuetools.net) migrates in group (c).
+- **HTTP request bodies go over the wire as raw UTF-8 bytes — never widen them.**
+  `HttpSendRequest`'s payload is a byte buffer and `nlohmann::dump()` emits UTF-8; widening
+  a POST body to `wchar_t` corrupts non-ASCII payloads (e.g. "Björk"). A FakeHttp test proves
+  the consumer *builds* the body right, but only a live submission viewed on the service
+  proves *wire* fidelity — do both (group (b): Björk/Jóga verified on Last.fm + ListenBrainz,
+  accents intact).
+- **The two group-(b) GETs inherit the seam's GET-path SEND timeout** their per-call
+  baseline never set — inert on a bodyless GET, documented in-code, and accepted rather than
+  adding a per-request timeout field (which the interface deliberately doesn't have). Parity
+  is matched site-by-site; where a single seam policy can't match every site, pick the one
+  that keeps shipped sites byte-identical and document the inert residual.

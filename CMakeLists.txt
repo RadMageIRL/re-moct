@@ -36,10 +36,10 @@ set(REMOCT_SOURCES
     src/DiscordRP.cpp
 )
 
-# Platform HTTP seam (Phase 1): WinINet impl of core::IHttp. In src/ per convention;
-# moves into src/platform/win/ at the core/platform reorg.
+# Platform HTTP seam (Phase 1): WinINet impl of core::IHttp, in src/platform/win/ —
+# the core/platform boundary (win/ compiled only on Windows; linux/ = libcurl, Phase 3).
 if(WIN32)
-    list(APPEND REMOCT_SOURCES ${CMAKE_SOURCE_DIR}/src/HttpWinInet.cpp)
+    list(APPEND REMOCT_SOURCES ${CMAKE_SOURCE_DIR}/src/platform/win/HttpWinInet.cpp)
 endif()
 
 add_executable(remoct ${REMOCT_SOURCES})

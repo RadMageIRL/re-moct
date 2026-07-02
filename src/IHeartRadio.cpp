@@ -1,7 +1,7 @@
 #ifdef _WIN32
 
 #include "IHeartRadio.h"
-#include "IHttp.h"
+#include "core/IHttp.h"
 #include "json.hpp"
 
 #include <windows.h>   // GetTempPathA / localtime_s only — no WinINet since slice 4

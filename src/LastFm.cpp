@@ -2,7 +2,7 @@
 
 #include "LastFm.h"
 #include "Log.h"
-#include "IHttp.h"
+#include "core/IHttp.h"
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>       // CryptoAPI (MD5 api_sig signing) still needs this

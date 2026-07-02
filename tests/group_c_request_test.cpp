@@ -7,7 +7,7 @@
 // (CDRipper's AR/CTDB requests aren't driven here — that TU pulls the full rip
 // dependency set. Their plain-HTTP no-SECURE decision is proven purely by
 // urlIsSecureScheme in http_seam_test, and AR end-to-end by the Joan Osborne rip gate.)
-#include "IHttp.h"
+#include "core/IHttp.h"
 #include "CoverArt.h"
 #include "json.hpp"
 #include <cstdio>

@@ -2,7 +2,7 @@
 // is mockable (a FakeHttp stands in for the transport) and that the group-(a)
 // consumers' response-parsing works against a faked HTTP response. Returns nonzero
 // on failure. Runs on Linux CI as well as MSYS2/UCRT64 (pure std + nlohmann).
-#include "IHttp.h"
+#include "core/IHttp.h"
 #include "json.hpp"
 #include <atomic>
 #include <cstdio>

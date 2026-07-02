@@ -2,7 +2,7 @@
 
 #include "ListenBrainz.h"
 #include "Log.h"
-#include "IHttp.h"
+#include "core/IHttp.h"
 
 #include <cstdarg>
 #include <cstdio>

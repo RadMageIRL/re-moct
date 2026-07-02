@@ -1,11 +1,11 @@
 // IHttp.h — platform-neutral HTTP seam (Phase 1; slices 1-3 = one-shot fetch,
 // slice 4 = cancel token + persistent sessions for the two audio-thread sites).
 //
-// `core::IHttp` is the interface; `platform::win::WinInetHttp` (src/HttpWinInet.cpp)
-// is the Windows/WinINet implementation. They live in include/ + src/ per the project
-// convention today (headers in include/, sources in src/); at the later core/platform
-// reorg they move into include/core/ + src/platform/win/ subdirs. The interface
-// survives that move unchanged.
+// `core::IHttp` is the interface; `platform::win::WinInetHttp`
+// (src/platform/win/HttpWinInet.cpp) is the Windows/WinINet implementation. They live
+// in include/core/ + src/platform/win/ — the core/platform boundary established at the
+// Phase 1 reorg (consumers include "core/IHttp.h"). The interface survived that move
+// unchanged.
 //
 // This header must NOT include <windows.h> or any platform header — that is the
 // "does core stay portable" seam test (it compiles on Linux CI as-is).

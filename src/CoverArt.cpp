@@ -11,7 +11,7 @@
 //  refactor; this module keeps its own httpGet, matching the current per-module pattern.)
 
 #include "CoverArt.h"
-#include "IHttp.h"              // core::IHttp seam (transport); no windows.h/wininet here
+#include "core/IHttp.h"         // core::IHttp seam (transport); no windows.h/wininet here
 #include "json.hpp"             // nlohmann single-header (vendored)
 #include <string>
 #include <vector>

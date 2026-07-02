@@ -1,7 +1,7 @@
 #ifdef _WIN32
 
 #include "RadioBrowser.h"
-#include "IHttp.h"
+#include "core/IHttp.h"
 
 #include <cctype>
 #include "json.hpp"

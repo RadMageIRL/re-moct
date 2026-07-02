@@ -29,7 +29,7 @@ if(WIN32)
         scrobble_request_test.cpp
         ${CMAKE_SOURCE_DIR}/src/LastFm.cpp
         ${CMAKE_SOURCE_DIR}/src/ListenBrainz.cpp
-        ${CMAKE_SOURCE_DIR}/src/HttpWinInet.cpp
+        ${CMAKE_SOURCE_DIR}/src/platform/win/HttpWinInet.cpp
         ${CMAKE_SOURCE_DIR}/src/Log.cpp
     )
     target_include_directories(scrobble_request_test PRIVATE
@@ -44,7 +44,7 @@ if(WIN32)
     add_executable(group_c_request_test
         group_c_request_test.cpp
         ${CMAKE_SOURCE_DIR}/src/CoverArt.cpp
-        ${CMAKE_SOURCE_DIR}/src/HttpWinInet.cpp
+        ${CMAKE_SOURCE_DIR}/src/platform/win/HttpWinInet.cpp
     )
     target_include_directories(group_c_request_test PRIVATE
         ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/lib)
@@ -57,7 +57,7 @@ if(WIN32)
     # reuse across one session, and pre-cancelled fetch never touching the network.
     add_executable(http_cancel_test
         http_cancel_test.cpp
-        ${CMAKE_SOURCE_DIR}/src/HttpWinInet.cpp
+        ${CMAKE_SOURCE_DIR}/src/platform/win/HttpWinInet.cpp
     )
     target_include_directories(http_cancel_test PRIVATE
         ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/lib)
@@ -72,7 +72,7 @@ if(WIN32)
     add_executable(iheart_request_test
         iheart_request_test.cpp
         ${CMAKE_SOURCE_DIR}/src/IHeartRadio.cpp
-        ${CMAKE_SOURCE_DIR}/src/HttpWinInet.cpp
+        ${CMAKE_SOURCE_DIR}/src/platform/win/HttpWinInet.cpp
     )
     target_include_directories(iheart_request_test PRIVATE
         ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/lib)

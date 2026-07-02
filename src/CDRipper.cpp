@@ -1,7 +1,7 @@
 #ifdef _WIN32
 #include "CDRipper.h"
 #include "ar_crc.h"
-#include "IHttp.h"          // core::IHttp seam (AR/CTDB fetch); WinINet lives behind it
+#include "core/IHttp.h"     // core::IHttp seam (AR/CTDB fetch); WinINet lives behind it
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>

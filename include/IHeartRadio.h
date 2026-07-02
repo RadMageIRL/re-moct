@@ -5,7 +5,7 @@
 #include <functional>
 #include <memory>
 
-#include "IHttp.h"   // persistent HTTP session via the platform seam (slice 4)
+#include "core/IHttp.h"   // persistent HTTP session via the platform seam (slice 4)
 
 // ─────────────────────────────────────────────────────────────────────────────
 // IHeartRadio — isolated iHeart now-playing service.

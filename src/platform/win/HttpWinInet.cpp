@@ -1,7 +1,7 @@
 // HttpWinInet.cpp — Windows/WinINet implementation of core::IHttp.
 //
-// Lives in src/ per project convention (header in include/IHttp.h); moves into
-// src/platform/win/ at the later core/platform reorg. Compiled only on Windows
+// Lives in src/platform/win/ (header in include/core/IHttp.h) — the core/platform
+// boundary established at the Phase 1 reorg. Compiled only on Windows
 // (guarded in CMakeLists via if(WIN32)).
 //
 // Two request shapes, each mirroring the per-module helpers it replaces:
@@ -23,7 +23,7 @@
 // seam by design, permanently.
 #ifdef _WIN32
 
-#include "IHttp.h"
+#include "core/IHttp.h"
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>

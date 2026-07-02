@@ -9,7 +9,7 @@
 //
 // Not Linux-CI-pure (it links the Windows consumers), so it is if(WIN32)-guarded in
 // tests/CMakeLists.txt: Linux CI runs the 3 pure suites, Windows runs 4.
-#include "IHttp.h"
+#include "core/IHttp.h"
 #include "LastFm.h"
 #include "ListenBrainz.h"
 #include "json.hpp"

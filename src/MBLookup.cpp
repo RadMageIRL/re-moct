@@ -1,7 +1,7 @@
 #ifdef _WIN32
 #include "MBLookup.h"
 #include "StringUtils.h"
-#include "IHttp.h"
+#include "core/IHttp.h"
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>

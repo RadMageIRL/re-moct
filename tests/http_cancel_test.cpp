@@ -8,7 +8,7 @@
 //   (C) a pre-cancelled fetch returns immediately and never touches the network.
 // Fixture: a plain-HTTP server on 127.0.0.1 (ephemeral port) driven per scenario.
 // Plain HTTP is deliberate — urlIsSecureScheme() is false, no TLS machinery.
-#include "IHttp.h"
+#include "core/IHttp.h"
 
 #include <winsock2.h>
 #include <ws2tcpip.h>

@@ -26,7 +26,7 @@
 #include <fdk-aac/aacdecoder_lib.h>
 #include "IHeartRadio.h"  // isolated iHeart now-playing service (HLS streams only)
 #include "IHeartNowPlayingSM.h"  // pure now-playing reconciliation state machine
-#include "IHttp.h"        // HLS manifest/segment one-shots go through the seam (slice 4)
+#include "core/IHttp.h"   // HLS manifest/segment one-shots go through the seam (slice 4)
 
 class StreamSource {
 public:

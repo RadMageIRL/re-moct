@@ -78,4 +78,19 @@ if(WIN32)
         ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/lib)
     target_link_libraries(iheart_request_test PRIVATE wininet)
     add_test(NAME iheart_request_test COMMAND iheart_request_test)
+
+    # slice 6 — Windows-only Discord IPC seam test. Links the REAL DiscordRP consumer
+    # + the named-pipe impl TU (linked only to satisfy core::ipc(); never invoked —
+    # the test injects a FakeIpc via constructor injection) and asserts the protocol
+    # frames the consumer builds: handshake shape, endpoint probe order, SET_ACTIVITY
+    # framing + jsonEscape, activity-null clear, CLOSE rejection, and lazy reconnect
+    # after channel death. The live gate (real Discord shows RP) proves the transport.
+    add_executable(discord_ipc_test
+        discord_ipc_test.cpp
+        ${CMAKE_SOURCE_DIR}/src/DiscordRP.cpp
+        ${CMAKE_SOURCE_DIR}/src/platform/win/IpcWinPipe.cpp
+    )
+    target_include_directories(discord_ipc_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/lib)
+    add_test(NAME discord_ipc_test COMMAND discord_ipc_test)
 endif()

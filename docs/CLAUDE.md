@@ -64,12 +64,13 @@ Audiobook suite (`.m4b`, chapters, `[Books]` nav). Discord Rich Presence stage 2
 machine + ring-buffer re-pin fix. Device-switching fix. Column-aware UTF-8 pipeline.
 
 ## Next substantive step
-**Phase 1 — HTTP seam consolidation: 6/8 sites migrated.** Groups (a) GET/JSON, (b) POST
-scrobble, (c) bytes/redirect are done via the `core::IHttp` seam (`dd5f792`). The two
-remaining sites — StreamSource `hlsHttpGet` and IHeart metadata — both touch the audio
-pipeline and are deferred go/no-go items (need a cancel token / persistent-session design).
-After HTTP: the rest of Phase 1 (IPC, notify, CD-IOCTL seams) + the `src/core`+`src/platform`
-reorg. See `docs/roadmap.md`.
+**Phase 1 — HTTP seam consolidation: ✅ 8/8, fully closed** (`4c72b09`). All WinINet
+sites outside the live audio read loop now go through `core::IHttp` — including the two
+audio-thread sites (StreamSource `hlsHttpGet`, IHeart metadata) via slice 4's cancel
+token + `IHttpSession` persistent sessions. The live read loop (`rawRead`→ring) stays
+raw WinINet permanently. **Next: the rest of Phase 1** — IPC (Discord named-pipe),
+notifications, CD-IOCTL seams, and the `src/core`+`src/platform` reorg (slice 5
+candidate). See `docs/roadmap.md`.
 
 ## Deep knowledge — read the matching file when a task touches it
 - Roadmap, phases, parked items, decisions → `docs/roadmap.md`

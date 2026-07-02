@@ -106,3 +106,24 @@
   `urlIsSecureScheme()` is false for `http://accuraterip.com` / `http://db.cuetools.net`, so
   no `INTERNET_FLAG_SECURE` — correct, and the AR fetch verified byte-identical (Joan Osborne
   12/12 conf 200). The HTTPS (a)/(b) sites were unaffected — a no-op there, real change here.
+- **"Keep the partial body on a mid-read error" was NOT a universal baseline.** All six
+  one-shot sites used `while (InternetReadFile && got>0)` (error ⇒ keep partial, report ok),
+  but `hlsHttpGet`'s baseline FAILED the call on a mid-body read error — a partial segment
+  must not reach the decoder path. Found at implementation time, not in the survey; hence
+  `HttpResponse::read_error` (slice 4): ok/body semantics unchanged for everyone, hls gates
+  on the flag. When surveying a migration, diff the read *loops*, not just the flags.
+- **Slice-4 accepted residuals (inert, documented so a future baseline-differ isn't
+  surprised):** (1) on an HTTP ≥400 the seam reads the (small) error body before the
+  consumer gates, where `hlsHttpGet`'s baseline bailed pre-read — no functional effect;
+  (2) the seam reads in 4 KB chunks vs the audio sites' 8 KB — wire-invisible (TCP
+  buffering), cancel granularity slightly finer; (3) scheme-derived `INTERNET_FLAG_SECURE`
+  replaces hls's flag-less TLS-by-scheme and IHeart's hardcoded SECURE — identical
+  outcomes, every URL's scheme accounted for. Cosmetic: the migrated failure logs lose
+  their `GetLastError()` codes (the seam doesn't surface OS error codes), same spirit as
+  group (c)'s collapsed CTDB log lines.
+- **A keep-alive session's pooled connection outlives its fetches — localhost test
+  fixtures must account for it.** The `http_cancel_test` server threads blocked in
+  send/recv on the client's pooled connection, which only closes when the SESSION object
+  is destroyed; joining the server thread before resetting the session deadlocked until
+  WinINet's ~60s idle-close (110s test run). Fix: reset the session BEFORE joining fixture
+  threads, and cap accepted-socket waits with SO_RCVTIMEO/SO_SNDTIMEO (2.6s run).

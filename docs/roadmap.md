@@ -32,14 +32,14 @@ carve the ABI first.
     - **group (b) — POST scrobble: ✅ DONE** (commit `7c13baf`): LastFm + ListenBrainz.
       See Done section.
     - **group (c) — bytes + redirect: ✅ DONE** (commit `dd5f792`): CoverArt + CDRipper
-      (AR/CTDB). See Done section. **`hlsHttpGet` was pulled OUT of (c)** and deferred
-      (below) — it is not a clean one-shot.
-    - **Deferred audio-thread go/no-go items** (the two remaining HTTP sites; each needs a
-      cancel token + persistent-session design before it can be touched):
-      - StreamSource `hlsHttpGet` — one-shot manifest/segment GETs, but on the shared
-        `KEEP_CONNECTION` session and the audio-segment path, with `stop_`-abort mid-read.
-      - IHeart metadata — persistent `KEEP_CONNECTION` on the audio-poll thread.
-      The live StreamSource audio read loop (`InternetReadFile`→ring) stays OUT entirely.
+      (AR/CTDB). See Done section. **`hlsHttpGet` was pulled OUT of (c)** and deferred —
+      it was not a clean one-shot.
+    - **slice 4 — the audio-thread pair (sites 7 & 8): ✅ DONE** (commit `4c72b09`):
+      StreamSource `hlsHttpGet` + IHeart metadata, via the cancel-token +
+      persistent-session (`IHttpSession`) extension. **HTTP consolidation is 8/8 —
+      fully closed.** The fork is resolved: both sites migrated. See Done section.
+      The live StreamSource audio read loop (`InternetReadFile`→ring) stays OUT
+      entirely, permanently — proven byte-identical by diff in slice 4.
   - IPC: Discord named-pipe → abstract (Linux = Unix socket).
   - Notifications: Toast/PowerShell → abstract (Linux = libnotify/notify-send).
   - CD access: Windows IOCTL → SG_IO on Linux.
@@ -56,6 +56,35 @@ carve the ABI first.
   of the whole plugin system. ("Fix iHeart and ship without rebuilding the host.")
 
 ## Done (restructure branch)
+- **Phase 1 slice 4 — HTTP seam, sites 7 & 8 (the audio-thread pair): DONE** (commit
+  `4c72b09`). **HTTP consolidation 8/8 — fully closed.** `core::IHttp` gained the two
+  capabilities the audio sites needed, both defaulting inert (six shipped sites
+  byte-identical):
+  - **Cancellation:** `HttpRequest::cancel` (`const std::atomic<bool>*`, polled before
+    open + before each chunk read — baseline `stop_` granularity) + `HttpResponse::
+    cancelled` (ok=false, partial body CLEARED via pure `finalizeCancelled()`), so a
+    consumer's own stop is never mistaken for network death (reconnect/backoff safe).
+  - **Persistent sessions:** `IHttpSession` + `IHttp::openSession(HttpSessionConfig)`
+    with a default forwarding impl (fakes/tests unchanged); `WinInetSession` holds one
+    `InternetOpen` handle (UA + timeouts at creation) and adds KEEP_CONNECTION per
+    fetch. Session lifetime is the caller's: hls dies in `disconnect()` (fresh per
+    re-handshake/re-pin), IHeart lives with the object — exact baseline lifetimes.
+  - Also: `pragma_no_cache` request field (both audio baselines sent it; default off)
+    and `read_error` response flag — an implementation-time survey correction (hls
+    FAILS on a mid-body read error, unlike the other six; a partial segment must not
+    reach the decoder). Accepted residuals recorded in `lessons.md`.
+  - StreamSource: only `disconnect`/`hlsEnsureSession`/`hlsHttpGet` touched (3 diff
+    hunks); `InternetReadFile` remains ONLY in `rawRead` (live loop), `InternetOpenUrl`
+    only in `connect()`'s ICY branch. IHeartRadio.cpp is now **WinINet-free** (nullptr
+    cancel — boundedness stays the deliberate 5 s timeout; wiring `stop_` into its
+    polls is a parked, separate decision).
+  - Tests 7/7: `http_seam_test` +4 pure cases; new `http_cancel_test` (localhost
+    socket fixture — mid-body abort 373 ms, keep-alive reuse = 1 connection observed,
+    pre-cancelled = zero network); new `iheart_request_test` (real consumer + injected
+    fake, all three endpoints). Two-layer verified: real-world on 7of9 — digital iHeart
+    plays clean, **mid-segment stop aborts <1 s** (the regression this design must not
+    introduce), stop-during-switch clean, now-playing + Discord art intact, ad-onset
+    re-pin a non-event, ICY/SHOUTcast behaviorally unregressed.
 - **Phase 1 slice 3 — HTTP seam, group (c): DONE** (commit `dd5f792`, pushed). CoverArt
   (`bytesByMbid`, `httpGet`) + CDRipper (AR `.bin`, CTDB) migrated to `core::http().fetch()`;
   **both files WinINet-free** (CoverArt now portable — no `windows.h`). New interface
@@ -112,6 +141,12 @@ carve the ABI first.
     cross-check item — the synthetic suite proves the logic, not on-drive behavior.
 
 ## Parked / deferred (not disturbed)
+- **Wire `stop_` into IHeart's metadata polls as a cancel token:** would cut worst-case
+  `close()` latency by ~5 s. Deliberately NOT done in slice 4 (a behavior improvement,
+  not parity) — take it only as its own decided change.
+- **Prompt interrupt of a fully stalled connect/read** (cross-thread handle-close):
+  baseline gap that slice 4 intentionally preserved (parity); the existing note in
+  `StreamSource::close()` still stands. Future hardening item.
 - **Track Info album tag decode:** an album field with accented chars (`é`) renders as
   `??` in the Track Info panel (same neighborhood as the earlier `¿` on the 4 Non Blondes
   filename) — a local tag-read/display decode artifact. **NOT in the scrobble path** (album

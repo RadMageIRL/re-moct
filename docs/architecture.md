@@ -36,6 +36,18 @@ platform-neutral and quietly does the Phase 1 HTTP consolidation at the same tim
 > enum (FollowAll/None/SameScheme) and pure, platform-neutral helpers `urlIsSecureScheme()`
 > + `finalizeBody()` (cap/reject) live in the interface header — testable off-platform, no
 > WinINet leak. That's the seam doing its job: platform behavior expressed as neutral policy.
+>
+> **Slice 4 added the two capabilities Phase 2/4 will lean on** (HTTP consolidation is
+> now 8/8 — every WinINet site outside the live audio read loop goes through the seam):
+> - **`IHttpSession` / `openSession(HttpSessionConfig)`** — the session shape a Source
+>   (Phase 2) or plugin (Phase 4) holds for its open→close lifetime, with the host handing
+>   in `IHttp` as the factory. Explicit object, caller-managed lifetime, NO hidden pooling
+>   global (that alternative was rejected as anti-DI). The default forwarding impl on
+>   `IHttp` means fakes keep working unchanged; `WinInetHttp` overrides it with a real
+>   keep-alive session (libcurl later: a held easy handle).
+> - **The cancel token** (`HttpRequest::cancel`, a polled `std::atomic<bool>*`) — the
+>   abort mechanism for any in-flight fetch; this is how a plugin's stop/close will abort
+>   its network work promptly (libcurl: the progress callback polls the same atomic).
 
 > Spotify (dropped for now): if ever revisited, the realistic path is a **sidecar** —
 > run librespot / go-librespot as a separate process, talk control + audio over IPC

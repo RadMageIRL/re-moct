@@ -92,3 +92,17 @@
   adding a per-request timeout field (which the interface deliberately doesn't have). Parity
   is matched site-by-site; where a single seam policy can't match every site, pick the one
   that keeps shipped sites byte-identical and document the inert residual.
+- **`reject_truncated` must CLEAR the body, not merely fail the response.** A capped read
+  can leave a valid-looking leading fragment (image magic bytes, a JSON prefix); returning it
+  with only `ok=false` invites a consumer that checks the body to embed a partial cover.
+  `finalizeBody()` clears it (CoverArt's 10 MB reject/clear). Groups (a)/(b) pass
+  `reject_truncated=false` (cap-and-keep, e.g. MBLookup) and are unaffected.
+- **A redirect bool can't express "follow same-scheme only."** CAA `/front-500` *requires*
+  following its redirect to the image host, but must not be downgraded http<->https — so
+  neither `follow=false` nor default-follow matches baseline. Hence `RedirectPolicy`
+  {FollowAll, FollowNone, FollowSameScheme}; FollowAll maps byte-identically to the old bool.
+  (c) is where the interface legitimately grew — matching baseline, not gold-plating.
+- **Plain-HTTP scheme-derived no-SECURE came due for CDRipper exactly as flagged in (b).**
+  `urlIsSecureScheme()` is false for `http://accuraterip.com` / `http://db.cuetools.net`, so
+  no `INTERNET_FLAG_SECURE` — correct, and the AR fetch verified byte-identical (Joan Osborne
+  12/12 conf 200). The HTTPS (a)/(b) sites were unaffected — a no-op there, real change here.

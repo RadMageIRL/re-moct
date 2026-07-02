@@ -32,6 +32,10 @@ platform-neutral and quietly does the Phase 1 HTTP consolidation at the same tim
 > A `core::setHttp(IHttp*)` injection hook (slice 2) now exists — a concrete step toward
 > that DI endgame: it swaps the transport process-wide (used today by tests to inject a
 > fake; tomorrow by the host to hand plugins the service).
+> The neutral surface grew where a real consumer needed it (slice 3): a `RedirectPolicy`
+> enum (FollowAll/None/SameScheme) and pure, platform-neutral helpers `urlIsSecureScheme()`
+> + `finalizeBody()` (cap/reject) live in the interface header — testable off-platform, no
+> WinINet leak. That's the seam doing its job: platform behavior expressed as neutral policy.
 
 > Spotify (dropped for now): if ever revisited, the realistic path is a **sidecar** —
 > run librespot / go-librespot as a separate process, talk control + audio over IPC

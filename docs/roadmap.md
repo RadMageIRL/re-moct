@@ -31,12 +31,15 @@ carve the ABI first.
       RadioBrowser. See Done section.
     - **group (b) — POST scrobble: ✅ DONE** (commit `7c13baf`): LastFm + ListenBrainz.
       See Done section.
-    - group (c) — bytes + redirect: CoverArt, CDRipper (AR/CTDB), StreamSource
-      `hlsHttpGet`. Exercises binary bodies + `final_url`. **CDRipper is plain-HTTP**
-      (`INTERNET_FLAG_SECURE` must derive from scheme — see `lessons.md`). The live
-      StreamSource audio read loop (`InternetReadFile`→ring) stays OUT of the seam.
-    - IHeart metadata — its OWN deferred go/no-go: persistent `KEEP_CONNECTION` on the
-      audio-poll thread; decide per-call vs keep-alive when taken (do NOT fold in).
+    - **group (c) — bytes + redirect: ✅ DONE** (commit `dd5f792`): CoverArt + CDRipper
+      (AR/CTDB). See Done section. **`hlsHttpGet` was pulled OUT of (c)** and deferred
+      (below) — it is not a clean one-shot.
+    - **Deferred audio-thread go/no-go items** (the two remaining HTTP sites; each needs a
+      cancel token + persistent-session design before it can be touched):
+      - StreamSource `hlsHttpGet` — one-shot manifest/segment GETs, but on the shared
+        `KEEP_CONNECTION` session and the audio-segment path, with `stop_`-abort mid-read.
+      - IHeart metadata — persistent `KEEP_CONNECTION` on the audio-poll thread.
+      The live StreamSource audio read loop (`InternetReadFile`→ring) stays OUT entirely.
   - IPC: Discord named-pipe → abstract (Linux = Unix socket).
   - Notifications: Toast/PowerShell → abstract (Linux = libnotify/notify-send).
   - CD access: Windows IOCTL → SG_IO on Linux.
@@ -53,6 +56,24 @@ carve the ABI first.
   of the whole plugin system. ("Fix iHeart and ship without rebuilding the host.")
 
 ## Done (restructure branch)
+- **Phase 1 slice 3 — HTTP seam, group (c): DONE** (commit `dd5f792`, pushed). CoverArt
+  (`bytesByMbid`, `httpGet`) + CDRipper (AR `.bin`, CTDB) migrated to `core::http().fetch()`;
+  **both files WinINet-free** (CoverArt now portable — no `windows.h`). New interface
+  capability exercised for real: `RedirectPolicy` enum (FollowAll default = byte-identical to
+  the old `follow_redirects=true`; **FollowSameScheme** for CAA cross-scheme-downgrade
+  protection); `finalizeBody()` **clears** the body on `reject_truncated`+truncated (CoverArt's
+  10 MB reject/clear); plain-HTTP AR/CTDB get **no SECURE flag** (scheme-derived via
+  `urlIsSecureScheme`). Per-call UAs preserved (CTDB short, AR/CAA default). Tests: pure
+  extensions (byte passthrough, `final_url`, clear-on-reject, `urlIsSecureScheme`) + Windows-only
+  `group_c_request_test`. Two-layer verified: `ctest` 5/5 + real-world on 7of9 (Joan Osborne
+  12/12 AR v2 conf 200 byte-identical through the seam's plain-HTTP AR fetch, `.bin` still
+  saved; cover art resolves in tags + Discord RPC).
+  - **HTTP consolidation now 6/8 sites migrated** (a: MBLookup, RadioBrowser; b: LastFm,
+    ListenBrainz; c: CoverArt, CDRipper) — this closes the *straightforward* HTTP work. The
+    remaining two (`hlsHttpGet`, IHeart metadata) both touch the audio pipeline and are
+    deferred go/no-go items needing a cancel token / persistent-session design.
+  - Minor: CTDB's two distinct failure log lines collapsed to the generic `HTTP: 0` block
+    (result preserved: false/inconclusive) — cosmetic.
 - **Phase 1 slice 2 — HTTP seam, group (b): DONE** (commit `7c13baf`, pushed). LastFm +
   ListenBrainz GET/POST helpers migrated to `core::http().fetch()`; **both files now
   WinINet-free** (ListenBrainz has no `windows.h` at all — portable). Added the seam's

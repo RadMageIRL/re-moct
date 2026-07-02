@@ -14,9 +14,14 @@ carve the ABI first.
 > future sidecar-style service plugin remains possible, but it is not on the plan.
 
 ## Phases (in order)
-- **Phase 0 — streaming-path record/replay test harness.** NON-NEGOTIABLE FIRST.
-  Turns refactors from build-and-pray into safe. Also wrap the pure AccurateRip CRC
-  math so it's unit-testable off-disc. This is the recommended next substantive step.
+- **Phase 0 — offline unit-test safety net: ✅ DONE (in the form pursued).** The
+  pure-unit half landed and is verified: `IHeartNowPlayingSM` (now-playing decision
+  logic — threadless, no network) and `ar_crc` (AccurateRip CRC math) extracted as pure
+  units with offline `ctest` coverage (`iheart_sm_test`, `ar_crc_test`). **Honest scope:
+  the originally-envisioned full streaming record/replay harness was NOT built** — the
+  safety net took the form of pure extractions + offline unit tests, which proved
+  sufficient to make the Phase 1 seam work safe. A true capture/replay harness remains
+  available to build later if a future refactor needs it.
 - **Phase 1 — platform abstraction / cleanup.** Replace platform-specific calls with
   seams (interfaces), not `#ifdef`s:
   - HTTP: consolidate the per-module WinINet GET helpers behind one `core::IHttp`

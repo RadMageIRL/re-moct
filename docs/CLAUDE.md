@@ -64,8 +64,10 @@ Audiobook suite (`.m4b`, chapters, `[Books]` nav). Discord Rich Presence stage 2
 machine + ring-buffer re-pin fix. Device-switching fix. Column-aware UTF-8 pipeline.
 
 ## Next substantive step
-**Phase 0 — streaming-path record/replay test harness** (+ wrap pure AccurateRip
-CRC math). Non-negotiable first; makes every later refactor safe. See `docs/roadmap.md`.
+**Phase 1 — platform abstraction, HTTP seam consolidation.** Phase 0 is done (pure
+`IHeartNowPlayingSM` + `ar_crc` units with offline ctest; the full replay harness was
+*not* built — see roadmap). In progress: the `core::IHttp` seam. Group (a) GET/JSON
+landed (`94eb8cb`); next is group (b) — LastFm + ListenBrainz POST. See `docs/roadmap.md`.
 
 ## Deep knowledge — read the matching file when a task touches it
 - Roadmap, phases, parked items, decisions → `docs/roadmap.md`

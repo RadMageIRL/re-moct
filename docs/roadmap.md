@@ -36,10 +36,18 @@ carve the ABI first.
   `.dll`/`.so` boundary, and **extract iHeart as the first real plugin** — the test
   of the whole plugin system. ("Fix iHeart and ship without rebuilding the host.")
 
+## Done (restructure branch)
+- **CDRipper negative drive-offset preamble OOB read + wrong CRC phase: FIXED**
+  (commit `1a2235a`). Floored offset decomposition (`ar::normalizeSkip`) + signed
+  preamble guard (`ar::arPreambleReadable`) extracted into `ar_crc.h` and wired into
+  `CDRipper::ripTrack`; the 150-sector preamble is untouched. Covered by `ar_crc_test`
+  (invariants, OOB-index witness, phase/CRC equivalence on a synthetic disc,
+  boundaries); the +6 path is unregressed (Joan Osborne re-rip 12/12 AR v2 conf 200,
+  byte-identical CRCs).
+  - Open: real negative-offset **hardware** validation remains a HydrogenAudio
+    cross-check item — the synthetic suite proves the logic, not on-drive behavior.
+
 ## Parked / deferred (not disturbed)
-- CDRipper negative drive-offset preamble OOB read + wrong CRC phase: BLOCKED —
-  can't fire on Dos's +6 drive (HL-DT-ST GHD3N); needs a synthetic negative-offset
-  test vector + a HydrogenAudio thread. Do NOT patch blind.
 - iHeart rabbit-hole desync: needs a 15–20 min instrumented ad-block capture (see
   `streaming.md`).
 - Scrobble back-to-back duplicate: source commits from debounced `IHNow` + TTL dedup.

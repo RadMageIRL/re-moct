@@ -1,6 +1,7 @@
 #ifdef _WIN32
 #include "MBLookup.h"
 #include "StringUtils.h"
+#include "IHttp.h"
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -106,34 +107,15 @@ std::string MBLookup::computeDiscId(int first_track, int last_track,
     return mb_base64(digest, 20);
 }
 
-// ─── HTTP GET via WinINet ─────────────────────────────────────────────────────
+// ─── HTTP GET via the core::IHttp seam (WinINet impl) ─────────────────────────
+// Parity with the former inline WinINet GET: same 4 MB safety cap, HTTP status
+// ignored (a partial/failed body fails JSON parsing gracefully downstream), and the
+// default UA + redirect-follow. Transport now lives behind core::http().
 std::string MBLookup::httpGet(const std::string& url) {
-    auto wurl = utf8_to_wide(url);
-
-    HINTERNET inet = InternetOpenW(
-        L"RE-MOCT/1.0.0-rc1 (https://github.com/RadMageIRL/re-moct)",
-        INTERNET_OPEN_TYPE_PRECONFIG, nullptr, nullptr, 0);
-    if (!inet) return {};
-
-    HINTERNET conn = InternetOpenUrlW(inet, wurl.c_str(), nullptr, 0,
-        INTERNET_FLAG_RELOAD | INTERNET_FLAG_SECURE |
-        INTERNET_FLAG_NO_CACHE_WRITE, 0);
-    if (!conn) { InternetCloseHandle(inet); return {}; }
-
-    std::string body;
-    char buf[4096];
-    DWORD bytes = 0;
-    while (InternetReadFile(conn, buf, sizeof(buf), &bytes)) {
-        if (bytes == 0) break;  // clean EOF
-        body.append(buf, bytes);
-        if (body.size() > 4 * 1024 * 1024) break;  // 4MB safety cap
-    }
-    // Check HTTP status — a failed read mid-stream returns a partial body
-    // which will fail JSON parsing gracefully, so no special handling needed
-
-    InternetCloseHandle(conn);
-    InternetCloseHandle(inet);
-    return body;
+    core::HttpRequest req;
+    req.url      = url;
+    req.max_body = 4u * 1024 * 1024;   // 4 MB safety cap (unchanged)
+    return core::http().fetch(req).body;
 }
 
 // ─── JSON parsing ─────────────────────────────────────────────────────────────

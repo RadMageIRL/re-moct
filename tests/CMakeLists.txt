@@ -13,3 +13,9 @@ add_executable(ar_crc_test
 )
 target_include_directories(ar_crc_test PRIVATE ${CMAKE_SOURCE_DIR}/include)
 add_test(NAME ar_crc_test COMMAND ar_crc_test)
+
+# core::IHttp seam — pure FakeHttp-backed parse test (no WinINet, Linux-CI safe).
+add_executable(http_seam_test http_seam_test.cpp)
+target_include_directories(http_seam_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/lib)
+add_test(NAME http_seam_test COMMAND http_seam_test)

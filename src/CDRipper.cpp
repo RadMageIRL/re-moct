@@ -1,13 +1,13 @@
 #ifdef _WIN32
 #include "CDRipper.h"
 #include "ar_crc.h"
+#include "IHttp.h"          // core::IHttp seam (AR/CTDB fetch); WinINet lives behind it
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <winioctl.h>
 #include <ntddcdrm.h>
 #include <shlobj.h>
-#include <wininet.h>
 
 // FLAC C API
 #include <FLAC/stream_encoder.h>
@@ -410,28 +410,17 @@ bool CDRipper::fetchARData(
             ntracks, v.id1, v.id2, cddb_id);
 
         if (dbg) fprintf(dbg, "TRY %08x/%08x -> HTTP ", v.id1, v.id2);
-        HINTERNET inet = InternetOpenA("RE-MOCT/1.0.0-rc1 (https://github.com/RadMageIRL/re-moct)",
-                                       INTERNET_OPEN_TYPE_PRECONFIG, nullptr, nullptr, 0);
-        if (!inet) { if (dbg) fprintf(dbg, "no inet\n"); continue; }
-        HINTERNET conn = InternetOpenUrlA(inet, url, nullptr, 0,
-                            INTERNET_FLAG_RELOAD | INTERNET_FLAG_NO_CACHE_WRITE, 0);
-        if (!conn) { InternetCloseHandle(inet);
-                     if (dbg) fprintf(dbg, "no conn\n");
-                     continue; }
-
-        DWORD status = 0, sz = sizeof(status);
-        HttpQueryInfoA(conn, HTTP_QUERY_STATUS_CODE | HTTP_QUERY_FLAG_NUMBER,
-                       &status, &sz, nullptr);
+        core::HttpRequest req;
+        req.url = url;   // http:// -> no SECURE (urlIsSecureScheme); default (full) UA; no cap
+        core::HttpResponse r = core::http().fetch(req);
+        DWORD status = (DWORD)r.status;
         if (dbg) fprintf(dbg, "%lu\n", status);
 
         if (status == 200) {
-            char buf[4096]; DWORD bytes = 0;
-            while (InternetReadFile(conn, buf, sizeof(buf), &bytes) && bytes > 0)
-                ar_data.insert(ar_data.end(), (uint8_t*)buf, (uint8_t*)buf+bytes);
+            ar_data.insert(ar_data.end(), r.body.begin(), r.body.end());
             disc_id1 = v.id1; disc_id2 = v.id2;
             if (dbg) fprintf(dbg, "HIT! disc_id1=%08x disc_id2=%08x size=%zu\n",
                              disc_id1, disc_id2, ar_data.size());
-            InternetCloseHandle(conn); InternetCloseHandle(inet);
 
             // ── Save raw .bin and human-readable manifest to ar_cache_dir ──
             if (!ar_cache_dir.empty()) {
@@ -465,7 +454,6 @@ bool CDRipper::fetchARData(
             }
             break;
         }
-        InternetCloseHandle(conn); InternetCloseHandle(inet);
     }
     if (dbg) fclose(dbg);
 
@@ -578,33 +566,12 @@ bool CDRipper::fetchCTDBData(const std::string& ctdb_id,
         }
     }
 
-    HINTERNET inet = InternetOpenA("RE-MOCT/1.0.0-rc1",
-                                   INTERNET_OPEN_TYPE_PRECONFIG, nullptr, nullptr, 0);
-    if (!inet) {
-        FILE* lf = _wfopen(utf8_to_wide(log_path).c_str(), L"a");
-        if (lf) { fprintf(lf, "HTTP    : failed to open WinInet handle\n"); fclose(lf); }
-        return false;
-    }
-    HINTERNET conn = InternetOpenUrlA(inet, url, nullptr, 0,
-                        INTERNET_FLAG_RELOAD | INTERNET_FLAG_NO_CACHE_WRITE, 0);
-    if (!conn) {
-        InternetCloseHandle(inet);
-        FILE* lf = _wfopen(utf8_to_wide(log_path).c_str(), L"a");
-        if (lf) { fprintf(lf, "HTTP    : connection failed\n"); fclose(lf); }
-        return false;
-    }
-
-    DWORD status = 0, sz = sizeof(status);
-    HttpQueryInfoA(conn, HTTP_QUERY_STATUS_CODE | HTTP_QUERY_FLAG_NUMBER,
-                   &status, &sz, nullptr);
-
-    std::string body;
-    if (status == 200) {
-        char buf[8192]; DWORD bytes = 0;
-        while (InternetReadFile(conn, buf, sizeof(buf), &bytes) && bytes > 0)
-            body.append(buf, bytes);
-    }
-    InternetCloseHandle(conn); InternetCloseHandle(inet);
+    core::HttpRequest req;
+    req.url        = url;                 // http:// -> no SECURE (urlIsSecureScheme)
+    req.user_agent = "RE-MOCT/1.0.0-rc1"; // CTDB's short UA (not the seam default)
+    core::HttpResponse r = core::http().fetch(req);
+    DWORD status = (DWORD)r.status;
+    std::string body = (status == 200) ? r.body : std::string();
 
     // Parse response — CTDB returns XML or JSON depending on version
     if (body.find("\"status\":\"ok\"")   != std::string::npos ||

@@ -36,4 +36,18 @@ if(WIN32)
         ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/lib)
     target_link_libraries(scrobble_request_test PRIVATE wininet advapi32)
     add_test(NAME scrobble_request_test COMMAND scrobble_request_test)
+
+    # group (c) — Windows-only CoverArt request test. Links CoverArt (portable) + the
+    # WinINet impl; injects a FakeHttp to assert per-call UA, reject_truncated, and the
+    # FollowSameScheme redirect policy. CDRipper AR/CTDB are covered by the pure
+    # urlIsSecureScheme test + the Joan Osborne rip gate (that TU is too heavy to link).
+    add_executable(group_c_request_test
+        group_c_request_test.cpp
+        ${CMAKE_SOURCE_DIR}/src/CoverArt.cpp
+        ${CMAKE_SOURCE_DIR}/src/HttpWinInet.cpp
+    )
+    target_include_directories(group_c_request_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/lib)
+    target_link_libraries(group_c_request_test PRIVATE wininet)
+    add_test(NAME group_c_request_test COMMAND group_c_request_test)
 endif()

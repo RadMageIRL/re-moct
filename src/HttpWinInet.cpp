@@ -37,11 +37,6 @@ std::string toUtf8(const wchar_t* w, int wlen) {
     return s;
 }
 
-bool isHttps(const std::string& url) {
-    return url.size() >= 8 &&
-           (url.compare(0, 8, "https://") == 0 || url.compare(0, 8, "HTTPS://") == 0);
-}
-
 // Extra request headers (UTF-8 -> wide, CRLF-joined). Content-Type is emitted first
 // when set, then the caller's headers (e.g. Authorization) — matching the byte order
 // the scrobble helpers wrote ("Content-Type: ...\r\nAuthorization: ...\r\n").
@@ -118,8 +113,14 @@ struct WinInetHttp final : core::IHttp {
         }
 
         DWORD flags = INTERNET_FLAG_RELOAD | INTERNET_FLAG_NO_CACHE_WRITE;
-        if (isHttps(req.url))      flags |= INTERNET_FLAG_SECURE;
-        if (!req.follow_redirects) flags |= INTERNET_FLAG_NO_AUTO_REDIRECT;
+        if (core::urlIsSecureScheme(req.url)) flags |= INTERNET_FLAG_SECURE;
+        switch (req.redirect) {
+            case core::RedirectPolicy::FollowAll:  break;   // no flag: WinINet default follow
+            case core::RedirectPolicy::FollowNone: flags |= INTERNET_FLAG_NO_AUTO_REDIRECT; break;
+            case core::RedirectPolicy::FollowSameScheme:
+                flags |= INTERNET_FLAG_IGNORE_REDIRECT_TO_HTTP |
+                         INTERNET_FLAG_IGNORE_REDIRECT_TO_HTTPS; break;
+        }
 
         std::wstring hdrs = buildHeaders(req);
         const wchar_t* hp = hdrs.empty() ? nullptr : hdrs.c_str();
@@ -133,7 +134,7 @@ struct WinInetHttp final : core::IHttp {
             res.status    = queryStatus(conn);
             readBody(conn, req, res);
             res.final_url = queryFinalUrl(conn);
-            res.ok        = req.reject_truncated ? !res.truncated : true;
+            core::finalizeBody(res, req);   // clears body on reject_truncated + truncated
             InternetCloseHandle(conn);
         } else {
             // ── non-GET (POST/…): InternetConnect + HttpOpenRequest + body ──
@@ -166,7 +167,7 @@ struct WinInetHttp final : core::IHttp {
                 res.status    = queryStatus(reqh);
                 readBody(reqh, req, res);
                 res.final_url = queryFinalUrl(reqh);
-                res.ok        = req.reject_truncated ? !res.truncated : true;
+                core::finalizeBody(res, req);
             }
             InternetCloseHandle(reqh);
             InternetCloseHandle(conn);

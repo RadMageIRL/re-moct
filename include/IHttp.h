@@ -15,9 +15,15 @@
 
 namespace core {
 
-// A single HTTP request. Slice 1 exercises GET only; the POST/body/content_type
-// fields exist so the shape is proven, but are unused until a later slice migrates
-// the scrobble sites. All strings are UTF-8; the platform impl widens as needed.
+// Redirect handling. FollowAll is the default and maps to WinINet's automatic follow
+// with NO extra flag — byte-identical to the pre-(c) `bool follow_redirects = true`,
+// so groups (a)/(b) are unchanged. FollowNone = don't follow (NO_AUTO_REDIRECT).
+// FollowSameScheme = follow but never cross http<->https (CoverArt/CAA: no downgrade;
+// WinINet IGNORE_REDIRECT_TO_HTTP|HTTPS). The bool genuinely couldn't express the
+// third policy — this is matching baseline, not gold-plating.
+enum class RedirectPolicy { FollowAll, FollowNone, FollowSameScheme };
+
+// A single HTTP request. All strings are UTF-8; the platform impl widens as needed.
 struct HttpRequest {
     std::string url;
     std::string method = "GET";
@@ -27,8 +33,8 @@ struct HttpRequest {
     std::string user_agent;                 // empty -> impl default UA
     int    timeout_ms       = 0;            // 0 -> impl default (no explicit timeout)
     std::size_t max_body    = 0;            // 0 -> unlimited; else cap the body in bytes
-    bool   follow_redirects = true;         // default matches WinINet's auto-follow
-    bool   reject_truncated = false;        // if capped before EOF, mark the response !ok
+    RedirectPolicy redirect = RedirectPolicy::FollowAll;  // see enum above
+    bool   reject_truncated = false;        // if capped before EOF: fail AND clear the body
 };
 
 // The response. `body` is a byte buffer (text consumers treat it as a string; binary
@@ -41,6 +47,28 @@ struct HttpResponse {
     std::string final_url;
     bool        truncated = false;          // hit max_body before EOF
 };
+
+// Scheme predicate (pure): true iff the URL is https. The platform transport derives
+// TLS from this, so a plain-http:// URL gets NO secure flag (the lessons.md item that
+// comes due for CDRipper's AR/CTDB fetch). Testable off-platform.
+inline bool urlIsSecureScheme(const std::string& url) {
+    return url.size() >= 8 &&
+           (url.compare(0, 8, "https://") == 0 || url.compare(0, 8, "HTTPS://") == 0);
+}
+
+// Cap/reject finalization a transport applies after reading the body. When a
+// reject_truncated request hit the cap (truncated), the partial body is CLEARED so a
+// leading image/JSON fragment can't be mistaken for a complete payload, and the
+// response fails. Otherwise it's a success with the body kept. reject_truncated
+// defaults false -> groups (a)/(b) unaffected (ok=true, body kept). Pure; unit-tested.
+inline void finalizeBody(HttpResponse& res, const HttpRequest& req) {
+    if (req.reject_truncated && res.truncated) {
+        res.body.clear();
+        res.ok = false;
+    } else {
+        res.ok = true;
+    }
+}
 
 struct IHttp {
     virtual ~IHttp() = default;

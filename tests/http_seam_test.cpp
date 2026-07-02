@@ -6,6 +6,8 @@
 #include "json.hpp"
 #include <cstdio>
 #include <string>
+#include <vector>
+#include <cstdint>
 
 using json = nlohmann::json;
 
@@ -88,6 +90,65 @@ int main() {
         core::HttpRequest req; req.url = "https://down-mirror/";
         std::string body = h.fetch(req).body;
         CHECK(body.empty());
+    }
+
+    // ═══ group (c): the fields (a)/(b) only declared ════════════════════════
+
+    // ---- (5) byte-body passthrough: std::string carries arbitrary bytes incl NUL ----
+    {
+        FakeHttp h; h.next.ok = true; h.next.status = 200;
+        const std::string png = { (char)0x89, 'P', 'N', 'G', (char)0x0D, (char)0x0A,
+                                  (char)0x00, (char)0xFF, 'x' };   // has an embedded NUL + 0xFF
+        h.next.body = png;
+        core::HttpRequest req; req.url = "https://coverartarchive.org/release/x/front-500";
+        auto r = h.fetch(req);
+        CHECK(r.body.size() == png.size());
+        CHECK(r.body == png);                                  // byte-identical, NUL-safe
+        std::vector<uint8_t> bytes(r.body.begin(), r.body.end());   // the byte-consumer copy
+        CHECK(bytes.size() == png.size());
+        CHECK(bytes[0] == 0x89 && bytes[6] == 0x00 && bytes[7] == 0xFF);
+    }
+
+    // ---- (6) final_url surfaced (hlsHttpGet token propagation depends on this) ----
+    {
+        FakeHttp h; h.next.ok = true; h.next.status = 200;
+        h.next.final_url = "https://cdn/redirected?rj-tok=abc";
+        core::HttpRequest req; req.url = "https://stream/manifest";
+        CHECK(h.fetch(req).final_url == "https://cdn/redirected?rj-tok=abc");
+    }
+
+    // ---- (7) finalizeBody: reject_truncated CLEARS the body at cap (the group-c fork) ----
+    {   // reject on + truncated -> body cleared, response fails (CoverArt semantics)
+        core::HttpRequest rq; rq.reject_truncated = true;
+        core::HttpResponse rs; rs.truncated = true; rs.body = "\x89PNG-partial-cover";
+        core::finalizeBody(rs, rq);
+        CHECK(rs.body.empty());
+        CHECK(rs.ok == false);
+    }
+    {   // reject on, not truncated -> body kept, ok
+        core::HttpRequest rq; rq.reject_truncated = true;
+        core::HttpResponse rs; rs.truncated = false; rs.body = "full-image";
+        core::finalizeBody(rs, rq);
+        CHECK(rs.body == "full-image"); CHECK(rs.ok);
+    }
+    {   // reject OFF (groups a/b) -> a truncated body is KEPT (cap-and-keep, e.g. MBLookup)
+        core::HttpRequest rq; rq.reject_truncated = false;
+        core::HttpResponse rs; rs.truncated = true; rs.body = "kept-partial";
+        core::finalizeBody(rs, rq);
+        CHECK(rs.body == "kept-partial"); CHECK(rs.ok);
+    }
+
+    // ---- (8) scheme predicate: plain-HTTP (CDRipper AR/CTDB) gets NO secure flag ----
+    CHECK(core::urlIsSecureScheme("http://www.accuraterip.com/accuraterip/x.bin") == false);
+    CHECK(core::urlIsSecureScheme("http://db.cuetools.net/lookup2.php")           == false);
+    CHECK(core::urlIsSecureScheme("https://coverartarchive.org/release/x/front")  == true);
+    CHECK(core::urlIsSecureScheme("https://itunes.apple.com/search")              == true);
+    CHECK(core::urlIsSecureScheme("")                                             == false);
+
+    // ---- (9) RedirectPolicy default is FollowAll (byte-identical to old follow=true) ----
+    {
+        core::HttpRequest rq;
+        CHECK(rq.redirect == core::RedirectPolicy::FollowAll);
     }
 
     if (!g_fail) std::printf("ALL PASS\n");

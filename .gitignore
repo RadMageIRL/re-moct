@@ -5,3 +5,4 @@ lib/miniaudio.h
 .vscode/
 *.o
 *.a
+*.exe

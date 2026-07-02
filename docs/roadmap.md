@@ -40,6 +40,11 @@ carve the ABI first.
       fully closed.** The fork is resolved: both sites migrated. See Done section.
       The live StreamSource audio read loop (`InternetReadFile`→ring) stays OUT
       entirely, permanently — proven byte-identical by diff in slice 4.
+  - **slice 5 — core/platform directory reorg (HTTP seam): ✅ DONE** (commit
+    `1977539`): `include/core/` + `src/platform/win/` established on the finished
+    HTTP seam. See Done section. The remaining seams below BUILD INTO this
+    structure (interfaces → `include/core/`, Windows impls → `src/platform/win/`);
+    they are not relocated later.
   - IPC: Discord named-pipe → abstract (Linux = Unix socket).
   - Notifications: Toast/PowerShell → abstract (Linux = libnotify/notify-send).
   - CD access: Windows IOCTL → SG_IO on Linux.
@@ -56,6 +61,22 @@ carve the ABI first.
   of the whole plugin system. ("Fix iHeart and ship without rebuilding the host.")
 
 ## Done (restructure branch)
+- **Phase 1 slice 5 — core/platform directory reorg (HTTP seam only): DONE** (commit
+  `1977539`). Pure relocation — `git mv include/IHttp.h include/core/IHttp.h` +
+  `git mv src/HttpWinInet.cpp src/platform/win/HttpWinInet.cpp` (both true renames,
+  95%/98% similarity — history preserved). Include statements changed to
+  `#include "core/IHttp.h"` across all 15 referencing sites (2 headers, 7 src
+  consumers, the impl, 5 tests) — chosen over adding `include/core` to the search
+  path so the layer boundary is visible at every include site and future core
+  headers follow the same pattern with zero extra CMake. CMake: main target + 4
+  test targets' `HttpWinInet.cpp` paths updated; no include-dir changes (`include/`
+  already on every target's path). Diff surface: 18 files, 29+/29− — provably
+  move-plus-paths only. Verified: clean reconfigure+rebuild (rm -rf build) 50/50,
+  ctest 7/7 same results, remoct.exe launches and plays a local file.
+  **Deliberately scoped to the one finished seam** — reorg-first on known-good code
+  establishes the boundary once; IPC / notifications / CD-IOCTL get built into it,
+  not relocated later. `src/platform/linux/` NOT created — it's the libcurl (+ Unix
+  socket, libnotify, SG_IO) home when Phase 3 arrives.
 - **Phase 1 slice 4 — HTTP seam, sites 7 & 8 (the audio-thread pair): DONE** (commit
   `4c72b09`). **HTTP consolidation 8/8 — fully closed.** `core::IHttp` gained the two
   capabilities the audio sites needed, both defaulting inert (six shipped sites
@@ -128,7 +149,7 @@ carve the ABI first.
   resolved metadata; RadioBrowser "kwin" search returned KWIN 97.7).
   - `core::http()` is a TRANSITIONAL global (endgame = injection; see `architecture.md`).
   - At the later `src/core` + `src/platform/{win,linux}` reorg, `IHttp.h` moves to
-    `include/core/` and `HttpWinInet.cpp` to `src/platform/win/`.
+    `include/core/` and `HttpWinInet.cpp` to `src/platform/win/`. (Done — slice 5.)
   - Remaining HTTP work (groups b, c, IHeart) tracked under Phase 1 above.
 - **CDRipper negative drive-offset preamble OOB read + wrong CRC phase: FIXED**
   (commit `1a2235a`). Floored offset decomposition (`ar::normalizeSkip`) + signed

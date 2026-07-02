@@ -17,7 +17,9 @@ is the whole point; keep Classic minimal and faithful, put flair in Awesome.
 - Toolchain: **MSYS2 UCRT64**, GCC 15.2, CMake + Ninja, ncursesw.
 - Binary: `build\bin\remoct.exe`. Build from the repo root.
 - Audio/encode: miniaudio (`ma_device_*`), FDK-AAC, libFLAC, LAME, libebur128, TagLib.
-- Net: WinINet (per-module GET helpers in 8 files — consolidation is planned, see roadmap).
+- Net: all HTTP via the `core::IHttp` seam (`include/core/IHttp.h`; WinINet impl
+  `src/platform/win/HttpWinInet.cpp`) — except StreamSource's live read loop (raw
+  WinINet by design, permanently).
 - Services: MusicBrainz, Discogs, AccurateRip, CTDB, Cover Art Archive, iTunes, Deezer,
   iHeart (HLS via `revma.ihrhls.com`), radio-browser.info, ICY/SHOUTcast,
   Last.fm, ListenBrainz, Discord (named-pipe IPC, asset key `remoct_logo`).
@@ -64,13 +66,13 @@ Audiobook suite (`.m4b`, chapters, `[Books]` nav). Discord Rich Presence stage 2
 machine + ring-buffer re-pin fix. Device-switching fix. Column-aware UTF-8 pipeline.
 
 ## Next substantive step
-**Phase 1 — HTTP seam consolidation: ✅ 8/8, fully closed** (`4c72b09`). All WinINet
-sites outside the live audio read loop now go through `core::IHttp` — including the two
-audio-thread sites (StreamSource `hlsHttpGet`, IHeart metadata) via slice 4's cancel
-token + `IHttpSession` persistent sessions. The live read loop (`rawRead`→ring) stays
-raw WinINet permanently. **Next: the rest of Phase 1** — IPC (Discord named-pipe),
-notifications, CD-IOCTL seams, and the `src/core`+`src/platform` reorg (slice 5
-candidate). See `docs/roadmap.md`.
+**Phase 1 — HTTP seam: ✅ 8/8 closed** (`4c72b09`) **+ core/platform boundary
+established** (slice 5, `1977539`): `include/core/` + `src/platform/win/` exist,
+seeded with the finished HTTP seam (pure relocation, verified). The live read loop
+(`rawRead`→ring) stays raw WinINet permanently. **Next: the remaining Phase 1
+seams** — IPC (Discord named-pipe), notifications, CD-IOCTL — each BUILT INTO the
+new structure (interface → `include/core/`, Windows impl → `src/platform/win/`).
+See `docs/roadmap.md`.
 
 ## Deep knowledge — read the matching file when a task touches it
 - Roadmap, phases, parked items, decisions → `docs/roadmap.md`

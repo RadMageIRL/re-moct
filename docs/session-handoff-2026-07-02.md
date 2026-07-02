@@ -1,11 +1,11 @@
-# Session handoff — 2026-07-02 (Phase 1 HTTP seam COMPLETE: 8/8, slice 4 landed)
+# Session handoff — 2026-07-02 (rev 2: slice 5 landed — core/platform boundary established)
 
 Read this at the start of the next session to pick up cleanly. Pairs with
 `CLAUDE.md`, `roadmap.md`, `lessons.md`, `architecture.md`, `streaming.md`.
 (The prior handoff `session-handoff-2026-07-01.md` covers Phase 0 + the
-negative-offset bug and is still valid history. This file's earlier revision
-covered groups a/b/c at 6/8 and the fork; the fork is now resolved — superseded
-by this revision.)
+negative-offset bug and is still valid history. This file's earlier revisions
+covered groups a/b/c at 6/8, then slice 4 closing HTTP at 8/8 — superseded by
+this revision, which adds slice 5.)
 
 ## Pinned constraints (do NOT re-litigate)
 - **The 150-sector offset is a physical property of the disc** — a design aspect of
@@ -22,65 +22,60 @@ by this revision.)
   ring is raw WinINet by design. Audit invariant: `InternetReadFile` appears in
   StreamSource ONLY in `rawRead`; `InternetOpenUrl` only in `connect()`'s ICY branch.
 
-## What this session accomplished — slice 4: HTTP 8/8, consolidation CLOSED
-Commit `4c72b09` (code), this commit (docs). The two audio-thread sites migrated
-behind `core::IHttp` via the capabilities designed and approved this session:
+## What this session accomplished — slice 5: core/platform directory boundary
+Commit `1977539` (code) + this docs commit. Pure relocation of the finished HTTP
+seam — deliberately reorg-first on known-good code so the boundary is established
+once and the remaining seams build into it instead of relocating later:
 
-- **Cancel token:** `HttpRequest::cancel` (`const std::atomic<bool>*`, polled before
-  open + before each chunk read — baseline `stop_` granularity) + `HttpResponse::
-  cancelled` (ok=false, partial body cleared via pure `finalizeCancelled()`). A
-  consumer's own stop is distinguishable from network death (reconnect/backoff safe).
-- **Persistent sessions:** `IHttpSession` + `IHttp::openSession(HttpSessionConfig)`;
-  default forwarding impl keeps every FakeHttp test unchanged; `WinInetSession` holds
-  one `InternetOpen` handle + KEEP_CONNECTION per fetch. Lifetimes match baseline
-  exactly: hls session dies in `disconnect()` (fresh per re-handshake/re-pin), IHeart's
-  lives with the object. This is the Phase 2/4 shape (Source/plugin holds a session;
-  host hands `IHttp` as factory) — the fork rationale, proven.
-- **Site 7 — `StreamSource::hlsHttpGet`:** signature/call-sites unchanged; 8 MB
-  cap-and-keep, `pragma_no_cache`, `cancel=&stop_`, `final_url` fallback, ≥400 gate and
-  read-error fail replicated consumer-side. Only `disconnect`/`hlsEnsureSession`/
-  `hlsHttpGet` touched (3 diff hunks; zero live-loop symbols in the diff).
-- **Site 8 — IHeart metadata:** 5 s session, same UA, Accept header, 4 MB cap,
-  **nullptr cancel** (parity — boundedness stays the deliberate timeout).
-  `IHeartRadio.cpp` is now **WinINet-free** (still `windows.h` for GetTempPathA).
-- **New fields default inert** — the six previously-shipped sites are byte-identical
-  (`pragma_no_cache=false` held; scrobble/group-c request tests still green through the
-  refactored impl).
-- `read_error` response flag = implementation-time survey correction; accepted
-  residuals + fixture lesson recorded in `lessons.md`.
+- `git mv include/IHttp.h include/core/IHttp.h` and
+  `git mv src/HttpWinInet.cpp src/platform/win/HttpWinInet.cpp` — both true renames
+  (95%/98% similarity), per-file history/blame preserved.
+- **Include approach decided: statements changed** — `#include "core/IHttp.h"` at all
+  15 referencing sites (IHeartRadio.h, StreamSource.h; CDRipper, CoverArt,
+  IHeartRadio, LastFm, ListenBrainz, MBLookup, RadioBrowser .cpp; the impl; 5 test
+  .cpps). Chosen over appending `include/core` to search paths: the layer is visible
+  at every include site (the `core/`-purity audit is a grep over include lines),
+  future core headers (IIpc, INotify, ICdIo) follow the pattern with zero extra
+  CMake, and `include/` already on every target's path means no include-dir edits.
+- CMake: `HttpWinInet.cpp` path updated in the main target (`if(WIN32)` block) + the
+  4 Windows-only test targets (scrobble/group_c/http_cancel/iheart_request).
+- Change surface: 18 files, 29+/29− — provably move-plus-paths only (the only
+  non-include edits are the path comments inside the two moved files + CMake).
+- **`src/platform/linux/` NOT created** — it's the home for the libcurl / Unix
+  socket / libnotify / SG_IO impls when Phase 3 arrives. Only `win/` exists.
+- Scope discipline held: ONLY the finished HTTP seam moved. All other files stay
+  flat until their seam is migrated — each future seam lands its interface in
+  `include/core/` and its Windows impl in `src/platform/win/` at migration time.
 
-## Verification (two-layer, all green)
-- **ctest 7/7**: the prior five + `http_cancel_test` (localhost socket fixture:
-  mid-body abort **373 ms** vs a ~300 s body / 8 s timeout; keep-alive = **1**
-  connection for 2 session fetches; pre-cancelled = zero network) +
-  `iheart_request_test` (real consumer + injected fake; session config + request shape
-  + all three endpoints). Fixture lesson: reset the session BEFORE joining server
-  threads (pooled connection outlives fetches) + cap socket waits — 110 s → 2.6 s.
-- **Real-world on 7of9 (all six gates passed):** digital iHeart resolves + plays clean;
-  **mid-segment stop aborts <1 s** (the regression this design must not introduce);
-  stop-during-station-switch clean; now-playing + Discord art intact; ad-onset re-pin a
-  non-event; ICY/SHOUTcast behaviorally unregressed.
+## Verification (slice 5 — "nothing changed but paths")
+- Clean reconfigure + rebuild after `rm -rf build` (stale cache would lie): 50/50.
+- **ctest 7/7 green** — same suite, same results (http_cancel_test ~2.6 s as before).
+- `remoct.exe` launches and plays a local file (sanity floor; no rip/stream gate
+  needed for a provably move-only diff).
+- `git status` showed both files as `R` renames, never delete+add.
 
-## Rest of Phase 1 — the next fork (pick a seam or the reorg)
+## Rest of Phase 1 — next fork (pick a seam; the structure is ready)
 - **IPC:** Discord named-pipe → abstract interface (Linux = Unix socket).
 - **Notifications:** Toast/PowerShell → abstract (Linux = libnotify/notify-send).
 - **CD access:** Windows IOCTL → SG_IO on Linux.
-- **The `src/core` + `src/platform/{win,linux}` directory reorg** — `IHttp.h` →
-  `include/core/`, `HttpWinInet.cpp` → `src/platform/win/` (use `git mv`, one logical
-  move per commit; grep-built leak map first; keep buildable).
+- Each builds into the slice-5 structure: interface → `include/core/`, Windows
+  impl → `src/platform/win/`, consumers include `"core/<Interface>.h"`.
 - Parked (see `roadmap.md`): wiring `stop_` into IHeart polls (behavior improvement,
   separate decision); stalled-connect prompt interrupt (hardening); concurrency debt.
 
 ## Current state
-- **Branch:** `restructure`; slice 4 = code `4c72b09` + docs `668d3da` (+ a small
-  follow-up lessons commit: ICY StreamTitle silence is station-side). Local only —
-  push when ready.
-- **Tests:** 7/7 green via `ctest` (5 prior + `http_cancel_test`, `iheart_request_test`).
+- **Branch:** `restructure`; slice 5 = code `1977539` + this docs commit. Slice 4
+  (`4c72b09` + docs) beneath it. Local until pushed.
+- **Tests:** 7/7 green via `ctest` (iheart_sm, ar_crc, http_seam, scrobble_request,
+  group_c_request, http_cancel, iheart_request).
 - **Build:** clean, `remoct.exe` at `build\bin\remoct.exe`.
+- **Layout now:** `include/core/IHttp.h` + `src/platform/win/HttpWinInet.cpp`;
+  everything else still flat in `include/` + `src/` (by design — moves happen
+  per-seam at migration time).
 - **This `E:\code\remoct` clone has the full MSYS2 UCRT toolchain + deps** — full build +
   ctest run locally; only interactive/real-world checks (rip / scrobble / stream) need 7of9.
 - The `sniffiheartradio/` probe keeps its own standalone WinINet copies of IHeartRadio —
-  intentionally divergent, unaffected by the migration.
+  intentionally divergent, unaffected.
 
 ## Build / test commands (MSYS2 UCRT64)
 ```

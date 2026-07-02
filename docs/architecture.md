@@ -24,7 +24,8 @@ are for streaming sources.
 notify) service rather than each plugin carrying its own WinINet. This keeps plugins
 platform-neutral and quietly does the Phase 1 HTTP consolidation at the same time.
 
-> **The HTTP seam now exists** (Phase 1 slice 1, `include/IHttp.h`): `core::IHttp` is
+> **The HTTP seam now exists** (Phase 1 slice 1; since slice 5 at
+> `include/core/IHttp.h`): `core::IHttp` is
 > the interface the host will hand plugins — the DI target that makes the above real.
 > Its `platform::win::WinInetHttp` impl is the first concrete transport. The current
 > process-wide `core::http()` accessor is a **transitional** migration seam ONLY;
@@ -69,6 +70,13 @@ Linux (`if(WIN32)`/`if(UNIX)` selecting target sources + libs), so whole files a
 excluded per-OS and `#ifdef`s shrink to tiny inline divergences. **`core/` never
 includes a platform header** — it only talks to the interfaces. The test: if `core/`
 compiles on Linux, nothing leaked. Nothing platform-specific belongs in an interface.
+
+> **The boundary now exists on disk** (Phase 1 slice 5): `include/core/IHttp.h` +
+> `src/platform/win/HttpWinInet.cpp`, seeded with the finished HTTP seam. Consumers
+> write `#include "core/IHttp.h"` — the layer is visible at the include site (that's
+> the audit: grep core files for platform includes). Remaining seams (IPC, notify,
+> cd_io) get built into this structure directly. `src/platform/linux/` is created
+> when Phase 3 lands the libcurl/Unix-socket/libnotify/SG_IO impls, not before.
 
 ## Linux port
 - WSL2 on 7of9 = fast local inner loop; CI on real Ubuntu = source of truth.

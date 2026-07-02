@@ -134,6 +134,8 @@ bool StreamSource::connect() {
 void StreamSource::disconnect() {
     if (hConn_) { InternetCloseHandle(hConn_); hConn_ = nullptr; }
     if (hInet_) { InternetCloseHandle(hInet_); hInet_ = nullptr; }
+    hls_session_.reset();   // HLS: drop the keep-alive session (fresh one per
+                            // re-handshake/re-pin — the lifetime the raw handle had)
 }
 
 // ─── HLS increment 1: resolve / poll / fetch (standalone, no audio path) ──────
@@ -143,61 +145,45 @@ void StreamSource::disconnect() {
 // %TEMP%\remoct-*.log). None of the continuous-stream path is touched.
 
 bool StreamSource::hlsEnsureSession() {
-    if (hInet_) return true;
-    hInet_ = InternetOpenA("RE-MOCT/1.0.0-rc1 (https://github.com/RadMageIRL/re-moct)",
-                           INTERNET_OPEN_TYPE_PRECONFIG, nullptr, nullptr, 0);
-    if (!hInet_) { slog("hlsEnsureSession: InternetOpenA FAILED err=%lu", GetLastError()); return false; }
-    DWORD to = 8000;  // mirror connect() timeouts
-    InternetSetOptionA(hInet_, INTERNET_OPTION_CONNECT_TIMEOUT, &to, sizeof(to));
-    InternetSetOptionA(hInet_, INTERNET_OPTION_RECEIVE_TIMEOUT, &to, sizeof(to));
-    InternetSetOptionA(hInet_, INTERNET_OPTION_SEND_TIMEOUT,    &to, sizeof(to));
+    if (hls_session_) return true;
+    core::HttpSessionConfig cfg;
+    cfg.user_agent = "";     // impl default == the exact UA the raw handle used
+    cfg.timeout_ms = 8000;   // mirror connect() timeouts (connect/receive/send)
+    hls_session_ = core::http().openSession(cfg);
+    if (!hls_session_) { slog("hlsEnsureSession: openSession FAILED"); return false; }
     return true;
 }
 
-// Short-lived GET over the shared session. Captures body (text and/or bytes)
-// and, optionally, the post-redirect URL.
+// Short-lived GET over the shared keep-alive session (via the core::IHttp seam).
+// Captures body (text and/or bytes) and, optionally, the post-redirect URL.
+// stop_ rides in as the request's cancel token — the transport polls it per chunk,
+// preserving the baseline's prompt mid-segment abort on stop.
 bool StreamSource::hlsHttpGet(const std::string& url, std::string* out_text,
                               std::vector<uint8_t>* out_bytes, std::string* out_final_url) {
-    if (!hInet_) return false;
-    DWORD flags = INTERNET_FLAG_RELOAD | INTERNET_FLAG_NO_CACHE_WRITE |
-                  INTERNET_FLAG_PRAGMA_NOCACHE | INTERNET_FLAG_KEEP_CONNECTION;
-    HINTERNET h = InternetOpenUrlA(hInet_, url.c_str(), nullptr, 0, flags, 0);
-    if (!h) { slog("hlsGet: open FAILED err=%lu url=%s", GetLastError(), url.c_str()); return false; }
+    if (!hls_session_) return false;
+    core::HttpRequest req;
+    req.url             = url;
+    req.pragma_no_cache = true;                 // baseline INTERNET_FLAG_PRAGMA_NOCACHE
+    req.max_body        = 8u * 1024u * 1024u;   // baseline 8 MB cap-and-keep
+    req.cancel          = &stop_;
+    core::HttpResponse res = hls_session_->fetch(req);
 
-    if (out_final_url) {                       // URL after redirects (token lives here)
-        char fbuf[2048]; DWORD flen = sizeof(fbuf);
-        if (InternetQueryOptionA(h, INTERNET_OPTION_URL, fbuf, &flen))
-            out_final_url->assign(fbuf, flen);
-        else
-            *out_final_url = url;
-    }
-
-    DWORD status = 0, slen = sizeof(status), sidx = 0;   // non-2xx => session expiry/dead
-    if (HttpQueryInfoA(h, HTTP_QUERY_STATUS_CODE | HTTP_QUERY_FLAG_NUMBER, &status, &slen, &sidx)
-        && status >= 400) {
-        slog("hlsGet: HTTP %lu url=%s", status, url.c_str());
-        InternetCloseHandle(h);
+    if (res.cancelled) return false;            // our own stop, not a network failure
+    if (!res.ok) { slog("hlsGet: open FAILED url=%s", url.c_str()); return false; }
+    if (res.read_error) {                       // baseline fails the call on a mid-body error
+        slog("hlsGet: read err url=%s", url.c_str());
         return false;
     }
-
-    std::vector<uint8_t> buf;
-    uint8_t chunk[8192];
-    DWORD got = 0;
-    for (;;) {
-        if (stop_.load()) { InternetCloseHandle(h); return false; }
-        if (!InternetReadFile(h, chunk, sizeof(chunk), &got)) {
-            slog("hlsGet: read err=%lu url=%s", GetLastError(), url.c_str());
-            InternetCloseHandle(h);
-            return false;
-        }
-        if (got == 0) break;                   // EOF
-        buf.insert(buf.end(), chunk, chunk + got);
-        if (buf.size() > 8u * 1024u * 1024u) { slog("hlsGet: oversized body, abort"); break; }
+    if (res.status >= 400) {                    // non-2xx => session expiry/dead
+        slog("hlsGet: HTTP %ld url=%s", res.status, url.c_str());
+        return false;
     }
-    InternetCloseHandle(h);
+    if (res.truncated) slog("hlsGet: oversized body, abort");   // cap-and-keep, as baseline
 
-    if (out_text)  out_text->assign(reinterpret_cast<char*>(buf.data()), buf.size());
-    if (out_bytes) *out_bytes = std::move(buf);
+    if (out_final_url)                          // URL after redirects (token lives here)
+        *out_final_url = res.final_url.empty() ? url : res.final_url;
+    if (out_text)  *out_text = res.body;
+    if (out_bytes) out_bytes->assign(res.body.begin(), res.body.end());
     return true;
 }
 

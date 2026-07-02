@@ -50,4 +50,32 @@ if(WIN32)
         ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/lib)
     target_link_libraries(group_c_request_test PRIVATE wininet)
     add_test(NAME group_c_request_test COMMAND group_c_request_test)
+
+    # slice 4 — Windows-only REAL-socket test of the WinINet cancel + session
+    # capabilities (localhost fixture; a fake cannot prove these): prompt mid-body
+    # cancel (the "stop mid-segment must not hang 8s" gate), keep-alive connection
+    # reuse across one session, and pre-cancelled fetch never touching the network.
+    add_executable(http_cancel_test
+        http_cancel_test.cpp
+        ${CMAKE_SOURCE_DIR}/src/HttpWinInet.cpp
+    )
+    target_include_directories(http_cancel_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/lib)
+    target_link_libraries(http_cancel_test PRIVATE wininet ws2_32)
+    add_test(NAME http_cancel_test COMMAND http_cancel_test)
+
+    # slice 4 — Windows-only IHeart metadata request test. Links the REAL IHeartRadio
+    # consumer + the WinINet impl and injects a FakeHttp to assert the session config
+    # (UA, 5s timeout) + per-request shape (Accept header, pragma, 4MB cap, no cancel
+    # token) and the three verified endpoints. hlsHttpGet's request shape is covered
+    # by http_cancel_test + the live gates (StreamSource's TU is too heavy to link).
+    add_executable(iheart_request_test
+        iheart_request_test.cpp
+        ${CMAKE_SOURCE_DIR}/src/IHeartRadio.cpp
+        ${CMAKE_SOURCE_DIR}/src/HttpWinInet.cpp
+    )
+    target_include_directories(iheart_request_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/lib)
+    target_link_libraries(iheart_request_test PRIVATE wininet)
+    add_test(NAME iheart_request_test COMMAND iheart_request_test)
 endif()

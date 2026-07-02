@@ -26,6 +26,7 @@
 #include <fdk-aac/aacdecoder_lib.h>
 #include "IHeartRadio.h"  // isolated iHeart now-playing service (HLS streams only)
 #include "IHeartNowPlayingSM.h"  // pure now-playing reconciliation state machine
+#include "IHttp.h"        // HLS manifest/segment one-shots go through the seam (slice 4)
 
 class StreamSource {
 public:
@@ -114,7 +115,7 @@ private:
     };
     HlsState                hls_;
 
-    bool hlsEnsureSession();                  // open hInet_ (UA + timeouts) if needed
+    bool hlsEnsureSession();                  // open hls_session_ (UA + timeouts) if needed
     bool hlsHttpGet(const std::string& url, std::string* out_text,
                     std::vector<uint8_t>* out_bytes, std::string* out_final_url);
     bool hlsResolveMaster();                  // GET master -> variant_url
@@ -192,9 +193,16 @@ private:
     mutable std::string       np_published_;
     std::string             iheart_art_;       // album-art URL for the committed song (digital mode; "" otherwise). Guarded by now_playing_mtx_.
 
-    // WinINet handles (owned by producer thread once open() returns)
+    // WinINet handles (owned by producer thread once open() returns). ICY/continuous
+    // path ONLY — the live audio read loop (rawRead -> InternetReadFile(hConn_) ->
+    // ring) stays raw WinINet, permanently outside the IHttp seam.
     HINTERNET               hInet_ = nullptr;
     HINTERNET               hConn_ = nullptr;
+    // HLS keep-alive session (slice 4): backs the hlsHttpGet manifest/segment
+    // one-shots via the core::IHttp seam. Same lifetime the raw hInet_ had for HLS —
+    // created in hlsEnsureSession, dropped in disconnect(), so every re-handshake /
+    // ad-onset re-pin gets a fresh session, exactly as baseline.
+    std::unique_ptr<core::IHttpSession> hls_session_;
 
     // MP3 decoder (driven on the producer thread only)
     ma_decoder              decoder_{};

@@ -3,6 +3,9 @@
 
 #include <string>
 #include <functional>
+#include <memory>
+
+#include "IHttp.h"   // persistent HTTP session via the platform seam (slice 4)
 
 // ─────────────────────────────────────────────────────────────────────────────
 // IHeartRadio — isolated iHeart now-playing service.
@@ -11,7 +14,8 @@
 // endpoint (sidecar-cached, self-resolving on a miss), then polls for the
 // current track with timestamp gating (blank during ad/talk breaks).
 //
-// Self-contained: owns its WinINet session, depends only on json.hpp + WinINet
+// Self-contained: owns its HTTP session (a keep-alive core::IHttpSession via the
+// platform seam — WinINet-free since slice 4), depends only on json.hpp + the seam
 // + the standard library. Used by StreamSource (production) and the standalone
 // SniffIHeartRadio probe (diagnostic). All iHeart-specific quirks live HERE, so
 // when iHeart changes their API only this one file needs to change.
@@ -88,7 +92,8 @@ public:
     static std::string sidecarPath();   // %TEMP%\re-moct-iheart-stations.json
 
 private:
-    void*       hInet_      = nullptr;  // HINTERNET (own session)
+    // Persistent keep-alive session (own UA + deliberate 5s timeouts; see ensureSession).
+    std::unique_ptr<core::IHttpSession> session_;
     bool        resolved_   = false;
     long        station_id_ = 0;
     std::string zc_;                    // "zc4366"

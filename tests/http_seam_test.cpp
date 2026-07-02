@@ -4,6 +4,7 @@
 // on failure. Runs on Linux CI as well as MSYS2/UCRT64 (pure std + nlohmann).
 #include "IHttp.h"
 #include "json.hpp"
+#include <atomic>
 #include <cstdio>
 #include <string>
 #include <vector>
@@ -149,6 +150,64 @@ int main() {
     {
         core::HttpRequest rq;
         CHECK(rq.redirect == core::RedirectPolicy::FollowAll);
+    }
+
+    // ═══ slice 4: cancel token + persistent sessions ═════════════════════════
+
+    // ---- (10) new fields default inert — the six shipped one-shot sites unchanged ----
+    {
+        core::HttpRequest rq;
+        CHECK(rq.cancel == nullptr);            // not cancellable unless asked
+        CHECK(rq.pragma_no_cache == false);     // no new wire header for shipped sites
+        core::HttpResponse rs;
+        CHECK(rs.cancelled == false);
+        CHECK(rs.read_error == false);
+    }
+
+    // ---- (11) finalizeCancelled: fails + marks cancelled + CLEARS the partial body
+    //           (a half-downloaded segment must never reach the decoder path) ----
+    {
+        core::HttpResponse rs; rs.ok = true; rs.body = "half-a-segment";
+        core::finalizeCancelled(rs);
+        CHECK(rs.cancelled);
+        CHECK(rs.ok == false);
+        CHECK(rs.body.empty());
+    }
+
+    // ---- (12) default openSession forwarder: session config folded into requests,
+    //           delegates to fetch() — so FakeHttp-backed tests see session traffic ----
+    {
+        FakeHttp h; h.next.ok = true; h.next.status = 200; h.next.body = "ok";
+        core::HttpSessionConfig cfg; cfg.user_agent = "UA-X/1.0"; cfg.timeout_ms = 5000;
+        auto s = static_cast<core::IHttp&>(h).openSession(cfg);
+        CHECK(s != nullptr);
+        core::HttpRequest rq; rq.url = "https://api/x";
+        auto r = s->fetch(rq);
+        CHECK(h.calls == 1);                    // routed through fetch()
+        CHECK(h.last.url == "https://api/x");
+        CHECK(h.last.user_agent == "UA-X/1.0"); // folded from session config
+        CHECK(h.last.timeout_ms == 5000);
+        CHECK(r.ok && r.body == "ok");
+        // explicit per-request values are not clobbered by the forwarder
+        core::HttpRequest rq2; rq2.url = "https://api/y";
+        rq2.user_agent = "UA-Y/2.0"; rq2.timeout_ms = 250;
+        s->fetch(rq2);
+        CHECK(h.last.user_agent == "UA-Y/2.0");
+        CHECK(h.last.timeout_ms == 250);
+    }
+
+    // ---- (13) the cancel token rides the request through the seam, and the
+    //           transport-side contract (finalizeCancelled on a set token) holds ----
+    {
+        FakeHttp h; h.next.ok = true;
+        std::atomic<bool> stop{false};
+        core::HttpRequest rq; rq.url = "https://seg/1.aac"; rq.cancel = &stop;
+        h.fetch(rq);
+        CHECK(h.last.cancel == &stop);          // pointer passthrough, no copy games
+        stop.store(true);                       // model the transport's per-chunk poll
+        core::HttpResponse rs; rs.body = "partial";
+        if (h.last.cancel && h.last.cancel->load()) core::finalizeCancelled(rs);
+        CHECK(rs.cancelled && !rs.ok && rs.body.empty());
     }
 
     if (!g_fail) std::printf("ALL PASS\n");

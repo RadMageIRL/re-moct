@@ -1,10 +1,10 @@
 #ifdef _WIN32
 
 #include "IHeartRadio.h"
+#include "IHttp.h"
 #include "json.hpp"
 
-#include <windows.h>
-#include <wininet.h>
+#include <windows.h>   // GetTempPathA / localtime_s only — no WinINet since slice 4
 
 #include <fstream>
 #include <ctime>
@@ -14,11 +14,8 @@
 using json = nlohmann::json;
 
 // ── Construction ─────────────────────────────────────────────────────────────
-IHeartRadio::IHeartRadio() = default;
-
-IHeartRadio::~IHeartRadio() {
-    if (hInet_) { InternetCloseHandle((HINTERNET)hInet_); hInet_ = nullptr; }
-}
+IHeartRadio::IHeartRadio()  = default;
+IHeartRadio::~IHeartRadio() = default;   // session_ closes itself
 
 // ── Paths ────────────────────────────────────────────────────────────────────
 std::string IHeartRadio::tempDir() {
@@ -53,43 +50,34 @@ bool IHeartRadio::isIHeartUrl(const std::string& url) {
     return extractZc(url, zc, n);
 }
 
-// ── WinINet ──────────────────────────────────────────────────────────────────
+// ── HTTP (via the core::IHttp seam, slice 4) ─────────────────────────────────
 bool IHeartRadio::ensureSession() {
-    if (hInet_) return true;
-    HINTERNET h = InternetOpenA(
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) RE-MOCT/1.0",
-        INTERNET_OPEN_TYPE_PRECONFIG, nullptr, nullptr, 0);
-    if (!h) { logmsg("iheart: InternetOpenA failed err=" + std::to_string(GetLastError())); return false; }
-    DWORD to = 5000;   // shorter than a stream connect: this polls on the audio
-                       // producer thread, so a hung iHeart connection mustn't
-                       // stall playback for long — skip and retry next cycle.
-    InternetSetOptionA(h, INTERNET_OPTION_CONNECT_TIMEOUT, &to, sizeof(to));
-    InternetSetOptionA(h, INTERNET_OPTION_RECEIVE_TIMEOUT, &to, sizeof(to));
-    InternetSetOptionA(h, INTERNET_OPTION_SEND_TIMEOUT,    &to, sizeof(to));
-    hInet_ = h;
+    if (session_) return true;
+    core::HttpSessionConfig cfg;
+    cfg.user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) RE-MOCT/1.0";
+    cfg.timeout_ms = 5000;   // shorter than a stream connect: this polls on the audio
+                             // producer thread, so a hung iHeart connection mustn't
+                             // stall playback for long — skip and retry next cycle.
+    session_ = core::http().openSession(cfg);
+    if (!session_) { logmsg("iheart: openSession failed"); return false; }
     return true;
 }
 
 bool IHeartRadio::httpGet(const std::string& url, std::string& body, long& status) {
     body.clear(); status = 0;
     if (!ensureSession()) return false;
-    const char* headers = "Accept: application/json\r\n";
-    DWORD flags = INTERNET_FLAG_RELOAD | INTERNET_FLAG_NO_CACHE_WRITE |
-                  INTERNET_FLAG_PRAGMA_NOCACHE | INTERNET_FLAG_KEEP_CONNECTION |
-                  INTERNET_FLAG_SECURE;
-    HINTERNET h = InternetOpenUrlA((HINTERNET)hInet_, url.c_str(), headers, (DWORD)-1L, flags, 0);
-    if (!h) { logmsg("iheart: GET open failed err=" + std::to_string(GetLastError()) + " " + url); return false; }
-
-    DWORD code = 0, clen = sizeof(code), idx = 0;
-    if (HttpQueryInfoA(h, HTTP_QUERY_STATUS_CODE | HTTP_QUERY_FLAG_NUMBER, &code, &clen, &idx))
-        status = (long)code;
-
-    char chunk[8192]; DWORD got = 0;
-    while (InternetReadFile(h, chunk, sizeof(chunk), &got) && got > 0) {
-        body.append(chunk, got);
-        if (body.size() > 4u * 1024u * 1024u) break;
-    }
-    InternetCloseHandle(h);
+    core::HttpRequest req;
+    req.url             = url;
+    req.headers         = {{"Accept", "application/json"}};
+    req.pragma_no_cache = true;                 // baseline INTERNET_FLAG_PRAGMA_NOCACHE
+    req.max_body        = 4u * 1024u * 1024u;   // baseline 4 MB cap-and-keep
+    // Deliberately NO cancel token: this poll's boundedness is the session's short
+    // timeout, exactly as baseline. (Wiring stop_ in would be a behavior change —
+    // parked as a separate decision.)
+    core::HttpResponse res = session_->fetch(req);
+    status = res.status;
+    if (!res.ok) { logmsg("iheart: GET open failed " + url); return false; }
+    body = std::move(res.body);   // partial body on a mid-read error is KEPT, as baseline
     return true;
 }
 

@@ -26,6 +26,7 @@
 #include "miniaudio.h"
 #include "LrcData.h"
 #include "Mp4Chapters.h"
+#include "core/INotify.h"
 
 class PlaylistManager;
 struct DigiConfig;
@@ -38,9 +39,12 @@ enum class UIOverlay { None, RipConfirm, MBSearch };
 
 class UIManager {
 public:
+    // notify == nullptr -> the production platform notifier (core::notifier());
+    // tests inject a fake here (constructor injection — no setNotify global).
     UIManager(PlaylistManager& playlist, AudioManager& audio,
               DigiConfig& config,
-              const std::string& initial_dir = "");
+              const std::string& initial_dir = "",
+              core::INotify* notify = nullptr);
     ~UIManager();
 
     void run();
@@ -48,6 +52,15 @@ public:
     const std::string& currentDir() const { return current_dir_; }
 
 private:
+    // Notifications seam (slice 7): injected fake in tests, core::notifier() in prod.
+    core::INotify* notify_;
+    // Same name/arity as the pre-slice-7 free function, so every toast call site
+    // in UIManager.cpp compiles unchanged (class scope hides the 4-arg adapter in
+    // Toast.h); forwards to that adapter with the injected notifier. Defined in
+    // UIManager.cpp.
+    void showTrackToast(const std::string& title, const std::string& artist,
+                        const std::string& album);
+
     WINDOW* win_title_    = nullptr;
     WINDOW* win_cwd_      = nullptr;
     WINDOW* win_dir_      = nullptr;

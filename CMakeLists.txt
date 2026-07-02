@@ -17,7 +17,6 @@ set(REMOCT_SOURCES
     src/PlaylistManager.cpp
     src/Config.cpp
     src/LrcData.cpp
-    src/Toast.cpp
     src/CDSource.cpp
     src/MBLookup.cpp
     src/CDRipper.cpp
@@ -43,6 +42,7 @@ if(WIN32)
     list(APPEND REMOCT_SOURCES
         ${CMAKE_SOURCE_DIR}/src/platform/win/HttpWinInet.cpp
         ${CMAKE_SOURCE_DIR}/src/platform/win/IpcWinPipe.cpp
+        ${CMAKE_SOURCE_DIR}/src/platform/win/NotifyWinToast.cpp
     )
 endif()
 

@@ -79,8 +79,10 @@ namespace fs = std::filesystem;
 // Construction
 // ─────────────────────────────────────────────────────────────────────────────
 UIManager::UIManager(PlaylistManager& playlist, AudioManager& audio,
-                     DigiConfig& config, const std::string& initial_dir)
-    : playlist_(playlist), audio_(audio), config_(config)
+                     DigiConfig& config, const std::string& initial_dir,
+                     core::INotify* notify)
+    : notify_(notify ? notify : &core::notifier()),
+      playlist_(playlist), audio_(audio), config_(config)
 {
     if (!initscr()) throw std::runtime_error("initscr() failed");
     setlocale(LC_ALL, "");
@@ -103,6 +105,13 @@ UIManager::UIManager(PlaylistManager& playlist, AudioManager& audio,
     refreshDir();
     audio_.setPreferDigital(config_.prefer_digital_stream);   // apply saved stream-mode pref
     running_ = true;
+}
+
+// All toast call sites land here (member hides the 4-arg Toast.h adapter);
+// content mapping stays in Toast.h, delivery behind the injected notifier.
+void UIManager::showTrackToast(const std::string& title, const std::string& artist,
+                               const std::string& album) {
+    ::showTrackToast(title, artist, album, *notify_);
 }
 
 UIManager::~UIManager() {

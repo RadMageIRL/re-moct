@@ -14,6 +14,13 @@ add_executable(ar_crc_test
 target_include_directories(ar_crc_test PRIVATE ${CMAKE_SOURCE_DIR}/include)
 add_test(NAME ar_crc_test COMMAND ar_crc_test)
 
+# core::INotify seam (slice 7) — pure FakeNotify-backed content test (no PowerShell,
+# no process spawn, Linux-CI safe). Header-only consumer adapter (Toast.h), so no
+# extra TUs; the transport (NotifyWinToast.cpp) is proven at the live toast gate.
+add_executable(notify_toast_test notify_toast_test.cpp)
+target_include_directories(notify_toast_test PRIVATE ${CMAKE_SOURCE_DIR}/include)
+add_test(NAME notify_toast_test COMMAND notify_toast_test)
+
 # core::IHttp seam — pure FakeHttp-backed parse test (no WinINet, Linux-CI safe).
 add_executable(http_seam_test http_seam_test.cpp)
 target_include_directories(http_seam_test PRIVATE

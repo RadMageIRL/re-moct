@@ -89,11 +89,6 @@ public:
         return ok;
     }
 
-    // Called by CDRipper — reads raw sectors using the existing open drive handle
-    bool readSectorsForRip(uint32_t lba, int count, uint8_t* buf) {
-        return readSectors(lba, count, buf);
-    }
-
     // Drive read offset in samples (from AccurateRip offset database).
     // Populated on open(). 0 = unknown/uncorrected.
     int         driveOffset() const { return drive_offset_samples_; }

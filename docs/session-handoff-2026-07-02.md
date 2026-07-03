@@ -1,4 +1,4 @@
-# Session handoff — 2026-07-02 (rev 6: PHASE 2 KICKOFF — design approved, slice 0 replay net landed)
+# Session handoff — 2026-07-02 (rev 7: Phase 2 slices 0 + A landed; next = slice B, design-first)
 
 Read this at the start of the next session to pick up cleanly. Pairs with
 `CLAUDE.md`, `roadmap.md`, `lessons.md`, `architecture.md`, `streaming.md`.
@@ -25,11 +25,23 @@ readiness assessment, approved ISource design, and slice 0.)
   restructures; SKIP 77 without a device). ctest 13/13, repeated-run stable,
   zero production-code changes. `logs/` gitignored (operational captures stay
   on disk as reference, not in the repo).
-- **Slicing approved:** A (contract + StreamSource/CDSource implement it,
-  concurrency boxes provably unopened, tests retarget through ISource*) →
-  review → B (LocalFileSource extraction — the heavy one) → C (callback
-  dispatch, OPTIONAL/declinable). Slice A proceeds on existing approval;
-  **stop for review before slice B.**
+- **Slice A LANDED** (code `0b7acf4` + docs, rev 7 delta): `core::ISource` at
+  `include/core/ISource.h`; StreamSource + CDSource implement it. Audit held:
+  **src/StreamSource.cpp diff EMPTY**; CDSource.cpp = three byte-equivalent
+  signature harmonizations only (seekTo(int)→bool(double), position/duration
+  int→double); AudioManager = 4 casts; UIManager/CDRipper unchanged;
+  sacred-symbol grep over the diff = zero hits. Virtual dispatch exists only on
+  UI-thread query paths — the audio callback still reads through concrete
+  members (that dispatch is slice C, optional). Slice-0 net retargeted through
+  `ISource&` + contract blocks. ctest 13/13, repeated-run stable.
+- **Next: slice B — LocalFileSource extraction. DESIGN-FIRST, Dos sign-off
+  before any code.** The heavy slice: decoder_/next_decoder_ become source
+  objects; the audio-thread crossfade struct-copy swap (AudioManager.cpp
+  initCrossfade) becomes a pointer swap under the SAME next_decoder_initialised_
+  release/acquire protocol; seek-prime and cursor/duration move into the class.
+  Gated by xfade_handoff_test + the full file-mode listen gate (crossfade,
+  gapless, varispeed, MP3 seek-prime, audiobook chapters). Then slice C
+  (callback dispatch, OPTIONAL/declinable).
 - **Parked as its own thread (do NOT fold into Phase 2):** `logs/iheart/` holds
   38 IHeartDeepLog JSONL captures (2026-06-27..29 + 07-02) — the instrumented
   ad-block material the parked rabbit-hole desync item has been waiting on.

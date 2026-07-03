@@ -64,10 +64,11 @@ carve the ABI first.
   - **slice 0 — thin replay net: ✅ DONE** (commit `7adae12`): the regression
     net for the whole phase — see Done section. These tests retarget through
     `ISource*` in slice A and gate every later slice.
-  - **slice A — contract + push sources:** ISource lands; StreamSource + CDSource
-    implement it (signature harmonization only — concurrency boxes provably
-    unopened: zero diff hunks in producers/ring/rawRead/readerWorker); pipeline
-    tests retarget through `ISource*`.
+  - **slice A — contract + push sources: ✅ DONE** (commit `0b7acf4`): ISource
+    landed; StreamSource + CDSource implement it (signature harmonization only —
+    concurrency boxes provably unopened: `src/StreamSource.cpp` diff EMPTY,
+    sacred-symbol grep over the full diff zero hits); pipeline tests retarget
+    through `ISource*`. See Done section.
   - **slice B — LocalFileSource extraction** (the heavy one: decoder_/
     next_decoder_ become source objects; the audio-thread crossfade swap becomes
     a pointer swap under the same release/acquire protocol). Gated by the slice-0
@@ -83,6 +84,25 @@ carve the ABI first.
   of the whole plugin system. ("Fix iHeart and ship without rebuilding the host.")
 
 ## Done (restructure branch)
+- **Phase 2 slice A — core::ISource + push sources: DONE** (commit `0b7acf4`).
+  `include/core/ISource.h` (new, platform-free, standalone-compile verified):
+  readFrames (audio-callback contract, fixed 44100/stereo/f32; ring-backed
+  sources always return frame_count and signal end via their own state —
+  pull-decoded sources short-read at EOF, slice B) / caps (seekable, finite,
+  live — declared, never faked) / positionSec / durationSec / seekTo / close.
+  open()/metadata/pause deliberately excluded (Decisions log). StreamSource
+  implements it with **zero .cpp hunks** (positionSec widened int→double
+  inline; caps=live; durationSec=0; seekTo=false); CDSource with three
+  byte-equivalent signature harmonizations (seekTo(int)→bool seekTo(double),
+  position/duration int→double — integer math preserved, widened) + caps=
+  seekable+finite; CD's extended surface stays concrete. AudioManager: exactly
+  4 consumer casts; UIManager + CDRipper compiled unchanged. The slice-0 net
+  retargeted through `core::ISource&` — the fidelity/prebuffer assertions now
+  also prove interface dispatch — plus new contract blocks per source. Audit:
+  sacred-symbol grep over the diff = zero hits; virtual dispatch added only on
+  UI-thread query paths (the audio callback still reads through concrete
+  members — dispatch there is slice C, deferred). Build clean, ctest 13/13,
+  repeated-run stable.
 - **Phase 2 slice 0 — thin replay net: DONE** (commit `7adae12`). Three tests
   that lock down the producer/consumer audio-machinery SEMANTICS headlessly,
   through the seams Phase 1 built — the safety net decision #1 required before

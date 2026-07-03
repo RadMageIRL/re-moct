@@ -1,6 +1,15 @@
 # RE-MOCT architecture & strategy
 
-## Plugin / Source interface (the endgame, designed but not yet built)
+> **The internal Source interface now EXISTS** (Phase 2 slice A, `0b7acf4`):
+> `core::ISource` at `include/core/ISource.h` — readFrames / caps(seekable,
+> finite, live) / positionSec / durationSec / seekTo / close. StreamSource
+> (iHeart + ICY behind one class) and CDSource implement it; LocalFileSource
+> joins at slice B. This is sequencing step 1 below, realized: compile-time,
+> statically linked, deliberately NOT the plugin ABI. `open()` and metadata are
+> excluded by decision (roadmap Decisions log) — construction stays concrete,
+> and the capability flags declare divergence instead of faking uniformity.
+
+## Plugin / Source interface (the endgame, designed but not yet built as a PLUGIN boundary)
 The plugin contract is a **PCM-centric, transport-agnostic Source**:
 `open / readFrames(float*) / seek? / metadata / capabilities / close`. *How* a
 plugin produces frames — decode in-process, or manage an out-of-process sidecar and

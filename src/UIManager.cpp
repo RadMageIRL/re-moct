@@ -28,6 +28,9 @@
 #include "CoverArt.h"
 #ifdef _WIN32
 #include <shellapi.h>   // ShellExecuteA for Last.fm browser auth
+#else
+#include <termios.h>    // IXON off so ^Q/^S reach curses (ctor block below)
+#include <unistd.h>
 #endif
 #include "StringUtils.h"
 #include "AudioManager.h"
@@ -96,6 +99,21 @@ UIManager::UIManager(PlaylistManager& playlist, AudioManager& audio,
     setlocale(LC_ALL, "");
     cbreak();
     noecho();
+#ifndef _WIN32
+    // Linux ttys ship with XON/XOFF flow control (IXON): the driver consumes
+    // ^Q (XON) and ^S (XOFF) before curses ever sees them — so Ctrl+Q (quit,
+    // key 17) never arrived and ^S would freeze output. cbreak() doesn't turn
+    // this off (raw() would, but it also takes ISIG — too big a hammer).
+    // Windows consoles have no tty flow control, which is why the baseline
+    // never needed this. (Slice-1 follow-up, Dos-found on the Debian VM.)
+    {
+        struct termios tio{};
+        if (tcgetattr(STDIN_FILENO, &tio) == 0) {
+            tio.c_iflag &= ~static_cast<tcflag_t>(IXON);
+            tcsetattr(STDIN_FILENO, TCSANOW, &tio);
+        }
+    }
+#endif
     keypad(stdscr, TRUE);
     curs_set(0);
     timeout(80);

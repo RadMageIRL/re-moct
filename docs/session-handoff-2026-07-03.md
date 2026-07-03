@@ -26,6 +26,17 @@
   the terminal was proven innocent by a key probe (termios stays IXON-only).
   Per-case gates now; ^B/^G/^U live on Linux (verified: all three prompts
   open in the TUI); ^F/^Y/^R/^D stay gated until their slices (4/6).
+- **Scrobbler-engine follow-up (`91caf7a`, Dos-found: prompts opened but no
+  scrobbles landed on Linux):** the ENTIRE bodies of updateScrobbler +
+  startLastfmPoll + startListenBrainzValidate were whole-body `#ifdef _WIN32`
+  (slice-1 scaffolding from the MD5-placeholder era) — empty shells on Linux.
+  Gates removed (Discord blocks keep inner gates, slice 4). LIVE app-driven
+  proof on Linux: Z100 in the TUI → junk filter skipped the station slate →
+  "Zara Larsson - Lush Life" now-playing (Last.fm resp OK, LB playing_now
+  200) → scrobble at elapsed=90: **Last.fm accepted:1 ignored:0, LB single
+  200.** Windows 14/14, Linux 10/10. Lesson recorded: sweep whole-body gates
+  when a slice makes a subsystem portable; "defined but not used" warnings =
+  gated-out consumers, treat as porting TODOs.
 - **Hard-won:** POSIX `close()` does NOT wake a blocked `accept()` — first
   Linux http_cancel run hung forever; fix = shutdown-then-close
   (`stopListener()`) + ctest TIMEOUT 60. Also pinned in lessons.md: WSL

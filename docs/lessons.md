@@ -101,6 +101,20 @@
   innocent until getch() says otherwise; (3) grep `#ifdef _WIN32` spans in
   dispatch switches when porting — a gate around one feature's case swallows
   its neighbors invisibly (the build stays green; the keys just vanish).
+- **The same class, one level deeper: whole-FUNCTION-body gates outlive the
+  era that justified them — when a slice makes a subsystem portable, sweep for
+  the scaffolding gates that assumed it wasn't.** Slice 1 gated the entire
+  bodies of updateScrobbler / startLastfmPoll / startListenBrainzValidate
+  (correct then: MD5 was a Linux placeholder, scrobbling couldn't work);
+  slice 2 made the whole chain portable but the gates stayed — so the login
+  prompts worked (key fix) while the ENGINES were empty shells: no scrobbles,
+  auth polls never committed, token validation never started. Windows fine,
+  probe fine (transport innocent), app silent. Tell-tale: the Linux build's
+  "defined but not used" warnings on normTrackId/looksLikeRealTrack/
+  deinvertArtist were this bug announcing itself — a static helper warning
+  means its consumer is gated out; treat those warnings as porting TODOs,
+  not noise. End-of-slice ritual now: `grep -n "#ifdef _WIN32" | audit each
+  span` over files the slice made portable.
 
 ## WSL build/test discipline — one run, one read, the log is the only truth
 - Run every build/test FOREGROUND, redirected to a log, with an exit marker:

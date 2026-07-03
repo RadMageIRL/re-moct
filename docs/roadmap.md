@@ -99,6 +99,29 @@ carve the ABI first.
   of the whole plugin system. ("Fix iHeart and ship without rebuilding the host.")
 
 ## Done (restructure branch)
+- **iHeart rabbit-hole desync — CLOSED WITH EVIDENCE** (2026-07-03 analysis
+  session; no code, analysis of `logs/iheart/` = 38 deep-log captures, 4,783
+  reconciliation ticks over 34.2 h, + the 07-02 operational log). Findings:
+  - **Stage-B promotion: REJECTED.** Its trigger (a fresh parallel session's
+    live edge showing music before the primary) occurred **0 times in 8
+    instrumented Stage-A episodes** — the lane sat on ads up to 115 s until the
+    primary's break cleared on its own, every time. iHeart's SSAI stitches new
+    joiners into ad pods too; the premise is false in every observed case.
+    **Faster manifest polling + staggered-peek machinery: also rejected** —
+    deferred behind this capture, killed by the same premise.
+  - **edgeLag is FLAT (never exceeded 2 segments in 598 polls, incl. a 1,091 s
+    ad span):** we never fall behind the manifest edge — the desync is in WHAT
+    the edge serves, not our lag. edgeLag-gated re-pin is dead.
+  - **The 35 s LIVE_STALL fallback is validated and well-placed:** 16/85 Live
+    runs self-resolved <30 s (stall correctly silent); all 68 stalled runs
+    ended in a Song commit (fire ~+41 s observed, recover by 60–89 s total).
+  - **The real holes split in two:** Class A (unfixable-by-design — one unpaid
+    cartcutId looping 8–12 min while iHeart's OWN trackHistory/ctm reported no
+    current song: broadcast-side break, nothing to rejoin) vs Class B
+    (session-side staleness with OOB-PROVEN live music, ~1 per ~6 h, 131–300 s,
+    and no mechanism arms from committed-Ad today) → the parked Class-B
+    OOB-gated re-pin candidate above. Signal quality: 3 mfCls flickers and
+    zero manifest freezes in 34.2 h.
 - **Canonical SET_SPEED in CDSource::open — RESOLVED** (commit `d2ad038`; the
   slice-8 parked improvement). The resurrected baseline intent: open() now
   issues `dev_->setSpeed(0xFFFF)` through the ICdIo seam (the canonical 12-byte
@@ -425,15 +448,29 @@ carve the ABI first.
   filename) — a local tag-read/display decode artifact. **NOT in the scrobble path** (album
   isn't scrobbled to Recent Tracks; artist/title were clean over the wire — confirmed in
   group (b)). A separate local tag-decode thread to look at later.
-- iHeart rabbit-hole desync: needs a 15–20 min instrumented ad-block capture (see
-  `streaming.md`).
+- **Class-B OOB-gated re-pin (PARKED, not greenlit — from the 2026-07-03 desync
+  analysis):** extend the existing 35 s stall re-pin to also fire from the
+  COMMITTED-AD state when gated on out-of-band liveness — sketch: `stState==Ad`
+  sustained >60–90 s WHILE trackHistory/ctm shows a current fresh song. Targets
+  the fixable hole class exactly (session loops a stale slate while OOB proves
+  the broadcast returned): observed ~1 per ~6 h of listening, 131–300 s each
+  (sharpest case: 206 s with thCurrent on 8/9 ticks and TWO fresh songs seen
+  out-of-band). Reuses the re-pin mechanism that went 68-for-68 → Song in the
+  corpus; adds no new machinery; the OOB gate was false throughout every
+  broadcast-side (Class A) hole, so it can't fire into a real break. **Honest
+  caveat: a fresh handshake DURING a Class-B hole was never captured — "re-pin
+  escapes the stuck session" is strongly plausible but not directly proven; the
+  first live gate settles it. This is a real audio-path change (re-pin from a
+  new state): full design-first pass + Dos sign-off when chosen, not before.**
+- **Retire the Stage-A staging-lane scaffold (optional cleanup, own change):**
+  inert logging-only observer; its data did its job (killed Stage-B). No
+  urgency — costs nothing dormant. Do NOT fold into other commits.
 - Scrobble back-to-back duplicate: source commits from debounced `IHNow` + TTL dedup.
 - StreamSource `isOpen()` race (consumed in staging lane, defer); `driveOffsetKnown()`
   always-false (skip, no payoff); AAC re-pin doesn't reset FDK (defer, ADTS resyncs).
 - ICY/SHOUTcast metadata improvement (structural protocol limit); ICY ingest
   sanitization (station-ID stripping).
 - Comb-filter / harmonic-sum tempogram for BPM (shelved).
-- Faster manifest polling + staggered-peek machinery (pending rabbit-hole capture).
 
 ## Decisions log
 - **Slice C declined — Phase 2 closed at A+B (2026-07-03).** Dispatch

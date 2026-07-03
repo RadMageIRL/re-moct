@@ -30,6 +30,16 @@
   +6); needs a synthetic negative-offset vector. Don't patch blind.
 
 ## Streaming ring buffer / re-pin
+- **An iHeart hole where iHeart's own trackHistory/ctm reports no current song
+  is broadcast-side (unfixable); one where OOB shows fresh songs while our
+  session loops a stale slate is session-side (the fixable class). The OOB
+  liveness signal is what separates them, and it's the correct gate for any
+  re-pin.** From the 2026-07-03 desync analysis: the longest, scariest holes
+  (8–12 min single-cartcut loops) had NO song playing per iHeart's own
+  endpoints — nothing to rejoin, by design; the fixable 131–300 s holes had
+  fresh songs provably airing while our edge stayed stale. A re-pin gated on
+  OOB liveness cannot fire into a real broadcast break, because the gate was
+  false throughout every one observed.
 - `ringClear()` is called in BOTH the AAC and MP3 re-pin paths, after
   `prebuffered_.store(false)`, to break a producer/consumer deadlock on self-heal.
   It's load-bearing for ad-skip re-pin crossfade — do not "clean it up."

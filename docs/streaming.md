@@ -23,13 +23,23 @@ bypasses iHeart's client-side ad-stitching and metadata-sync layer. Consequences
 - Poll log includes: newest segment number, `nextPlay`, `edgeLag`, `ringSec`, `cls`, `pdt`.
 - `IHeartDeepLog` includes `pdt` / `spotPaid`, with a 5MB roll limit.
 
-## The rabbit-hole capture (next real iHeart step)
-Capture **one real 15–20 minute ad block** with an instrumented build to determine:
-- Does `edgeLag` climb during the ad block → then **gate re-pin on `edgeLag`**.
-- Or does it stay at 1 → then we need a **fresh-edge peek** instead.
-The Stage-A dual-stream observer scaffold (logging only) is in place for this.
-Music-edge-triggered re-pin (step 3) is pending this log evidence. Faster manifest
-polling + staggered-peek machinery is deferred until the capture decides the approach.
+## The rabbit-hole capture — DONE, both questions answered (2026-07-03 analysis)
+The captures landed (38 deep-log files, 4,783 ticks / 34.2 h in `logs/iheart/`,
+plus the 07-02 operational log with Stage-A peek data) and were analyzed:
+- **`edgeLag` does NOT climb — flat at 0–2 segments through every ad block**
+  (598 polls, incl. a 1,091 s ad span). We never fall behind the manifest edge;
+  the desync is in WHAT the edge serves, not our lag. edgeLag-gated re-pin: dead.
+- **The fresh-edge peek was built (Stage A) and its data KILLS Stage B:** in 8/8
+  instrumented break episodes the fresh parallel session's live edge served ads
+  the whole time (up to 115 s of peeks) until the primary's break cleared on its
+  own. iHeart's SSAI stitches new joiners into ad pods too — there is no earlier
+  music edge to promote into. **Stage-B promotion, faster manifest polling, and
+  the staggered-peek machinery are all rejected on this evidence** (roadmap Done
+  entry has the full numbers). The Stage-A scaffold is inert; retiring it is a
+  parked optional cleanup.
+- What remains fixable is the **Class-B hole** (session loops a stale slate while
+  trackHistory/ctm prove the broadcast returned, ~1 per ~6 h, 131–300 s) — the
+  OOB-gated re-pin candidate parked in roadmap.md, design-first when chosen.
 
 ## Scrobble duplicate
 Back-to-back duplicate scrobbles come from a mid-song `IHNow` flicker creating two

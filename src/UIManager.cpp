@@ -3050,7 +3050,11 @@ void UIManager::startDiscordArtLookup(const std::string& artist,
 #endif
 
 void UIManager::updateScrobbler() {
-#ifdef _WIN32
+    // Portable since slice 2 (the scrobble clients + MD5 signing run on both
+    // platforms) — the whole-body _WIN32 gate came off with the ^B/^G key fix:
+    // it was slice-1 scaffolding from the MD5-placeholder era, and it silently
+    // no-op'd every scrobble/auth-commit on Linux while the login PROMPTS
+    // worked (Dos-found). Discord RP stays inner-gated below (slice 4).
     static bool announced = false;
     if (!announced) {
         sclog("updateScrobbler active (session=%s)",
@@ -3298,11 +3302,10 @@ void UIManager::updateScrobbler() {
             std::thread([=]{ ListenBrainz::submitSingle(lbtok, a, t, ts, al); }).detach();
         }
     }
-#endif
 }
 
 void UIManager::startLastfmPoll(const std::string& token) {
-#ifdef _WIN32
+    // Portable since slice 2 (getSession = seam HTTP + vendored MD5).
     if (lf_poll_active_.exchange(true)) return;        // already polling
     lf_poll_done_.store(false);
     if (lf_poll_thread_.joinable()) lf_poll_thread_.join();
@@ -3325,11 +3328,10 @@ void UIManager::startLastfmPoll(const std::string& token) {
         }
         lf_poll_active_.store(false);
     });
-#endif
 }
 
 void UIManager::startListenBrainzValidate(const std::string& token) {
-#ifdef _WIN32
+    // Portable since slice 2 (validate-token = seam HTTP, no signing).
     if (lb_validate_active_.exchange(true)) return;     // one validation already in flight
     lb_validate_done_.store(false);
     if (lb_validate_thread_.joinable()) lb_validate_thread_.join();
@@ -3348,7 +3350,6 @@ void UIManager::startListenBrainzValidate(const std::string& token) {
         lb_validate_done_.store(true);
         lb_validate_active_.store(false);
     });
-#endif
 }
 
 void UIManager::lastfmBeginAuth() {

@@ -66,19 +66,17 @@ Audiobook suite (`.m4b`, chapters, `[Books]` nav). Discord Rich Presence stage 2
 machine + ring-buffer re-pin fix. Device-switching fix. Column-aware UTF-8 pipeline.
 
 ## Next substantive step
-**Phase 1 seams COMPLETE** (HTTP 8/8, core/platform boundary, IPC, notify,
-CD-I/O — byte-identical Relish gate). **Phase 2 (internal Source interface) is
-UNDERWAY**: slice 0 replay net ✅ (`7adae12`), slice A ✅ (`0b7acf4`:
-`core::ISource`; StreamSource + CDSource implement it), **slice B ✅
-(`845a155`: LocalFileSource — the file path is the THIRD ISource impl; the
-audio-thread crossfade swap is a pointer move + retirement under the unchanged
-release/acquire protocol; latent race F2 closed; all three gates passed incl.
-the live listen gate)**. **A+B achieve Phase 2's goal. Next fork: slice C
-(callback dispatch through ISource*, OPTIONAL/declinable — the per-mode
-branches stay regardless) or close Phase 2 and move to Phase 3 (Linux port).**
-Parked: VBR live-bitrate readout semantics (pre-existing, probe-confirmed on
-baseline — product decision). The live read loop (`rawRead`→ring) stays raw
-WinINet permanently. See `docs/roadmap.md`.
+**Phase 1 seams COMPLETE** (HTTP 8/8, boundary, IPC, notify, CD-I/O).
+**Phase 2 COMPLETE** (2026-07-03): `core::ISource` proven against all four
+real sources — slice 0 replay net (`7adae12`), slice A stream+CD (`0b7acf4`),
+slice B LocalFileSource + retirement scheme (`845a155`); **slice C (callback
+dispatch) formally DECLINED** — the single-active-source abstraction is wrong
+during a crossfade (two live sources); per-mode branches are semantics, not
+debt; revisit only if Phase 4's plugin registry needs it (Decisions log).
+**Next fork: Phase 3 (Linux port — `src/platform/linux/`, WSL2 loop, CI
+matrix) or a parked item** (VBR readout product decision, canonical SET_SPEED,
+`logs/iheart/` desync analysis as its own thread). The live read loop
+(`rawRead`→ring) stays raw WinINet permanently. See `docs/roadmap.md`.
 
 ## Deep knowledge — read the matching file when a task touches it
 - Roadmap, phases, parked items, decisions → `docs/roadmap.md`

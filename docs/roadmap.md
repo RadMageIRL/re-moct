@@ -55,8 +55,12 @@ carve the ABI first.
     `14aebec`): the LAST platform seam — Phase 1's seam work is complete. See
     Done section. (Linux = SG_IO on /dev/srN, Phase 3.)
   - Clear the parked concurrency debt where cheap.
-- **Phase 2 — internal Source interface.** A compile-time C++ abstract base
-  (statically linked, NOT a DLL yet). **Design approved (2026-07-02):**
+- **Phase 2 — internal Source interface: ✅ DONE** (slices 0/A/B landed; slice
+  C formally DECLINED by decision, 2026-07-03 — see below and the Decisions
+  log). The goal — an internal compile-time `core::ISource` proven against all
+  four real sources (local file, iHeart, ICY, CD) with zero new dependencies —
+  was achieved at slice B under the slice-0 replay net + live gates.
+  **Design approved (2026-07-02):**
   `core::ISource` at `include/core/ISource.h` — readFrames (the audio-callback
   contract, fixed 44100/stereo/f32) / caps (seekable, finite, live) /
   positionSec / durationSec / seekTo / close. **`open()` and metadata are
@@ -72,10 +76,22 @@ carve the ABI first.
   - **slice B — LocalFileSource extraction: ✅ DONE** (commit `845a155`): the
     heaviest slice — the audio-thread swap became a pointer move + RETIREMENT
     under the unchanged release/acquire protocol. See Done section.
-  - **slice C — callback dispatch through ISource* (OPTIONAL, own go/no-go):**
-    the mode flags stay regardless (they gate per-mode side logic that must not
-    unify — file-only ReplayGain, CD-only live-BPM, per-branch buffering/
-    track-end). A+B achieve Phase 2's goal; C is declinable.
+  - **slice C — callback dispatch through ISource*: ❌ DECLINED** (2026-07-03,
+    go/no-go assessment, Dos confirmed). Not "polish not worth it" — the polish
+    is INCORRECT: a single active-`ISource*` is factually wrong for the file
+    branch, which runs TWO live sources during a crossfade (varispeed needs the
+    file source specifically; the mix and gapless fill read `next_src_`) — only
+    3 of the 6 callback readFrames sites could even use it. The real costs were
+    structural, not the (unmeasurable) vtable: a second source of truth for
+    "what's playing" that can disagree with the mode flags mid-transition (the
+    teardown-ordering class slice 0 guards), and a fourth audio-thread change
+    class (the pointer goes stale at every swap — the F2 lesson replayed). The
+    mode flags/branches stay regardless (file-only ReplayGain, CD-only live-BPM,
+    per-branch buffering/track-end are semantics, not debt). Nothing downstream
+    needs it: Phase 3 recompiles the portable core unchanged; Phase 4's plugin
+    dispatch is its own boundary. Virtual dispatch through the interface is
+    already proven on every ctest run (the pipeline tests drive the real
+    machinery through `ISource&`).
 - **Phase 3 — Linux port.** Forces the boundary clean. WSL2 as the fast inner loop,
   GitHub Actions matrix (Windows + Linux) as the source of truth.
 - **Phase 4 — plugin-ize.** Harden the Source interface into a loadable C-ABI
@@ -405,6 +421,17 @@ carve the ABI first.
 - Faster manifest polling + staggered-peek machinery (pending rabbit-hole capture).
 
 ## Decisions log
+- **Slice C declined — Phase 2 closed at A+B (2026-07-03).** Dispatch
+  uniformity in the audio callback would add a second source of truth for the
+  playing mode (a cross-thread `active_src_` pointer that every transition must
+  keep agreeing with the mode flags) plus a fourth audio-thread change class
+  (the pointer staleness at every crossfade swap — the F2/retirement lesson
+  replayed), while the single-active-source abstraction is factually WRONG
+  during a crossfade (two live sources; 3 of 6 call sites can't use it — the
+  hlsHttpGet lesson at callback scale: if the abstraction requires pretending,
+  it's wrong). No Phase 3/4 dependency. The per-mode branches are semantics,
+  not debt. **Revisit only if Phase 4's plugin registry generates a concrete
+  need — and design it there, not here.**
 - **Phase 2 ISource contract (approved 2026-07-02): model the real four, don't
   force uniformity.** `core::ISource` = readFrames/caps/positionSec/durationSec/
   seekTo/close at `include/core/ISource.h` (first core-owned non-platform

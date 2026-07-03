@@ -1,4 +1,4 @@
-# Session handoff — 2026-07-03 (Phase 2 slices A + B landed; next fork = slice C or Phase 3)
+# Session handoff — 2026-07-03 (rev 2: PHASE 2 CLOSED — slice C declined; next fork = Phase 3 or a parked item)
 
 Read this at the start of the next session to pick up cleanly. Pairs with
 `CLAUDE.md`, `roadmap.md`, `lessons.md`, `architecture.md`, `streaming.md`.
@@ -61,18 +61,32 @@ the current fork.)
 - **Phase 2 status: A+B achieve the phase's goal** — all three real source
   families implement `core::ISource`, proven against what existed.
 
+## PHASE 2 CLOSED (rev-2 delta)
+**Slice C assessed via written go/no-go and DECLINED (Dos confirmed).** The
+decisive reason (§1c of the assessment): a single active-`ISource*` is
+factually WRONG for the file branch — it runs TWO live sources during a
+crossfade (varispeed reads the file source; the mix and gapless fill read
+`next_src_`), so only 3 of the 6 callback readFrames sites could use it — the
+hlsHttpGet lesson at callback scale. Supporting reasons: a second source of
+truth for the playing mode (can disagree with the mode flags mid-transition —
+the teardown-ordering class slice 0 guards); a fourth audio-thread change
+class (pointer staleness at every swap — the F2 lesson replayed); the vtable
+cost itself is unmeasurable and was NOT the argument; and nothing downstream
+needs it (Phase 3 recompiles the portable core; Phase 4's plugin dispatch is
+its own boundary — revisit there if its registry generates a concrete need).
+Full entry in roadmap.md's Decisions log. **Phase 2's goal is achieved: all
+four real sources (file, iHeart, ICY, CD) behind `core::ISource`, proven under
+the slice-0 net + live gates, zero new dependencies.** Docs-only close-out;
+nothing in the tree changed, which is the point.
+
 ## Next fork (decide with Dos)
-1. **Slice C — callback dispatch through ISource\*** (OPTIONAL, declinable):
-   the per-mode flags/branches stay regardless (file-only ReplayGain, CD-only
-   BPM, per-branch buffering/track-end). Value is mostly uniformity; risk is
-   another audio-thread change for little behavioral payoff. Honest default:
-   decline unless Phase 3/4 shows a concrete need.
-2. **Close Phase 2 → Phase 3 (Linux port):** WSL2 inner loop + GitHub Actions
-   matrix; `src/platform/linux/` (libcurl, Unix socket, libnotify, SG_IO);
-   the port is the forcing function that proves the boundary.
-3. Parked candidates if a small slice is wanted: VBR readout decision, canonical
-   SET_SPEED, `stop_` into IHeart polls, rabbit-hole desync analysis over
-   `logs/iheart/` (own thread, NOT Phase 2).
+1. **Phase 3 (Linux port):** WSL2 inner loop + GitHub Actions matrix;
+   `src/platform/linux/` (libcurl, Unix socket, libnotify, SG_IO); the port is
+   the forcing function that proves the boundary. The natural next phase.
+2. Parked candidates if a smaller slice is wanted: VBR live-bitrate readout
+   semantics (product decision, probe evidence in roadmap), canonical
+   SET_SPEED in CDSource::open (needs listen test), `stop_` into IHeart polls,
+   rabbit-hole desync analysis over `logs/iheart/` (own thread).
 
 ## Operating discipline (unchanged)
 - Read CLAUDE.md + roadmap + lessons + architecture + THIS handoff first.

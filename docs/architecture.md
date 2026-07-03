@@ -1,13 +1,20 @@
 # RE-MOCT architecture & strategy
 
-> **The internal Source interface now EXISTS** (Phase 2 slice A, `0b7acf4`):
+> **The internal Source interface is COMPLETE** (Phase 2, closed 2026-07-03):
 > `core::ISource` at `include/core/ISource.h` — readFrames / caps(seekable,
-> finite, live) / positionSec / durationSec / seekTo / close. StreamSource
-> (iHeart + ICY behind one class) and CDSource implement it; LocalFileSource
-> joins at slice B. This is sequencing step 1 below, realized: compile-time,
-> statically linked, deliberately NOT the plugin ABI. `open()` and metadata are
-> excluded by decision (roadmap Decisions log) — construction stays concrete,
-> and the capability flags declare divergence instead of faking uniformity.
+> finite, live) / positionSec / durationSec / seekTo / close — implemented by
+> all three real source families: StreamSource (iHeart + ICY behind one class,
+> slice A), CDSource (slice A), and LocalFileSource (slice B — extracted from
+> AudioManager; the audio-thread track swap is a pointer move + retirement
+> under the unchanged release/acquire protocol). Sequencing steps 1 and 2 below
+> are done: compile-time, statically linked, deliberately NOT the plugin ABI.
+> `open()` and metadata are excluded by decision (roadmap Decisions log) —
+> construction stays concrete, and the capability flags declare divergence
+> instead of faking uniformity. **The audio callback's dispatch is deliberately
+> CONCRETE** (slice C declined): the file branch runs two live sources during a
+> crossfade, so a single active-`ISource*` would misrepresent the machinery;
+> the per-mode branches encode real semantics. Plugin-layer dispatch is Phase
+> 4's own design, at the host↔plugin registry boundary — not a retrofit here.
 
 ## Plugin / Source interface (the endgame, designed but not yet built as a PLUGIN boundary)
 The plugin contract is a **PCM-centric, transport-agnostic Source**:

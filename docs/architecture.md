@@ -89,6 +89,17 @@ compiles on Linux, nothing leaked. Nothing platform-specific belongs in an inter
 > single-consumer seams get injected directly; the http()/setHttp() transitional
 > pattern is reserved for many-consumer migrations. Linux sibling = Unix domain
 > socket over the same interface (Phase 3).
+>
+> **The notifications seam is in** (slice 7, the third seam in the boundary):
+> `core::INotify` (`include/core/INotify.h`) + `platform::win::WinToastNotify`
+> (`src/platform/win/NotifyWinToast.cpp`, the PowerShell-toast transport). One
+> primitive — `notify(title, body)` — and content stays consumer-side in Toast.h,
+> a header-only adapter holding the track/status → title/body mapping (the same
+> content/transport line HTTP and IPC held). Ctor DI again: UIManager takes an
+> `INotify*` (production default `core::notifier()`, link-time bridge only — no
+> setNotify global) — the second consumer to get the endgame shape directly.
+> Linux sibling = libnotify/notify-send (Phase 3), whose native surface is exactly
+> (title, body). Remaining interface from the leak map: **cd_io only**.
 
 ## Linux port
 - WSL2 on 7of9 = fast local inner loop; CI on real Ubuntu = source of truth.

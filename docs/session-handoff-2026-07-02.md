@@ -1,11 +1,11 @@
-# Session handoff — 2026-07-02 (rev 3: slices 5 + 6 landed — boundary established, IPC seam in)
+# Session handoff — 2026-07-02 (rev 4: slice 7 landed — notifications seam in; CD-IOCTL is the last Phase 1 seam)
 
 Read this at the start of the next session to pick up cleanly. Pairs with
 `CLAUDE.md`, `roadmap.md`, `lessons.md`, `architecture.md`, `streaming.md`.
 (The prior handoff `session-handoff-2026-07-01.md` covers Phase 0 + the
 negative-offset bug and is still valid history. This file's earlier revisions
-covered HTTP 6/8, then slice 4 closing HTTP at 8/8, then slice 5 — superseded by
-this revision, which adds slice 6.)
+covered HTTP 6/8 → 8/8 (slice 4), the slice-5 boundary, then slice 6 —
+superseded by this revision, which adds slice 7.)
 
 ## Pinned constraints (do NOT re-litigate)
 - **The 150-sector offset is a physical property of the disc** — a design aspect of
@@ -17,77 +17,77 @@ this revision, which adds slice 6.)
   read *loops*, not just the flags, and preserve asymmetric timeout shapes (the slice-4
   `read_error` and slice-6 bounded-header/unbounded-body lessons).
 - **`core::http()` / `core::setHttp()` are TRANSITIONAL globals** — the endgame is
-  dependency injection. Slice 6 set the DI precedent: single-consumer seams take their
-  interface by CONSTRUCTOR INJECTION (DiscordRP holds an `IIpc*`; `core::ipc()` is only
-  the link-time bridge, no `setIpc()` exists).
+  dependency injection. Slices 6 and 7 set the precedent: single-consumer seams take
+  their interface by CONSTRUCTOR INJECTION (DiscordRP holds an `IIpc*`; UIManager holds
+  an `INotify*`; `core::ipc()`/`core::notifier()` are link-time bridges only — no
+  setIpc()/setNotify() exists).
 - **The live StreamSource audio read loop stays OUT of any seam, permanently.**
   `producerWorker`/`producerWorkerAAC` → `rawRead`'s `InternetReadFile(hConn_)` → SPSC
   ring is raw WinINet by design. Audit invariant: `InternetReadFile` appears in
   StreamSource ONLY in `rawRead`; `InternetOpenUrl` only in `connect()`'s ICY branch.
+- **The escape/UTF-16LE/base64 `-EncodedCommand` block in NotifyWinToast.cpp is
+  frozen** — it fixed a real quote-injection bug (metadata from network stream tags
+  breaking out of the old `-Command "..."` form). Do not "clean it up".
 
 ## What this session accomplished
-**Slice 5** (code `1977539` + docs `098354e`, PUSHED): the core/platform boundary —
-`include/core/IHttp.h` + `src/platform/win/HttpWinInet.cpp` via `git mv` (true renames),
-`#include "core/IHttp.h"` at all 15 sites (statements-changed decided over search-path),
-5 CMake path updates. Move-plus-paths-only diff; clean rebuild 50/50; ctest 7/7;
-launch+play confirmed. See roadmap Done + rev 2 of this file for full detail.
+**Slice 7** (code `dde7041` + docs = this commit): the notifications seam — the THIRD
+seam built INTO the slice-5 boundary, and the smallest:
+- `include/core/INotify.h`: ONE primitive, `notify(title, body)` — two strings, no
+  icon/duration (the baseline toast never set either). Contract is the baseline's:
+  fire-and-forget, non-blocking, best-effort, NO error reporting, any thread.
+- `src/platform/win/NotifyWinToast.cpp` (`platform::win::WinToastNotify`): `git mv`
+  from src/Toast.cpp — **rename held at 64%**, injection-fix history preserved. The
+  PowerShell transport (esc → WinRT toast script → UTF-16LE/base64 `-EncodedCommand`
+  → detached CreateProcess, 5 s bounded reap) moved byte-identical; the body lives as
+  a file-static at ORIGINAL indentation with the class as a thin adapter — that's what
+  held the rename (see the new lessons.md entry: re-indenting a moved body into a
+  class kills similarity detection).
+- CONTENT stayed consumer-side (the IHttp/IIpc split): Toast.h is now a header-only,
+  platform-free content adapter `showTrackToast(title, artist, album, INotify&)` —
+  baseline mapping verbatim (artist PREPENDS title; empty album → "RE-MOCT" body),
+  including the status-shape inversion (("Streaming", station, "") → "station -
+  Streaming" — baseline, not fixed). `'RE-MOCT'` CreateToastNotifier id stays
+  impl-side (platform attribution; Linux twin = `notify-send -a`).
+- **Ownership: constructor injection** — UIManager is the ONE consumer class (33 call
+  sites, all in UIManager.cpp, all UI-thread): `UIManager(..., core::INotify* =
+  nullptr)` defaulting to `core::notifier()`. A private 3-arg member wrapper hides the
+  4-arg adapter → all 33 call sites compiled textually unchanged.
+- Out of scope, deliberately untouched: only the track-change toast honors
+  `config_.toast_enabled` (status toasts fire unconditionally) — baseline behavior.
 
-**Slice 6** (code `89285d8`, docs = this commit, local): the IPC seam — the FIRST seam
-built INTO the boundary, and the proof it's clean:
-- `include/core/IIpc.h`: `IIpcChannel` (a local bidirectional byte channel) + `IIpc`
-  (channel factory, logical endpoint name → platform path). Three primitives shaped by
-  the one real consumer: `send` (whole buffer, ONE OS write — Discord's framing breaks
-  on split writes), `waitReadable(min_bytes, timeout_ms)` (bounded peek-poll; the win
-  impl keeps the baseline's 10 ms granularity), `recvSome` (one blocking OS read).
-  The bounded-header/UNbounded-body asymmetry is deliberate parity — a tidier
-  `recvExact(timeout)` was rejected (would invent semantics the baseline doesn't have).
-- `src/platform/win/IpcWinPipe.cpp`: `platform::win::WinPipeIpc` — faithful extraction
-  of DiscordRP's pipe code (CreateFileW/WriteFile/PeekNamedPipe+Sleep/ReadFile/
-  CloseHandle). Teardown = close only, NO CLOSE frame (baseline: faithful, not polite).
-- Protocol stayed in DiscordRP: framing, discord-ipc-0..9 probe (Discord-protocol
-  knowledge), handshake, 1 MB squatter cap, CLOSE handling, lazy reconnect, payload/
-  nonce/jsonEscape. Same protocol/transport split as IHttp.
-- **Ownership: constructor injection** — `DiscordRP(app_id, core::IIpc* = nullptr)`,
-  default `core::ipc()`. No `setIpc()` global (one consumer didn't justify the
-  http()/setHttp() pattern; the ctor param IS the DI endgame shape).
-- DiscordRP.cpp pipe-API-free (`windows.h` only for `GetCurrentProcessId` — the
-  IHeartRadio `GetTempPathA` shape); DiscordRP.h drops `windows.h` entirely, so
-  UIManager.h stops inheriting it from this path. UIManager's
-  `DiscordRP discord_{app_id}` unchanged.
+## Verification (slice 7, two-layer, all green)
+- **ctest 9/9**: prior eight + `notify_toast_test` (portable — no PowerShell, no
+  process spawn): FakeNotify through the REAL Toast.h adapter — mapping branches,
+  the dominant (msg,"","") status shape, the Streaming inversion,
+  adapter-must-NOT-escape (escaping is the transport's job), call ordering.
+- **Live gate (passed on this machine):** toasts fire from the real triggers (track
+  change with toast_enabled on; status toggles); probe toasts through the real seam
+  confirmed in Action Center — quote-injection case ('/" in metadata, the past bug's
+  exact trigger) intact, accents (Björk/Jóga) render; a synchronous run of the
+  identical script exited 0 (Show() succeeded, i.e. the toast actually rendered).
 
-## Verification (slice 6, two-layer, all green)
-- **ctest 8/8**: prior seven + `discord_ipc_test` (FakeIpc via ctor injection driving
-  the REAL DiscordRP: handshake bytes exact, probe order 0..9 / first-accept /
-  all-refuse no-op, SET_ACTIVITY framing + pid + timestamps/assets omission,
-  jsonEscape (quote/backslash/newline/tab/control→\u00xx), activity-null clear,
-  CLOSE→reject-without-activity-frame, reconnect-after-death re-probes+re-handshakes).
-  Fixture lesson (recorded in `lessons.md`): the fake's captured frames must live in
-  state owned by the fake FACTORY (shared_ptr), not on the channel — DiscordRP
-  destroying the channel on CLOSE is the behavior under test, and first draft dangled.
-- **Live Discord gate (all four passed on this machine):** RP shows title/artist +
-  album art; track change updates; Discord quit+restart → next update reconnects
-  (lazy re-probe + re-handshake); toggle off clears the activity.
-
-## Rest of Phase 1 — remaining seams (build into the structure)
-- **Notifications:** Toast/PowerShell → `core::INotify`-ish (Linux = libnotify/notify-send).
-- **CD access:** Windows IOCTL → SG_IO on Linux (StreamSource/CDSource/CDRipper survey first).
-- Each: interface → `include/core/`, Windows impl → `src/platform/win/`, consumer
-  includes `"core/<Interface>.h"`; pick accessor-vs-injection by consumer count.
+## Rest of Phase 1 — what remains
+- **CD access: Windows IOCTL → SG_IO on Linux — the LAST platform seam.** Survey
+  first: StreamSource/CDSource/CDRipper (where the IOCTLs live, who calls them, what
+  moves). Interface → `include/core/`, Windows impl → `src/platform/win/`; pick
+  accessor-vs-injection by consumer count.
 - Parked (see `roadmap.md`): wiring `stop_` into IHeart polls; stalled-connect prompt
   interrupt; concurrency debt; Track Info album-tag decode artifact.
 
 ## Current state
-- **Branch:** `restructure`. Slice 6 = code `89285d8` + docs (this commit) — LOCAL,
-  push when ready. Slice 5 pair (`1977539`/`098354e`) already pushed; origin in sync
-  up to there.
-- **Tests:** 8/8 green via `ctest` (iheart_sm, ar_crc, http_seam, scrobble_request,
-  group_c_request, http_cancel, iheart_request, discord_ipc).
+- **Branch:** `restructure`. Slice 7 = code `dde7041` + docs (this commit) — LOCAL,
+  push when ready. Origin is in sync up through the slice-6 pair (`89285d8`/`ca38511`).
+- **Tests:** 9/9 green via `ctest` (iheart_sm, ar_crc, notify_toast, http_seam,
+  scrobble_request, group_c_request, http_cancel, iheart_request, discord_ipc).
 - **Build:** clean, `remoct.exe` at `build\bin\remoct.exe`.
-- **Layout:** `include/core/{IHttp,IIpc}.h` + `src/platform/win/{HttpWinInet,IpcWinPipe}.cpp`;
-  everything else flat until its seam migrates. `src/platform/linux/` still absent (Phase 3).
-- **This `E:\code\remoct` clone has the full MSYS2 UCRT toolchain + deps** — build + ctest
-  run locally; interactive/real-world checks run here too when they don't need hardware
-  (the slice-6 Discord gate ran on this machine); a rip needs 7of9's drive.
+- **Layout:** `include/core/{IHttp,IIpc,INotify}.h` +
+  `src/platform/win/{HttpWinInet,IpcWinPipe,NotifyWinToast}.cpp`; Toast.h is the
+  consumer-side content adapter in `include/`; everything else flat until its seam
+  migrates. `src/platform/linux/` still absent (Phase 3).
+- **This `E:\code\remoct` clone has the full MSYS2 UCRT toolchain + deps** — build +
+  ctest run locally; interactive/real-world checks run here too when they don't need
+  hardware (the slice-6 Discord gate and the slice-7 toast gate both ran on this
+  machine); a rip needs 7of9's drive.
 - Gotcha: the harness shell's cwd can silently reset to `E:\code` (outer junk repo) —
   `cd /e/code/remoct` explicitly in git one-liners.
 

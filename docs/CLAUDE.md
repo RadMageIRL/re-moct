@@ -67,12 +67,14 @@ machine + ring-buffer re-pin fix. Device-switching fix. Column-aware UTF-8 pipel
 
 ## Next substantive step
 **Phase 1 — HTTP seam ✅ 8/8** (`4c72b09`), **core/platform boundary ✅** (slice 5,
-`1977539`), **IPC seam ✅** (slice 6, `89285d8`: `core::IIpc` + `WinPipeIpc`;
-DiscordRP takes it by constructor injection — the DI endgame shape, no new global).
-The live read loop (`rawRead`→ring) stays raw WinINet permanently. **Next: the
-remaining Phase 1 seams** — notifications (Toast/PowerShell), CD-IOCTL — each BUILT
-INTO the structure (interface → `include/core/`, Windows impl →
-`src/platform/win/`). See `docs/roadmap.md`.
+`1977539`), **IPC seam ✅** (slice 6, `89285d8`), **notifications seam ✅** (slice 7,
+`dde7041`: `core::INotify` + `WinToastNotify`; UIManager ctor injection, content
+adapter in Toast.h — both single-consumer seams now on the DI endgame shape, no new
+globals). The live read loop (`rawRead`→ring) stays raw WinINet permanently.
+**Next: CD-IOCTL → SG_IO — the LAST Phase 1 seam** (StreamSource/CDSource/CDRipper
+survey first), then parked concurrency debt where cheap. Built INTO the structure
+(interface → `include/core/`, Windows impl → `src/platform/win/`). See
+`docs/roadmap.md`.
 
 ## Deep knowledge — read the matching file when a task touches it
 - Roadmap, phases, parked items, decisions → `docs/roadmap.md`

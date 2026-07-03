@@ -48,8 +48,11 @@ carve the ABI first.
   - **slice 6 — IPC: Discord named-pipe → `core::IIpc`: ✅ DONE** (commit `89285d8`):
     the first seam built INTO the slice-5 structure. See Done section. (Linux =
     Unix socket, Phase 3.)
-  - Notifications: Toast/PowerShell → abstract (Linux = libnotify/notify-send).
-  - CD access: Windows IOCTL → SG_IO on Linux.
+  - **slice 7 — notifications: Toast/PowerShell → `core::INotify`: ✅ DONE** (commit
+    `dde7041`): third seam built INTO the slice-5 structure; second ctor-injection
+    consumer. See Done section. (Linux = libnotify/notify-send, Phase 3.)
+  - CD access: Windows IOCTL → SG_IO on Linux — **the LAST remaining platform seam**
+    (StreamSource/CDSource/CDRipper survey first).
   - Clear the parked concurrency debt where cheap.
 - **Phase 2 — internal Source interface.** A compile-time C++ abstract base
   (statically linked, NOT a DLL yet): `open / readFrames / seek? / metadata /
@@ -63,6 +66,38 @@ carve the ABI first.
   of the whole plugin system. ("Fix iHeart and ship without rebuilding the host.")
 
 ## Done (restructure branch)
+- **Phase 1 slice 7 — notifications seam (Toast/PowerShell → core::INotify): DONE**
+  (commit `dde7041`). Third seam BUILT INTO the slice-5 boundary:
+  `include/core/INotify.h` + `src/platform/win/NotifyWinToast.cpp`
+  (`platform::win::WinToastNotify`; `git mv` from src/Toast.cpp — rename held at 64%,
+  injection-fix history preserved). Interface = "show the user a transient
+  notification": ONE primitive, `notify(title, body)` — two strings, no icon/duration
+  params (the baseline never set either; ToastImageAndText02's image slot was never
+  populated). Contract is the baseline's: fire-and-forget, non-blocking (the win impl
+  spawns PowerShell from a detached thread, 5 s bounded reap, CREATE_NO_WINDOW),
+  best-effort with NO error reporting (baseline swallowed CreateProcess failure),
+  callable from any thread (impl stateless per call). CONTENT stayed consumer-side —
+  the IHttp/IIpc protocol/transport split: Toast.h is now a header-only, platform-free
+  content adapter, `showTrackToast(title, artist, album, INotify&)`, keeping the
+  baseline mapping verbatim (artist PREPENDS the title: "Artist - Title"; empty album
+  → "RE-MOCT" body) including its status-shape inversion (("Streaming", station, "")
+  → "station - Streaming" — baseline, not fixed). The escape/UTF-16LE/base64
+  `-EncodedCommand`/CreateProcess transport block moved byte-identical (one identifier
+  rename, `esc(top)`→`esc(title)`; emitted bytes unchanged) — that block fixed a real
+  quote-injection bug and is frozen. The `'RE-MOCT'` CreateToastNotifier id stays
+  impl-side (platform attribution — the Linux twin's `notify-send -a`).
+  **Ownership: constructor injection again** — UIManager is the ONE consumer class
+  (33 call sites, all in UIManager.cpp): `UIManager(..., core::INotify* = nullptr)`
+  defaulting to `core::notifier()` (link-time bridge only, no `setNotify()`; named
+  notifier() to avoid the notify().notify() stutter). A private 3-arg member wrapper
+  hides the 4-arg adapter, so all 33 call sites compiled textually unchanged. New
+  `notify_toast_test` (9th ctest target, portable — no PowerShell/process spawn):
+  FakeNotify through the REAL Toast.h adapter, 8 cases (mapping branches, the
+  dominant (msg,"","") status shape, the Streaming inversion, adapter-must-NOT-escape
+  — escaping is the transport's job — and call ordering). Two-layer verified:
+  ctest 9/9 + live gate on this machine — toasts fire from the real triggers (track
+  change, status toggles), quote-injection ('/") and accented-metadata (Björk) probes
+  confirmed in Action Center, synchronous script run exit 0 (Show() succeeded).
 - **Phase 1 slice 6 — IPC seam (Discord named-pipe → core::IIpc): DONE** (commit
   `89285d8`). First seam BUILT INTO the slice-5 boundary: `include/core/IIpc.h` +
   `src/platform/win/IpcWinPipe.cpp` (`platform::win::WinPipeIpc`). Interface =

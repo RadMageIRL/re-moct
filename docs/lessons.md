@@ -149,6 +149,15 @@
   survives only as the link-time bridge to the platform TU — core code can't #include
   the impl header, so the production default must be reached by name. Pick the pattern
   per seam by consumer count, not by precedent.
+- **git rename detection dies if you re-indent a moved body into a class.** Similarity
+  is content-based; wrapping an extracted baseline in a class method (+4 columns on
+  every line) plus a new header comment dropped Toast.cpp → NotifyWinToast.cpp below
+  the 50% threshold — the `git mv` registered as delete+add, severing the
+  injection-fix history the move was supposed to preserve. Fix: keep the extracted
+  baseline at namespace/file scope at its ORIGINAL indentation (a file-static
+  function) and make the interface class a thin adapter that calls it — held the
+  slice-7 rename at 64%. Bonus: the frozen block's diff then shows exactly one
+  changed identifier, which is the auditable-parity property we want anyway.
 - **Preserve asymmetric timeout shapes; don't "clean them up" into a uniform API.**
   DiscordRP's baseline bounds the header wait (peek ≥8 bytes, 1000 ms — a wedged Discord
   must never hang the UI) but deliberately does NOT bound body reads. A tidier

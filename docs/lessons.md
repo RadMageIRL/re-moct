@@ -76,6 +76,37 @@
 - Cosmetic iteration is fine ("dessert"), but the Phase 0 harness is the "vegetables"
   that make the next big refactor safe — don't let polish indefinitely defer it.
 
+## Audio-thread refactoring (Phase 2 slice B)
+- **A pointer needs no stronger publication guarantee than the struct it
+  replaces — but the FREE side is where a naive pointer swap regresses.** The
+  release/acquire flag that published a multi-hundred-byte struct publishes a
+  pointer + pointee identically (happens-before is transitive over the deref).
+  The genuinely new hazard was deallocation: baseline's UI-thread positionSec()
+  racing the audio-thread swap read a torn MEMBER struct (never freed memory);
+  a naive `unique_ptr` move-assign would have FREED the object under that read.
+  Fix: the audio thread RETIRES the outgoing source (retired_src_), the main
+  thread reaps it in pollEvents under the existing track_swap_flag_
+  synchronizes-with edge. Raced deref now always hits a live object, and the
+  audio callback stops calling free entirely. Rule: when changing a payload's
+  ownership mechanism, audit the READERS of the old payload for lifetime
+  assumptions, not just the writers for ordering.
+- **The by-value ma_decoder copy worked only because miniaudio's internal
+  pointers are heap-targets, not self-references** — an undocumented
+  relocatability property the baseline silently relied on. A fixed heap address
+  for the decoder's whole life (the source object) removes that reliance.
+- **Slice-B accepted residuals (inert, documented so a future differ isn't
+  surprised):** (1) the outgoing decoder's uninit/file-close now happens ~one
+  pollEvents tick later on the main thread (was: inside the audio callback);
+  (2) on a read that returns a FULL buffer and EOF together, track_done fires
+  ≤1 callback (~10 ms) later (the readFrames wrapper signals EOF by short read
+  only) — same audio out, flag shifted one tick; same shape in varispeed's
+  top-up loop (one extra 0-frame call before eof); (3) the TagLib hint
+  pre-reads in play/preloadNext were DROPPED, not moved — open_decoder
+  provably discarded them (`(void)hint_channels`) since the forced-44100/2
+  config replaced hint sniffing (the slice-8 "don't migrate garbage" rule);
+  (4) setDevice's file-restart now primes the decoder and re-reads tags into
+  the source's private info_ (current_track_ untouched) — inert warm-up.
+
 ## Replay-net / test-fixture lessons (Phase 2 slice 0)
 - **"A few quiet reads" is NOT end-of-stream when legitimate in-stream silence
   exists.** With a fake-speed producer, the reader finishes writing a whole track

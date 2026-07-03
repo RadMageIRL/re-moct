@@ -68,15 +68,16 @@ machine + ring-buffer re-pin fix. Device-switching fix. Column-aware UTF-8 pipel
 ## Next substantive step
 **Phase 1 seams COMPLETE** (HTTP 8/8, core/platform boundary, IPC, notify,
 CD-I/O — byte-identical Relish gate). **Phase 2 (internal Source interface) is
-UNDERWAY**: design approved (contract = `core::ISource` readFrames/caps/
-position/duration/seekTo/close; `open()` + metadata deliberately OUT — see
-roadmap Decisions log), **slice 0 thin replay net ✅ (`7adae12`)**, **slice A
-✅ (`0b7acf4`: `include/core/ISource.h`; StreamSource + CDSource implement it,
-StreamSource.cpp diff EMPTY, tests retargeted through `ISource*`, ctest
-13/13)**. **Next: slice B — LocalFileSource extraction (the heavy one:
-decoder_/next_decoder_ become source objects, audio-thread crossfade swap →
-pointer swap). DESIGN-FIRST, sign-off before code.** Slice C (callback
-dispatch) stays optional. The live read loop (`rawRead`→ring) stays raw
+UNDERWAY**: slice 0 replay net ✅ (`7adae12`), slice A ✅ (`0b7acf4`:
+`core::ISource`; StreamSource + CDSource implement it), **slice B ✅
+(`845a155`: LocalFileSource — the file path is the THIRD ISource impl; the
+audio-thread crossfade swap is a pointer move + retirement under the unchanged
+release/acquire protocol; latent race F2 closed; all three gates passed incl.
+the live listen gate)**. **A+B achieve Phase 2's goal. Next fork: slice C
+(callback dispatch through ISource*, OPTIONAL/declinable — the per-mode
+branches stay regardless) or close Phase 2 and move to Phase 3 (Linux port).**
+Parked: VBR live-bitrate readout semantics (pre-existing, probe-confirmed on
+baseline — product decision). The live read loop (`rawRead`→ring) stays raw
 WinINet permanently. See `docs/roadmap.md`.
 
 ## Deep knowledge — read the matching file when a task touches it

@@ -69,10 +69,9 @@ carve the ABI first.
     concurrency boxes provably unopened: `src/StreamSource.cpp` diff EMPTY,
     sacred-symbol grep over the full diff zero hits); pipeline tests retarget
     through `ISource*`. See Done section.
-  - **slice B — LocalFileSource extraction** (the heavy one: decoder_/
-    next_decoder_ become source objects; the audio-thread crossfade swap becomes
-    a pointer swap under the same release/acquire protocol). Gated by the slice-0
-    xfade_handoff_test + the full file-mode listen gate.
+  - **slice B — LocalFileSource extraction: ✅ DONE** (commit `845a155`): the
+    heaviest slice — the audio-thread swap became a pointer move + RETIREMENT
+    under the unchanged release/acquire protocol. See Done section.
   - **slice C — callback dispatch through ISource* (OPTIONAL, own go/no-go):**
     the mode flags stay regardless (they gate per-mode side logic that must not
     unify — file-only ReplayGain, CD-only live-BPM, per-branch buffering/
@@ -84,6 +83,30 @@ carve the ABI first.
   of the whole plugin system. ("Fix iHeart and ship without rebuilding the host.")
 
 ## Done (restructure branch)
+- **Phase 2 slice B — LocalFileSource extraction: DONE** (commit `845a155`).
+  The file path became the third ISource implementation: `include/
+  LocalFileSource.h` + `src/LocalFileSource.cpp` (open_decoder/prime_decoder/
+  populate_track_info moved verbatim; seek-prime + cursor moved verbatim into
+  methods; TrackInfo hoisted to `include/TrackInfo.h`, zero call-site changes).
+  **The crux (correctness argument ratified before code):** initCrossfade's
+  audio-thread by-value ma_decoder struct copy became a pointer move under the
+  IDENTICAL `next_decoder_initialised_` release/acquire protocol — the atomic
+  appears in the diff only as unchanged context. The outgoing source is
+  **retired, not freed** (audio thread parks it in retired_src_; pollEvents
+  reaps on the main thread under the existing track_swap_flag_ synchronizes-
+  with edge) — closing latent baseline race F2 (UI-thread positionSec vs the
+  swap): the raced deref now always hits a live decoder, strictly narrower
+  than the baseline's torn-struct read, and the audio callback no longer
+  frees heap. Bonus: removes reliance on ma_decoder being trivially
+  relocatable. Audio-thread diff = exactly three enumerated change classes
+  (swap block, reads→readFrames at the same sites, guards); effect chains and
+  per-mode branches byte-identical; StreamSource/CDSource/CDRipper zero diff.
+  Named residuals/removals in lessons.md. Verified: ctest 13/13 (xfade +S5
+  replace-preload, added test-first), 5× stable; headless mechanics gate ALL
+  PASS (MP3 seek storm, varispeed 1.50× + boundary suppression, repeat-one,
+  device-switch continuity, 11 h .m4b, **88.9 M positionSec reads hammered
+  through a live crossfade swap**); live listen gate passed on 7of9
+  (crossfade/gapless/varispeed/MP3 seek-prime/chapters — "works as previous").
 - **Phase 2 slice A — core::ISource + push sources: DONE** (commit `0b7acf4`).
   `include/core/ISource.h` (new, platform-free, standalone-compile verified):
   readFrames (audio-callback contract, fixed 44100/stereo/f32; ring-backed
@@ -339,6 +362,17 @@ carve the ABI first.
     cross-check item — the synthetic suite proves the logic, not on-drive behavior.
 
 ## Parked / deferred (not disturbed)
+- **VBR live-bitrate readout semantics (product decision, NOT a bug-fix
+  ride-along):** on a VBR MP3, a forward seek makes liveBitrateKbps() spike
+  enormously for ~one 0.5 s window (the estimator models file position
+  LINEARLY — `file_pos = (pos/dur)·file_size` — so the seek jump lands in one
+  bytes/sec delta), then settle a few kbps above TagLib's nominal (the linear
+  model yields the file-average rate). **Confirmed pre-existing by A/B probe
+  on baseline `3d4e061` vs slice B — identical peaks (~76 k kbps) and settles
+  on both; slice B exonerated** (the estimator moved untouched). The open
+  question is what the readout SHOULD mean: average (label it), true
+  instantaneous local-frame rate (needs real byte positions, not the linear
+  model), or spike-suppressed. Take as its own decided change.
 - **Adopt canonical SET_SPEED in CDSource::open (behavior improvement):** the
   baseline's "reset speed to max after open" never worked — its hand-rolled 6-byte
   struct is rejected by cdrom.sys with ERROR_BAD_LENGTH (probe-confirmed, slice 8),

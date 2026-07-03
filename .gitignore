@@ -7,3 +7,8 @@ lib/miniaudio.h
 *.a
 *.exe
 logs/
+# Local runtime config (holds real API keys) — NEVER track. The app writes
+# remoct.conf/theme.conf to cwd when the config dir isn't resolvable, so a
+# test/app run from the repo root can drop one here.
+remoct.conf
+theme.conf

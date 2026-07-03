@@ -99,7 +99,23 @@ compiles on Linux, nothing leaked. Nothing platform-specific belongs in an inter
 > `INotify*` (production default `core::notifier()`, link-time bridge only — no
 > setNotify global) — the second consumer to get the endgame shape directly.
 > Linux sibling = libnotify/notify-send (Phase 3), whose native surface is exactly
-> (title, body). Remaining interface from the leak map: **cd_io only**.
+> (title, body).
+>
+> **The CD-I/O seam is in** (slice 8 — the LAST seam; the leak map is CLEAR):
+> `core::ICdIo`/`ICdDevice` (`include/core/ICdIo.h`) + `platform::win::WinCdIo`
+> (`src/platform/win/CdIoWin.cpp`). Raw optical-drive transport — factory open →
+> device object; readToc (raw MSF — LBA math stays consumer-side), last-session
+> query, readRaw (explicit `want_c2` + bytes-returned), setSpeed, mediaPresent,
+> model. Every impl method is one baseline DeviceIoControl moved parameter-
+> identical; ALL rip/AR/Enhanced-CD logic stayed in CDRipper/CDSource — the same
+> protocol/transport split as HTTP/IPC/notify. Ctor DI ×2 (CDSource + CDRipper,
+> production default `core::cdio()`). Proven by the heaviest gate in the project:
+> a byte-identical AccurateRip rip (12/12 v2 conf 200, every CRC matching the
+> pre-migration baseline log). Linux sibling = SG_IO on /dev/srN (Phase 3): READ
+> CD 0xBE (readRaw ± C2 via CDB bits), READ TOC 0x43 (TIME=1 → MSF; format 01 →
+> session), TEST UNIT READY, INQUIRY, SET CD SPEED 0xBB — one-to-one.
+> **Phase 1's seam work is complete: core/ no longer touches WinINet, named
+> pipes, PowerShell, or IOCTLs directly.**
 
 ## Linux port
 - WSL2 on 7of9 = fast local inner loop; CI on real Ubuntu = source of truth.

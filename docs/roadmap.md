@@ -51,8 +51,9 @@ carve the ABI first.
   - **slice 7 — notifications: Toast/PowerShell → `core::INotify`: ✅ DONE** (commit
     `dde7041`): third seam built INTO the slice-5 structure; second ctor-injection
     consumer. See Done section. (Linux = libnotify/notify-send, Phase 3.)
-  - CD access: Windows IOCTL → SG_IO on Linux — **the LAST remaining platform seam**
-    (StreamSource/CDSource/CDRipper survey first).
+  - **slice 8 — CD access: Windows IOCTL → `core::ICdIo`: ✅ DONE** (commit
+    `14aebec`): the LAST platform seam — Phase 1's seam work is complete. See
+    Done section. (Linux = SG_IO on /dev/srN, Phase 3.)
   - Clear the parked concurrency debt where cheap.
 - **Phase 2 — internal Source interface.** A compile-time C++ abstract base
   (statically linked, NOT a DLL yet): `open / readFrames / seek? / metadata /
@@ -66,6 +67,44 @@ carve the ABI first.
   of the whole plugin system. ("Fix iHeart and ship without rebuilding the host.")
 
 ## Done (restructure branch)
+- **Phase 1 slice 8 — CD-I/O seam (Windows CD IOCTLs → core::ICdIo): DONE**
+  (commit `14aebec`). The LAST platform seam, BUILT INTO the slice-5 boundary:
+  `include/core/ICdIo.h` + `src/platform/win/CdIoWin.cpp` (`platform::win::WinCdIo`
+  / `WinCdDevice`). Interface = raw optical-drive transport, 8 primitives modeled on
+  the two real consumers: factory `open(drive-spec)` → device object (dtor closes;
+  concurrent opens of one drive are CONTRACT — CDSource holds its device for playback
+  while CDRipper opens a second per rip), `readToc` (raw MSF handed over — MSF→LBA
+  math and the "do NOT subtract 150" contract stay consumer-side),
+  `lastSessionFirstTrack` (the one value the Enhanced-CD detect consumes), `readRaw`
+  (lba/sectors/want_c2/buffer/got), `setSpeed`, `mediaPresent`, `model`. Every impl
+  method is ONE baseline DeviceIoControl moved parameter-identical (the lba*2048
+  DiskOffset quirk now impl-side). `want_c2` is an EXPLICIT flag — advisory on
+  Windows (buffer size IS the request, the baseline shape) but it's what SG_IO's CDB
+  error-field bits need at Phase 3; buffer-size-implies-C2 was the one
+  Windows-only assumption in the baseline and it's gone. Bytes-returned (`got`) is
+  surfaced — the C2 probe (`got == 2646`) and the de-interleave branch depend on it.
+  ALL rip/disc logic stayed consumer-side (the IHttp/IIpc/INotify split): AR CRC
+  math, 150-sector preamble, normalizeSkip/arPreambleReadable, disc-ID
+  normalization, frame450 sweep, Enhanced-CD silence search + +174, retry/
+  silence-fill, cache-flush, C2 interpretation, drive-offset table.
+  **Ownership: ctor injection per consumer** (the slice-6/7 pattern, now ×2):
+  `CDSource(ICdIo* = nullptr)` + `CDRipper(ICdIo* = nullptr)` defaulting to
+  `core::cdio()` (link-time bridge only, no setCdio()). Header detox rode along as
+  designed: CDSource.h no longer includes windows.h/ntddcdrm.h (AudioManager/
+  UIManager stop inheriting Windows from this path); CDTrack + MBLookup TOC params
+  DWORD→uint32_t, type-only. CDSource's hand-rolled 6-byte SET_SPEED was DROPPED,
+  not migrated — probe-confirmed rejected by cdrom.sys with ERROR_BAD_LENGTH, a
+  lifelong silent no-op (see parked item). Unified open flags (ripper's shape;
+  CDSource residuals inert and documented in lessons.md). New `cd_toc_test`
+  (10th ctest target): FakeCdIo via ctor injection through the REAL CDSource —
+  Relish-shaped non-standard pregap (T1 @ LBA 182), Enhanced-CD data track +
+  session-2 leadout, malformed-TOC clamps, model→offset lookup, media checks.
+  **Two-layer verified: ctest 10/10 + THE hardware gate** — Joan Osborne Relish
+  ripped through the seam on the GHD3N: 12/12 AR v2 conf 200, per-track
+  crc_v1/crc_v2, all 12 pcm_crc32, frame450 global/local, the T1 first-16-samples
+  dump, and "C2 support: no" ALL byte-identical to the pre-migration baseline log
+  (diff-verified line-by-line); .bin cache saved; CD playback + seek through the
+  seam confirmed, with the two-concurrent-opens contract exercised live.
 - **Phase 1 slice 7 — notifications seam (Toast/PowerShell → core::INotify): DONE**
   (commit `dde7041`). Third seam BUILT INTO the slice-5 boundary:
   `include/core/INotify.h` + `src/platform/win/NotifyWinToast.cpp`
@@ -227,6 +266,16 @@ carve the ABI first.
     cross-check item — the synthetic suite proves the logic, not on-drive behavior.
 
 ## Parked / deferred (not disturbed)
+- **Adopt canonical SET_SPEED in CDSource::open (behavior improvement):** the
+  baseline's "reset speed to max after open" never worked — its hand-rolled 6-byte
+  struct is rejected by cdrom.sys with ERROR_BAD_LENGTH (probe-confirmed, slice 8),
+  so the call was dropped for parity. Actually resetting (`dev_->setSpeed(0xFFFF)`
+  at the dropped site) would make playback-mode spin-up real for the first time —
+  take it only as its own decided change with a playback listen test.
+- **Latent baseline OOB on corrupt multi-session TOCs:** CDSource's session-2 block
+  indexes `entries[toc2.last]` unclamped (baseline did the same with TrackData) — a
+  corrupt disc reporting last>99 over-reads the array. Preserved as-is in slice 8
+  (no ride-along logic); fix alongside the session-2 guards as its own change.
 - **Wire `stop_` into IHeart's metadata polls as a cancel token:** would cut worst-case
   `close()` latency by ~5 s. Deliberately NOT done in slice 4 (a behavior improvement,
   not parity) — take it only as its own decided change.

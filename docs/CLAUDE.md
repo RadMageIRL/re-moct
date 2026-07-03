@@ -66,15 +66,13 @@ Audiobook suite (`.m4b`, chapters, `[Books]` nav). Discord Rich Presence stage 2
 machine + ring-buffer re-pin fix. Device-switching fix. Column-aware UTF-8 pipeline.
 
 ## Next substantive step
-**Phase 1 — HTTP seam ✅ 8/8** (`4c72b09`), **core/platform boundary ✅** (slice 5,
-`1977539`), **IPC seam ✅** (slice 6, `89285d8`), **notifications seam ✅** (slice 7,
-`dde7041`: `core::INotify` + `WinToastNotify`; UIManager ctor injection, content
-adapter in Toast.h — both single-consumer seams now on the DI endgame shape, no new
-globals). The live read loop (`rawRead`→ring) stays raw WinINet permanently.
-**Next: CD-IOCTL → SG_IO — the LAST Phase 1 seam** (StreamSource/CDSource/CDRipper
-survey first), then parked concurrency debt where cheap. Built INTO the structure
-(interface → `include/core/`, Windows impl → `src/platform/win/`). See
-`docs/roadmap.md`.
+**Phase 1 seams COMPLETE**: HTTP ✅ 8/8 (`4c72b09`), core/platform boundary ✅
+(slice 5, `1977539`), IPC ✅ (slice 6, `89285d8`), notifications ✅ (slice 7,
+`dde7041`), **CD-I/O ✅ (slice 8, `14aebec`: `core::ICdIo` + `CdIoWin`; ctor DI
+×2 — CDSource + CDRipper; byte-identical Relish gate 12/12 AR v2 conf 200)**. The
+live read loop (`rawRead`→ring) stays raw WinINet permanently. `core::http()` is
+the one remaining transitional global (endgame DI). **Next: parked concurrency
+debt where cheap, then Phase 2 (internal Source interface).** See `docs/roadmap.md`.
 
 ## Deep knowledge — read the matching file when a task touches it
 - Roadmap, phases, parked items, decisions → `docs/roadmap.md`

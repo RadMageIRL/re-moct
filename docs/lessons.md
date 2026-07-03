@@ -158,6 +158,31 @@
   function) and make the interface class a thin adapter that calls it — held the
   slice-7 rename at 64%. Bonus: the frozen block's diff then shows exactly one
   changed identifier, which is the auditable-parity property we want anyway.
+- **Probe the baseline call before migrating it — a "working" fire-and-forget ioctl
+  may never have worked.** CDSource's "reset speed to max" sent a hand-rolled 6-byte
+  struct where cdrom.sys expects the canonical (12-byte here) CDROM_SET_SPEED; a
+  standalone probe showed it rejected with ERROR_BAD_LENGTH — a lifelong silent no-op
+  (return ignored). A seam can't express "send these exact malformed bytes", and
+  silently fixing it would CHANGE drive behavior on the playback path. Rule: probe →
+  if it provably fails today, DROP the call (behavior-identical) and park the fix as
+  its own decided improvement. Don't migrate garbage faithfully, and don't fix it as
+  a ride-along. (slice 8; parked item in roadmap.md)
+- **"Buffer size implies capability" is a platform shape — name capabilities as
+  explicit flags in a seam.** Windows IOCTL_CDROM_RAW_READ returns C2 error bytes iff
+  the output buffer is sized 2646/sector — the request is IMPLICIT in the buffer.
+  SG_IO needs the C2 error-field bits set in the CDB; buffer size can't express it.
+  Hence `readRaw(..., want_c2, ...)`: advisory on Windows (impl passes the buffer
+  through untouched — byte-identical), load-bearing on Linux. Corollary: surface
+  bytes-returned — the baseline's C2 probe and de-interleave branch both key on it;
+  hiding it would force policy into the seam.
+- **One impl can serve two consumers' differing open flags only after arguing each
+  delta inert — and the argument goes in the diff.** CDSource opened its device
+  SHARE_READ + SEQUENTIAL_SCAN; CDRipper SHARE_READ|WRITE + ATTRIBUTE_NORMAL. The
+  seam uses the ripper's shape for both: share-mode widening is strictly more
+  permissive (nothing opens a CD device for write), and SEQUENTIAL_SCAN is a
+  ReadFile read-ahead hint — inert under DeviceIoControl-only access. Both residuals
+  proven by the byte-identical rip gate + live playback. The concurrent-two-opens
+  case (CDSource holds while CDRipper rips) is interface CONTRACT, not accident.
 - **Preserve asymmetric timeout shapes; don't "clean them up" into a uniform API.**
   DiscordRP's baseline bounds the header wait (peek ≥8 bytes, 1000 ms — a wedged Discord
   must never hang the UI) but deliberately does NOT bound body reads. A tidier

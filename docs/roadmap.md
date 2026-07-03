@@ -92,13 +92,62 @@ carve the ABI first.
     dispatch is its own boundary. Virtual dispatch through the interface is
     already proven on every ctest run (the pipeline tests drive the real
     machinery through `ISource&`).
-- **Phase 3 — Linux port.** Forces the boundary clean. WSL2 as the fast inner loop,
-  GitHub Actions matrix (Windows + Linux) as the source of truth.
+- **Phase 3 — Linux port. IN PROGRESS** (kickoff 2026-07-03; readiness survey +
+  slicing approved — `docs/phase3-readiness.md`). Forces the boundary clean. WSL2
+  (Debian Trixie, provisioned on 7of9) as the fast inner loop, GitHub Actions
+  matrix (windows msys2/UCRT64 + debian:trixie container) as the source of truth.
+  Strictly a PARITY port — no new features, no visual changes. Approved slicing:
+  - **slice 0 — CI matrix + env + seam stubs: ✅ DONE** (commit `27735f5`): see
+    Done section. CD-gate venue RESOLVED on evidence: usbipd→WSL2, no VM.
+  - **slice 1 — portable core compiles + links on Linux** (platform-util layer,
+    the mechanical de-Win32 classes, vendored MD5 both platforms, de-gate
+    whole-file `_WIN32` wraps, StreamSource header detox). Gate: remoct plays a
+    local file on Linux + Windows ctest 13/13 zero behavior change.
+  - **slice 2 — HTTP: libcurl IHttp** (+sessions, cancel token, RedirectPolicy,
+    read_error; POSIX twin of http_cancel_test). Gate: MB lookup + scrobble
+    round-trip + digital iHeart HLS PLAYS on Linux.
+  - **slice 3 — ICY raw-loop Linux twin** (design-first, sacred territory; lean:
+    curl CONNECT_ONLY + curl_easy_recv keeps the pull-read shape). Gate: ICY
+    station plays on Linux; Windows loop byte-diff empty.
+  - **slice 4 — IPC: Unix-socket IIpc.** Gate: discord_ipc_test on Linux + live
+    socat echo probe (full Discord RP stays Windows-verified, documented).
+  - **slice 5 — notify: libnotify.** Gate: real notification via dunst;
+    headless = documented best-effort no-op (the contract).
+  - **slice 6 — CD: SG_IO ICdIo — LAST.** Gate: Relish rip via usbipd/WSL2 on
+    the GHD3N: 12/12 AR v2 conf 200 AND byte-identical to the Windows baseline
+    log (every CRC/frame450/"C2 support" line) — conf-200 alone is not the bar.
 - **Phase 4 — plugin-ize.** Harden the Source interface into a loadable C-ABI
   `.dll`/`.so` boundary, and **extract iHeart as the first real plugin** — the test
   of the whole plugin system. ("Fix iHeart and ship without rebuilding the host.")
 
 ## Done (restructure branch)
+- **Phase 3 slice 0 — CI matrix + Linux env + seam stubs: DONE** (readiness
+  survey + approval: docs `ebf5382`; code `27735f5`). The survey's decisive
+  findings (full detail in `docs/phase3-readiness.md`): the tree is pervasively
+  whole-file `#ifdef _WIN32`-gated (a naive Linux build = empty shell), so the
+  survey de-gated all 23 TUs and compiled them against real Trixie headers —
+  **12/23 clean today**, the rest classified (trivial Sleep/localtime →
+  mechanical file/time APIs → LastFm MD5 decision → structural: StreamSource
+  raw ICY loop + gated UIManager/AudioManager members). Both known-unknowns
+  GREEN: ncursesw on Linux = COLORS=256/PAIRS=65536 + wide-API round-trip 3/3
+  (the COLORS=8 ceiling was a Windows/MSYS2-terminfo artifact); miniaudio =
+  PulseAudio backend live in WSL2, 27k frames through the real callback at
+  44100/stereo/f32. CMake configures on Linux UNCHANGED; the 4 pure suites
+  passed on Linux before any changes. **CD gate resolved on evidence: the
+  GHD3N is USB (JMicron bridge, busid 4-1) — usbipd-win 5.3.0 attached it to
+  WSL2 as a real scsi3-mmc `/dev/sr0`+`/dev/sg4`; sg_inq INQUIRY, cdparanoia
+  full TOC (12 tracks — Relish, T1 LBA 32 = MSF 182 − the 150 preamble,
+  conventions reconciling exactly as pinned), and a raw READ CD 0xBE returned
+  SCSI Good, 2352 bytes, byte-identical on re-read. No VM.** Landed: CI
+  workflow (debian:trixie container job — matched with the WSL2 loop,
+  non-free enabled for fdk-aac; windows msys2/UCRT64 job, full suite);
+  `src/platform/linux/SeamStubs.cpp` (inert contract-failure stubs + the four
+  core:: link-time bridges, `platform::lnx` namespace — `linux` is a macro
+  under gnu dialects; each seam slice replaces its stub with its real impl
+  file); CMake MSYS2 block guarded WIN32 + `remoct_linux_seams` OBJECT target.
+  Verified: Windows baseline 13/13 BEFORE changes, regression 13/13 AFTER;
+  Linux CI steps rehearsed in WSL2 (configure rc=0, stubs -Wall/-Wextra/
+  -Wpedantic clean, ctest 4/4); then the real matrix green on push.
 - **iHeart rabbit-hole desync — CLOSED WITH EVIDENCE** (2026-07-03 analysis
   session; no code, analysis of `logs/iheart/` = 38 deep-log captures, 4,783
   reconciliation ticks over 34.2 h, + the 07-02 operational log). Findings:

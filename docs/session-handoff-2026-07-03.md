@@ -1,4 +1,41 @@
-# Session handoff — 2026-07-03 (rev 3: Phase 2 closed + cleanup pass done; NEXT SESSION = PHASE 3 KICKOFF, Linux port)
+# Session handoff — 2026-07-03 (rev 4: PHASE 3 KICKED OFF — readiness survey approved, slice 0 LANDED; next = slice 1 after Dos review)
+
+## Rev-4 delta: Phase 3 kickoff session (2026-07-03, morning)
+- **Readiness survey DONE and approved by Dos** — full assessment in
+  `docs/phase3-readiness.md` (committed `ebf5382`). Headlines: 12/23 TUs
+  Linux-clean once the pervasive whole-file `#ifdef _WIN32` gates are stripped
+  (the gates make a naive Linux build an empty shell — the survey's key
+  method finding); both known-unknowns GREEN (ncursesw = 256 colors + wide-API
+  3/3 on Trixie, the COLORS=8 ceiling was MSYS2-terminfo; miniaudio =
+  PulseAudio live in WSL2, 27k frames through the real callback); CMake
+  configures unchanged; 4 pure suites pass on Linux as-is; fdk-aac needs
+  Debian non-free (enabled).
+- **Slice 0 LANDED** (code `27735f5`): CI matrix (debian:trixie container +
+  windows msys2/UCRT64, both on every push — the trixie container matches the
+  WSL2 inner loop, drift-immune), `src/platform/linux/SeamStubs.cpp` (inert
+  contract-failure stubs + the four core:: bridges, namespace `platform::lnx`),
+  CMake WIN32-guarded MSYS2 block + `remoct_linux_seams` OBJECT target.
+  Verified: Windows 13/13 before AND after; WSL2 rehearsal 4/4; live matrix
+  green on push.
+- **CD gate venue RESOLVED with evidence — usbipd→WSL2, no VM:** the GHD3N is
+  USB (JMicron 152d:0578, busid 4-1); usbipd-win 5.3.0 installed, bound (stays
+  bound), attached → real scsi3-mmc `/dev/sr0`+`/dev/sg4`; sg_inq, cdparanoia
+  full TOC (Relish — T1 LBA 32 = MSF 182 − 150, conventions reconcile as
+  pinned), raw READ CD 0xBE SCSI Good + byte-identical re-read. Gate ritual:
+  `usbipd attach --wsl --busid 4-1` (drive leaves Windows) / `detach` returns it.
+- **Decisions taken with Dos:** vendored single-file MD5 both platforms (gate:
+  api_sig parity via live scrobble on both); ICY twin transport deferred to
+  slice 3 design-first (lean: curl CONNECT_ONLY + curl_easy_recv — keeps the
+  pull-read shape); directory policy = XDG conventions, exact mappings proposed
+  in the slice that touches them; WSL2 Debian Trixie provisioned (deps in
+  readiness doc §4).
+- **NEXT: slice 1** — portable core compiles + links on Linux (platform-util
+  layer; mechanical de-Win32 per the §2 classification; de-gate whole-file
+  wraps; StreamSource header detox with ICY staying Windows-only until slice
+  3). Gate: remoct plays a local file on Linux + Windows ctest 13/13 zero
+  behavior change. **STOPPED for Dos review before starting slice 1.**
+
+(Rev-3 content below — the Phase 2 close + cleanup pass — still valid history.)
 
 Read this at the start of the next session to pick up cleanly. Pairs with
 `CLAUDE.md`, `roadmap.md`, `lessons.md`, `architecture.md`, `streaming.md`.

@@ -66,21 +66,22 @@ Audiobook suite (`.m4b`, chapters, `[Books]` nav). Discord Rich Presence stage 2
 machine + ring-buffer re-pin fix. Device-switching fix. Column-aware UTF-8 pipeline.
 
 ## Next substantive step
-**Phase 1 seams COMPLETE** (HTTP 8/8, boundary, IPC, notify, CD-I/O).
-**Phase 2 COMPLETE** (2026-07-03): `core::ISource` proven against all four
-real sources — slice 0 replay net (`7adae12`), slice A stream+CD (`0b7acf4`),
-slice B LocalFileSource + retirement scheme (`845a155`); **slice C (callback
-dispatch) formally DECLINED** — the single-active-source abstraction is wrong
-during a crossfade (two live sources); per-mode branches are semantics, not
-debt; revisit only if Phase 4's plugin registry needs it (Decisions log).
-**Next fork: Phase 3 (Linux port — `src/platform/linux/`, WSL2 loop, CI
-matrix) or a parked item** (`logs/iheart/` desync analysis as its own thread;
-`stop_` into IHeart polls; stalled-connect interrupt; Track Info album-tag
-decode). Cleanup pass done: VBR readout RESOLVED `adacbb1` (`bitrateKbps` =
-TagLib nominal — the "live" estimator was a constant-derivative average);
-canonical SET_SPEED RESOLVED `d2ad038` (open() really resets to max now;
-1764 named fallback if ever audibly objectionable). The live read loop
-(`rawRead`→ring) stays raw WinINet permanently. See `docs/roadmap.md`.
+**Phases 0/1/2 COMPLETE** (seams 8/8 + boundary; `core::ISource` proven against
+all four sources; slice C declined — see roadmap Decisions log).
+**Phase 3 (Linux port) IN PROGRESS** — readiness survey + slicing approved
+(`docs/phase3-readiness.md`): strictly a PARITY port. **Slice 0 DONE**
+(`27735f5`): CI matrix live (debian:trixie container + windows msys2 — both
+required green on every push), `src/platform/linux/SeamStubs.cpp` (inert seam
+stubs + core:: bridges, `platform::lnx`), WSL2 Debian Trixie inner loop
+provisioned on 7of9. **CD gate venue PROVEN: usbipd→WSL2** (GHD3N is USB;
+real SG_IO READ CD 0xBE verified on Relish; attach = `usbipd attach --wsl
+--busid 4-1`, drive leaves Windows while attached). **Next: slice 1** (portable
+core compiles+links on Linux; gate = plays a local file) — pending Dos review.
+Survey facts to reuse: 12/23 TUs Linux-clean; whole-file `#ifdef _WIN32` gates
+hide the rest; ncursesw on Linux = 256 colors + wide API clean; miniaudio
+PulseAudio live in WSL2. The live read loop (`rawRead`→ring) stays raw WinINet
+permanently on Windows; its Linux twin is slice 3 (design-first). See
+`docs/roadmap.md` for the six-slice plan + per-slice gates.
 
 ## Deep knowledge — read the matching file when a task touches it
 - Roadmap, phases, parked items, decisions → `docs/roadmap.md`

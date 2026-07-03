@@ -27,8 +27,9 @@
 #include "IHeartRadio.h"  // isolated iHeart now-playing service (HLS streams only)
 #include "IHeartNowPlayingSM.h"  // pure now-playing reconciliation state machine
 #include "core/IHttp.h"   // HLS manifest/segment one-shots go through the seam (slice 4)
+#include "core/ISource.h" // Phase 2 slice A: the internal Source interface
 
-class StreamSource {
+class StreamSource : public core::ISource {
 public:
     std::string nowPlaying() const;   // current ICY StreamTitle (empty if none)
     std::string currentArtUrl() const; // album-art URL for the committed song (digital iHeart only; "" otherwise)
@@ -61,13 +62,15 @@ public:
 
     // Begin streaming the given URL. Returns false if the initial connection
     // can't be opened. Audio does not flow until PREBUFFER_SEC has accumulated.
+    // (Deliberately NOT part of core::ISource — the async-connect orchestration
+    // around this slow call belongs to AudioManager.)
     bool open(const std::string& url);
 
     // Prefer the iHeart web-player (ad-reduced "digital") rendition on the next
     // connect; falls back to the raw broadcast if the handshake fails. Set before
     // open()/reconnect. Thread-safe.
     void setPreferDigital(bool b) { prefer_digital_.store(b); }
-    void close();
+    void close() override;
 
     bool isOpen()     const { return producer_thread_.joinable(); }
     bool isPlaying()  const { return playing_.load(); }
@@ -84,14 +87,23 @@ public:
     bool paused()     const { return paused_.load(); }
 
     // Seconds of wall-clock playback since the first sample left the ring.
-    int  positionSec() const { return position_sec_.load(); }
+    // (double per core::ISource; the stored value is whole seconds.)
+    double positionSec() const override { return (double)position_sec_.load(); }
     // Last error string (set on hard failure). Empty == none.
     std::string lastError() const { return last_error_; }
+
+    // ── core::ISource (Phase 2 slice A) ─────────────────────────────────────
+    // A live stream: not seekable, no known end/duration. Declared, not faked.
+    core::SourceCaps caps() const override {
+        return { .seekable = false, .finite = false, .live = true };
+    }
+    double durationSec() const override { return 0.0; }
+    bool   seekTo(double) override { return false; }   // live edge only
 
     // Audio-callback contract — identical to CDSource::readFrames.
     // Fills dst with frame_count stereo float frames; outputs silence while
     // paused, buffering, or on underrun.
-    uint32_t readFrames(float* dst, uint32_t frame_count);
+    uint32_t readFrames(float* dst, uint32_t frame_count) override;
 
 private:
     enum class Codec { MP3, AAC };

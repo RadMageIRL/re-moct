@@ -142,7 +142,7 @@ public:
     std::string streamNowPlaying() const { return stream_source_.nowPlaying(); }
     std::string streamArtUrl()     const { return stream_source_.currentArtUrl(); } // iHeart digital cover ("" -> use logo)
     std::string streamUrl()      const { return stream_source_.url(); }   // URL actually streaming
-    int      streamPositionSec() const { return stream_source_.positionSec(); }
+    int      streamPositionSec() const { return (int)stream_source_.positionSec(); }
 #endif
 
     // Called by track-end callback to pre-load next track for crossfade/gapless

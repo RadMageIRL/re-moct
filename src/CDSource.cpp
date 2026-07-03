@@ -244,14 +244,14 @@ void CDSource::readerWorker() {
     }
 }
 
-void CDSource::seekTo(int seconds) {
-    if (current_track_.load() == 0) return;
+bool CDSource::seekTo(double seconds) {
+    if (current_track_.load() == 0) return false;
     // Find track start LBA
     uint32_t track_start = 0;
     for (auto& t : tracks_)
         if (t.number == current_track_.load()) { track_start = t.start_lba; break; }
 
-    // Calculate target LBA: 75 sectors per second
+    // Calculate target LBA: 75 sectors per second (truncation == the old int form)
     uint32_t target_lba = track_start + (uint32_t)(seconds * 75);
     uint32_t track_end = track_end_lba_.load();
     if (track_end > 0 && target_lba >= track_end) target_lba = track_end - 1;
@@ -267,6 +267,7 @@ void CDSource::seekTo(int seconds) {
     current_lba_.store(target_lba);
     reader_stop_.store(false);
     reader_thread_ = std::thread(&CDSource::readerWorker, this);
+    return true;
 }
 
 bool CDSource::readSectors(uint32_t lba, int count, uint8_t* buf) {
@@ -297,21 +298,21 @@ uint32_t CDSource::readFrames(float* dst, uint32_t frame_count) {
 
 // ─── Position ─────────────────────────────────────────────────────────────────
 
-int CDSource::positionSec() const {
-    if (!current_track_.load()) return 0;
+double CDSource::positionSec() const {
+    if (!current_track_.load()) return 0.0;
     for (auto& t : tracks_)
         if (t.number == current_track_.load()) {
             uint32_t played = current_lba_.load() - t.start_lba;
-            return (int)(played / 75);
+            return (double)(played / 75);    // whole seconds (integer division), widened
         }
-    return 0;
+    return 0.0;
 }
 
-int CDSource::durationSec() const {
+double CDSource::durationSec() const {
     for (auto& t : tracks_)
         if (t.number == current_track_.load())
-            return t.duration_sec;
-    return 0;
+            return (double)t.duration_sec;
+    return 0.0;
 }
 
 // ─── Ring buffer ──────────────────────────────────────────────────────────────

@@ -5,6 +5,7 @@
 // platform-clean (no <windows.h>/<ntddcdrm.h>; AudioManager/UIManager and friends
 // no longer inherit Windows from this path).
 #include "core/ICdIo.h"
+#include "core/ISource.h"   // Phase 2 slice A: the internal Source interface
 
 #include <cstdint>
 #include <memory>
@@ -26,8 +27,13 @@ struct CDTrack {
 // Reads Red Book audio sectors from an optical drive via the core::ICdIo seam,
 // converts to float PCM, and feeds a ring buffer consumed by the audio callback.
 // Completely isolated from the existing ma_decoder path.
+//
+// Implements core::ISource (the playback-feed facet). The CD-specific surface —
+// open(drive)/playTrack (a disc is a CONTAINER of tracks), TOC, drive offset/
+// model, stopReader, media checks — deliberately stays concrete beside the
+// interface: CDRipper and UIManager consume it via AudioManager::cdSource().
 
-class CDSource {
+class CDSource : public core::ISource {
 public:
     static constexpr int    SECTOR_BYTES   = 2352;   // raw Red Book sector
     static constexpr int    SECTOR_SAMPLES = 588;    // 2352 / 4 (16-bit stereo)
@@ -41,7 +47,7 @@ public:
 
     // Open drive (e.g. "D"). Returns false if no audio CD found.
     bool open(const std::string& drive_letter);
-    void close();
+    void close() override;
 
     bool isOpen()  const { return dev_ != nullptr; }
     bool isPlaying() const { return playing_.load(); }
@@ -78,7 +84,10 @@ public:
     }
     void pause(bool p) { paused_.store(p); }
     bool paused() const { return paused_.load(); }
-    void seekTo(int seconds);
+    // Seek within the current track (double per core::ISource; the LBA math
+    // truncates to whole 1/75s sectors exactly as the old int form did).
+    // Returns false when nothing is playing.
+    bool seekTo(double seconds) override;
     bool mediaRemoved() const { return media_removed_.load(); }
     void clearMediaRemoved()  { media_removed_.store(false); }
     bool checkMedia() {
@@ -100,11 +109,18 @@ public:
     bool        driveOffsetKnown() const { return offset_known_; }
 
     // Called from audio callback — fills dst with float PCM frames.
-    uint32_t readFrames(float* dst, uint32_t frame_count);
+    uint32_t readFrames(float* dst, uint32_t frame_count) override;
 
-    int  currentTrack()   const { return current_track_.load(); }
-    int  positionSec()    const;
-    int  durationSec()    const;
+    // ── core::ISource (Phase 2 slice A) ─────────────────────────────────────
+    // Seekable, finite, device-backed. Position/duration are per current track,
+    // whole seconds widened to double per the interface.
+    core::SourceCaps caps() const override {
+        return { .seekable = true, .finite = true, .live = false };
+    }
+
+    int    currentTrack()   const { return current_track_.load(); }
+    double positionSec()    const override;
+    double durationSec()    const override;
 
 private:
     core::ICdIo*                     io_  = nullptr;  // injected; nullptr = core::cdio()

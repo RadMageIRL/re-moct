@@ -34,6 +34,7 @@
 
 #include "StreamSource.h"
 #include "core/IHttp.h"
+#include "core/ISource.h"
 
 #include <fdk-aac/aacenc_lib.h>
 
@@ -208,15 +209,16 @@ static double rmsOf(const std::vector<float>& v) {
     return std::sqrt(acc / (double)v.size());
 }
 
-// Paced drain of n frames through readFrames (the audio-callback contract).
-static std::vector<float> drainFrames(StreamSource& ss, int frames) {
+// Paced drain of n frames through readFrames (the audio-callback contract),
+// via core::ISource — the slice-A interface dispatch is what's under test.
+static std::vector<float> drainFrames(core::ISource& src, int frames) {
     std::vector<float> all;
     all.reserve((size_t)frames * 2);
     float buf[512 * 2];
     int left = frames;
     while (left > 0) {
         int n = left < 512 ? left : 512;
-        ss.readFrames(buf, (uint32_t)n);
+        src.readFrames(buf, (uint32_t)n);
         all.insert(all.end(), buf, buf + (size_t)n * 2);
         left -= n;
         Sleep(1);
@@ -246,6 +248,15 @@ int main() {
     core::setHttp(&fake);
     {
         StreamSource ss;
+        core::ISource& s = ss;                            // the slice-A contract
+
+        // ── 0. The core::ISource contract surface (slice A) ───────────────────
+        {
+            auto sc = s.caps();
+            CHECK(!sc.seekable && !sc.finite && sc.live); // declared, matching reality
+            CHECK(!s.seekTo(3.0));                        // live edge only, always false
+            CHECK(s.durationSec() == 0.0);                // no known end
+        }
 
         // ── 1+2. open -> prime -> prebuffer -> audio flows ────────────────────
         CHECK(ss.open(FakeHls::MASTER));                  // .m3u8 -> HLS mode, AAC worker

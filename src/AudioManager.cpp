@@ -560,7 +560,10 @@ void AudioManager::seekTo(double seconds) {
 void AudioManager::seekBy(double delta) {
 #ifdef _WIN32
     if (cd_mode_.load()) {
-        int new_pos = std::clamp(cd_source_.positionSec() + (int)delta, 0, cd_source_.durationSec());
+        // (int casts: CDSource position/duration are whole seconds widened to
+        // double per core::ISource — slice A signature harmonization only.)
+        int new_pos = std::clamp((int)cd_source_.positionSec() + (int)delta, 0,
+                                 (int)cd_source_.durationSec());
         cd_source_.seekTo(new_pos);
         cd_bpm_reset_.store(true);   // discontinuity — restart the BPM window
         return;
@@ -1446,7 +1449,7 @@ const std::vector<CDTrack>& AudioManager::cdTracks() const {
     return cd_source_.tracks();
 }
 
-int AudioManager::cdPositionSec()  const { return cd_source_.positionSec(); }
-int AudioManager::cdDurationSec()  const { return cd_source_.durationSec(); }
+int AudioManager::cdPositionSec()  const { return (int)cd_source_.positionSec(); }
+int AudioManager::cdDurationSec()  const { return (int)cd_source_.durationSec(); }
 int AudioManager::cdCurrentTrack() const { return cd_source_.currentTrack(); }
 #endif

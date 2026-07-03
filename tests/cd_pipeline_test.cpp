@@ -123,10 +123,11 @@ static void buildToc(core::CdToc& toc, const std::vector<uint32_t>& starts, uint
 
 // One paced consumer read: 512 frames -> 1024 int16 samples appended to out.
 // float = int16/32768 is exact in a float, so the round-trip recovers the exact
-// int16 the producer wrote.
-static void readChunk(CDSource& cd, std::vector<int16_t>& out) {
+// int16 the producer wrote. Reads through core::ISource — the slice-A contract
+// — so every fidelity assertion below also proves the interface dispatch.
+static void readChunk(core::ISource& src, std::vector<int16_t>& out) {
     float f[512 * 2];
-    cd.readFrames(f, 512);
+    src.readFrames(f, 512);
     for (int i = 0; i < 512 * 2; ++i)
         out.push_back((int16_t)lrintf(f[i] * 32768.0f));
 }
@@ -236,10 +237,21 @@ int main() {
     CHECK(cd.tracks().size() == 2);
     CHECK(cd.tracks()[0].start_lba == T1 && cd.tracks()[0].length_lba == LEN);
 
+    // ── 0. The core::ISource contract surface (slice A) ──────────────────────
+    core::ISource& s = cd;
+    {
+        auto sc = s.caps();
+        CHECK(sc.seekable && sc.finite && !sc.live);      // declared, matching reality
+        CHECK(!s.seekTo(1.0));                            // nothing playing -> false
+        CHECK(s.positionSec() == 0.0);
+        CHECK(s.durationSec() == 0.0);                    // no current track yet
+    }
+
     // ── 1. Full-track PCM fidelity + track-end predicate ─────────────────────
     {
         CHECK(cd.playTrack(1));
         CHECK(cd.isPlaying());
+        CHECK(s.durationSec() == 2.0);                    // 150 sectors / 75 via the interface
         Sleep(100);                                       // let the reader prefill the ring
         std::vector<int16_t> v;
         drainAll(cd, v);
@@ -258,7 +270,7 @@ int main() {
         Sleep(100);
         std::vector<int16_t> pre;
         readChunk(cd, pre);                               // consume a little, discard
-        cd.seekTo(1);                                     // -> LBA 182 + 75 = 257
+        CHECK(s.seekTo(1.0));                             // via the interface -> LBA 182 + 75 = 257
         std::vector<int16_t> v;
         drainAll(cd, v);
         const uint32_t tgt = T1 + 75;

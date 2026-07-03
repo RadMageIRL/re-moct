@@ -34,6 +34,20 @@ readiness assessment, approved ISource design, and slice 0.)
   UI-thread query paths — the audio callback still reads through concrete
   members (that dispatch is slice C, optional). Slice-0 net retargeted through
   `ISource&` + contract blocks. ctest 13/13, repeated-run stable.
+- **Slice A live gate PASSED (2026-07-03, this machine, temp headless harness —
+  slice-8 gate pattern, stripped after):** (1) local FLAC play + seekTo(30) —
+  position 2.55 s after 2.5 s, duration 222 s, landed 32.07 s; (2) LIVE iHeart
+  digital session (`stream.revma.ihrhls.com/zc4366/hls.m3u8`) through the
+  async-connect machinery — position 0→5 s over 5 s wall clock, now-playing
+  "Michael Jackson - Human Nature" (StreamSource's new vtable live); (3) CD
+  drive G:, Relish, 12 tracks — spin-up then ~1 s/s advance, `seekBy(+60)` (the
+  AM cast path → `CDSource::seekTo(double)` with real reader-join + ring-flush)
+  landed 67 s, duration 321 s, and the `ISource`-typed surface on the live
+  device-backed source consistent (caps seekable+finite+!live, pos/dur match).
+  No rip gate — CDRipper has zero diff. Gate-harness lesson: the canonical
+  iHeart master URL is `stream.revma.ihrhls.com/zc<id>/hls.m3u8` (an `n1a.`
+  host guess fails), and a physical drive needs its spin-up waited out before
+  measuring position-advance rate.
 - **Next: slice B — LocalFileSource extraction. DESIGN-FIRST, Dos sign-off
   before any code.** The heavy slice: decoder_/next_decoder_ become source
   objects; the audio-thread crossfade struct-copy swap (AudioManager.cpp

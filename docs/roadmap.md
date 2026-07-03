@@ -99,6 +99,22 @@ carve the ABI first.
   of the whole plugin system. ("Fix iHeart and ship without rebuilding the host.")
 
 ## Done (restructure branch)
+- **Canonical SET_SPEED in CDSource::open — RESOLVED** (commit `d2ad038`; the
+  slice-8 parked improvement). The resurrected baseline intent: open() now
+  issues `dev_->setSpeed(0xFFFF)` through the ICdIo seam (the canonical 12-byte
+  CDROM_SET_SPEED control-run C proved works) at the exact site where the
+  hand-rolled 6-byte no-op was dropped. Value decision: **0xFFFF** — baseline
+  author's stated intent, CDRipper's own restore convention, and most drives'
+  unset default, so the common fresh-open case sounds unchanged; what's new is
+  DETERMINISM in the pathological case (a rip aborted mid-Pass-2 no longer
+  leaves the drive at 10x for subsequent playback). Rejected: 176/1x (real
+  underrun hazard — refill rate == consumption rate leaves no headroom to
+  rebuild the ring cushion after a seek flush); 1764/10x quiet-mid held as a
+  NAMED FALLBACK, taken only if the listen gate ever finds max audibly
+  objectionable (evidence-first, not speculative). Contract in the net:
+  cd_toc_test asserts exactly one setSpeed(0xFFFF) on successful open, zero on
+  failed open. CDRipper zero diff. Gate: live playback on drive G — 10 s clean
+  (no stalls), seek landed, close clean; ctest 13/13.
 - **VBR bitrate readout — RESOLVED as a product decision** (commit `adacbb1`).
   The survey finding that decided it: the "live VBR estimate" was a linear
   position model (`(pos/dur)·file_size`, differentiated) whose steady-state
@@ -394,12 +410,6 @@ carve the ABI first.
     cross-check item — the synthetic suite proves the logic, not on-drive behavior.
 
 ## Parked / deferred (not disturbed)
-- **Adopt canonical SET_SPEED in CDSource::open (behavior improvement):** the
-  baseline's "reset speed to max after open" never worked — its hand-rolled 6-byte
-  struct is rejected by cdrom.sys with ERROR_BAD_LENGTH (probe-confirmed, slice 8),
-  so the call was dropped for parity. Actually resetting (`dev_->setSpeed(0xFFFF)`
-  at the dropped site) would make playback-mode spin-up real for the first time —
-  take it only as its own decided change with a playback listen test.
 - **Latent baseline OOB on corrupt multi-session TOCs:** CDSource's session-2 block
   indexes `entries[toc2.last]` unclamped (baseline did the same with TrackData) — a
   corrupt disc reporting last>99 over-reads the array. Preserved as-is in slice 8

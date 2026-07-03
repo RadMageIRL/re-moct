@@ -74,11 +74,13 @@ dispatch) formally DECLINED** — the single-active-source abstraction is wrong
 during a crossfade (two live sources); per-mode branches are semantics, not
 debt; revisit only if Phase 4's plugin registry needs it (Decisions log).
 **Next fork: Phase 3 (Linux port — `src/platform/linux/`, WSL2 loop, CI
-matrix) or a parked item** (canonical SET_SPEED, `logs/iheart/` desync
-analysis as its own thread). VBR readout: RESOLVED `adacbb1` (`bitrateKbps` =
-TagLib nominal; the "live" estimator was a constant-derivative average — see
-lessons.md). The live read loop (`rawRead`→ring) stays raw WinINet
-permanently. See `docs/roadmap.md`.
+matrix) or a parked item** (`logs/iheart/` desync analysis as its own thread;
+`stop_` into IHeart polls; stalled-connect interrupt; Track Info album-tag
+decode). Cleanup pass done: VBR readout RESOLVED `adacbb1` (`bitrateKbps` =
+TagLib nominal — the "live" estimator was a constant-derivative average);
+canonical SET_SPEED RESOLVED `d2ad038` (open() really resets to max now;
+1764 named fallback if ever audibly objectionable). The live read loop
+(`rawRead`→ring) stays raw WinINet permanently. See `docs/roadmap.md`.
 
 ## Deep knowledge — read the matching file when a task touches it
 - Roadmap, phases, parked items, decisions → `docs/roadmap.md`

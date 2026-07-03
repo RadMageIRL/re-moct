@@ -1,0 +1,83 @@
+# CI matrix — Phase 3 slice 0 (docs/phase3-readiness.md §6).
+#
+# Two jobs, both required green:
+#   linux   — ubuntu-latest runner, steps inside a debian:trixie container. The
+#             container pins the userland to the SAME distro as the WSL2 inner loop
+#             on 7of9 (and the CD-gate VM, if one is ever needed) — a matched Trixie
+#             triple, immune to ubuntu-latest version drift. This job is what
+#             catches a Windows-ism leaking into core/ the moment it appears.
+#   windows — windows-latest + MSYS2 UCRT64 (the dev toolchain). Full build + the
+#             whole ctest suite (xfade_handoff_test self-SKIPs via SKIP_RETURN_CODE
+#             77 when the runner has no audio device — by design).
+#
+# The Linux job builds NAMED targets: the four pure test suites + the seam-stub
+# object library. The `remoct` executable is not yet buildable on Linux (the
+# whole-file _WIN32 gates come off in slice 1); as port slices land, their targets
+# and tests join this list until the full build + suite runs on both platforms.
+name: CI
+
+on:
+  push:
+    branches: [restructure, main]
+  pull_request:
+    branches: [restructure, main]
+
+jobs:
+  linux:
+    name: Linux (Debian Trixie container)
+    runs-on: ubuntu-latest
+    container: debian:trixie
+    steps:
+      - name: Install toolchain + deps
+        run: |
+          # fdk-aac lives in non-free — enable the extra components (the same
+          # one-line change the WSL2 inner loop needed; readiness doc §4).
+          sed -i 's/^Components: main.*/Components: main contrib non-free non-free-firmware/' /etc/apt/sources.list.d/*.sources
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            build-essential g++ cmake ninja-build pkg-config git ca-certificates \
+            libflac-dev libmp3lame-dev libebur128-dev libfdk-aac-dev \
+            libncurses-dev libtag-dev libcurl4-openssl-dev libnotify-dev \
+            libasound2-dev libpulse-dev
+      - uses: actions/checkout@v4
+      - name: Configure
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+      - name: Build (pure suites + Linux seam stubs)
+        run: >
+          cmake --build build --target
+          iheart_sm_test ar_crc_test http_seam_test notify_toast_test
+          remoct_linux_seams
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+
+  windows:
+    name: Windows (MSYS2 UCRT64)
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - name: Set up MSYS2 UCRT64
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          release: false
+          update: false
+          install: >-
+            mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-cmake
+            mingw-w64-ucrt-x86_64-ninja
+            mingw-w64-ucrt-x86_64-pkgconf
+            mingw-w64-ucrt-x86_64-ncurses
+            mingw-w64-ucrt-x86_64-taglib
+            mingw-w64-ucrt-x86_64-flac
+            mingw-w64-ucrt-x86_64-lame
+            mingw-w64-ucrt-x86_64-libebur128
+            mingw-w64-ucrt-x86_64-fdk-aac
+      - uses: actions/checkout@v4
+      - name: Configure
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+      - name: Build
+        run: cmake --build build
+      - name: Test
+        run: ctest --test-dir build --output-on-failure

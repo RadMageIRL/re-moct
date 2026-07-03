@@ -5,9 +5,14 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-set(MSYS2_PREFIX "C:/msys64/ucrt64")
-message(STATUS "MSYS2 prefix: ${MSYS2_PREFIX}")
-list(APPEND CMAKE_PREFIX_PATH "${MSYS2_PREFIX}")
+# Windows toolchain prefix. On Linux the find_library/find_path calls below fall
+# through these (empty/nonexistent) hints to the system paths — verified on Debian
+# Trixie: configure passes unchanged (Phase 3 readiness survey, docs/phase3-readiness.md).
+if(WIN32)
+    set(MSYS2_PREFIX "C:/msys64/ucrt64")
+    message(STATUS "MSYS2 prefix: ${MSYS2_PREFIX}")
+    list(APPEND CMAKE_PREFIX_PATH "${MSYS2_PREFIX}")
+endif()
 
 # ── Sources ────────────────────────────────────────────────────────────────
 set(REMOCT_SOURCES
@@ -46,6 +51,23 @@ if(WIN32)
         ${CMAKE_SOURCE_DIR}/src/platform/win/NotifyWinToast.cpp
         ${CMAKE_SOURCE_DIR}/src/platform/win/CdIoWin.cpp
     )
+endif()
+
+# Phase 3 slice 0: the Linux seam placeholders compile as their own target so the
+# CI matrix proves src/platform/linux/ + the core interface headers are
+# platform-clean from day one. The `remoct` executable itself is not yet buildable
+# on Linux (whole-file _WIN32 gates come off in slice 1 — see
+# docs/phase3-readiness.md); CI builds the pure test targets + this one by name.
+# Each seam slice (2/4/5/6) replaces its stub in SeamStubs.cpp with a real impl
+# file appended here.
+if(UNIX)
+    add_library(remoct_linux_seams OBJECT
+        ${CMAKE_SOURCE_DIR}/src/platform/linux/SeamStubs.cpp
+    )
+    target_include_directories(remoct_linux_seams PRIVATE ${CMAKE_SOURCE_DIR}/include)
+    if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+        target_compile_options(remoct_linux_seams PRIVATE -Wall -Wextra -Wpedantic)
+    endif()
 endif()
 
 add_executable(remoct ${REMOCT_SOURCES})

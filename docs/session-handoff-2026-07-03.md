@@ -26,6 +26,19 @@
   the terminal was proven innocent by a key probe (termios stays IXON-only).
   Per-case gates now; ^B/^G/^U live on Linux (verified: all three prompts
   open in the TUI); ^F/^Y/^R/^D stay gated until their slices (4/6).
+- **TUI-parity follow-up (`4f0b240`, Dos-found):** (1) stream status readouts
+  (Negotiating / nowPlaying + [LIVE]) were `#ifdef _WIN32` in drawProgress —
+  Linux drew the blank file-mode bar over a live stream; un-gated (portable
+  curses). (2) **Toast fallback, interim until slice 5:** showTrackToast also
+  writes the message to the cmdline bar for ~5 s on Linux (`#ifndef _WIN32`,
+  rip_status_ pattern) — ^B-with-token now visibly says "logged in as …",
+  ^G-with-keys visibly says "approve in browser". REVISIT AT SLICE 5 (keep or
+  drop once libnotify lands). (3) The "^G divergence" was CONFIG STATE, not
+  platform: key+secret present → browser-auth branch on BOTH platforms; none →
+  in-app key→secret prompts on BOTH (fresh-user bars verified live on Linux).
+  Gate outputs: "Negotiating Radio Stream…" → "Lady Gaga - Alejandro  [LIVE]";
+  ^B → "ListenBrainz: logged in as RadMageIRL"; fresh-user ^G/^B bars open.
+  Windows 14/14 (zero behavior change), Linux 10/10.
 - **Scrobbler-engine follow-up (`91caf7a`, Dos-found: prompts opened but no
   scrobbles landed on Linux):** the ENTIRE bodies of updateScrobbler +
   startLastfmPoll + startListenBrainzValidate were whole-body `#ifdef _WIN32`

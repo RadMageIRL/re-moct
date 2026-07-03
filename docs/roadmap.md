@@ -56,10 +56,26 @@ carve the ABI first.
     Done section. (Linux = SG_IO on /dev/srN, Phase 3.)
   - Clear the parked concurrency debt where cheap.
 - **Phase 2 — internal Source interface.** A compile-time C++ abstract base
-  (statically linked, NOT a DLL yet): `open / readFrames / seek? / metadata /
-  capabilities / close`. Refactor the EXISTING sources (local file, iHeart, ICY,
-  CD) to implement it. Prove it against what already exists, under the Phase 0
-  harness, with zero new dependencies.
+  (statically linked, NOT a DLL yet). **Design approved (2026-07-02):**
+  `core::ISource` at `include/core/ISource.h` — readFrames (the audio-callback
+  contract, fixed 44100/stereo/f32) / caps (seekable, finite, live) /
+  positionSec / durationSec / seekTo / close. **`open()` and metadata are
+  deliberately OUT of the v1 contract** (see Decisions log). Slices:
+  - **slice 0 — thin replay net: ✅ DONE** (commit `7adae12`): the regression
+    net for the whole phase — see Done section. These tests retarget through
+    `ISource*` in slice A and gate every later slice.
+  - **slice A — contract + push sources:** ISource lands; StreamSource + CDSource
+    implement it (signature harmonization only — concurrency boxes provably
+    unopened: zero diff hunks in producers/ring/rawRead/readerWorker); pipeline
+    tests retarget through `ISource*`.
+  - **slice B — LocalFileSource extraction** (the heavy one: decoder_/
+    next_decoder_ become source objects; the audio-thread crossfade swap becomes
+    a pointer swap under the same release/acquire protocol). Gated by the slice-0
+    xfade_handoff_test + the full file-mode listen gate.
+  - **slice C — callback dispatch through ISource* (OPTIONAL, own go/no-go):**
+    the mode flags stay regardless (they gate per-mode side logic that must not
+    unify — file-only ReplayGain, CD-only live-BPM, per-branch buffering/
+    track-end). A+B achieve Phase 2's goal; C is declinable.
 - **Phase 3 — Linux port.** Forces the boundary clean. WSL2 as the fast inner loop,
   GitHub Actions matrix (Windows + Linux) as the source of truth.
 - **Phase 4 — plugin-ize.** Harden the Source interface into a loadable C-ABI
@@ -67,6 +83,43 @@ carve the ABI first.
   of the whole plugin system. ("Fix iHeart and ship without rebuilding the host.")
 
 ## Done (restructure branch)
+- **Phase 2 slice 0 — thin replay net: DONE** (commit `7adae12`). Three tests
+  that lock down the producer/consumer audio-machinery SEMANTICS headlessly,
+  through the seams Phase 1 built — the safety net decision #1 required before
+  the Source-interface refactor touches the audio path (a diff audit protects
+  code that moves unopened; these protect the seams the refactor deliberately
+  changes). Zero production-code changes; ctest 13/13, stable across repeated
+  runs. **This is Phase 2's regression net: slice A retargets these tests
+  through `ISource*` and every subsequent slice gates on them.**
+  - `cd_pipeline_test`: FakeCdIo through the REAL CDSource playback pipeline
+    (playTrack → readerWorker → SPSC ring → readFrames). Byte-exact PCM fidelity
+    across the thread boundary (never-zero pattern keyed on absolute disc
+    position), seek flush/restart at target LBA, pause continuity, consumer-stall
+    backpressure, transient-error silence-fill (exactly count×1176 zeros
+    in-stream, LBA advanced), media-removal hard stop + latch, stopReader-leaves-
+    device-open (the CDRipper handoff), playback-never-requests-C2.
+  - `hls_pipeline_test`: FakeHttp via `core::setHttp()` through the REAL
+    StreamSource HLS/AAC pipeline (open → hlsConnect → producerWorkerAAC →
+    segment pump → FDK decode → ring → readFrames) — the Phase-0 Tier-2
+    record/replay idea realized cheaply on the slice-4 seam. Synthetic manifests
+    + REAL ADTS generated at test start by FDK-encoding a sine (no binary
+    fixtures in the repo). Prebuffer, live-window stall → underrun → rebuffer
+    self-heal, timed-ID3 (TIT2/TPE1) → nowPlaying, and the prompt-close cancel
+    gate: close() during a wedged segment fetch returned in **16 ms** with the
+    cancel token observed at the fake transport — the slice-4 "mid-segment stop
+    <1 s" property now runs on every ctest, headlessly.
+  - `xfade_handoff_test`: REAL AudioManager on generated WAVs through a real
+    MUTED device — the swap-adjacent file path slice B restructures: gapless EOF
+    short-read → audio-thread swap → track_swap_flag_ → pollEvents install
+    ordering (swap lands before the track-end callback fires), crossfade
+    trigger/two-decoder mix/isCrossfading visibility/completion (a preload
+    event, NOT a track_end), clearNext mid-crossfade (the device-stop quiesce
+    branch), end-without-preload. Needs audio hardware: SKIPs (exit 77) when no
+    device opens, so the cd/hls tests remain the always-on net.
+  - **Honest limits:** the ICY/continuous path (rawRead → InternetReadFile, raw
+    WinINet by design) cannot be replayed headlessly — live gates only. Real-time
+    callback cadence, device bring-up ordering, and real ad-pod re-pin timing
+    also stay with the 7of9 live gates.
 - **Phase 1 slice 8 — CD-I/O seam (Windows CD IOCTLs → core::ICdIo): DONE**
   (commit `14aebec`). The LAST platform seam, BUILT INTO the slice-5 boundary:
   `include/core/ICdIo.h` + `src/platform/win/CdIoWin.cpp` (`platform::win::WinCdIo`
@@ -298,6 +351,31 @@ carve the ABI first.
 - Faster manifest polling + staggered-peek machinery (pending rabbit-hole capture).
 
 ## Decisions log
+- **Phase 2 ISource contract (approved 2026-07-02): model the real four, don't
+  force uniformity.** `core::ISource` = readFrames/caps/positionSec/durationSec/
+  seekTo/close at `include/core/ISource.h` (first core-owned non-platform
+  contract; Phase 3 sources and Phase 4 plugins implement the same interface).
+  What made a uniform frame contract honest: all paths already converged on
+  fixed 44100/stereo/f32, and StreamSource/CDSource::readFrames are deliberately
+  identical. Deliberate EXCLUSIONS: **`open()` stays out** (three irreconcilable
+  open shapes — file path, stream URL + async-connect orchestration that must
+  stay in AudioManager, CD drive+track container; a uniform open(string) would
+  push connect orchestration into sources or fake a CD URL scheme — Phase 4's
+  problem, the ABI-leak to resist). **Metadata stays out** (least-uniform facet:
+  file = full TagLib upfront, CD = TOC + external MB lookup, stream = time-
+  varying nowPlaying/art; the unified-metadata trap is where a Phase-4 shape
+  sneaks in — grow later per the RedirectPolicy precedent if a real consumer
+  needs it). CD's extended surface (TOC/offset/model/stopReader/checkMedia,
+  consumed by CDRipper + UIManager) stays concrete beside the interface.
+  **Standing rule: if any of the four sources needs pretending to fit, that's
+  stop-and-redesign, not push-through.** Slice C (callback dispatch) is optional
+  and declinable — the per-mode callback branches gate logic that must not unify.
+- **Slice 0 net-first (decision #1, 2026-07-02): thin replay net before the
+  refactor, not the full capture harness and not bare diff audits.** Diff audits
+  protect what moves unopened (slices 4/8 proved that); the new timing risk is at
+  the seams the refactor deliberately changes (callback dispatch, teardown
+  ordering, crossfade swap). The Phase-1 seams (setHttp/FakeCdIo) made the net a
+  1-session build vs 3-5 for a full instrumented capture harness.
 - **300ms post-track-change seek lockout: REJECTED.** Silent dropped seeks in every
   track-change window were worse than the rare benign held-key leak they prevented.
   The track-stamp guard (discard a buffered seek if the track changed) was kept — it's

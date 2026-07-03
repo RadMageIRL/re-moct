@@ -1,11 +1,39 @@
-# Session handoff — 2026-07-02 (rev 5: slice 8 landed — CD-I/O seam in; PHASE 1 SEAMS COMPLETE)
+# Session handoff — 2026-07-02 (rev 6: PHASE 2 KICKOFF — design approved, slice 0 replay net landed)
 
 Read this at the start of the next session to pick up cleanly. Pairs with
 `CLAUDE.md`, `roadmap.md`, `lessons.md`, `architecture.md`, `streaming.md`.
 (The prior handoff `session-handoff-2026-07-01.md` covers Phase 0 + the
 negative-offset bug and is still valid history. This file's earlier revisions
-covered HTTP 6/8 → 8/8 (slice 4), the slice-5 boundary, slice 6, then slice 7 —
-superseded by this revision, which adds slice 8, the LAST platform seam.)
+covered HTTP 6/8 → 8/8 (slice 4), the slice-5 boundary, slices 6/7, then slice 8
+completing Phase 1 — superseded by this revision, which adds the Phase 2 kickoff:
+readiness assessment, approved ISource design, and slice 0.)
+
+## Phase 2 kickoff (this revision's delta)
+- **Readiness assessment ran design-first and Dos approved all three calls:**
+  (1) decision #1 = thin replay net BEFORE refactoring (not bare diff audits,
+  not the full capture harness — the Phase-1 seams made the net a 1-session
+  build); (2) the ISource contract WITH its exclusions (`open()` + metadata out
+  — see roadmap Decisions log for the full rationale); (3) placement
+  `include/core/ISource.h`, `core::` namespace.
+- **Slice 0 LANDED** (code `7adae12`): `cd_pipeline_test` (FakeCdIo → real
+  playTrack→readerWorker→ring→readFrames, byte-exact PCM fidelity + seek/pause/
+  backpressure/silence-fill/media-removal), `hls_pipeline_test` (FakeHttp via
+  setHttp → real open→producerWorkerAAC→segment pump→FDK→ring→readFrames;
+  runtime FDK-encoded ADTS fixture, no binaries; prompt-close-mid-wedged-fetch =
+  16 ms with the cancel token observed), `xfade_handoff_test` (real AudioManager,
+  real MUTED device, generated WAVs — the swap-adjacent path slice B
+  restructures; SKIP 77 without a device). ctest 13/13, repeated-run stable,
+  zero production-code changes. `logs/` gitignored (operational captures stay
+  on disk as reference, not in the repo).
+- **Slicing approved:** A (contract + StreamSource/CDSource implement it,
+  concurrency boxes provably unopened, tests retarget through ISource*) →
+  review → B (LocalFileSource extraction — the heavy one) → C (callback
+  dispatch, OPTIONAL/declinable). Slice A proceeds on existing approval;
+  **stop for review before slice B.**
+- **Parked as its own thread (do NOT fold into Phase 2):** `logs/iheart/` holds
+  38 IHeartDeepLog JSONL captures (2026-06-27..29 + 07-02) — the instrumented
+  ad-block material the parked rabbit-hole desync item has been waiting on.
+  Dedicated analysis session, separate scope.
 
 ## Pinned constraints (do NOT re-litigate)
 - **The 150-sector offset is a physical property of the disc** — a design aspect of
@@ -78,20 +106,23 @@ Phase 1 platform seam. Survey → design → probe → sign-off → implement, i
 
 ## Rest of Phase 1 / next steps
 - **Phase 1 platform seams are COMPLETE** (HTTP, boundary, IPC, notify, CD-I/O).
-- Parked (see `roadmap.md`): canonical SET_SPEED in CDSource::open (behavior
-  improvement, needs its own decision + listen test); corrupt-TOC session-2 OOB
-  (latent baseline, preserved); wiring `stop_` into IHeart polls; stalled-connect
-  prompt interrupt; concurrency debt where cheap; Track Info album-tag decode.
-- **Then Phase 2: internal Source interface** (compile-time C++ ABC; refactor
-  file/iHeart/ICY/CD sources onto it). See `roadmap.md` + `architecture.md`.
+- **Phase 2 is UNDERWAY: next = slice A** (ISource contract + StreamSource/
+  CDSource implement it; sacred-invariant audit = zero diff hunks in producers/
+  ring/rawRead/readerWorker; the slice-0 net is the regression gate; tests
+  retarget through ISource*). Stop for review before slice B.
+- Parked (see `roadmap.md`): rabbit-hole desync analysis over `logs/iheart/`
+  (own thread, NOT Phase 2); canonical SET_SPEED in CDSource::open; corrupt-TOC
+  session-2 OOB; wiring `stop_` into IHeart polls; stalled-connect prompt
+  interrupt; concurrency debt where cheap; Track Info album-tag decode.
 
 ## Current state
-- **Branch:** `restructure`. Slice 8 = code `14aebec` + docs (this commit) + F5
-  dead-code removal (separate follow-up commit) — LOCAL, push when ready. Origin
-  in sync through the slice-7 pair (`dde7041`/`3c70574`).
-- **Tests:** 10/10 green via `ctest` (iheart_sm, ar_crc, notify_toast, http_seam,
+- **Branch:** `restructure`. Slice 8 trio (`14aebec`/`4145b26`/`2e037cd`) +
+  slice 0 (`7adae12` + this docs commit) — LOCAL, push when ready. Origin in
+  sync through the slice-7 pair (`dde7041`/`3c70574`).
+- **Tests: 13/13 green** via `ctest` (iheart_sm, ar_crc, notify_toast, http_seam,
   scrobble_request, group_c_request, http_cancel, iheart_request, discord_ipc,
-  cd_toc).
+  cd_toc, **cd_pipeline, hls_pipeline, xfade_handoff** — the last needs an audio
+  device and SKIPs cleanly without one).
 - **Build:** clean, `remoct.exe` at `build\bin\remoct.exe`.
 - **Layout:** `include/core/{IHttp,IIpc,INotify,ICdIo}.h` +
   `src/platform/win/{HttpWinInet,IpcWinPipe,NotifyWinToast,CdIoWin}.cpp`; Toast.h

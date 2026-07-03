@@ -6,3 +6,4 @@ lib/miniaudio.h
 *.o
 *.a
 *.exe
+logs/

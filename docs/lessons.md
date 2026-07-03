@@ -76,6 +76,21 @@
 - Cosmetic iteration is fine ("dessert"), but the Phase 0 harness is the "vegetables"
   that make the next big refactor safe — don't let polish indefinitely defer it.
 
+## Replay-net / test-fixture lessons (Phase 2 slice 0)
+- **"A few quiet reads" is NOT end-of-stream when legitimate in-stream silence
+  exists.** With a fake-speed producer, the reader finishes writing a whole track
+  (including the transient-error silence-fill gap) into the ring long before a
+  paced consumer drains it — a drain loop that exits on "N consecutive all-zero
+  reads + reader stopped" terminates mid-gap and reads as data loss. Proof of
+  emptiness must be structural: require a consecutive zero-run LONGER THAN THE
+  ENTIRE RING — the ring cannot hold that much, so it must be dry. (First
+  cd_pipeline_test run failed exactly this way.)
+- **Windows `Sleep(1)` is ~15 ms** (default timer granularity). Two consequences
+  for producer/consumer tests: pacing margins are far larger than they look on
+  paper (good), and pacing where none is needed dominates runtime (bad — pace the
+  consumer only while the producer is live; once it has stopped, the ring is a
+  static buffer and can be drained flat out. Cut cd_pipeline_test from 25 s to 7 s).
+
 ## HTTP / platform-seam migration
 - **Parity for an HTTP migration lives at the call sites, not the seam.** The FakeHttp
   unit test feeds canned bodies, so it proves parse logic but CANNOT catch a wrong

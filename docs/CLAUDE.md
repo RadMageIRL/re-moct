@@ -66,13 +66,16 @@ Audiobook suite (`.m4b`, chapters, `[Books]` nav). Discord Rich Presence stage 2
 machine + ring-buffer re-pin fix. Device-switching fix. Column-aware UTF-8 pipeline.
 
 ## Next substantive step
-**Phase 1 seams COMPLETE**: HTTP ✅ 8/8 (`4c72b09`), core/platform boundary ✅
-(slice 5, `1977539`), IPC ✅ (slice 6, `89285d8`), notifications ✅ (slice 7,
-`dde7041`), **CD-I/O ✅ (slice 8, `14aebec`: `core::ICdIo` + `CdIoWin`; ctor DI
-×2 — CDSource + CDRipper; byte-identical Relish gate 12/12 AR v2 conf 200)**. The
-live read loop (`rawRead`→ring) stays raw WinINet permanently. `core::http()` is
-the one remaining transitional global (endgame DI). **Next: parked concurrency
-debt where cheap, then Phase 2 (internal Source interface).** See `docs/roadmap.md`.
+**Phase 1 seams COMPLETE** (HTTP 8/8, core/platform boundary, IPC, notify,
+CD-I/O — byte-identical Relish gate). **Phase 2 (internal Source interface) is
+UNDERWAY**: design approved (contract = `core::ISource` readFrames/caps/
+position/duration/seekTo/close; `open()` + metadata deliberately OUT — see
+roadmap Decisions log), **slice 0 thin replay net ✅ (`7adae12`: cd_pipeline +
+hls_pipeline + xfade_handoff tests, ctest 13/13)**. **Next: slice A** — ISource
+lands, StreamSource + CDSource implement it (concurrency boxes provably
+unopened), pipeline tests retarget through `ISource*`. Then slice B
+(LocalFileSource extraction), slice C optional. The live read loop
+(`rawRead`→ring) stays raw WinINet permanently. See `docs/roadmap.md`.
 
 ## Deep knowledge — read the matching file when a task touches it
 - Roadmap, phases, parked items, decisions → `docs/roadmap.md`

@@ -125,12 +125,17 @@ bool CDSource::open(const std::string& drive_letter) {
         }
     }
 
-    // The baseline "reset speed to max" that lived here was DROPPED in slice 8:
-    // it sent a hand-rolled 6-byte struct where cdrom.sys expects the canonical
-    // CDROM_SET_SPEED, and was probe-confirmed rejected with ERROR_BAD_LENGTH —
-    // a lifelong silent no-op (return was ignored). Dropping it is behavior-
-    // identical. Actually resetting speed here (dev_->setSpeed(0xFFFF)) is a
-    // parked behavior improvement — see roadmap.md.
+    // Reset read speed to max (canonical CDROM_SET_SPEED via the seam) — a
+    // RESURRECTED dead call, not a new one: the baseline attempted exactly this
+    // here, but its hand-rolled 6-byte struct was rejected by cdrom.sys with
+    // ERROR_BAD_LENGTH (probe-confirmed in slice 8) — a lifelong silent no-op,
+    // dropped then for parity and adopted canonically now as its own decided
+    // change. 0xFFFF = the baseline author's stated intent, CDRipper's own
+    // restore convention, and most drives' unset default — so the common
+    // fresh-open case sounds as it always has; what changes is determinism in
+    // the pathological one (e.g. a rip aborted mid-Pass-2 no longer leaves the
+    // drive at 10x). Fire-and-forget, as everywhere.
+    dev_->setSpeed(0xFFFF);
     // Enhanced CD track length correction is done lazily in CDRipper at rip time.
 
     ring_.resize(RING_SIZE, 0);

@@ -36,6 +36,8 @@ struct FakeState {                       // outlives any device CDSource discard
     std::string  model           = "FAKE DRIVE";
     int          toc_reads       = 0;
     int          raw_reads       = 0;
+    int          speed_calls     = 0;    // canonical SET_SPEED contract (post-slice-8 adoption)
+    uint16_t     last_speed      = 0;
     uint32_t     last_lba        = 0;
     uint32_t     last_sectors    = 0;
     bool         last_want_c2    = false;
@@ -67,7 +69,7 @@ public:
         got = out_size;
         return true;
     }
-    void setSpeed(uint16_t) override {}
+    void setSpeed(uint16_t kbps) override { ++st_->speed_calls; st_->last_speed = kbps; }
     bool mediaPresent() override { return st_->media; }
     std::string model() override { return st_->model; }
 private:
@@ -132,6 +134,10 @@ int main() {
         CHECK(offs[0] == 182);
         CHECK(offs[12] == 182 + 12 * 15000);
         CHECK(cd.driveOffset() == 0);                    // "FAKE DRIVE" unknown
+        // Canonical SET_SPEED contract: a successful open() resets read speed
+        // to max exactly once (the resurrected baseline intent — see roadmap).
+        CHECK(io.st->speed_calls == 1);
+        CHECK(io.st->last_speed == 0xFFFF);
         cd.close();
         CHECK(!cd.isOpen());
     }
@@ -187,6 +193,7 @@ int main() {
         io.st->toc_ok = false;
         CDSource cd(&io);
         CHECK(!cd.open("D"));
+        CHECK(io.st->speed_calls == 0);                  // failed open: no speed command
     }
     {
         FakeCdIo io;                                     // device open fails

@@ -142,6 +142,16 @@ UIManager::UIManager(PlaylistManager& playlist, AudioManager& audio,
 void UIManager::showTrackToast(const std::string& title, const std::string& artist,
                                const std::string& album) {
     ::showTrackToast(title, artist, album, *notify_);
+#ifndef _WIN32
+    // Toast fallback (interim until slice 5 — see UIManager.h): mirror the
+    // adapter's title mapping (artist prepends) into the cmdline bar so
+    // toast-only feedback is visible on Linux. Sanitized: the bar draws via
+    // the narrow API and metadata can carry non-ASCII.
+    status_msg_ = sanitizeForDisplay(artist.empty() ? title
+                                                    : artist + " - " + title);
+    status_msg_ticks_ = 0;
+    redraw_needed_.store(true);
+#endif
 }
 
 UIManager::~UIManager() {
@@ -714,6 +724,14 @@ void UIManager::run() {
             }
         } else if (cd_ripper_.isActive()) {
             rip_msg_ticks_ = 0;
+        }
+#endif
+#ifndef _WIN32
+        // Expire the toast-fallback status line (same cadence as rip_status_).
+        if (!status_msg_.empty() && ++status_msg_ticks_ > 60) {
+            status_msg_.clear();
+            status_msg_ticks_ = 0;
+            redraw_needed_.store(true);
         }
 #endif
         {
@@ -2704,7 +2722,9 @@ void UIManager::drawProgress() {
     if (bw < 4) bw = 4;
     int filled = (dur > 0) ? (int)((pos/dur)*bw) : 0;
     filled = std::clamp(filled, 0, bw);
-#ifdef _WIN32
+    // Stream status readouts — portable since slice 2 (the whole radio path
+    // runs on Linux); the _WIN32 gate here was slice-1 scaffolding and left
+    // Linux drawing the file-mode bar (blank 0:00 + bpm) over a live stream.
     if (audio_.streamConnecting()) {
         // Backgrounded connect in progress — make the current operation obvious.
         std::string left  = "Negotiating Radio Stream...";
@@ -2735,7 +2755,6 @@ void UIManager::drawProgress() {
         wattroff(win_progress_, COLOR_PAIR(CP_TITLE));
         return;
     }
-#endif
     wattron(win_progress_, COLOR_PAIR(CP_PROGRESS));
     if (config_.awesome_mode) {
         // Comet-style progress with a proportional gradient tail: a bright █ head at
@@ -2792,6 +2811,16 @@ void UIManager::drawProgress() {
 void UIManager::drawCmdLine() {
     if (goto_active_) { drawGotoBar(); return; }
     werase(win_cmdline_);
+#ifndef _WIN32
+    // Toast fallback (see UIManager.h) — drawn exactly like rip_status_.
+    if (!status_msg_.empty()) {
+        wattron(win_cmdline_, COLOR_PAIR(CP_STATUS_OK) | A_BOLD);
+        mvwaddnstr(win_cmdline_, 0, 1, status_msg_.c_str(), screen_cols_ - 2);
+        wattroff(win_cmdline_, COLOR_PAIR(CP_STATUS_OK) | A_BOLD);
+        wnoutrefresh(win_cmdline_);
+        return;
+    }
+#endif
 #ifdef _WIN32
     std::string mb_status_snap, mb_error_snap;
     {

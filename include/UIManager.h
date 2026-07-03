@@ -243,6 +243,16 @@ private:
     std::string rip_status_;   // shown in cmdline during/after rip
     int         rip_msg_ticks_ = 0;  // auto-clear counter
 
+#ifndef _WIN32
+    // Toast fallback (interim until slice 5 libnotify): notifications are an
+    // inert stub on Linux, so every showTrackToast message ALSO surfaces in
+    // the cmdline bar for a few seconds — otherwise flows that answer only
+    // via toast (^B "logged in as", ^G "approve in browser") look dead.
+    // Same shape as rip_status_/rip_msg_ticks_. Revisit at slice 5.
+    std::string status_msg_;
+    int         status_msg_ticks_ = 0;
+#endif
+
     // Recently played virtual dir state
     bool in_recent_      = false;
     bool in_favs_        = false;

@@ -84,7 +84,7 @@ public:
     PlaybackState    state()        const { return state_.load(); }
     double           positionSec()  const;
     double           durationSec()  const;
-    int              liveBitrateKbps() const;
+    int              bitrateKbps() const;   // TagLib nominal/average (static — see .cpp)
     const TrackInfo& currentTrack() const { return current_track_; }
     int              currentBpm()   const { return live_bpm_.load(); }
 
@@ -233,13 +233,6 @@ private:
     // Set by initCrossfade() on the audio thread when it swaps decoders; consumed
     // by pollEvents() on the main thread, which is the ONLY writer of current_track_.
     std::atomic<bool>          track_swap_flag_ { false };
-
-    // liveBitrateKbps() rolling VBR estimate — per-instance, reset each play().
-    // Previously function-local statics: shared across instances and never reset
-    // on track change, so the first reading after a switch was stale.
-    mutable double  lbr_prev_file_pos_ = 0.0;
-    mutable std::chrono::steady_clock::time_point lbr_prev_time_ {};
-    mutable int     lbr_cached_kbps_   = 0;
 
     // EQ biquad state (one per band per channel, max 2 ch)
     std::atomic<bool>  eq_enabled_ { false };

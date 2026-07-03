@@ -2637,8 +2637,8 @@ void UIManager::drawProgress() {
             meta += "  bpm:...";
     } else {
 #endif
-    if (track.bitrate_kbps > 0 || audio_.liveBitrateKbps() > 0) {
-        int br = audio_.liveBitrateKbps();
+    if (track.bitrate_kbps > 0 || audio_.bitrateKbps() > 0) {
+        int br = audio_.bitrateKbps();
         if (br <= 0) br = track.bitrate_kbps;
         meta += std::to_string(br) + " kbps";
     }

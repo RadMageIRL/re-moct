@@ -142,11 +142,6 @@ bool AudioManager::play(const std::string& path) {
     state_.store(PlaybackState::Playing);
     track_ended_flag_.store(false);
 
-    // Reset the per-track live-bitrate estimator (was leaking across tracks via statics).
-    lbr_prev_file_pos_ = 0.0;
-    lbr_cached_kbps_   = 0;
-    lbr_prev_time_     = std::chrono::steady_clock::now();
-
     // Seed duration from TagLib (already available in current_track_)
     // This avoids calling ma_decoder_get_length_in_pcm_frames from UI thread
     // which races with the audio callback on files without Xing/Info headers
@@ -451,51 +446,23 @@ double AudioManager::durationSec() const {
     return cached_duration_.load();
 }
 
-int AudioManager::liveBitrateKbps() const {
-    if (!file_src_)
+// Displayed bitrate: TagLib's nominal/average — for VBR exactly as for CBR and
+// lossless. The "live VBR estimate" this replaces was a linear position model
+// ((pos/dur)·file_size, differentiated) whose steady-state derivative is
+// constant BY CONSTRUCTION: the file average dressed as a live reading, made
+// less accurate by tag/album-art bytes in file_size and spiking across seeks
+// (the position jump landed in one 0.5 s delta window — probe evidence in
+// roadmap's resolved entry, 2026-07-03). TagLib's number is both simpler and
+// more accurate.
+int AudioManager::bitrateKbps() const {
+    if (current_track_.bitrate_kbps > 0)
         return current_track_.bitrate_kbps;
-    if (current_track_.file_size_bytes == 0 || current_track_.duration_sec <= 0)
-        return current_track_.bitrate_kbps;
-
-    // Detect CBR: standard bitrates are exact round numbers
-    // If TagLib reports a standard CBR value, trust it — don't estimate
-    static const int cbr_rates[] = {
-        32,40,48,56,64,80,96,112,128,160,192,224,256,320, 0
-    };
-    int taglib_br = current_track_.bitrate_kbps;
-    for (int i = 0; cbr_rates[i]; ++i) {
-        if (taglib_br == cbr_rates[i]) return taglib_br;  // CBR — use static value
-    }
-
-    // Lossless formats (FLAC, WAV, AIFF, ALAC) have naturally variable frame sizes
-    // but aren't VBR in a meaningful sense — use TagLib static value
-    auto& p = current_track_.path;
-    auto dot = p.rfind('.');
-    auto ext = dot != std::string::npos ? p.substr(dot) : std::string{};
-    for (char& c : ext) c = (char)std::tolower((unsigned char)c);
-    if (ext == ".flac" || ext == ".wav" || ext == ".aiff"
-        || ext == ".aif" || ext == ".alac" || ext == ".ape"
-        || ext == ".wv")
-        return taglib_br;
-
-    auto now     = std::chrono::steady_clock::now();
-    double elapsed = std::chrono::duration<double>(now - lbr_prev_time_).count();
-
-    if (elapsed >= 0.5) {
-        double pos_sec  = positionSec();
-        double dur      = current_track_.duration_sec;
-        double file_pos = (dur > 0) ? (pos_sec / dur) * (double)current_track_.file_size_bytes : 0.0;
-
-        if (lbr_prev_file_pos_ > 0 && elapsed > 0) {
-            double bytes_per_sec = (file_pos - lbr_prev_file_pos_) / elapsed;
-            if (bytes_per_sec > 0)
-                lbr_cached_kbps_ = (int)(bytes_per_sec * 8.0 / 1000.0);
-        }
-        lbr_prev_file_pos_ = file_pos;
-        lbr_prev_time_     = now;
-    }
-
-    return (lbr_cached_kbps_ > 0) ? lbr_cached_kbps_ : taglib_br;
+    // Tagless fallback: a one-shot static average from size/duration — no
+    // rolling state, derived from immutable per-track fields.
+    if (file_src_ && current_track_.file_size_bytes > 0 && current_track_.duration_sec > 0)
+        return (int)((double)current_track_.file_size_bytes * 8.0
+                     / ((double)current_track_.duration_sec * 1000.0));
+    return current_track_.bitrate_kbps;   // 0 — the UI hides the field
 }
 
 // ─── visualizer ──────────────────────────────────────────────────────────────

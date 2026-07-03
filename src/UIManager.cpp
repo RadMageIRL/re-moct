@@ -106,6 +106,10 @@ UIManager::UIManager(PlaylistManager& playlist, AudioManager& audio,
     // this off (raw() would, but it also takes ISIG — too big a hammer).
     // Windows consoles have no tty flow control, which is why the baseline
     // never needed this. (Slice-1 follow-up, Dos-found on the Debian VM.)
+    // NOTE: this is the ONLY control char the Linux tty steals in cbreak
+    // mode — a minimal-curses key probe confirmed ^B/^G/^U/^N/^T (2/7/21/
+    // 14/20) all reach getch() with just this. The slice-2 "dead keys" were
+    // an #ifdef _WIN32 span in handleInput's key switch, not the terminal.
     {
         struct termios tio{};
         if (tcgetattr(STDIN_FILENO, &tio) == 0) {
@@ -3826,6 +3830,14 @@ void UIManager::handleInput(int ch) {
                                               : "Nerd icons: OFF", "", "");
 #endif
             break;
+        // Per-case Windows gates below (slice-2 fix): a single #ifdef here
+        // used to span ^D/^B/^F/^G/^U/^Y/^R, silently deleting the portable
+        // scrobbler-login and radio-URL keys from the Linux build (Dos-found:
+        // ^U/^G/^B dead while ^N/^T/^L/^Q worked — a key probe proved the tty
+        // delivers all of them; the gap was here). Gate each key on WHY:
+        // ^D = Discord IPC (slice 4); ^F = the MBSearch overlay's draw/input
+        // handlers are still Windows-gated; ^Y/^R = CD (slice 6, and the
+        // RipConfirm modal handler is Windows-gated).
 #ifdef _WIN32
         case 4:  // Ctrl+D — toggle Discord Rich Presence
             config_.discord_presence = !config_.discord_presence;
@@ -3840,12 +3852,14 @@ void UIManager::handleInput(int ch) {
                 showTrackToast("Discord presence: OFF", "", "");
             }
             break;
+#endif
         case 2:  // Ctrl+B — ListenBrainz login (paste user token; no browser/handshake)
             if (config_.listenbrainz_token.empty())
                 openInputBar(InputMode::ListenBrainzToken, "");
             else
                 showTrackToast("ListenBrainz: logged in as " + config_.listenbrainz_user, "", "");
             break;
+#ifdef _WIN32
         case 6:  // Ctrl+F — MusicBrainz / Discogs manual search
             if (ui_overlay_ == UIOverlay::None && !mb_lookup_.isActive()) {
                 mb_search_ = {};
@@ -3853,6 +3867,7 @@ void UIManager::handleInput(int ch) {
                 redraw_needed_.store(true);
             }
             break;
+#endif
         case 7:  // Ctrl+G — Last.fm login (stateful: request token, then exchange)
             if (config_.lastfm_key.empty() || config_.lastfm_secret.empty()) {
                 openInputBar(InputMode::LastfmKey, "");   // first-time: prompt in-app
@@ -3880,6 +3895,7 @@ void UIManager::handleInput(int ch) {
             if (ui_overlay_ == UIOverlay::None)
                 openInputBar(InputMode::StreamURL, "");
             break;
+#ifdef _WIN32
         case 25:  // Ctrl+Y — CD rip
             if (ui_overlay_ != UIOverlay::None) break;  // already showing modal
             if (audio_.cdMode() && !cd_ripper_.isActive()) {

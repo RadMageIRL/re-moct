@@ -155,11 +155,19 @@ carve the ABI first.
   readouts live, PulseAudio sink-input "remoct" uncorked — and Windows ctest
   ran 13/13 both before and after the port edits (baseline first, regression
   after). Linux ctest 4/4. CI Linux job now builds the FULL remoct binary.**
-  Known nits for review: Ctrl+Q didn't reach the app through the tmux pty
-  (suspected IXON; recheck on a real terminal); config dir came up as
-  ~/.config/RE-MOCT (Config.cpp's existing branch) while logs use re-moct —
-  naming unification is a small follow-up; live Windows listen spot-check
-  recommended at review (headless 13/13 done).
+  **Slice-1 follow-up (Dos-found on the independent Debian VM, fixed same
+  day):** (1) Ctrl+Q dead on Linux — CONFIRMED IXON: cbreak() leaves tty
+  flow control on, so the driver ate ^Q/XON before curses saw key 17; fixed
+  by clearing IXON via termios in the UIManager ctor, Linux-only (raw() was
+  rejected — it also takes ISIG). (2) Resize didn't redraw — root cause was
+  OUR OWN `#ifndef _WIN32` SIGWINCH handler in main.cpp DISPLACING ncursesw's,
+  so KEY_RESIZE was never queued; fixed by deleting it — the existing
+  KEY_RESIZE relayout path now runs. (3) Ctrl+U radio confirmed EXPECTED-dead
+  (HTTP stub until slice 2, ICY slice 3) and graceful — app alive, no crash.
+  Verified: ^Q clean exit + resize relayout + ^U graceful all in the WSL2
+  pty; Windows 13/13 again (both changes Linux-only). Remaining nits:
+  config-dir casing (~/.config/RE-MOCT vs re-moct state dir) parked; live
+  Windows listen spot-check still with Dos.
 - **Phase 3 slice 0 — CI matrix + Linux env + seam stubs: DONE** (readiness
   survey + approval: docs `ebf5382`; code `27735f5`). The survey's decisive
   findings (full detail in `docs/phase3-readiness.md`): the tree is pervasively

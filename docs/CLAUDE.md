@@ -70,18 +70,20 @@ machine + ring-buffer re-pin fix. Device-switching fix. Column-aware UTF-8 pipel
 all four sources; slice C declined — see roadmap Decisions log).
 **Phase 3 (Linux port) IN PROGRESS** — readiness survey + slicing approved
 (`docs/phase3-readiness.md`): strictly a PARITY port. **Slice 0 DONE**
-(`27735f5`): CI matrix live (debian:trixie container + windows msys2 — both
-required green on every push), `src/platform/linux/SeamStubs.cpp` (inert seam
-stubs + core:: bridges, `platform::lnx`), WSL2 Debian Trixie inner loop
-provisioned on 7of9. **CD gate venue PROVEN: usbipd→WSL2** (GHD3N is USB;
-real SG_IO READ CD 0xBE verified on Relish; attach = `usbipd attach --wsl
---busid 4-1`, drive leaves Windows while attached). **Next: slice 1** (portable
-core compiles+links on Linux; gate = plays a local file) — pending Dos review.
-Survey facts to reuse: 12/23 TUs Linux-clean; whole-file `#ifdef _WIN32` gates
-hide the rest; ncursesw on Linux = 256 colors + wide API clean; miniaudio
-PulseAudio live in WSL2. The live read loop (`rawRead`→ring) stays raw WinINet
-permanently on Windows; its Linux twin is slice 3 (design-first). See
-`docs/roadmap.md` for the six-slice plan + per-slice gates.
+(`27735f5`): CI matrix live (debian:trixie container + windows msys2, both
+required green); seam stubs in `src/platform/linux/` (`platform::lnx`); WSL2
+Trixie inner loop on 7of9. **CD gate venue PROVEN: usbipd→WSL2** (GHD3N busid
+4-1 stays bound; real SG_IO READ CD verified on Relish). **Slice 1 DONE:
+the portable core compiles, links, and PLAYS on Linux** — whole-file `_WIN32`
+gates off 21 files; `include/PortUtil.h` (each helper's Windows expansion =
+the baseline call verbatim); StreamSource's sacred ICY loop moved inside
+`#ifdef _WIN32` byte-verbatim (Linux connect() refuses Continuous until the
+slice-3 twin; HLS fully portable); gate passed = WAV played to completion in
+a WSL2 tmux pty (PulseAudio sink-input live) + Windows 13/13 before AND after.
+**Next: slice 2 (HTTP: libcurl IHttp + vendored MD5 both platforms)** —
+pending Dos review. The live read loop stays raw WinINet permanently on
+Windows; its Linux twin is slice 3 (design-first). See `docs/roadmap.md` for
+the six-slice plan + per-slice gates.
 
 ## Deep knowledge — read the matching file when a task touches it
 - Roadmap, phases, parked items, decisions → `docs/roadmap.md`

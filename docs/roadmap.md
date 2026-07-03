@@ -99,10 +99,13 @@ carve the ABI first.
   Strictly a PARITY port — no new features, no visual changes. Approved slicing:
   - **slice 0 — CI matrix + env + seam stubs: ✅ DONE** (commit `27735f5`): see
     Done section. CD-gate venue RESOLVED on evidence: usbipd→WSL2, no VM.
-  - **slice 1 — portable core compiles + links on Linux** (platform-util layer,
-    the mechanical de-Win32 classes, vendored MD5 both platforms, de-gate
-    whole-file `_WIN32` wraps, StreamSource header detox). Gate: remoct plays a
-    local file on Linux + Windows ctest 13/13 zero behavior change.
+  - **slice 1 — portable core compiles + links on Linux: ✅ DONE** (the
+    platform-util layer, the mechanical de-Win32 classes, whole-file `_WIN32`
+    wraps de-gated, StreamSource header detox with the sacred ICY loop gated
+    VERBATIM; MD5 stayed a Linux placeholder — vendoring rides with slice 2 as
+    decided). Gate PASSED: remoct played a WAV to completion on Linux
+    (PulseAudio sink-input live) + Windows ctest 13/13 before AND after. See
+    Done section.
   - **slice 2 — HTTP: libcurl IHttp** (+sessions, cancel token, RedirectPolicy,
     read_error; POSIX twin of http_cancel_test). Gate: MB lookup + scrobble
     round-trip + digital iHeart HLS PLAYS on Linux.
@@ -121,6 +124,42 @@ carve the ABI first.
   of the whole plugin system. ("Fix iHeart and ship without rebuilding the host.")
 
 ## Done (restructure branch)
+- **Phase 3 slice 1 — portable core compiles, links, and PLAYS on Linux: DONE.**
+  The whole-file `#ifdef _WIN32` gates came off 21 files (11 TUs + 10 headers);
+  `include/PortUtil.h` landed with the rule that makes it safe: **every helper's
+  Windows expansion is the baseline call verbatim** (sleepMs==::Sleep,
+  tickMs==::GetTickCount incl. uint32 wrap shape, fopenUtf8==_wfopen(utf8_to_wide)),
+  so adoption is a rename, not a behavior change. Per-file: CDSource/IHeartRadio/
+  DiscordRP (getpid twin) trivial; Log + IHeartDeepLog rewritten portable
+  (std::filesystem/chrono/localtimeSafe; same dated-file/trim/heartbeat
+  contracts; Linux logs → $XDG_STATE_HOME/re-moct per the XDG decision); CDRipper
+  mechanical (fopenUtf8 ×~30, kSep per-platform separator so Windows rip logs
+  stay byte-identical for the slice-6 diff gate, buildOutputDir Windows branch
+  verbatim + XDG_MUSIC_DIR twin, DWORD→uint32_t word-boundary safe); LastFm MD5
+  = deliberate Linux placeholder ("" api_sig — slice 2 vendors the real one both
+  platforms, as decided); **StreamSource detox: the ICY raw transport (connect's
+  WinINet body, the rawRead InternetReadFile loop) moved INSIDE `#ifdef _WIN32`
+  byte-verbatim — on Linux connect() refuses Continuous mode with a clear error
+  until the slice-3 twin; HLS path fully portable (hlsResolveUrl got a portable
+  RFC-3986-ish twin for InternetCombineUrlA); HINTERNET members exist as inert
+  void* twins so the machinery compiles unreferenced**; AudioManager/UIManager.h
+  member gates stripped; ShellExecuteA → xdg-open twin; utf8_to_wide got a Linux
+  UTF-32 twin (reuses utf8_next — one decoder for draw + column math); version
+  tag per-platform (-win byte-identical / -linux). Audits: zero sacred symbols
+  in the StreamSource diff (ringClear/prebuffered_/ring machinery all context);
+  every StreamSource change line in 5 enumerated classes (Sleep/tick renames,
+  DWORD→uint32_t, gate insertion, include swap, hlsResolveUrl split); no
+  unguarded platform includes outside src/platform/win; PortUtil.h included
+  from .cpp files only. **Gate: on WSL2 Trixie, remoct's TUI came up in a tmux
+  pty, browsed, and played a 20 s WAV to COMPLETION — progress bar/bitrate/BPM
+  readouts live, PulseAudio sink-input "remoct" uncorked — and Windows ctest
+  ran 13/13 both before and after the port edits (baseline first, regression
+  after). Linux ctest 4/4. CI Linux job now builds the FULL remoct binary.**
+  Known nits for review: Ctrl+Q didn't reach the app through the tmux pty
+  (suspected IXON; recheck on a real terminal); config dir came up as
+  ~/.config/RE-MOCT (Config.cpp's existing branch) while logs use re-moct —
+  naming unification is a small follow-up; live Windows listen spot-check
+  recommended at review (headless 13/13 done).
 - **Phase 3 slice 0 — CI matrix + Linux env + seam stubs: DONE** (readiness
   survey + approval: docs `ebf5382`; code `27735f5`). The survey's decisive
   findings (full detail in `docs/phase3-readiness.md`): the tree is pervasively

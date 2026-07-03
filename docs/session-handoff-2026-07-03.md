@@ -1,4 +1,38 @@
-# Session handoff — 2026-07-03 (rev 4: PHASE 3 KICKED OFF — readiness survey approved, slice 0 LANDED; next = slice 1 after Dos review)
+# Session handoff — 2026-07-03 (rev 5: Phase 3 slices 0 AND 1 landed; next = slice 2 (HTTP/libcurl) after Dos review)
+
+## Rev-5 delta: slice 1 — portable core compiles, links, and PLAYS on Linux
+- **Gate PASSED both sides:** remoct's TUI ran in a WSL2 tmux pty, browsed
+  /root/Music, and played a generated 20 s WAV to completion (progress bar/
+  bitrate/BPM live; `pactl` showed sink-input "remoct", Corked: no). Windows
+  ctest 13/13 BEFORE the edits (baseline) and AFTER (regression); Linux ctest
+  4/4; the CI Linux job now builds the FULL remoct binary.
+- **Shape of the change** (full detail in roadmap Done): whole-file `#ifdef
+  _WIN32` gates off 21 files; `include/PortUtil.h` (Windows expansion of every
+  helper = the baseline call VERBATIM — sleepMs/tickMs/fopenUtf8/tempDir/
+  logDir); Log + IHeartDeepLog rewritten portable (std::filesystem; XDG state
+  dir on Linux); CDRipper mechanical (kSep keeps Windows rip-log paths
+  byte-identical for slice 6); LastFm MD5 = Linux placeholder (slice 2 vendors
+  real MD5 both platforms, per decision); StreamSource: ICY transport gated
+  Windows-only byte-verbatim (connect() refuses Continuous on Linux with a
+  clear error until slice 3), HLS fully portable incl. a hlsResolveUrl twin;
+  utf8_to_wide got a UTF-32 Linux twin reusing utf8_next; ShellExecuteA →
+  xdg-open; version tag -win/-linux per platform.
+- **Audits held:** zero sacred symbols in the StreamSource diff; all its
+  change lines in 5 enumerated classes; no unguarded platform includes outside
+  src/platform/win/; PortUtil.h consumed from .cpp only.
+- **Review notes:** Ctrl+Q didn't reach the app through the tmux pty (suspect
+  IXON — recheck on a real terminal); config dir is ~/.config/RE-MOCT vs logs
+  in ~/.local/state/re-moct — naming unification someday; a live Windows
+  listen spot-check is recommended (headless 13/13 done here).
+- **NEXT: slice 2 — HTTP: libcurl IHttp impl** (+ IHttpSession keep-alive,
+  cancel token via progress callback, RedirectPolicy incl. SameScheme,
+  read_error; vendored single-file MD5 on BOTH platforms with api_sig parity;
+  POSIX twin of http_cancel_test; port the if(WIN32) request tests). Gate on
+  Linux: MB lookup resolves, RadioBrowser search, live scrobble round-trip,
+  digital iHeart HLS PLAYS; hls_pipeline_test in the matrix. STOPPED for Dos
+  review before starting.
+
+(Rev-4 delta below: slice 0 + readiness survey, still current.)
 
 ## Rev-4 delta: Phase 3 kickoff session (2026-07-03, morning)
 - **Readiness survey DONE and approved by Dos** — full assessment in

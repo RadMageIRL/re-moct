@@ -1,4 +1,38 @@
-# Session handoff — 2026-07-03 (rev 5: Phase 3 slices 0 AND 1 landed; next = slice 2 (HTTP/libcurl) after Dos review)
+# Session handoff — 2026-07-03 (rev 6: slice 2 (HTTP/libcurl + MD5) LANDED, gates passed; next = slice 3 (ICY twin, design-first))
+
+## Rev-6 delta: slice 2 — libcurl IHttp + vendored MD5, both platforms green
+- **Verified:** Windows ctest 14/14; Linux ctest 10/10 (was 4). Shape + full
+  mapping table: `docs/phase3-slice2-design.md` (approved pre-code) + the
+  roadmap Done entry. Highlights: CURLSH share-handle sessions (scenario B of
+  http_cancel_test = live proof the pool reuses ONE TCP connection);
+  XFERINFOFUNCTION cancel; CONNECTTIMEOUT + LOW_SPEED stall-guard (NOT a
+  whole-transfer deadline); MD5 = byte-verbatim Openwall `lib/md5.{h,c}`
+  (approved deviation from header-only — verbatim upstream is more auditable),
+  one LastFm signing path both platforms, vectors re-proven vs Python hashlib.
+- **Live gates (Linux, real libcurl):** MB standalone probe — REAL Relish TOC
+  from the 2026-06-21 rip log resolved to Joan Osborne — Relish (1995), 12/12
+  titles; RadioBrowser TUI search returned KWIN 97.7; digital iHeart HLS (Z100)
+  PLAYED — pump at edgeLag 0, live nowPlaying via CurlSession, audible output
+  proven by sink-monitor capture (RMS 5791, 100% non-zero). NOTE: the progress
+  bar in radio mode only displays metadata — it does not move (Dos-confirmed
+  expected; do not chase a static readout as a bug). Scrobble round-trips
+  (Windows MD5 regression + Linux accents): Dos, with his keys — Linux keys go
+  in `~/.config/RE-MOCT/` (UPPERCASE — lowercase is silently ignored).
+- **Hard-won:** POSIX `close()` does NOT wake a blocked `accept()` — first
+  Linux http_cancel run hung forever; fix = shutdown-then-close
+  (`stopListener()`) + ctest TIMEOUT 60. Also pinned in lessons.md: WSL
+  build/test discipline (ONE foreground run to a log with an EXIT= marker,
+  ONE read; never poll ps, never restart-to-check).
+- **Parked (recorded, untouched):** `port::logDir()` misses the grandparent
+  mkdir (fresh account → silent no-log); radio-browser nl1/at1 mirrors
+  DNS-dead (de1 fine).
+- **NEXT: slice 3 — ICY raw-loop Linux twin.** Design-first, sacred territory
+  (the Windows loop stays raw WinINet byte-verbatim; zero-diff invariant).
+  Lean shape per the slice-0 decision: curl CONNECT_ONLY + curl_easy_recv
+  keeps the pull-read shape. Gate: ICY station plays on Linux; Windows loop
+  byte-diff EMPTY.
+
+(Rev-5 and earlier below — still current history.)
 
 ## Rev-5 delta: slice 1 — portable core compiles, links, and PLAYS on Linux
 - **Gate PASSED both sides:** remoct's TUI ran in a WSL2 tmux pty, browsed

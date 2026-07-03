@@ -86,6 +86,25 @@
 - Cosmetic iteration is fine ("dessert"), but the Phase 0 harness is the "vegetables"
   that make the next big refactor safe — don't let polish indefinitely defer it.
 
+## WSL build/test discipline — one run, one read, the log is the only truth
+- Run every build/test FOREGROUND, redirected to a log, with an exit marker:
+  `<cmd> > /root/out.log 2>&1; echo EXIT=$?`. Then read the log ONCE:
+  tail + `grep -E "error:|Failed|Passed|EXIT="`.
+- **Never background a build and poll ps/process state to infer whether it
+  passed.** Process-alive tells you nothing about pass/fail — a finished-clean
+  build and a still-running build look identical from ps, and you will loop
+  forever restarting a build that already succeeded.
+- **Never restart a build "to check on it."** If the log has no `EXIT=` yet, it
+  is still running — wait, don't relaunch. Relaunching resets the clock and
+  hides the result.
+- A cold full `cmake -S . -B` configure + build is legitimately slower
+  (3–5 min) than an incremental (`ninja: no work to do`, seconds) — slowness is
+  not failure. Read the log to distinguish; don't assume a stall and restart.
+- The answer to "is it done? did it pass? why did it fail?" is always in the
+  log file, never in the process table. If you find yourself checking ps or
+  relaunching, stop — go read the log. (Cost three loops in the slice-2
+  session before being pinned.)
+
 ## Readouts / estimators
 - **The "live VBR" bitrate estimator was a linear position model — a
   constant-derivative average dressed as a live reading; TagLib's nominal is
@@ -201,6 +220,17 @@
   is destroyed; joining the server thread before resetting the session deadlocked until
   WinINet's ~60s idle-close (110s test run). Fix: reset the session BEFORE joining fixture
   threads, and cap accepted-socket waits with SO_RCVTIMEO/SO_SNDTIMEO (2.6s run).
+- **`close()` on a listening socket does NOT wake a thread blocked in `accept()`
+  on Linux — `shutdown()` first.** Windows' closesocket aborts a blocked accept
+  (WSAEINTR), and http_cancel_test's fixture relied on exactly that to stop its
+  server threads; ported to Linux unchanged, scenarios B/C hung forever in
+  server.join() (7/10 tests in, stuck minutes on a 2.5 s test — the log made the
+  hang unambiguous). POSIX close() just drops the fd refcount; the sleeping
+  accept keeps its reference. `shutdown(fd, SHUT_RDWR)` wakes it (accept returns
+  EINVAL) — hence the shim's stopListener(): shutdown-then-close on POSIX,
+  plain closesocket on Windows. Belt-and-braces: the test now carries a ctest
+  TIMEOUT 60 so this hang class fails the matrix fast instead of eating the
+  25-minute default. (Phase 3 slice 2, first Linux run of the portable test.)
 - **A fake's observation state must outlive the object the consumer destroys.** The
   consumer discarding its channel/session on failure is often exactly the behavior under
   test (DiscordRP drops its channel on a CLOSE reject) — a fake that stores its captured

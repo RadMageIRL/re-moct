@@ -106,9 +106,9 @@ carve the ABI first.
     decided). Gate PASSED: remoct played a WAV to completion on Linux
     (PulseAudio sink-input live) + Windows ctest 13/13 before AND after. See
     Done section.
-  - **slice 2 — HTTP: libcurl IHttp** (+sessions, cancel token, RedirectPolicy,
-    read_error; POSIX twin of http_cancel_test). Gate: MB lookup + scrobble
-    round-trip + digital iHeart HLS PLAYS on Linux.
+  - **slice 2 — HTTP: libcurl IHttp: ✅ DONE** (sessions, cancel token,
+    RedirectPolicy, read_error; vendored MD5 both platforms; http_cancel_test
+    made portable — one file, both transports). See Done section.
   - **slice 3 — ICY raw-loop Linux twin** (design-first, sacred territory; lean:
     curl CONNECT_ONLY + curl_easy_recv keeps the pull-read shape). Gate: ICY
     station plays on Linux; Windows loop byte-diff empty.
@@ -124,6 +124,46 @@ carve the ABI first.
   of the whole plugin system. ("Fix iHeart and ship without rebuilding the host.")
 
 ## Done (restructure branch)
+- **Phase 3 slice 2 — HTTP: libcurl core::IHttp + vendored MD5, both platforms
+  green: DONE.** Design doc: `docs/phase3-slice2-design.md` (approved before
+  code). `src/platform/linux/HttpCurl.cpp` (`platform::lnx::CurlHttp`/
+  `CurlSession`) — the WinINet sibling, same TU layout, `core::http()/setHttp()`
+  with the identical g_override shape. Key mappings (full table in the design
+  doc): **sessions = a held CURLSH share handle** (CONNECT+DNS+SSL_SESSION
+  caches, mutex-locked) + one easy handle PER fetch via CURLOPT_SHARE — keep-
+  alive reuse across fetches AND thread-safe concurrent fetches (single shared
+  easy handle rejected: can't run two transfers); **cancel** = pre-check + XFER-
+  INFOFUNCTION polling the atomic (accepted-better residual: cancel works during
+  CONNECT on Linux, WinINet can't); **timeout_ms = CONNECTTIMEOUT_MS + LOW_
+  SPEED_LIMIT/TIME stall guard, deliberately NOT CURLOPT_TIMEOUT_MS** (a whole-
+  transfer deadline would kill healthy slow downloads — behavior WinINet never
+  had); FollowSameScheme = REDIR_PROTOCOLS_STR pinned to the original scheme;
+  WinINet cache flags = no-op (curl has no client cache); proxy = env-var
+  convention. SeamStubs dropped StubHttp + the http bridges. **MD5 vendored as
+  byte-verbatim upstream `lib/md5.{h,c}`** (Peslyak/Openwall public domain) +
+  `extern "C"` — approved deviation from the design's header-only shape
+  (unmodified upstream = smaller trust surface, the "verbatim moves are safer"
+  principle); root CMake gains LANGUAGES C; LastFm::md5Hex = ONE code path both
+  platforms (CryptoAPI block + slice-1 Linux placeholder both deleted). New
+  `md5_test` (RFC 1321 vectors + 55/56/64/65 padding boundaries + a raw-UTF-8
+  api_sig-shaped vector, every custom vector independently confirmed against
+  Python hashlib). **Tests now portable via HTTP_IMPL/HTTP_LIBS:** http_cancel
+  (platform shim; scenario B = live proof the CURLSH pool reuses ONE TCP
+  connection), scrobble_request, group_c_request, iheart_request, hls_pipeline.
+  **Windows 14/14, Linux 4→10/10.** Hard-won fix: first Linux run hung forever —
+  POSIX close() does NOT wake a thread blocked in accept() (Windows closesocket
+  does); fixed with shutdown-then-close (stopListener) + ctest TIMEOUT 60 so the
+  hang class fails CI fast (lessons.md). **Live gates on Linux, all through the
+  real libcurl transport:** MB standalone probe fed the REAL Relish TOC from the
+  2026-06-21 rip log → `Joan Osborne — Relish (1995)`, all 12 track titles
+  (in-app CD→MB flow re-verifies at slice 6); RadioBrowser search in the TUI
+  returned KWIN 97.7 (the group-(a) twin); digital iHeart HLS (Z100 zc1469)
+  PLAYED — segment pump at edgeLag 0, FDK 48→44.1k, live iHeart nowPlaying
+  through the CurlSession, and audible-output proof: 4 s off the Pulse sink
+  monitor at RMS 5791 / 100% non-zero samples. Scrobble round-trips (the
+  Windows MD5-vendoring regression + Linux accents-intact) run by Dos with his
+  keys. Findings recorded, not fixed (parked below): logDir grandparent mkdir;
+  radio-browser nl1/at1 mirrors DNS-dead (de1 fine, fallback loop works).
 - **Phase 3 slice 1 — portable core compiles, links, and PLAYS on Linux: DONE.**
   The whole-file `#ifdef _WIN32` gates came off 21 files (11 TUs + 10 headers);
   `include/PortUtil.h` landed with the rule that makes it safe: **every helper's
@@ -529,6 +569,14 @@ carve the ABI first.
     cross-check item — the synthetic suite proves the logic, not on-drive behavior.
 
 ## Parked / deferred (not disturbed)
+- **`port::logDir()` doesn't create the grandparent** (slice-1 residual, found
+  at the slice-2 gates): it mkdirs `$HOME/.local/state` and `re-moct` but not
+  `~/.local` — on a fresh account the operational log silently no-ops. Windows
+  unaffected (%TEMP% always exists). Fix = `std::filesystem::create_directories`
+  as its own tiny change.
+- **radio-browser mirror list refresh:** nl1/at1 are DNS-dead (de1 alive, the
+  fallback loop copes). Refresh the list — or resolve mirrors via the
+  documented `all.api.radio-browser.info` DNS rotation — someday.
 - **Latent baseline OOB on corrupt multi-session TOCs:** CDSource's session-2 block
   indexes `entries[toc2.last]` unclamped (baseline did the same with TrackData) — a
   corrupt disc reporting last>99 over-reads the array. Preserved as-is in slice 8

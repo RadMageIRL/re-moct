@@ -78,12 +78,17 @@ the portable core compiles, links, and PLAYS on Linux** — whole-file `_WIN32`
 gates off 21 files; `include/PortUtil.h` (each helper's Windows expansion =
 the baseline call verbatim); StreamSource's sacred ICY loop moved inside
 `#ifdef _WIN32` byte-verbatim (Linux connect() refuses Continuous until the
-slice-3 twin; HLS fully portable); gate passed = WAV played to completion in
-a WSL2 tmux pty (PulseAudio sink-input live) + Windows 13/13 before AND after.
-**Next: slice 2 (HTTP: libcurl IHttp + vendored MD5 both platforms)** —
-pending Dos review. The live read loop stays raw WinINet permanently on
-Windows; its Linux twin is slice 3 (design-first). See `docs/roadmap.md` for
-the six-slice plan + per-slice gates.
+slice-3 twin; HLS fully portable). **Slice 2 DONE: libcurl `core::IHttp`
+(`src/platform/linux/HttpCurl.cpp` — CURLSH share-handle sessions, XFERINFO
+cancel, LOW_SPEED stall-guard timeout) + vendored MD5 both platforms
+(`lib/md5.{h,c}` byte-verbatim Openwall; LastFm one signing path); five HTTP
+tests portable; Windows 14/14, Linux 10/10; live gates = MB probe (real
+Relish TOC resolved), RadioBrowser in the TUI (KWIN 97.7), digital iHeart
+HLS PLAYED on Linux (audible, RMS-proven, nowPlaying live).**
+**Next: slice 3 (ICY raw-loop Linux twin — design-first, sacred territory;
+lean shape: curl CONNECT_ONLY + curl_easy_recv keeps the pull-read shape).**
+The live read loop stays raw WinINet permanently on Windows. See
+`docs/roadmap.md` for the six-slice plan + per-slice gates.
 
 ## Deep knowledge — read the matching file when a task touches it
 - Roadmap, phases, parked items, decisions → `docs/roadmap.md`

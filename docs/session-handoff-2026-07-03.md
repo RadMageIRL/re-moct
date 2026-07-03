@@ -1,4 +1,4 @@
-# Session handoff — 2026-07-03 (rev 2: PHASE 2 CLOSED — slice C declined; next fork = Phase 3 or a parked item)
+# Session handoff — 2026-07-03 (rev 3: Phase 2 closed + cleanup pass done; NEXT SESSION = PHASE 3 KICKOFF, Linux port)
 
 Read this at the start of the next session to pick up cleanly. Pairs with
 `CLAUDE.md`, `roadmap.md`, `lessons.md`, `architecture.md`, `streaming.md`.
@@ -79,14 +79,39 @@ four real sources (file, iHeart, ICY, CD) behind `core::ISource`, proven under
 the slice-0 net + live gates, zero new dependencies.** Docs-only close-out;
 nothing in the tree changed, which is the point.
 
-## Next fork (decide with Dos)
-1. **Phase 3 (Linux port):** WSL2 inner loop + GitHub Actions matrix;
-   `src/platform/linux/` (libcurl, Unix socket, libnotify, SG_IO); the port is
-   the forcing function that proves the boundary. The natural next phase.
-2. Parked candidates if a smaller slice is wanted: VBR live-bitrate readout
-   semantics (product decision, probe evidence in roadmap), canonical
-   SET_SPEED in CDSource::open (needs listen test), `stop_` into IHeart polls,
-   rabbit-hole desync analysis over `logs/iheart/` (own thread).
+## Cleanup pass (rev-3 delta) — three briefs, three closures, all pushed
+1. **VBR bitrate readout: FIXED** (`adacbb1`/`4cdfa88`) — the "live" estimator
+   was a linear position model (constant-derivative average, never
+   instantaneous); now `bitrateKbps()` = TagLib nominal for everything, gate
+   probe pinned VBR at 264 across a seek (was peak 90k).
+2. **Canonical SET_SPEED: ADOPTED** (`d2ad038`/`0b0ddb2`) — CDSource::open
+   really resets to max (0xFFFF) via the seam for the first time; contract in
+   cd_toc_test; live gate on drive G clean; 1764 quiet-mid is a NAMED FALLBACK
+   only if max ever proves audibly objectionable.
+3. **iHeart rabbit-hole desync: CLOSED WITH EVIDENCE** (`2913a1b`, analysis
+   only) — Stage-B promotion REJECTED (0/8 lane-music-first; SSAI stitches new
+   joiners into ad pods too), faster-polling/staggered-peek rejected same
+   premise, edgeLag flat, 35 s stall validated 68/68. Hole classes: A =
+   broadcast-side (OOB shows no song, unfixable), B = session-side stale slate
+   with OOB-proven live music. **Class-B OOB-gated re-pin is PARKED, NOT
+   greenlit** (own design-first pass + live gate when chosen); Stage-A scaffold
+   retirement is its own small future cleanup, never folded in.
+
+## NEXT SESSION: Phase 3 kickoff (Linux port) — planned for the morning
+Read CLAUDE.md + roadmap + lessons + architecture + THIS handoff first, then
+design-first as always. The shape from roadmap/architecture: WSL2 on 7of9 as
+the fast inner loop; GitHub Actions matrix (windows-latest via msys2 +
+ubuntu-latest) as the source of truth — the CI matrix is the highest-leverage
+first move (it catches Windows-isms leaking into core the moment they appear);
+`src/platform/linux/` impls for the four seams (libcurl HTTP, Unix-socket IPC,
+libnotify notify, SG_IO CD — the ICdIo header already documents the SCSI
+one-to-one mapping); the pure suites already build Linux-clean by design.
+Expect a survey first: what actually stands between today's tree and a Linux
+configure (ncursesw UI, miniaudio backend, windows.h stragglers outside
+platform/ — e.g. CDSource.cpp's Sleep, Mp4Chapters, IHeartDeepLog, Log).
+Remaining parked pool: Class-B OOB-gated re-pin, Stage-A retirement, `stop_`
+into IHeart polls, stalled-connect interrupt, Track Info album-tag decode,
+scrobble dedup, ICY items.
 
 ## Operating discipline (unchanged)
 - Read CLAUDE.md + roadmap + lessons + architecture + THIS handoff first.

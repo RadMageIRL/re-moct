@@ -99,6 +99,22 @@ carve the ABI first.
   of the whole plugin system. ("Fix iHeart and ship without rebuilding the host.")
 
 ## Done (restructure branch)
+- **VBR bitrate readout — RESOLVED as a product decision** (commit `adacbb1`).
+  The survey finding that decided it: the "live VBR estimate" was a linear
+  position model (`(pos/dur)·file_size`, differentiated) whose steady-state
+  derivative is constant BY CONSTRUCTION — it never showed local-frame VBR
+  variation, only the file average made less accurate (tag/album-art bytes
+  inflate file_size, +2-4%) with a seek spike (76-90k kbps in the one delta
+  window that swallowed the jump; A/B-probed identical on pre-slice-B baseline
+  `3d4e061` — pre-existing, slice B exonerated). Decision (a): return TagLib's
+  nominal/average for VBR exactly as CBR/lossless already did; one-shot static
+  size/duration fallback for tagless files; estimator + 3 mutable members
+  retired (net −40 lines). Renamed `liveBitrateKbps` → `bitrateKbps` — names
+  are documentation; the old name re-forms the wrong mental model. Rejected:
+  (b) label-as-instantaneous (enshrines a misreading — it never was),
+  (d) spike-suppress-only (keeps fictional liveness to preserve noise).
+  Gate: probe across a forward seek — VBR pinned 264/264/264 (was peak
+  90,569), CBR 256 steady, FLAC 967 steady; ctest 13/13.
 - **Phase 2 slice B — LocalFileSource extraction: DONE** (commit `845a155`).
   The file path became the third ISource implementation: `include/
   LocalFileSource.h` + `src/LocalFileSource.cpp` (open_decoder/prime_decoder/
@@ -378,17 +394,6 @@ carve the ABI first.
     cross-check item — the synthetic suite proves the logic, not on-drive behavior.
 
 ## Parked / deferred (not disturbed)
-- **VBR live-bitrate readout semantics (product decision, NOT a bug-fix
-  ride-along):** on a VBR MP3, a forward seek makes liveBitrateKbps() spike
-  enormously for ~one 0.5 s window (the estimator models file position
-  LINEARLY — `file_pos = (pos/dur)·file_size` — so the seek jump lands in one
-  bytes/sec delta), then settle a few kbps above TagLib's nominal (the linear
-  model yields the file-average rate). **Confirmed pre-existing by A/B probe
-  on baseline `3d4e061` vs slice B — identical peaks (~76 k kbps) and settles
-  on both; slice B exonerated** (the estimator moved untouched). The open
-  question is what the readout SHOULD mean: average (label it), true
-  instantaneous local-frame rate (needs real byte positions, not the linear
-  model), or spike-suppressed. Take as its own decided change.
 - **Adopt canonical SET_SPEED in CDSource::open (behavior improvement):** the
   baseline's "reset speed to max after open" never worked — its hand-rolled 6-byte
   struct is rejected by cdrom.sys with ERROR_BAD_LENGTH (probe-confirmed, slice 8),

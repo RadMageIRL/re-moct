@@ -76,6 +76,16 @@
 - Cosmetic iteration is fine ("dessert"), but the Phase 0 harness is the "vegetables"
   that make the next big refactor safe — don't let polish indefinitely defer it.
 
+## Readouts / estimators
+- **The "live VBR" bitrate estimator was a linear position model — a
+  constant-derivative average dressed as a live reading; TagLib's nominal is
+  both simpler and more accurate.** `(pos/dur)·file_size` differentiated can
+  only ever yield file_size/duration in steady state: no VBR signal, just the
+  average plus artifacts (tag-byte inflation, a seek-window spike, timing
+  jitter). Before "fixing" or "labeling" a live readout, check whether the
+  estimator can measure what it claims at all — this one couldn't, which
+  turned a labeling question into a deletion.
+
 ## Audio-thread refactoring (Phase 2 slice B)
 - **A pointer needs no stronger publication guarantee than the struct it
   replaces — but the FREE side is where a naive pointer swap regresses.** The

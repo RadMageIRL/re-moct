@@ -77,9 +77,10 @@ static bool pumpUntil(AudioManager& am, Pred pred, int timeout_ms) {
 }
 
 int main() {
-    const std::string A = "xfade_a.wav", B = "xfade_b.wav";   // ctest cwd
+    const std::string A = "xfade_a.wav", B = "xfade_b.wav", C = "xfade_c.wav";   // ctest cwd
     CHECK(writeWav(A, 2.0, 440.0));
     CHECK(writeWav(B, 2.0, 880.0));
+    CHECK(writeWav(C, 2.0, 660.0));
     if (g_fail) return 1;
 
     AudioManager am;
@@ -174,8 +175,26 @@ int main() {
         am.stop();
     }
 
+    // ── 5. Replace a preload mid-play: the non-crossfading teardownNext branch ─
+    // preloadNext(C) while B is already preloaded discards B (un-publish first,
+    // then free — with no crossfade in flight this is the direct-free branch),
+    // and C must be the track installed at the gapless swap.
+    {
+        g_end = 0; g_pre = 0;
+        am.crossfade_secs = 0.0f;
+        CHECK(am.play(A));
+        CHECK(am.preloadNext(B));
+        CHECK(am.preloadNext(C));                         // replaces B mid-play
+        am.seekTo(1.4);
+        CHECK(pumpUntil(am, []{ return g_end.load() >= 1; }, 6000));
+        CHECK(am.currentTrack().path == C);               // C installed, B discarded
+        CHECK(am.state() == PlaybackState::Playing);
+        am.stop();
+    }
+
     std::remove(A.c_str());
     std::remove(B.c_str());
+    std::remove(C.c_str());
 
     if (g_fail == 0) { std::printf("xfade_handoff_test: ALL PASS\n"); return 0; }
     std::printf("xfade_handoff_test: %d FAILURE(S)\n", g_fail);

@@ -18,6 +18,7 @@ set(REMOCT_SOURCES
     src/Config.cpp
     src/LrcData.cpp
     src/CDSource.cpp
+    src/LocalFileSource.cpp
     src/MBLookup.cpp
     src/CDRipper.cpp
     src/CoverArt.cpp

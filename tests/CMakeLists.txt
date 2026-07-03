@@ -167,6 +167,7 @@ if(WIN32)
     add_executable(xfade_handoff_test
         xfade_handoff_test.cpp
         ${CMAKE_SOURCE_DIR}/src/AudioManager.cpp
+        ${CMAKE_SOURCE_DIR}/src/LocalFileSource.cpp
         ${CMAKE_SOURCE_DIR}/src/StreamSource.cpp
         ${CMAKE_SOURCE_DIR}/src/CDSource.cpp
         ${CMAKE_SOURCE_DIR}/src/IHeartRadio.cpp
@@ -187,3 +188,4 @@ if(WIN32)
     add_test(NAME xfade_handoff_test COMMAND xfade_handoff_test)
     set_tests_properties(xfade_handoff_test PROPERTIES TIMEOUT 180 SKIP_RETURN_CODE 77)
 endif()
+

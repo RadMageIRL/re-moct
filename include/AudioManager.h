@@ -11,30 +11,15 @@
 #include <chrono>
 
 #include "miniaudio.h"
+#include "TrackInfo.h"        // hoisted from this header (slice B) — same struct, zero call-site changes
+#include "LocalFileSource.h"  // the file path as a source object (slice B)
+#include <memory>
 #ifdef _WIN32
 #include "CDSource.h"
 #include "StreamSource.h"
 #endif
 
 enum class PlaybackState { Stopped, Playing, Paused };
-
-struct TrackInfo {
-    std::string path;
-    std::string title;
-    std::string artist;
-    std::string album;
-    int  duration_sec = 0;
-    int  bitrate_kbps = 0;
-    int  sample_rate  = 0;
-    int  channels     = 0;
-    std::string genre;
-    std::string comment;
-    int  year         = 0;
-    int  track_num    = 0;
-    int  bpm          = 0;   // 0 = not yet detected
-    float replaygain_db = 0.0f;
-    std::uintmax_t file_size_bytes = 0;
-};
 
 class AudioManager {
 public:
@@ -157,18 +142,28 @@ public:
     void setSelectedDeviceIndex(int i) { selected_device_idx_ = i; }
 
 private:
-    // ── Primary decoder + device ──────────────────────────────────────────
-    ma_decoder  decoder_ {};
+    // ── Primary source + device ───────────────────────────────────────────
+    // file_src_ is the current local-file source (slice B: replaces the inline
+    // ma_decoder decoder_ + decoder_initialised_; "initialised" == non-null).
+    // Mutated on the main thread only in device-stopped windows — the same
+    // synchronization the plain bool relied on — EXCEPT the one audio-thread
+    // mutation: the initCrossfade swap.
+    std::unique_ptr<LocalFileSource> file_src_;
     ma_device   device_  {};
-    bool decoder_initialised_ = false;
     bool device_initialised_  = false;
 
-    // ── Crossfade / gapless second decoder ───────────────────────────────
-    // next_decoder_ is loaded while current track is still playing.
+    // ── Crossfade / gapless second source ─────────────────────────────────
+    // next_src_ is loaded while current track is still playing.
     // When crossfade begins (or track ends for gapless), we swap them.
-    ma_decoder  next_decoder_  {};
+    std::unique_ptr<LocalFileSource> next_src_;
     std::atomic<bool> next_decoder_initialised_ { false };  // release on write, acquire on read
     std::string next_path_;
+    // The outgoing source after an audio-thread swap. The audio thread RETIRES
+    // the old current here instead of freeing it; pollEvents reaps it on the
+    // main thread under the existing track_swap_flag_ synchronizes-with edge,
+    // so a UI-thread positionSec() racing the swap can only ever dereference a
+    // live decoder (and the audio callback no longer frees heap).
+    std::unique_ptr<LocalFileSource> retired_src_;
 
     // Crossfade state (written on UI thread, read on audio thread)
     std::atomic<bool>  crossfading_  { false };

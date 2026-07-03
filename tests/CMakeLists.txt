@@ -116,4 +116,74 @@ if(WIN32)
     target_include_directories(cd_toc_test PRIVATE
         ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/lib)
     add_test(NAME cd_toc_test COMMAND cd_toc_test)
+
+    # ── Slice 0 (Phase 2 prep) — the thin replay net ──────────────────────────
+    # Three tests that exercise the producer/consumer audio machinery the Source-
+    # interface refactor restructures, headlessly, through the seams Phase 1 built.
+    # A diff audit protects code that moves unopened; these protect the semantics
+    # at the seams the refactor deliberately changes.
+
+    # cd_pipeline_test: FakeCdIo through the REAL CDSource playback pipeline —
+    # playTrack -> readerWorker -> SPSC ring -> readFrames. Byte-exact PCM fidelity
+    # across the thread boundary, seek flush, pause continuity, backpressure,
+    # silence-fill on transient errors, media-removal hard stop, teardown states.
+    add_executable(cd_pipeline_test
+        cd_pipeline_test.cpp
+        ${CMAKE_SOURCE_DIR}/src/CDSource.cpp
+        ${CMAKE_SOURCE_DIR}/src/platform/win/CdIoWin.cpp
+    )
+    target_include_directories(cd_pipeline_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/lib)
+    add_test(NAME cd_pipeline_test COMMAND cd_pipeline_test)
+    set_tests_properties(cd_pipeline_test PROPERTIES TIMEOUT 120)
+
+    # hls_pipeline_test: FakeHttp (core::setHttp) through the REAL StreamSource
+    # HLS/AAC pipeline — open -> hlsConnect -> producerWorkerAAC -> segment pump ->
+    # FDK decode -> ring -> readFrames. The Phase-0 Tier-2 replay idea realized on
+    # the slice-4 seam: synthetic manifests + real FDK-encoded ADTS. Prebuffer,
+    # underrun->rebuffer self-heal, timed-ID3 now-playing, and the prompt-close
+    # cancel gate (headless twin of the "mid-segment stop <1s" 7of9 gate). The
+    # ICY/continuous path (raw WinINet by design) stays live-gate-only.
+    add_executable(hls_pipeline_test
+        hls_pipeline_test.cpp
+        ${CMAKE_SOURCE_DIR}/src/StreamSource.cpp
+        ${CMAKE_SOURCE_DIR}/src/IHeartRadio.cpp
+        ${CMAKE_SOURCE_DIR}/src/IHeartNowPlayingSM.cpp
+        ${CMAKE_SOURCE_DIR}/src/IHeartDeepLog.cpp
+        ${CMAKE_SOURCE_DIR}/src/Log.cpp
+        ${CMAKE_SOURCE_DIR}/src/platform/win/HttpWinInet.cpp
+    )
+    target_include_directories(hls_pipeline_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/lib ${FDKAAC_INCLUDE})
+    target_link_libraries(hls_pipeline_test PRIVATE ${FDKAAC_LIB} wininet)
+    add_test(NAME hls_pipeline_test COMMAND hls_pipeline_test)
+    set_tests_properties(hls_pipeline_test PROPERTIES TIMEOUT 120)
+
+    # xfade_handoff_test: the REAL AudioManager on generated WAVs through a real
+    # (muted) device — the swap-adjacent file path Slice B restructures: gapless
+    # EOF swap + track_swap_flag_ install, crossfade trigger/mix/completion,
+    # clearNext mid-crossfade (device-stop quiesce branch), end-without-preload.
+    # Needs an audio device: SKIPs (exit 77) when none can be opened.
+    add_executable(xfade_handoff_test
+        xfade_handoff_test.cpp
+        ${CMAKE_SOURCE_DIR}/src/AudioManager.cpp
+        ${CMAKE_SOURCE_DIR}/src/StreamSource.cpp
+        ${CMAKE_SOURCE_DIR}/src/CDSource.cpp
+        ${CMAKE_SOURCE_DIR}/src/IHeartRadio.cpp
+        ${CMAKE_SOURCE_DIR}/src/IHeartNowPlayingSM.cpp
+        ${CMAKE_SOURCE_DIR}/src/IHeartDeepLog.cpp
+        ${CMAKE_SOURCE_DIR}/src/AacDecoder.cpp
+        ${CMAKE_SOURCE_DIR}/src/Mp4Chapters.cpp
+        ${CMAKE_SOURCE_DIR}/src/Log.cpp
+        ${CMAKE_SOURCE_DIR}/src/platform/win/HttpWinInet.cpp
+        ${CMAKE_SOURCE_DIR}/src/platform/win/CdIoWin.cpp
+    )
+    target_include_directories(xfade_handoff_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/lib
+        ${FDKAAC_INCLUDE} ${TAGLIB_INCLUDE_DIRS})
+    target_compile_definitions(xfade_handoff_test PRIVATE UNICODE _UNICODE)
+    target_link_libraries(xfade_handoff_test PRIVATE
+        ${TAGLIB_LIBRARIES} ${FDKAAC_LIB} wininet winmm ole32)
+    add_test(NAME xfade_handoff_test COMMAND xfade_handoff_test)
+    set_tests_properties(xfade_handoff_test PROPERTIES TIMEOUT 180 SKIP_RETURN_CODE 77)
 endif()

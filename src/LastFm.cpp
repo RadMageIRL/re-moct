@@ -1,12 +1,12 @@
-#ifdef _WIN32
-
 #include "LastFm.h"
 #include "Log.h"
 #include "core/IHttp.h"
 
+#ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>       // CryptoAPI (MD5 api_sig signing) still needs this
 #include <wincrypt.h>
+#endif
 #include <algorithm>
 #include <cctype>
 #include <cstdio>
@@ -27,6 +27,14 @@ static const char* kHost = "ws.audioscrobbler.com";
 static const char* kPath = "/2.0/";
 
 // ─── MD5 via Windows CryptoAPI (guaranteed-correct; no hand-rolled hash) ───────
+// Linux (Phase 3 slice 1): a deliberate PLACEHOLDER, not an implementation.
+// The decided endgame (readiness doc §7.1, rides with slice 2's HTTP/scrobble
+// gate, NOT this slice) is a vendored single-file MD5 used on BOTH platforms,
+// proven by an api_sig parity check + live scrobble round-trip on each. Until
+// then md5Hex returns "" on Linux → sign() produces an empty api_sig → Last.fm
+// rejects the call exactly like any bad-signature request; with slice 1's stub
+// HTTP transport the request never leaves the process anyway.
+#ifdef _WIN32
 std::string LastFm::md5Hex(const std::string& s) {
     HCRYPTPROV prov = 0;
     HCRYPTHASH hash = 0;
@@ -51,6 +59,11 @@ std::string LastFm::md5Hex(const std::string& s) {
     }
     return out;
 }
+#else
+std::string LastFm::md5Hex(const std::string&) {
+    return {};   // slice-2 placeholder — see the block comment above
+}
+#endif
 
 // api_sig = md5( for each param sorted by name: name+value ... then + secret )
 std::string LastFm::sign(Params& params, const std::string& secret) {
@@ -190,4 +203,3 @@ bool LastFm::scrobble(const std::string& api_key, const std::string& secret,
     return postWriteCall(p, sig);
 }
 
-#endif // _WIN32

@@ -14,10 +14,8 @@
 #include "TrackInfo.h"        // hoisted from this header (slice B) — same struct, zero call-site changes
 #include "LocalFileSource.h"  // the file path as a source object (slice B)
 #include <memory>
-#ifdef _WIN32
 #include "CDSource.h"
 #include "StreamSource.h"
-#endif
 
 enum class PlaybackState { Stopped, Playing, Paused };
 
@@ -98,7 +96,6 @@ public:
     void clearTrackEnd()  { track_ended_flag_.store(false); }
     bool pollPreloadNext() { return preload_next_flag_.exchange(false); }
 
-#ifdef _WIN32
     // ── CD Audio mode ────────────────────────────────────────────────────────
     bool     openCD(const std::string& drive_letter);  // detect & load TOC
     void     closeCD();
@@ -128,7 +125,6 @@ public:
     std::string streamArtUrl()     const { return stream_source_.currentArtUrl(); } // iHeart digital cover ("" -> use logo)
     std::string streamUrl()      const { return stream_source_.url(); }   // URL actually streaming
     int      streamPositionSec() const { return (int)stream_source_.positionSec(); }
-#endif
 
     // Called by track-end callback to pre-load next track for crossfade/gapless
     // Returns false if next track can't be opened
@@ -196,7 +192,6 @@ private:
     void      resetSpeedResampler() { speed_res_frames_ = 0; speed_pos_ = 0.0; }
     ma_result readVarispeed(float* out, ma_uint32 frame_count, ma_uint32 channels,
                             float speed, ma_uint64& produced);
-#ifdef _WIN32
     std::atomic<bool>          cd_mode_  { false };
     CDSource                   cd_source_;
     std::atomic<bool>          stream_mode_  { false };
@@ -222,7 +217,6 @@ private:
     std::thread                stream_connect_thread_;
     void startStreamConnectLocked(const std::string& url);     // state_mutex_ must be held
     void pollStreamConnect();                                  // main thread; from pollEvents
-#endif
     std::atomic<bool>          replaygain_enabled_ { false };
     std::atomic<float>         replaygain_gain_    { 1.0f };
     // The audio callback must never read current_track_ (a struct of std::strings

@@ -1,4 +1,3 @@
-#ifdef _WIN32
 
 #include "RadioBrowser.h"
 #include "core/IHttp.h"
@@ -92,4 +91,3 @@ void RadioBrowser::countClick(const std::string& stationuuid) {
     httpGet(std::string(kMirrors[0]) + "/json/url/" + stationuuid);
 }
 
-#endif // _WIN32

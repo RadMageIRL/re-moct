@@ -1,12 +1,7 @@
-#ifdef _WIN32
 #include "MBLookup.h"
 #include "StringUtils.h"
 #include "core/IHttp.h"
 
-#define WIN32_LEAN_AND_MEAN
-#include <windows.h>
-#include <wininet.h>
-// wininet linked via CMakeLists target_link_libraries
 
 #include "json.hpp"
 
@@ -596,4 +591,3 @@ void MBLookup::discogsReleaseWorker(std::string discogs_id, MBCallback cb) {
     active_.store(false);
 }
 
-#endif // _WIN32

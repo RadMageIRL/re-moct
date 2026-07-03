@@ -9,7 +9,6 @@
 // here, consumer-side: the [opcode u32][len u32][payload] framing, the
 // discord-ipc-0..9 endpoint probe, the handshake, the 1 MB response cap, and the
 // lazy-reconnect policy — the same protocol/transport split as the IHttp seam.
-#ifdef _WIN32
 #include "core/IIpc.h"
 #include <cstdint>
 #include <memory>
@@ -55,4 +54,3 @@ private:
     bool        handshaked_ = false;
 };
 
-#endif // _WIN32

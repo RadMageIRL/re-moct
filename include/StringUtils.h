@@ -21,6 +21,10 @@ inline bool localtimeSafe(std::time_t t, std::tm& out) {
 }
 
 // ─── Wide string conversion ───────────────────────────────────────────────────
+// Windows: MultiByteToWideChar (UTF-16, the baseline — astral glyphs become
+// surrogate pairs; the terminal folds them to '?', accepted in lessons.md).
+// Linux: a straight codepoint decode further down (after utf8_next) — wchar_t
+// is UTF-32 there, so the ncursesw wide-draw path gets one wchar_t per glyph.
 #ifdef _WIN32
 inline std::wstring utf8_to_wide(const std::string& s) {
     if (s.empty()) return {};
@@ -157,6 +161,19 @@ inline uint32_t utf8_next(const std::string& s, size_t& i) {
     i += n;
     return cp;
 }
+
+// Linux twin of utf8_to_wide (see the Windows version above): wchar_t is
+// UTF-32 here, so one decoded codepoint per wchar_t — the ncursesw wide-draw
+// path gets whole glyphs with no surrogate handling needed.
+#ifndef _WIN32
+inline std::wstring utf8_to_wide(const std::string& s) {
+    std::wstring w;
+    w.reserve(s.size());
+    size_t i = 0;
+    while (i < s.size()) w += (wchar_t)utf8_next(s, i);
+    return w;
+}
+#endif
 
 // Display columns for one codepoint (Kuhn-style East-Asian width).
 inline int cpWidth(uint32_t cp) {

@@ -1,4 +1,3 @@
-#ifdef _WIN32
 
 #include "ListenBrainz.h"
 #include "Log.h"
@@ -131,4 +130,3 @@ bool ListenBrainz::submitSingle(const std::string& token,
     return ok;
 }
 
-#endif // _WIN32

@@ -1,5 +1,4 @@
 #pragma once
-#ifdef _WIN32
 
 // Slice 8: device access goes through the core::ICdIo seam — this header is
 // platform-clean (no <windows.h>/<ntddcdrm.h>; AudioManager/UIManager and friends
@@ -161,4 +160,3 @@ private:
     int  ringRead(int16_t* dst, int samples);
 };
 
-#endif // _WIN32

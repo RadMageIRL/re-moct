@@ -1,9 +1,8 @@
-#ifdef _WIN32
-
 #include "StreamSource.h"
 #include "Log.h"
 #include "StringUtils.h"
 #include "IHeartDeepLog.h"
+#include "PortUtil.h"   // sleepMs/tickMs — expand to the baseline ::Sleep/::GetTickCount on Windows
 #include <cstring>
 #include <algorithm>
 #include <cctype>
@@ -94,6 +93,9 @@ void StreamSource::close() {
 bool StreamSource::connect() {
     if (mode_ == Mode::HLS) return hlsConnect();   // segment-pump setup (no persistent ICY conn)
 
+#ifdef _WIN32
+    // ── ICY/continuous transport: raw WinINet, permanently outside the IHttp
+    //    seam by design. The block below is the baseline, verbatim. ──────────
     hInet_ = InternetOpenA("RE-MOCT/1.0.0-rc1 (https://github.com/RadMageIRL/re-moct)",
                            INTERNET_OPEN_TYPE_PRECONFIG, nullptr, nullptr, 0);
     if (!hInet_) return false;
@@ -129,11 +131,22 @@ bool StreamSource::connect() {
     raw_pos_ = 0;
     slog("connect: icy_metaint=%d", icy_metaint_);
     return true;
+#else
+    // Linux: the ICY raw transport does not exist yet — it is its OWN
+    // design-first slice (Phase 3 slice 3), not a ride-along. A continuous URL
+    // fails to connect exactly like a dead station; the HLS path above is
+    // fully seam-routed and portable.
+    last_error_ = "ICY/continuous streams not yet supported on this platform";
+    slog("connect: ICY/continuous unsupported on this platform (Phase 3 slice 3)");
+    return false;
+#endif
 }
 
 void StreamSource::disconnect() {
+#ifdef _WIN32
     if (hConn_) { InternetCloseHandle(hConn_); hConn_ = nullptr; }
     if (hInet_) { InternetCloseHandle(hInet_); hInet_ = nullptr; }
+#endif
     hls_session_.reset();   // HLS: drop the keep-alive session (fresh one per
                             // re-handshake/re-pin — the lifetime the raw handle had)
 }
@@ -205,10 +218,31 @@ std::string StreamSource::hlsFirstUri(const std::string& body) {
 
 std::string StreamSource::hlsResolveUrl(const std::string& base, const std::string& ref) {
     if (ref.rfind("http://", 0) == 0 || ref.rfind("https://", 0) == 0) return ref;  // absolute
+#ifdef _WIN32
     char out[2048]; DWORD len = sizeof(out);
     if (InternetCombineUrlA(base.c_str(), ref.c_str(), out, &len, ICU_NO_ENCODE))
         return std::string(out, len);
     return ref;                                // fallback: hand back as-is
+#else
+    // Portable twin of InternetCombineUrlA for the manifest shapes this call
+    // actually sees: scheme-relative ("//host/…"), host-relative ("/path"),
+    // and directory-relative refs against the (query-stripped) base.
+    size_t scheme_end = base.find("://");
+    if (scheme_end == std::string::npos) return ref;
+    if (ref.rfind("//", 0) == 0)                       // scheme-relative
+        return base.substr(0, scheme_end + 1) + ref;
+    size_t host_start = scheme_end + 3;
+    if (!ref.empty() && ref[0] == '/') {               // host-relative
+        size_t path_start = base.find('/', host_start);
+        return (path_start == std::string::npos ? base : base.substr(0, path_start)) + ref;
+    }
+    std::string b = base;                              // directory-relative
+    size_t q = b.find_first_of("?#", host_start);
+    if (q != std::string::npos) b = b.substr(0, q);
+    size_t last = b.rfind('/');
+    if (last == std::string::npos || last < host_start) return b + "/" + ref;
+    return b.substr(0, last + 1) + ref;
+#endif
 }
 
 bool StreamSource::hlsResolveMaster() {
@@ -260,10 +294,10 @@ bool StreamSource::hlsPollMedia() {
         if (disc && hls_repin_armed_) {
             hls_repin_pending_.store(true);
             hls_repin_armed_ = false;
-            hls_repin_cooldown_until_ = GetTickCount() + 90000;   // ~one ad pod
+            hls_repin_cooldown_until_ = port::tickMs() + 90000;   // ~one ad pod
             slog("hlsPollMedia: AD-ONSET discontinuity -> requesting live-edge re-pin");
         } else if (!hls_repin_armed_ &&
-                   (long)(GetTickCount() - hls_repin_cooldown_until_) >= 0) {
+                   (long)(port::tickMs() - hls_repin_cooldown_until_) >= 0) {
             hls_repin_armed_ = true;
             slog("hlsPollMedia: live-edge re-pin re-armed (cooldown elapsed)");
         }
@@ -290,7 +324,7 @@ bool StreamSource::hlsPollMedia() {
         }
         i = e + 1;
     }
-    hls_.last_poll = GetTickCount();
+    hls_.last_poll = port::tickMs();
     if (is_iheart_) updateIHeartNowPlaying(body);   // reconcile manifest + trackHistory
     // Diagnostic: live-edge offset. newest = last seq advertised in the manifest;
     // next_play ≈ the segment we're about to play (front of pending). edgeLag is
@@ -375,7 +409,7 @@ std::string StreamSource::hlsBuildDigitalUrl(const std::string& base) {
     if (id.empty()) return base;
 
     static bool seeded = false;
-    if (!seeded) { std::srand(GetTickCount()); seeded = true; }
+    if (!seeded) { std::srand(port::tickMs()); seeded = true; }
     static const char* H = "0123456789abcdef";
     std::string lid; lid.reserve(32);
     for (int i = 0; i < 32; ++i) lid += H[std::rand() & 15];
@@ -560,7 +594,7 @@ void StreamSource::updateIHeartNowPlaying(const std::string& body) {
     std::string mfSong = (cls == IHeartMfCls::Song) ? (mfArtist + " - " + mfTitle) : std::string();
 
     // trackHistory snapshot (throttled ~9s; caches song + staleness between polls).
-    DWORD nowtick = GetTickCount();
+    uint32_t nowtick = port::tickMs();
     if (last_iheart_poll_ == 0 || nowtick - last_iheart_poll_ >= 9000) {
         last_iheart_poll_ = nowtick;
         long ended = -1;
@@ -700,7 +734,7 @@ void StreamSource::updateIHeartNowPlaying(const std::string& body) {
     if (d.liveStallFired) {
         hls_repin_pending_.store(true);
         hls_repin_armed_ = false;
-        hls_repin_cooldown_until_ = GetTickCount() + 90000;
+        hls_repin_cooldown_until_ = port::tickMs() + 90000;
         slog("updateIHeart: LIVE-floor stall %lus -> requesting live-edge re-pin",
              (unsigned long)(d.liveStallElapsedMs / 1000));
     }
@@ -716,7 +750,7 @@ void StreamSource::updateIHeartNowPlaying(const std::string& body) {
             // so it tracks rebuffers and collapses to ~0 right after a re-pin flush.
             long ring_ms = (long)(1000.0 * (double)ringAvailable() / (double)(SAMPLE_RATE * CHANNELS));
             long pend_ms = (long)hls_.pending.size() * (long)hls_.target_dur_ms;
-            np_pub_q_.push_back({ GetTickCount() + (DWORD)(ring_ms + pend_ms), disp });
+            np_pub_q_.push_back({ port::tickMs() + (uint32_t)(ring_ms + pend_ms), disp });
             const char* via = (d.newKind==IHNow::Song) ? "song" : (d.newKind==IHNow::Ad ? "ad" : "live");
             slog("iheart [%s]: %s", via, disp.c_str());
         }
@@ -736,9 +770,9 @@ void StreamSource::updateIHeartNowPlaying(const std::string& body) {
 // lane's producer, which can take up to a read chunk — doing that inline would
 // stall the primary producer (this runs on it) and underrun audio.
 void StreamSource::serviceStaging() {
-    DWORD now = GetTickCount();
+    uint32_t now = port::tickMs();
 
-    auto teardown = [&](const char* why, DWORD cooldown_ms) {
+    auto teardown = [&](const char* why, uint32_t cooldown_ms) {
         slog("staging: %s -> teardown", why);
         if (staging_) {
             StreamSource* s = staging_.release();      // hand ownership to the reaper thread
@@ -897,11 +931,11 @@ void StreamSource::hlsParseId3(const uint8_t* tag, size_t len) {
     slog("hls-id3: %s", combined.c_str());
 }
 
-DWORD StreamSource::hlsRawRead(void* dst, DWORD want) {
+uint32_t StreamSource::hlsRawRead(void* dst, uint32_t want) {
     // 1. Serve from the current segment if bytes remain.
     if (hls_.seg_pos < hls_.seg.size()) {
-        DWORD avail = (DWORD)(hls_.seg.size() - hls_.seg_pos);
-        DWORD n = (want < avail) ? want : avail;
+        uint32_t avail = (uint32_t)(hls_.seg.size() - hls_.seg_pos);
+        uint32_t n = (want < avail) ? want : avail;
         std::memcpy(dst, hls_.seg.data() + hls_.seg_pos, n);
         hls_.seg_pos += n;
         return n;
@@ -910,14 +944,14 @@ DWORD StreamSource::hlsRawRead(void* dst, DWORD want) {
     int repoll_fail = 0;
     while (hls_.pending.empty()) {
         if (stop_.load()) return 0;
-        DWORD since = GetTickCount() - hls_.last_poll;
-        if (since < (DWORD)hls_.target_dur_ms) { Sleep(50); continue; }   // pace polling
+        uint32_t since = port::tickMs() - hls_.last_poll;
+        if (since < (uint32_t)hls_.target_dur_ms) { port::sleepMs(50); continue; }   // pace polling
         if (!hlsPollMedia()) {
             // Variant GET failed — session token likely expired. Refresh via master.
             if (!hlsResolveMaster() || !hlsPollMedia()) {
                 if (++repoll_fail >= 3) { slog("hlsRawRead: giving up after repoll failures"); return 0; }
                 if (stop_.load()) return 0;
-                Sleep(300);
+                port::sleepMs(300);
             }
         }
         // If still empty, the live edge hasn't advanced yet — loop and wait.
@@ -969,8 +1003,11 @@ bool StreamSource::hlsProbeTest(const std::string& master_url) {
 // Both decoders pull audio through readAudio(); it transparently removes the
 // periodic Shoutcast/Icecast metadata blocks and parses the StreamTitle out.
 
-DWORD StreamSource::rawRead(void* dst, DWORD want) {
+uint32_t StreamSource::rawRead(void* dst, uint32_t want) {
     if (mode_ == Mode::HLS) return hlsRawRead(dst, want);   // segment pump backs the byte stream
+#ifdef _WIN32
+    // ── THE live audio read loop: raw WinINet by design, permanently outside
+    //    the IHttp seam. Baseline, verbatim. Linux twin = Phase 3 slice 3. ──
     if (raw_pos_ >= raw_buf_.size()) {
         if (stop_.load() || hConn_ == nullptr) return 0;
         raw_buf_.assign(8192, 0);
@@ -982,29 +1019,34 @@ DWORD StreamSource::rawRead(void* dst, DWORD want) {
         raw_buf_.resize(got);
         raw_pos_ = 0;
     }
-    DWORD avail = (DWORD)(raw_buf_.size() - raw_pos_);
-    DWORD n = (want < avail) ? want : avail;
+    uint32_t avail = (uint32_t)(raw_buf_.size() - raw_pos_);
+    uint32_t n = (want < avail) ? want : avail;
     std::memcpy(dst, raw_buf_.data() + raw_pos_, n);
     raw_pos_ += n;
     return n;
+#else
+    // Unreachable: connect() refuses Continuous mode off-Windows (slice 3).
+    (void)dst; (void)want;
+    return 0;
+#endif
 }
 
-bool StreamSource::rawReadExact(void* dst, DWORD n) {
+bool StreamSource::rawReadExact(void* dst, uint32_t n) {
     uint8_t* p = static_cast<uint8_t*>(dst);
     while (n > 0) {
-        DWORD got = rawRead(p, n);
+        uint32_t got = rawRead(p, n);
         if (got == 0) return false;   // stream ended mid-block
         p += got; n -= got;
     }
     return true;
 }
 
-DWORD StreamSource::readAudio(void* out, DWORD want) {
+uint32_t StreamSource::readAudio(void* out, uint32_t want) {
     if (icy_metaint_ <= 0)
         return rawRead(out, want);     // no inline metadata — straight passthrough
 
     uint8_t* dst = static_cast<uint8_t*>(out);
-    DWORD produced = 0;
+    uint32_t produced = 0;
     while (produced < want) {
         if (icy_counter_ <= 0) {
             // Metadata block: 1 length byte, then (len*16) bytes.
@@ -1013,14 +1055,14 @@ DWORD StreamSource::readAudio(void* out, DWORD want) {
             int mlen = (int)lenb * 16;
             if (mlen > 0) {
                 std::string block((size_t)mlen, '\0');
-                if (!rawReadExact(&block[0], (DWORD)mlen)) break;
+                if (!rawReadExact(&block[0], (uint32_t)mlen)) break;
                 parseIcyMetadata(block);
             }
             icy_counter_ = icy_metaint_;
         }
-        DWORD chunk = want - produced;
-        if (chunk > (DWORD)icy_counter_) chunk = (DWORD)icy_counter_;
-        DWORD got = rawRead(dst + produced, chunk);
+        uint32_t chunk = want - produced;
+        if (chunk > (uint32_t)icy_counter_) chunk = (uint32_t)icy_counter_;
+        uint32_t got = rawRead(dst + produced, chunk);
         if (got == 0) break;
         produced     += got;
         icy_counter_ -= (int)got;
@@ -1046,7 +1088,7 @@ void StreamSource::parseIcyMetadata(const std::string& block) {
 
 std::string StreamSource::nowPlaying() const {
     std::lock_guard<std::mutex> lk(now_playing_mtx_);
-    DWORD now = GetTickCount();
+    uint32_t now = port::tickMs();
     while (!np_pub_q_.empty() && (long)(now - np_pub_q_.front().releaseTick) >= 0) {
         np_published_ = np_pub_q_.front().disp;
         np_pub_q_.pop_front();
@@ -1094,7 +1136,7 @@ ma_result StreamSource::onRead(ma_decoder* dec, void* out, size_t toRead, size_t
     if (self->stop_.load() || self->hConn_ == nullptr)
         return MA_AT_END;
 
-    DWORD got = self->readAudio(out, (DWORD)toRead);   // ICY metadata stripped here
+    uint32_t got = self->readAudio(out, (uint32_t)toRead);   // ICY metadata stripped here
 
     *bytesRead = (size_t)got;
     if (got == 0)
@@ -1129,7 +1171,7 @@ void StreamSource::producerWorker() {
     bool logged_first = false;
 
     while (!stop_.load()) {
-        if (paused_.load()) { Sleep(20); continue; }
+        if (paused_.load()) { port::sleepMs(20); continue; }
 
         if (hls_repin_pending_.exchange(false)) {
             slog("producer: ad-onset live-edge re-pin -> re-handshake");
@@ -1138,13 +1180,13 @@ void StreamSource::producerWorker() {
             prebuffered_.store(false);
             ringClear();                      // drop stale buffered audio: jump to live + avoid backpressure deadlock
             if (stop_.load()) break;
-            if (!connect() || !initDecoder()) { Sleep(500); continue; }
+            if (!connect() || !initDecoder()) { port::sleepMs(500); continue; }
             continue;
         }
 
         // Backpressure: mirror CDSource — if the ring is over half full, let the
         // consumer drain before decoding more.
-        if (ringAvailable() > RING_SIZE / 2) { Sleep(10); continue; }
+        if (ringAvailable() > RING_SIZE / 2) { port::sleepMs(10); continue; }
 
         ma_uint64 framesRead = 0;
         ma_decoder_read_pcm_frames(&decoder_, pcm.data(), CHUNK, &framesRead);
@@ -1175,7 +1217,7 @@ void StreamSource::producerWorker() {
             break;
         }
         prebuffered_.store(false);                     // re-buffer after the gap
-        Sleep(500 * reconnect_attempts);               // linear backoff
+        port::sleepMs(500 * reconnect_attempts);               // linear backoff
         if (stop_.load()) break;
         if (!connect() || !initDecoder()) continue;    // keep retrying until cap
     }
@@ -1207,22 +1249,22 @@ void StreamSource::producerWorkerAAC() {
     bool logged_first       = false;
 
     while (!stop_.load()) {
-        if (paused_.load()) { Sleep(20); continue; }
+        if (paused_.load()) { port::sleepMs(20); continue; }
         if (hls_repin_pending_.exchange(false)) {
             slog("producerAAC: ad-onset live-edge re-pin -> re-handshake");
             disconnect();
             prebuffered_.store(false);
             ringClear();                      // drop stale buffered audio: jump to live + avoid backpressure deadlock
             if (stop_.load()) break;
-            if (!connect()) { Sleep(500); continue; }
+            if (!connect()) { port::sleepMs(500); continue; }
             bytes_in_buf = 0;                 // fresh session — drop stale partial frame
             continue;
         }
-        if (ringAvailable() > RING_SIZE / 2) { Sleep(10); continue; }   // backpressure
+        if (ringAvailable() > RING_SIZE / 2) { port::sleepMs(10); continue; }   // backpressure
 
         // Top up the network buffer (append after any carried-over leftover).
         if (bytes_in_buf < NETBUF) {
-            DWORD got = readAudio(net.data() + bytes_in_buf, NETBUF - bytes_in_buf);
+            uint32_t got = readAudio(net.data() + bytes_in_buf, NETBUF - bytes_in_buf);
             if (got == 0) {
                 slog("producerAAC: read ended -> reconnect (attempt %d)", reconnect_attempts + 1);
                 if (stop_.load()) break;
@@ -1233,7 +1275,7 @@ void StreamSource::producerWorkerAAC() {
                     break;
                 }
                 prebuffered_.store(false);
-                Sleep(500 * reconnect_attempts);
+                port::sleepMs(500 * reconnect_attempts);
                 if (stop_.load()) break;
                 if (!connect()) continue;
                 bytes_in_buf = 0;            // fresh connection — drop stale partial frame
@@ -1387,4 +1429,3 @@ void StreamSource::ringClear() {
     np_published_ = now_playing_;
 }
 
-#endif // _WIN32

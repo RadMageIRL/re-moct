@@ -1,5 +1,4 @@
 #pragma once
-#ifdef _WIN32
 
 #include <string>
 #include <functional>
@@ -115,4 +114,3 @@ private:
     static bool extractZc(const std::string& url, std::string& zc, long& num);
 };
 
-#endif // _WIN32

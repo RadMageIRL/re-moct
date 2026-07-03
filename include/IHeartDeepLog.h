@@ -1,5 +1,4 @@
 #pragma once
-#ifdef _WIN32
 
 #include <string>
 #include <cstddef>
@@ -105,4 +104,3 @@ std::string path();
 
 } // namespace IHeartDeepLog
 
-#endif // _WIN32

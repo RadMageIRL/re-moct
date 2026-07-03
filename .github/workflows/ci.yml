@@ -10,10 +10,10 @@
 #             whole ctest suite (xfade_handoff_test self-SKIPs via SKIP_RETURN_CODE
 #             77 when the runner has no audio device — by design).
 #
-# The Linux job builds NAMED targets: the four pure test suites + the seam-stub
-# object library. The `remoct` executable is not yet buildable on Linux (the
-# whole-file _WIN32 gates come off in slice 1); as port slices land, their targets
-# and tests join this list until the full build + suite runs on both platforms.
+# Since slice 1 the Linux job builds the FULL `remoct` binary (the portable core
+# compiles, links, and plays a local file — the slice-1 gate) plus the test
+# suite. The remaining if(WIN32) tests join the Linux side as their seam impls
+# land (slices 2-6).
 name: CI
 
 on:
@@ -42,11 +42,8 @@ jobs:
       - uses: actions/checkout@v4
       - name: Configure
         run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
-      - name: Build (pure suites + Linux seam stubs)
-        run: >
-          cmake --build build --target
-          iheart_sm_test ar_crc_test http_seam_test notify_toast_test
-          remoct_linux_seams
+      - name: Build (remoct + test suite)
+        run: cmake --build build
       - name: Test
         run: ctest --test-dir build --output-on-failure
 

@@ -53,14 +53,17 @@ if(WIN32)
     )
 endif()
 
-# Phase 3 slice 0: the Linux seam placeholders compile as their own target so the
-# CI matrix proves src/platform/linux/ + the core interface headers are
-# platform-clean from day one. The `remoct` executable itself is not yet buildable
-# on Linux (whole-file _WIN32 gates come off in slice 1 — see
-# docs/phase3-readiness.md); CI builds the pure test targets + this one by name.
-# Each seam slice (2/4/5/6) replaces its stub in SeamStubs.cpp with a real impl
-# file appended here.
+# Phase 3: Linux platform sources. Slice 0 landed SeamStubs.cpp (inert seam
+# placeholders + the core:: link-time bridges); slice 1 builds the full remoct
+# target on UNIX against them. Each seam slice (2/4/5/6) replaces its stub with
+# a real impl file appended here.
 if(UNIX)
+    list(APPEND REMOCT_SOURCES
+        ${CMAKE_SOURCE_DIR}/src/platform/linux/SeamStubs.cpp
+    )
+    # Standalone compile check for the seam/stub layer (CI builds it by name —
+    # proves src/platform/linux/ + the core interface headers stay
+    # platform-clean even if the main target is mid-port).
     add_library(remoct_linux_seams OBJECT
         ${CMAKE_SOURCE_DIR}/src/platform/linux/SeamStubs.cpp
     )
@@ -75,13 +78,22 @@ add_executable(remoct ${REMOCT_SOURCES})
 target_include_directories(remoct PRIVATE
     ${CMAKE_SOURCE_DIR}/include
     ${CMAKE_SOURCE_DIR}/lib
-    ${MSYS2_PREFIX}/include
-    ${MSYS2_PREFIX}/include/ncursesw
     ${FLAC_INCLUDE}
     ${LAME_INCLUDE}
     ${EBUR128_INCLUDE}
     ${FDKAAC_INCLUDE}
 )
+if(WIN32)
+    target_include_directories(remoct PRIVATE
+        ${MSYS2_PREFIX}/include
+        ${MSYS2_PREFIX}/include/ncursesw
+    )
+else()
+    # Debian keeps the wide-char build's headers under /usr/include/ncursesw —
+    # putting it on the path makes <ncurses.h> resolve to the ncursesw variant
+    # (NCURSES_WIDECHAR-ready), mirroring the MSYS2 layout above.
+    target_include_directories(remoct PRIVATE /usr/include/ncursesw)
+endif()
 
 # ── Compile definitions ────────────────────────────────────────────────────
 target_compile_definitions(remoct PRIVATE
@@ -154,6 +166,10 @@ target_link_libraries(remoct PRIVATE
     $<$<PLATFORM_ID:Windows>:wininet>
     $<$<PLATFORM_ID:Windows>:shell32>
     $<$<PLATFORM_ID:Windows>:advapi32>
+    # Linux: miniaudio's runtime backend loading (dlopen) + threads + libm.
+    $<$<PLATFORM_ID:Linux>:pthread>
+    $<$<PLATFORM_ID:Linux>:dl>
+    $<$<PLATFORM_ID:Linux>:m>
 )
 
 # ── Compiler warnings ──────────────────────────────────────────────────────

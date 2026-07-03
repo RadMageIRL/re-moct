@@ -1,25 +1,35 @@
-#ifdef _WIN32
-
 #include "IHeartDeepLog.h"
 
-#define WIN32_LEAN_AND_MEAN
-#include <windows.h>
+// Portable since Phase 3 slice 1: Win32 file/time calls became std::filesystem /
+// chrono / localtimeSafe with the behavior contract unchanged — JSONL capture
+// files `remoct-deep-analysis-YYYYMMDD-HHMMSS.log` under the per-platform app
+// logs dir (Windows: %APPDATA%\RE-MOCT\logs\, the exact baseline; Linux:
+// $XDG_STATE_HOME/re-moct/logs/), 5 MB size roll, kKeepDays retention by file
+// mtime, 30 s heartbeat + semantic-dedup writes, uint32 tick stamps
+// (port::tickMs == the baseline GetTickCount on Windows).
+#include "PortUtil.h"
+#include "StringUtils.h"   // localtimeSafe
 #include "json.hpp"
 
 #include <atomic>
 #include <mutex>
 #include <string>
+#include <chrono>
+#include <ctime>
 #include <cstdio>
 #include <cctype>
 #include <cstring>
+#include <filesystem>
+#include <system_error>
 
 using json = nlohmann::json;
+namespace fs = std::filesystem;
 
 namespace {
 
 // ─── Tunables ────────────────────────────────────────────────────────────────
 constexpr unsigned long long kMaxBytes   = 5ull * 1024 * 1024;  // size roll at ~5 MB
-constexpr DWORD              kHeartbeatMs = 30000;               // forced record cadence
+constexpr uint32_t           kHeartbeatMs = 30000;               // forced record cadence
 constexpr int               kKeepDays    = 5;                    // retention (days)
 constexpr int               kSchema      = 1;
 const char* const           kPrefix      = "remoct-deep-analysis-";
@@ -33,74 +43,106 @@ std::mutex         g_mtx;
 std::string        g_cur_path;          // active capture file ("" => start fresh on next emit)
 unsigned long long g_seq            = 0;
 std::string        g_last_sig;          // dedup signature of last written record
-DWORD              g_last_write_tick = 0;
+uint32_t           g_last_write_tick = 0;
 bool               g_file_started    = false;  // _meta written for g_cur_path?
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
-std::string logsDir() {                  // %APPDATA%\RE-MOCT\logs\  (created if absent)
-    char buf[MAX_PATH];
-    DWORD len = GetEnvironmentVariableA("APPDATA", buf, MAX_PATH);
-    if (!(len > 0 && len < MAX_PATH)) return std::string();
-    std::string base = std::string(buf) + "\\RE-MOCT";
-    CreateDirectoryA(base.c_str(), nullptr);             // ok if it already exists
-    std::string logs = base + "\\logs";
-    CreateDirectoryA(logs.c_str(), nullptr);
-    return logs + "\\";
+// Windows: %APPDATA%\RE-MOCT\logs\ — the baseline location (deep captures live
+// with the app's data, not in %TEMP% like the operational log). Linux:
+// $XDG_STATE_HOME/re-moct/logs/ (fallback ~/.local/state/re-moct/logs/).
+std::string logsDir() {
+#ifdef _WIN32
+    const char* appdata = std::getenv("APPDATA");
+    if (!appdata || !*appdata) return std::string();
+    std::string base = std::string(appdata) + "\\RE-MOCT";
+    std::error_code ec;
+    fs::create_directories(fs::path(base + "\\logs"), ec);   // ok if it already exists
+    if (ec) return std::string();
+    return base + "\\logs\\";
+#else
+    std::string base;
+    if (const char* x = std::getenv("XDG_STATE_HOME"); x && *x) base = x;
+    else if (const char* h = std::getenv("HOME"); h && *h)
+        base = std::string(h) + "/.local/state";
+    else return std::string();
+    std::string logs = base + "/re-moct/logs";
+    std::error_code ec;
+    fs::create_directories(fs::path(logs), ec);
+    if (ec) return std::string();
+    return logs + "/";
+#endif
 }
 
 std::string stampCompact() {             // "YYYYMMDD-HHMMSS" (local)
-    SYSTEMTIME st; GetLocalTime(&st);
-    char b[24];
+    std::time_t t = std::time(nullptr);
+    std::tm tmv{};
+    if (!localtimeSafe(t, tmv)) return "19700101-000000";
+    char b[40];
     std::snprintf(b, sizeof(b), "%04d%02d%02d-%02d%02d%02d",
-                  st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond);
+                  tmv.tm_year + 1900, tmv.tm_mon + 1, tmv.tm_mday,
+                  tmv.tm_hour, tmv.tm_min, tmv.tm_sec);
     return b;
 }
 
 std::string nowLocal() {                 // "YYYY-MM-DD HH:MM:SS.mmm" (local)
-    SYSTEMTIME st; GetLocalTime(&st);
-    char b[32];
+    auto now = std::chrono::system_clock::now();
+    std::time_t t = std::chrono::system_clock::to_time_t(now);
+    int ms = (int)(std::chrono::duration_cast<std::chrono::milliseconds>(
+                       now.time_since_epoch()).count() % 1000);
+    std::tm tmv{};
+    if (!localtimeSafe(t, tmv)) return "1970-01-01 00:00:00.000";
+    char b[48];
     std::snprintf(b, sizeof(b), "%04d-%02d-%02d %02d:%02d:%02d.%03d",
-                  st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond, st.wMilliseconds);
+                  tmv.tm_year + 1900, tmv.tm_mon + 1, tmv.tm_mday,
+                  tmv.tm_hour, tmv.tm_min, tmv.tm_sec, ms);
     return b;
 }
 
 std::string nowUtcIso() {                // "YYYY-MM-DDTHH:MM:SS.mmmZ" (UTC)
-    SYSTEMTIME st; GetSystemTime(&st);
-    char b[32];
+    auto now = std::chrono::system_clock::now();
+    std::time_t t = std::chrono::system_clock::to_time_t(now);
+    int ms = (int)(std::chrono::duration_cast<std::chrono::milliseconds>(
+                       now.time_since_epoch()).count() % 1000);
+    std::tm tmv{};
+#ifdef _WIN32
+    if (gmtime_s(&tmv, &t) != 0) return "1970-01-01T00:00:00.000Z";
+#else
+    if (!gmtime_r(&t, &tmv)) return "1970-01-01T00:00:00.000Z";
+#endif
+    char b[48];
     std::snprintf(b, sizeof(b), "%04d-%02d-%02dT%02d:%02d:%02d.%03dZ",
-                  st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond, st.wMilliseconds);
+                  tmv.tm_year + 1900, tmv.tm_mon + 1, tmv.tm_mday,
+                  tmv.tm_hour, tmv.tm_min, tmv.tm_sec, ms);
     return b;
 }
 
 unsigned long long fileSize(const std::string& p) {
-    WIN32_FILE_ATTRIBUTE_DATA d;
-    if (GetFileAttributesExA(p.c_str(), GetFileExInfoStandard, &d))
-        return ((unsigned long long)d.nFileSizeHigh << 32) | d.nFileSizeLow;
-    return 0;
+    std::error_code ec;
+    auto sz = fs::file_size(fs::path(p), ec);
+    return ec ? 0ull : (unsigned long long)sz;
 }
 
 // Delete capture files whose last-write time is older than kKeepDays. The active
-// file is never deleted. Caller holds g_mtx.
+// file is never deleted. Caller holds g_mtx. Non-throwing (error_code overloads).
 void trimOld(const std::string& dir) {
-    FILETIME ftNow; GetSystemTimeAsFileTime(&ftNow);
-    const ULONGLONG now  = ((ULONGLONG)ftNow.dwHighDateTime << 32) | ftNow.dwLowDateTime;
-    const ULONGLONG span = (ULONGLONG)kKeepDays * 24ull * 3600ull * 10000000ull;  // 100-ns ticks/day
-    const ULONGLONG cutoff = (now > span) ? (now - span) : 0;
-
-    std::string pattern = dir + kPrefix + "*" + kSuffix;
-    WIN32_FIND_DATAA fd;
-    HANDLE h = FindFirstFileA(pattern.c_str(), &fd);
-    if (h == INVALID_HANDLE_VALUE) return;
-    do {
-        if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
-        ULONGLONG wt = ((ULONGLONG)fd.ftLastWriteTime.dwHighDateTime << 32)
-                     | fd.ftLastWriteTime.dwLowDateTime;
-        if (wt >= cutoff) continue;
-        std::string full = dir + fd.cFileName;
+    const auto cutoff = fs::file_time_type::clock::now()
+                      - std::chrono::hours(24 * kKeepDays);
+    std::error_code ec;
+    for (fs::directory_iterator it(fs::path(dir), ec), end; !ec && it != end;
+         it.increment(ec)) {
+        if (!it->is_regular_file(ec)) continue;
+        std::string n = it->path().filename().string();
+        const size_t plen = std::strlen(kPrefix), slen = std::strlen(kSuffix);
+        if (n.size() <= plen + slen
+            || n.compare(0, plen, kPrefix) != 0
+            || n.compare(n.size() - slen, slen, kSuffix) != 0) continue;
+        std::error_code tec;
+        auto wt = fs::last_write_time(it->path(), tec);
+        if (tec || wt >= cutoff) continue;
+        std::string full = it->path().string();
         if (full == g_cur_path) continue;
-        DeleteFileA(full.c_str());
-    } while (FindNextFileA(h, &fd));
-    FindClose(h);
+        fs::remove(it->path(), tec);
+    }
 }
 
 void startNewFile(const std::string& dir) {
@@ -175,7 +217,7 @@ void emit(const Record& r) {
     std::lock_guard<std::mutex> lk(g_mtx);
     if (!g_enabled.load()) return;       // re-check under lock (toggle race)
 
-    const DWORD tick = GetTickCount();
+    const uint32_t tick = port::tickMs();
     std::string s = sigOf(r);
     const bool first     = (g_last_write_tick == 0);
     const bool changed   = first || (s != g_last_sig);
@@ -271,5 +313,3 @@ void emit(const Record& r) {
 }
 
 } // namespace IHeartDeepLog
-
-#endif // _WIN32

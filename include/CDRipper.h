@@ -1,5 +1,4 @@
 #pragma once
-#ifdef _WIN32
 
 #include "CDSource.h"
 #include "MBLookup.h"
@@ -166,4 +165,3 @@ private:
     std::unique_ptr<core::ICdDevice> openDrive(const std::string& drive_letter);
 };
 
-#endif // _WIN32

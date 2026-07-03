@@ -14,14 +14,12 @@
 #include <atomic>
 #include <thread>
 #include <unordered_set>
-#ifdef _WIN32
 #include "MBLookup.h"
 #include "CDRipper.h"
 #include "RadioBrowser.h"
 #include "LastFm.h"
 #include "ListenBrainz.h"
 #include "DiscordRP.h"
-#endif
 #include "AudioManager.h"
 #include "miniaudio.h"
 #include "LrcData.h"
@@ -209,7 +207,6 @@ private:
     std::string cd_drive_letter_;
     int         cd_poll_ticks_   = 0;
     int         cd_fail_count_   = 0;
-#ifdef _WIN32
     MBLookup    mb_lookup_;
     std::atomic<bool> mb_fetching_ { false };
     std::string mb_error_;    // protected by mb_mutex_
@@ -245,7 +242,6 @@ private:
     UIOverlay   ui_overlay_    = UIOverlay::None;
     std::string rip_status_;   // shown in cmdline during/after rip
     int         rip_msg_ticks_ = 0;  // auto-clear counter
-#endif  // consecutive media check failures  // name of active preset, empty if custom
 
     // Recently played virtual dir state
     bool in_recent_      = false;
@@ -294,7 +290,6 @@ private:
     std::string scrob_artist_, scrob_track_, scrob_album_;
     std::string scrob_normid_;           // canonical identity of the committed track (relabel dedup)
     std::string discord_radio_art_;      // last iHeart digital cover URL pushed to Discord ("" = logo)
-#ifdef _WIN32
     // Discord Rich Presence (Ctrl+D). Mirrors the scrobbler's track-change moment.
     DiscordRP   discord_{"1519141025195491338"};   // RE-MOCT application id
     bool        discord_active_       = false;      // an activity is currently set
@@ -318,7 +313,6 @@ private:
                                const std::string& album,
                                const std::string& key,
                                bool song = false);
-#endif
     long        scrob_start_ = 0;        // unix time the current track started
     bool        scrob_done_  = false;    // already scrobbled this track
     void        updateScrobbler();       // called each tick; fires now-playing + scrobble

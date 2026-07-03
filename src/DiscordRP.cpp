@@ -1,13 +1,19 @@
 #include "DiscordRP.h"
-#ifdef _WIN32
 #include <vector>
 #include <cstring>
 #include <ctime>
 #include <cstdio>
 
+// pid for the activity payload only — the pipe transport lives behind
+// core::IIpc since slice 6 (Windows named pipe; Unix-socket sibling = slice 4).
+#ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
-#include <windows.h>   // GetCurrentProcessId only (activity payload pid) — the pipe
-                       // transport lives behind core::IIpc since slice 6
+#include <windows.h>   // GetCurrentProcessId
+static unsigned long rpPid() { return (unsigned long)GetCurrentProcessId(); }
+#else
+#include <unistd.h>
+static unsigned long rpPid() { return (unsigned long)getpid(); }
+#endif
 
 // Discord IPC framing: [opcode u32 LE][length u32 LE][payload bytes].
 // Opcodes: 0 HANDSHAKE, 1 FRAME, 2 CLOSE, 3 PING, 4 PONG.
@@ -95,7 +101,7 @@ void DiscordRP::setActivity(const std::string& details, const std::string& state
     if (!ensureConnected()) return;
 
     std::string a = "{\"cmd\":\"SET_ACTIVITY\",\"args\":{\"pid\":";
-    a += std::to_string((unsigned long)GetCurrentProcessId());
+    a += std::to_string(rpPid());
     a += ",\"activity\":{";
     bool comma = false;
     auto field = [&](const std::string& body) {
@@ -120,7 +126,7 @@ void DiscordRP::setActivity(const std::string& details, const std::string& state
 void DiscordRP::clearActivity() {
     if (!connected()) return;
     std::string a = "{\"cmd\":\"SET_ACTIVITY\",\"args\":{\"pid\":";
-    a += std::to_string((unsigned long)GetCurrentProcessId());
+    a += std::to_string(rpPid());
     a += ",\"activity\":null},\"nonce\":\"" + std::to_string((long)time(nullptr)) + "\"}";
     if (writeFrame(1, a)) drainOneFrame();
 }
@@ -130,4 +136,3 @@ void DiscordRP::disconnect() {
     handshaked_ = false;
 }
 
-#endif // _WIN32

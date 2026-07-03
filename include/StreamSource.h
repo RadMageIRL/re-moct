@@ -1,5 +1,4 @@
 #pragma once
-#ifdef _WIN32
 
 // ─── StreamSource ─────────────────────────────────────────────────────────────
 // Plays an HTTP/HTTPS audio stream (internet radio) completely isolated from the
@@ -11,9 +10,15 @@
 // Step 1 scope: headless. No UI, no ICY metadata, MP3 only (forced backend).
 // Resamples whatever the station sends to a fixed 44100/stereo output.
 
+// WinINet backs ONLY the ICY/continuous raw read loop (permanently outside the
+// IHttp seam, by design). On Linux that transport is absent until Phase 3
+// slice 3 (design-first ICY twin): the HLS path below is fully seam-routed and
+// portable; connect() refuses Continuous mode off-Windows.
+#ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <wininet.h>
+#endif
 #include <string>
 #include <thread>
 #include <atomic>
@@ -123,7 +128,7 @@ private:
         std::vector<std::string> pending;     // segment URLs not yet fetched
         std::vector<uint8_t>     seg;         // current segment bytes (increment 2)
         size_t                   seg_pos = 0;
-        DWORD                    last_poll = 0;// GetTickCount of last media poll
+        uint32_t                 last_poll = 0;// port::tickMs of last media poll
     };
     HlsState                hls_;
 
@@ -135,7 +140,7 @@ private:
     bool hlsPollMedia();                      // GET variant -> append new segments to pending
     bool hlsFetchSegment(const std::string& url, std::vector<uint8_t>& out);
     bool hlsConnect();                        // HLS branch of connect(): resolve + prime near live edge
-    DWORD hlsRawRead(void* dst, DWORD want);  // HLS branch of rawRead(): the segment pump
+    uint32_t hlsRawRead(void* dst, uint32_t want);  // HLS branch of rawRead(): the segment pump
     void hlsParseId3(const uint8_t* tag, size_t len);  // extract TIT2/TPE1 -> now_playing_
 
     // ── iHeart now-playing (HLS only) ────────────────────────────────────────
@@ -152,7 +157,7 @@ private:
     // instead of drifting behind across our (independent, longer) SSAI ad pod.
     std::atomic<bool> hls_repin_pending_{ false };  // producer should re-handshake at next safe point
     bool              hls_repin_armed_ = true;      // one-shot: fire once per ad break, then re-arm
-    DWORD             hls_repin_cooldown_until_ = 0;// re-arm only after this tick (suppress mid-pod)
+    uint32_t          hls_repin_cooldown_until_ = 0;// re-arm only after this tick (suppress mid-pod)
 
     // ── Staging lane (dual-stream smooth re-pin) ─────────────────────────────
     // The coordinator (a normal is_lane_=false instance) owns ONE staging
@@ -168,10 +173,10 @@ private:
     enum class Stg { Idle, Opening, Arming };
     Stg                 stg_state_ = Stg::Idle;
     std::atomic<bool>   stg_opening_{ false };        // staging open() in flight on a detached thread
-    DWORD               stg_cooldown_until_ = 0;       // suppress re-arm until this tick
-    DWORD               stg_armed_tick_ = 0;            // tick the staging peek armed (for elapsed-since-arm logging)
+    uint32_t            stg_cooldown_until_ = 0;       // suppress re-arm until this tick
+    uint32_t            stg_armed_tick_ = 0;            // tick the staging peek armed (for elapsed-since-arm logging)
     void serviceStaging();                             // coordinator-only: arm/watch/tear down the lane
-    DWORD       last_iheart_poll_ = 0;      // trackHistory poll throttle (GetTickCount)
+    uint32_t    last_iheart_poll_ = 0;      // trackHistory poll throttle (port::tickMs)
     std::string iheart_th_cache_;           // cached trackHistory result between throttled polls
     long        iheart_th_ended_  = -1;     // cached trackHistory staleness (now - endTime)
     IHeartRadio::CurrentTrack iheart_ctm_;  // cached currentTrackMeta (polled while deep log is on, or in digital mode for album art)
@@ -200,16 +205,24 @@ private:
     // getter publishes entries as they come due. Display-only — reconciliation,
     // debounce, scrobble, and decode are untouched. Reset on ringClear() (re-pin),
     // where the buffer is flushed and the label must snap to the live jump.
-    struct NpPub { DWORD releaseTick; std::string disp; };
+    struct NpPub { uint32_t releaseTick; std::string disp; };
     mutable std::deque<NpPub> np_pub_q_;
     mutable std::string       np_published_;
     std::string             iheart_art_;       // album-art URL for the committed song (digital mode; "" otherwise). Guarded by now_playing_mtx_.
 
     // WinINet handles (owned by producer thread once open() returns). ICY/continuous
     // path ONLY — the live audio read loop (rawRead -> InternetReadFile(hConn_) ->
-    // ring) stays raw WinINet, permanently outside the IHttp seam.
+    // ring) stays raw WinINet, permanently outside the IHttp seam. On Linux the
+    // members exist as inert void* twins (HINTERNET is void*) so the ICY machinery
+    // COMPILES but is unreachable — connect() refuses Continuous mode there until
+    // the slice-3 ICY twin replaces this transport per-platform.
+#ifdef _WIN32
     HINTERNET               hInet_ = nullptr;
     HINTERNET               hConn_ = nullptr;
+#else
+    void*                   hInet_ = nullptr;
+    void*                   hConn_ = nullptr;
+#endif
     // HLS keep-alive session (slice 4): backs the hlsHttpGet manifest/segment
     // one-shots via the core::IHttp seam. Same lifetime the raw hInet_ had for HLS —
     // created in hlsEnsureSession, dropped in disconnect(), so every re-handshake /
@@ -248,9 +261,9 @@ private:
     void producerWorkerAAC();   // AAC path (FDK-AAC + optional resample)
 
     // ── ICY (Shoutcast/Icecast) inline metadata ──
-    DWORD readAudio(void* out, DWORD want);    // ICY-aware read both decoders pull from
-    DWORD rawRead(void* dst, DWORD want);      // buffered raw network bytes
-    bool  rawReadExact(void* dst, DWORD n);
+    uint32_t readAudio(void* out, uint32_t want); // ICY-aware read both decoders pull from
+    uint32_t rawRead(void* dst, uint32_t want);   // buffered raw network bytes
+    bool  rawReadExact(void* dst, uint32_t n);
     void  parseIcyMetadata(const std::string& block);
     bool connect();          // (re)open WinINet handles for url_
     void disconnect();       // close WinINet handles
@@ -267,5 +280,3 @@ private:
     int  ringRead(int16_t* dst, int samples);
     void ringClear();   // producer-side flush (re-pin): drop buffered audio, jump to live
 };
-
-#endif // _WIN32

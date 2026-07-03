@@ -1,10 +1,9 @@
-#ifdef _WIN32
-
 #include "IHeartRadio.h"
 #include "core/IHttp.h"
 #include "json.hpp"
 
-#include <windows.h>   // GetTempPathA / localtime_s only — no WinINet since slice 4
+#include "PortUtil.h"     // tempDir (the GetTempPathA baseline on Windows) — no WinINet since slice 4
+#include "StringUtils.h"  // localtimeSafe
 
 #include <fstream>
 #include <ctime>
@@ -19,10 +18,8 @@ IHeartRadio::~IHeartRadio() = default;   // session_ closes itself
 
 // ── Paths ────────────────────────────────────────────────────────────────────
 std::string IHeartRadio::tempDir() {
-    char buf[MAX_PATH];
-    DWORD n = GetTempPathA(MAX_PATH, buf);
-    if (n == 0 || n > MAX_PATH) return ".\\";
-    return std::string(buf, n);
+    std::string d = port::tempDir();          // Windows: the GetTempPathA baseline
+    return d.empty() ? std::string("./") : d;
 }
 
 std::string IHeartRadio::sidecarPath() {
@@ -127,7 +124,7 @@ void IHeartRadio::writeSidecar() {
     }
     {
         std::time_t t = std::time(nullptr); std::tm tmv{};
-        localtime_s(&tmv, &t);
+        localtimeSafe(t, tmv);
         char b[32]; std::strftime(b, sizeof(b), "%Y-%m-%dT%H:%M:%S", &tmv);
         entry["resolved_at"] = b;
     }
@@ -310,4 +307,3 @@ bool IHeartRadio::pollCurrentTrackMeta(CurrentTrack* out) {
 }
 
 
-#endif // _WIN32

@@ -1,5 +1,4 @@
 #pragma once
-#ifdef _WIN32
 
 #include <string>
 #include <vector>
@@ -41,4 +40,3 @@ private:
     static bool         postWriteCall(const Params& signed_params, const std::string& api_sig);
 };
 
-#endif // _WIN32

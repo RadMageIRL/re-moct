@@ -23,9 +23,7 @@ AudioManager::AudioManager()  = default;
 AudioManager::~AudioManager() {
     bpm_cancel_.store(true);
     if (bpm_thread_.joinable()) bpm_thread_.join();
-#ifdef _WIN32
     if (stream_connect_thread_.joinable()) stream_connect_thread_.join();
-#endif
     teardown();
     teardownNext();
 }
@@ -89,20 +87,15 @@ void AudioManager::teardownNext() {
 
 // ─── play ────────────────────────────────────────────────────────────────────
 bool AudioManager::play(const std::string& path) {
-#ifdef _WIN32
     // Scheme-branch: HTTP(S) URLs route to the (non-blocking) streaming path.
     if (path.rfind("http://", 0) == 0 || path.rfind("https://", 0) == 0) {
         beginStream(path);
         return true;
     }
-#endif
     std::lock_guard<std::mutex> lock(state_mutex_);
-#ifdef _WIN32
     // Starting a file supersedes any in-flight stream connect (its result will be
     // discarded rather than clobbering this playback).
     stream_connect_gen_.fetch_add(1);
-#endif
-#ifdef _WIN32
     // Exit stream mode if switching to file playback (clear the flag first so the
     // audio callback stops entering the stream branch, then join the producer).
     if (stream_mode_.load()) {
@@ -120,7 +113,6 @@ bool AudioManager::play(const std::string& path) {
             device_initialised_ = false;
         }
     }
-#endif
     teardown();
     teardownNext();
     track_ended_flag_.store(false);
@@ -335,7 +327,6 @@ void AudioManager::resume() {
 }
 
 void AudioManager::togglePause() {
-#ifdef _WIN32
     if (cd_mode_.load()) {
         cd_source_.pause(!cd_source_.paused());
         state_.store(cd_source_.paused() ? PlaybackState::Paused
@@ -348,14 +339,12 @@ void AudioManager::togglePause() {
                                              : PlaybackState::Playing);
         return;
     }
-#endif
     if      (state_.load() == PlaybackState::Playing) pause();
     else if (state_.load() == PlaybackState::Paused)  resume();
 }
 
 void AudioManager::stop() {
     std::lock_guard<std::mutex> lock(state_mutex_);
-#ifdef _WIN32
     if (cd_mode_.load()) {
         cd_source_.stop();
         cd_source_.close();
@@ -381,7 +370,6 @@ void AudioManager::stop() {
         track_ended_flag_.store(false);
         return;
     }
-#endif
     teardown();
     teardownNext();
     track_ended_flag_.store(false);  // don't advance playlist on manual stop
@@ -410,7 +398,6 @@ void AudioManager::seekTo(double seconds) {
 }
 
 void AudioManager::seekBy(double delta) {
-#ifdef _WIN32
     if (cd_mode_.load()) {
         // (int casts: CDSource position/duration are whole seconds widened to
         // double per core::ISource — slice A signature harmonization only.)
@@ -420,7 +407,6 @@ void AudioManager::seekBy(double delta) {
         cd_bpm_reset_.store(true);   // discontinuity — restart the BPM window
         return;
     }
-#endif
     seekTo(positionSec() + delta);
 }
 
@@ -512,9 +498,7 @@ void AudioManager::pollEvents() {
         if (on_preload_next_) on_preload_next_();
     if (track_ended_flag_.exchange(false))
         if (on_track_end_) on_track_end_();
-#ifdef _WIN32
     pollStreamConnect();   // pick up a finished background stream connect
-#endif
 }
 
 // ─── audio callback ──────────────────────────────────────────────────────────
@@ -591,7 +575,6 @@ void AudioManager::onDataCallback(void* output, ma_uint32 frame_count) {
         return;
     }
 
-#ifdef _WIN32
     // ── Stream mode: read from StreamSource ring buffer ──────────────────
     if (stream_mode_.load()) {
         float* out = static_cast<float*>(output);
@@ -696,7 +679,6 @@ void AudioManager::onDataCallback(void* output, ma_uint32 frame_count) {
             track_ended_flag_.store(true);
         return;
     }
-#endif
 
     float* out    = static_cast<float*>(output);
     const ma_uint32 sr = device_.sampleRate;
@@ -1094,7 +1076,6 @@ void AudioManager::resetEq() {
 
 
 // ─── CD Audio mode ────────────────────────────────────────────────────────────
-#ifdef _WIN32
 bool AudioManager::openCD(const std::string& drive_letter) {
     std::lock_guard<std::mutex> lock(state_mutex_);
     // Exit stream mode if active before entering CD mode.
@@ -1147,7 +1128,6 @@ void AudioManager::closeCD() {
     }
 }
 
-#ifdef _WIN32
 // Non-blocking radio start. If a connect is already running, remember the latest
 // request (depth-1, latest-wins) instead of racing a second worker.
 void AudioManager::beginStream(const std::string& url) {
@@ -1267,13 +1247,10 @@ void AudioManager::pollStreamConnect() {
     }
     if (has_pending) startStreamConnectLocked(pending);
 }
-#endif // _WIN32
 
 bool AudioManager::playCDTrack(int track_number) {
     if (!cd_mode_.load() || !cd_source_.isOpen()) return false;
-#ifdef _WIN32
     stream_connect_gen_.fetch_add(1);   // supersede any in-flight stream connect
-#endif
     bool ok = cd_source_.playTrack(track_number);
     if (ok) state_.store(PlaybackState::Playing);   // viz / BPM / UI gate on state_
     return ok;
@@ -1285,4 +1262,3 @@ const std::vector<CDTrack>& AudioManager::cdTracks() const {
 int AudioManager::cdPositionSec()  const { return (int)cd_source_.positionSec(); }
 int AudioManager::cdDurationSec()  const { return (int)cd_source_.durationSec(); }
 int AudioManager::cdCurrentTrack() const { return cd_source_.currentTrack(); }
-#endif

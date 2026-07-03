@@ -54,10 +54,19 @@
 #include <cstdint>
 #include <ctime>
 #include <thread>
-#ifdef _WIN32
 #include <cstdarg>
 #include <cstdio>
+#include <cstring>
+#include <cstdlib>
 #include "Log.h"
+// Version tag shown in the status line and About panel. Per-platform suffix —
+// on Windows this is the baseline string byte-identical; Linux tells the truth.
+#ifdef _WIN32
+static const char* const kVersionTag = "v1.0.0-rc1-win";
+#else
+static const char* const kVersionTag = "v1.0.0-rc1-linux";
+#endif
+
 static void sclog(const char* fmt, ...) {
     char buf[2048];
     va_list ap; va_start(ap, fmt);
@@ -65,7 +74,6 @@ static void sclog(const char* fmt, ...) {
     va_end(ap);
     Log::write("scrob", buf);
 }
-#endif
 #include <cstdio>
 #include <chrono>
 
@@ -1221,7 +1229,7 @@ void UIManager::drawTitleBar() {
         std::strftime(clk, sizeof(clk), " %H:%M:%S", tm);
         modes += clk;
     }
-    std::string right = modes + " RE-MOCT v1.0.0-rc1-win ";
+    std::string right = modes + " RE-MOCT " + kVersionTag + " ";
 
     int max_np = screen_cols_ - (int)right.size() - (int)badge.size() - 2;
     std::string line = " " + badge;
@@ -2142,7 +2150,11 @@ void UIManager::drawAbout() {
     static const Line info[] = {
         { "Music On Console Terminal",      true  },
         { "",                               false },
+#ifdef _WIN32
         { "Version v1.0.0-rc1-win  |  C++20  |  ncurses  |  miniaudio  |  TagLib", false },
+#else
+        { "Version v1.0.0-rc1-linux  |  C++20  |  ncurses  |  miniaudio  |  TagLib", false },
+#endif
         { "",                               false },
         { "A terminal music player inspired by MOC (Music On Console).", false },
         { "Plays MP3, FLAC, OGG, WAV and more.  Gapless playback,",     false },
@@ -3323,7 +3335,13 @@ void UIManager::lastfmBeginAuth() {
         config_.lastfm_pending = token;   // persisted so it survives an app restart
         config_.save();
         sclog("beginAuth: token acquired, browser opened, auto-poll started");
+#ifdef _WIN32
         ShellExecuteA(nullptr, "open", url.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+#else
+        // xdg-open twin — same fire-and-forget contract as ShellExecuteA "open".
+        // (Last.fm auth URLs are https + query params; no shell-hostile chars.)
+        (void)std::system(("xdg-open '" + url + "' >/dev/null 2>&1 &").c_str());
+#endif
         startLastfmPoll(token);           // auto-complete after you click allow
         showTrackToast("Last.fm: approve in browser - finishes automatically", "", "");
     } else {

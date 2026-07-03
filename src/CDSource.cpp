@@ -1,11 +1,10 @@
-#ifdef _WIN32
 #include "CDSource.h"
 #include "drive_offsets.h"   // full AccurateRip drive-offset DB (4885 drives)
 
-// windows.h ONLY for Sleep() in the reader thread (the DiscordRP.cpp precedent) —
-// ALL device access goes through the core::ICdIo seam (src/platform/win/CdIoWin.cpp).
-#define WIN32_LEAN_AND_MEAN
-#include <windows.h>
+// port::sleepMs ONLY for the reader-thread pacing (expands to the baseline
+// ::Sleep on Windows) — ALL device access goes through the core::ICdIo seam
+// (src/platform/win/CdIoWin.cpp; Linux SG_IO sibling at Phase 3 slice 6).
+#include "PortUtil.h"
 
 #include <cstring>
 #include <cmath>
@@ -202,7 +201,7 @@ void CDSource::readerWorker() {
     int consecutive_errors = 0;
 
     while (!reader_stop_.load()) {
-        if (paused_.load()) { Sleep(20); continue; }
+        if (paused_.load()) { port::sleepMs(20); continue; }
 
         uint32_t lba = current_lba_.load();
         if (lba >= track_end_lba_.load()) {
@@ -212,7 +211,7 @@ void CDSource::readerWorker() {
 
         // Throttle if ring is more than half full
         int avail = ringAvailable();
-        if (avail > RING_SIZE / 2) { Sleep(10); continue; }
+        if (avail > RING_SIZE / 2) { port::sleepMs(10); continue; }
 
         uint32_t remaining = track_end_lba_.load() - lba;
         int      count     = std::min((uint32_t)BUF_SECTORS, remaining);
@@ -238,7 +237,7 @@ void CDSource::readerWorker() {
             std::vector<int16_t> silence(silence_samples, 0);
             ringWrite(silence.data(), silence_samples);
             current_lba_.store(lba + count);
-            Sleep(50);  // brief back-off before retry
+            port::sleepMs(50);  // brief back-off before retry
             continue;
         }
 
@@ -417,4 +416,3 @@ int CDSource::lookupDriveOffset(const std::string& model) {
     return ::lookupDriveOffset(model);
 }
 
-#endif // _WIN32

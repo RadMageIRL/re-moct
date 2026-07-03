@@ -1,5 +1,7 @@
 cmake_minimum_required(VERSION 3.20)
-project(remoct VERSION 0.1.0 LANGUAGES CXX)
+# C is enabled alongside CXX for the one vendored C TU: lib/md5.c (the
+# public-domain Openwall MD5 behind LastFm's api_sig — slice 2, both platforms).
+project(remoct VERSION 0.1.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -39,6 +41,7 @@ set(REMOCT_SOURCES
     src/Log.cpp
     src/ListenBrainz.cpp
     src/DiscordRP.cpp
+    lib/md5.c
 )
 
 # Platform seams (Phase 1): Windows impls of the core interfaces, in src/platform/win/
@@ -60,7 +63,14 @@ endif()
 if(UNIX)
     list(APPEND REMOCT_SOURCES
         ${CMAKE_SOURCE_DIR}/src/platform/linux/SeamStubs.cpp
+        ${CMAKE_SOURCE_DIR}/src/platform/linux/HttpCurl.cpp
     )
+    # Module-mode search only: under WSL2 the appended Windows PATH would let
+    # config-mode find MSYS2's CURLConfig.cmake at /mnt/c (CMake treats PATH
+    # entries as prefixes) and demand its Windows-side deps. The classic module
+    # finds the system libcurl and still defines CURL::libcurl.
+    set(CURL_NO_CURL_CMAKE ON)
+    find_package(CURL REQUIRED)
     # Standalone compile check for the seam/stub layer (CI builds it by name —
     # proves src/platform/linux/ + the core interface headers stay
     # platform-clean even if the main target is mid-port).
@@ -166,18 +176,22 @@ target_link_libraries(remoct PRIVATE
     $<$<PLATFORM_ID:Windows>:wininet>
     $<$<PLATFORM_ID:Windows>:shell32>
     $<$<PLATFORM_ID:Windows>:advapi32>
-    # Linux: miniaudio's runtime backend loading (dlopen) + threads + libm.
+    # Linux: miniaudio's runtime backend loading (dlopen) + threads + libm;
+    # libcurl backs the core::IHttp seam (slice 2).
     $<$<PLATFORM_ID:Linux>:pthread>
     $<$<PLATFORM_ID:Linux>:dl>
     $<$<PLATFORM_ID:Linux>:m>
 )
+if(UNIX)
+    target_link_libraries(remoct PRIVATE CURL::libcurl)
+endif()
 
 # ── Compiler warnings ──────────────────────────────────────────────────────
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    # C++-only: lib/md5.c (C) must not get C++-only warning flags.
     target_compile_options(remoct PRIVATE
-        -Wall -Wextra -Wpedantic
-        -Wno-unused-parameter
-        -Wno-old-style-cast
+        $<$<COMPILE_LANGUAGE:CXX>:-Wall -Wextra -Wpedantic
+        -Wno-unused-parameter -Wno-old-style-cast>
     )
 endif()
 

@@ -1,41 +1,32 @@
-// SeamStubs.cpp — Phase 3 slice 0: inert Linux placeholders for the four platform
-// seams, so the Linux build has definitions for every core:: link-time bridge from
-// day one and the CI matrix compiles this directory from day one.
+// SeamStubs.cpp — Phase 3 slice 0: inert Linux placeholders for the platform
+// seams still awaiting their real impls, so the Linux build has definitions for
+// every core:: link-time bridge.
 //
 // Each seam's real implementation arrives as its OWN file in its OWN slice and
 // removes its stub from here (this file shrinks to nothing and dies with slice 6):
-//   slice 2 — HttpCurl.cpp      (libcurl; sessions = held easy handle, cancel token
-//                                polled from the progress callback)
+//   slice 2 — HttpCurl.cpp: ✅ LANDED — the HTTP stub + core::http()/setHttp()
+//             bridges moved there; libcurl now backs the seam for real.
 //   slice 4 — IpcUnixSocket.cpp ($XDG_RUNTIME_DIR/<name> Unix domain socket)
 //   slice 5 — NotifyLibnotify.cpp (notify-send/libnotify, app id "RE-MOCT")
 //   slice 6 — CdIoSgIo.cpp      (SG_IO on /dev/srN: READ CD 0xBE, READ TOC 0x43,
 //                                TEST UNIT READY, INQUIRY, SET CD SPEED 0xBB)
 //
-// Stub behavior is the CONTRACT'S failure mode, not an abort: HTTP fetch fails
-// (ok=false), IPC/CD connect/open return nullptr ("not listening" / "can't open"),
-// notify is a best-effort no-op (the interface swallows failure by design). A
-// consumer wired through a stub degrades exactly as it would on a dead network /
-// absent Discord / missing drive — behavior the Windows consumers already handle.
+// Stub behavior is the CONTRACT'S failure mode, not an abort: IPC/CD
+// connect/open return nullptr ("not listening" / "can't open"), notify is a
+// best-effort no-op (the interface swallows failure by design). A consumer
+// wired through a stub degrades exactly as it would with an absent Discord /
+// missing drive — behavior the Windows consumers already handle.
 //
 // Namespace note: `platform::lnx`, not `platform::linux` — `linux` is a predefined
 // macro under -std=gnu++ dialects; the tree builds with extensions off today, but
 // the name must not break if that ever changes.
 #ifdef __linux__
 
-#include "core/IHttp.h"
 #include "core/IIpc.h"
 #include "core/INotify.h"
 #include "core/ICdIo.h"
 
 namespace platform::lnx {
-
-struct StubHttp final : core::IHttp {
-    core::HttpResponse fetch(const core::HttpRequest&) override {
-        return {};                       // ok=false, status 0 — transport failure
-    }
-    // openSession: inherited default forwarder is correct for a stub — it forwards
-    // to fetch(), which fails, matching "session opened, network dead".
-};
 
 struct StubIpc final : core::IIpc {
     std::unique_ptr<core::IIpcChannel> connect(const std::string&) override {
@@ -57,17 +48,7 @@ struct StubCdIo final : core::ICdIo {
 
 namespace core {
 
-// Transitional injection pointer — the exact HttpWinInet.cpp shape, so tests that
-// inject via setHttp() behave identically on both platforms.
-static IHttp* g_override = nullptr;
-
-void setHttp(IHttp* transport) { g_override = transport; }
-
-IHttp& http() {
-    if (g_override) return *g_override;
-    static platform::lnx::StubHttp instance;
-    return instance;
-}
+// (http()/setHttp() live in HttpCurl.cpp since slice 2.)
 
 IIpc& ipc() {
     static platform::lnx::StubIpc instance;

@@ -1,19 +1,30 @@
-// http_cancel_test — Windows-only REAL-socket tests of the slice-4 WinINet
-// capabilities that a FakeHttp cannot prove:
+// http_cancel_test — REAL-socket tests of the slice-4 IHttp capabilities that a
+// FakeHttp cannot prove, PORTABLE since Phase 3 slice 2 (one file, both matrix
+// jobs — a platform shim below swaps winsock/POSIX plumbing; the scenarios and
+// assertions are identical against WinINet on Windows and libcurl on Linux):
 //   (A) an in-flight fetch aborts PROMPTLY when the cancel atomic flips —
 //       chunk-granularity, well under the receive timeout and nowhere near
 //       body-completion time (the "stop mid-segment must not hang 8s" gate);
 //   (B) a session reuses ONE TCP connection across fetches (keep-alive actually
-//       works through the held InternetOpen handle + KEEP_CONNECTION);
+//       works — WinINet: held InternetOpen handle + KEEP_CONNECTION; libcurl:
+//       the CURLSH share-handle connection pool, proven here, not assumed);
 //   (C) a pre-cancelled fetch returns immediately and never touches the network.
 // Fixture: a plain-HTTP server on 127.0.0.1 (ephemeral port) driven per scenario.
 // Plain HTTP is deliberate — urlIsSecureScheme() is false, no TLS machinery.
 #include "core/IHttp.h"
 
+#ifdef _WIN32
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#else
+#include <arpa/inet.h>
+#include <csignal>
+#include <netinet/in.h>
+#include <sys/socket.h>
+#include <unistd.h>
+#endif
 
 #include <atomic>
 #include <chrono>
@@ -21,6 +32,53 @@
 #include <cstring>
 #include <string>
 #include <thread>
+
+// ── platform shim ────────────────────────────────────────────────────────────
+#ifdef _WIN32
+using SockT = SOCKET;
+static constexpr SockT kBadSock = INVALID_SOCKET;
+static void closeSock(SockT s)  { closesocket(s); }
+static bool initNet()           { WSADATA w; return WSAStartup(MAKEWORD(2,2), &w) == 0; }
+static void cleanupNet()        { WSACleanup(); }
+static int  sendFlags()         { return 0; }
+using SockLenT = int;
+static void capSocketWaits(SockT c, unsigned ms = 2000) {
+    DWORD v = ms;
+    setsockopt(c, SOL_SOCKET, SO_RCVTIMEO, (const char*)&v, sizeof(v));
+    setsockopt(c, SOL_SOCKET, SO_SNDTIMEO, (const char*)&v, sizeof(v));
+}
+#else
+using SockT = int;
+static constexpr SockT kBadSock = -1;
+static void closeSock(SockT s)  { ::close(s); }
+static bool initNet()           { signal(SIGPIPE, SIG_IGN); return true; }  // a fixture send
+                                  // to a dead client must not kill the test process
+static void cleanupNet()        {}
+static int  sendFlags()         { return MSG_NOSIGNAL; }   // belt and braces with ^
+using SockLenT = socklen_t;
+static void capSocketWaits(SockT c, unsigned ms = 2000) {
+    struct timeval tv { (time_t)(ms / 1000u), (suseconds_t)((ms % 1000u) * 1000u) };
+    setsockopt(c, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    setsockopt(c, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+}
+#endif
+
+static void sleepMs(unsigned ms) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(ms));
+}
+
+// Stop a LISTENING socket so a thread blocked in accept() on it wakes up.
+// Windows: closesocket() aborts a blocked accept (WSAEINTR) — the baseline
+// shape. Linux: close() does NOT wake a blocked accept() (the fd stays
+// referenced by the sleeping syscall — first Linux run hung forever in
+// server.join()); shutdown() DOES (accept returns EINVAL), so shut down
+// first, then close.
+static void stopListener(SockT s) {
+#ifndef _WIN32
+    ::shutdown(s, SHUT_RDWR);
+#endif
+    closeSock(s);
+}
 
 static int g_fail = 0;
 #define CHECK(c) do{ if(!(c)){ ++g_fail; \
@@ -33,46 +91,37 @@ static long msSince(Clock::time_point t0) {
 
 // ── fixture ──────────────────────────────────────────────────────────────────
 struct Listener {
-    SOCKET sock = INVALID_SOCKET;
-    int    port = 0;
+    SockT sock = kBadSock;
+    int   port = 0;
     bool openLocal() {
-        sock = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-        if (sock == INVALID_SOCKET) return false;
+        sock = ::socket(AF_INET, SOCK_STREAM, 0);
+        if (sock == kBadSock) return false;
         sockaddr_in a{}; a.sin_family = AF_INET; a.sin_port = 0;
         inet_pton(AF_INET, "127.0.0.1", &a.sin_addr);
         if (::bind(sock, (sockaddr*)&a, sizeof(a)) != 0) return false;
         if (::listen(sock, 4) != 0) return false;
-        int alen = sizeof(a);
+        SockLenT alen = sizeof(a);
         if (getsockname(sock, (sockaddr*)&a, &alen) != 0) return false;
         port = ntohs(a.sin_port);
         return true;
     }
-    ~Listener() { if (sock != INVALID_SOCKET) closesocket(sock); }
+    ~Listener() { if (sock != kBadSock) closeSock(sock); }
 };
 
-// Cap every blocking op on an accepted socket so the fixture can never wedge:
-// the client's pooled keep-alive connection outlives each scenario's fetches and
-// only closes when the SESSION is destroyed — a server thread blocked in send/recv
-// on it must time out rather than stall the join.
-static void capSocketWaits(SOCKET c, DWORD ms = 2000) {
-    setsockopt(c, SOL_SOCKET, SO_RCVTIMEO, (const char*)&ms, sizeof(ms));
-    setsockopt(c, SOL_SOCKET, SO_SNDTIMEO, (const char*)&ms, sizeof(ms));
-}
-
 // Read from `c` until a blank line terminates the request headers (or the peer dies).
-static bool readRequest(SOCKET c) {
+static bool readRequest(SockT c) {
     std::string req; char b[1024];
     for (;;) {
-        int n = ::recv(c, b, sizeof(b), 0);
+        int n = (int)::recv(c, b, sizeof(b), 0);
         if (n <= 0) return false;
         req.append(b, n);
         if (req.find("\r\n\r\n") != std::string::npos) return true;
     }
 }
 
-static bool sendAll(SOCKET c, const char* p, int len) {
+static bool sendAll(SockT c, const char* p, int len) {
     while (len > 0) {
-        int n = ::send(c, p, len, 0);
+        int n = (int)::send(c, p, len, sendFlags());
         if (n <= 0) return false;
         p += n; len -= n;
     }
@@ -80,8 +129,7 @@ static bool sendAll(SOCKET c, const char* p, int len) {
 }
 
 int main() {
-    WSADATA wsa;
-    if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) { std::printf("FAIL WSAStartup\n"); return 1; }
+    if (!initNet()) { std::printf("FAIL initNet\n"); return 1; }
 
     core::IHttp& http = core::http();
 
@@ -94,8 +142,8 @@ int main() {
         Listener lis; CHECK(lis.openLocal());
         std::atomic<bool> server_done{false};
         std::thread server([&] {
-            SOCKET c = ::accept(lis.sock, nullptr, nullptr);
-            if (c == INVALID_SOCKET) return;
+            SockT c = ::accept(lis.sock, nullptr, nullptr);
+            if (c == kBadSock) return;
             capSocketWaits(c);
             if (readRequest(c)) {
                 const char* hdr = "HTTP/1.1 200 OK\r\n"
@@ -105,9 +153,9 @@ int main() {
                 sendAll(c, hdr, (int)strlen(hdr));
                 char chunk[1024]; memset(chunk, 'x', sizeof(chunk));
                 while (!server_done.load() && sendAll(c, chunk, sizeof(chunk)))
-                    Sleep(30);
+                    sleepMs(30);
             }
-            closesocket(c);
+            closeSock(c);
         });
 
         core::HttpSessionConfig cfg; cfg.timeout_ms = 8000;   // mirror the hls session
@@ -115,7 +163,7 @@ int main() {
         CHECK(session != nullptr);
 
         std::atomic<bool> stop{false};
-        std::thread canceller([&] { Sleep(300); stop.store(true); });
+        std::thread canceller([&] { sleepMs(300); stop.store(true); });
 
         core::HttpRequest req;
         req.url    = "http://127.0.0.1:" + std::to_string(lis.port) + "/seg1.aac";
@@ -143,8 +191,8 @@ int main() {
         std::atomic<bool> quit{false};
         std::thread server([&] {
             while (!quit.load()) {
-                SOCKET c = ::accept(lis.sock, nullptr, nullptr);
-                if (c == INVALID_SOCKET) break;      // listener closed -> exit
+                SockT c = ::accept(lis.sock, nullptr, nullptr);
+                if (c == kBadSock) break;            // listener closed -> exit
                 ++connections;
                 capSocketWaits(c);
                 // serve any number of sequential requests on this connection
@@ -155,7 +203,7 @@ int main() {
                                       "Connection: keep-alive\r\n\r\nhello";
                     if (!sendAll(c, rsp, (int)strlen(rsp))) break;
                 }
-                closesocket(c);
+                closeSock(c);
             }
         });
 
@@ -174,7 +222,7 @@ int main() {
 
         quit.store(true);
         session.reset();                  // drop the pooled conn -> recv sees EOF
-        closesocket(lis.sock); lis.sock = INVALID_SOCKET;   // unblock accept()
+        stopListener(lis.sock); lis.sock = kBadSock;   // unblock accept()
         server.join();
     }
 
@@ -185,10 +233,10 @@ int main() {
         std::atomic<bool> quit{false};
         std::thread server([&] {
             while (!quit.load()) {
-                SOCKET c = ::accept(lis.sock, nullptr, nullptr);
-                if (c == INVALID_SOCKET) break;
+                SockT c = ::accept(lis.sock, nullptr, nullptr);
+                if (c == kBadSock) break;
                 ++connections;
-                closesocket(c);
+                closeSock(c);
             }
         });
 
@@ -206,15 +254,15 @@ int main() {
 
         CHECK(res.cancelled && !res.ok && res.body.empty());
         CHECK(ms < 500);                  // never blocked on the network
-        Sleep(100);                       // give a phantom connection time to show up
+        sleepMs(100);                     // give a phantom connection time to show up
         CHECK(connections.load() == 0);   // the network was never touched
 
         quit.store(true);
-        closesocket(lis.sock); lis.sock = INVALID_SOCKET;
+        stopListener(lis.sock); lis.sock = kBadSock;
         server.join();
     }
 
-    WSACleanup();
+    cleanupNet();
     if (!g_fail) std::printf("ALL PASS\n");
     return g_fail ? 1 : 0;
 }

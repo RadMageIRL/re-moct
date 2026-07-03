@@ -2,11 +2,11 @@
 #include "Log.h"
 #include "core/IHttp.h"
 
-#ifdef _WIN32
-#define WIN32_LEAN_AND_MEAN
-#include <windows.h>       // CryptoAPI (MD5 api_sig signing) still needs this
-#include <wincrypt.h>
-#endif
+// Vendored public-domain MD5 (lib/md5.{h,c}, Peslyak/Openwall — kept byte-
+// verbatim upstream, hence the extern "C" here rather than a header patch).
+extern "C" {
+#include "md5.h"
+}
 #include <algorithm>
 #include <cctype>
 #include <cstdio>
@@ -26,44 +26,27 @@ static void lflog(const char* fmt, ...) {
 static const char* kHost = "ws.audioscrobbler.com";
 static const char* kPath = "/2.0/";
 
-// ─── MD5 via Windows CryptoAPI (guaranteed-correct; no hand-rolled hash) ───────
-// Linux (Phase 3 slice 1): a deliberate PLACEHOLDER, not an implementation.
-// The decided endgame (readiness doc §7.1, rides with slice 2's HTTP/scrobble
-// gate, NOT this slice) is a vendored single-file MD5 used on BOTH platforms,
-// proven by an api_sig parity check + live scrobble round-trip on each. Until
-// then md5Hex returns "" on Linux → sign() produces an empty api_sig → Last.fm
-// rejects the call exactly like any bad-signature request; with slice 1's stub
-// HTTP transport the request never leaves the process anyway.
-#ifdef _WIN32
+// ─── MD5 via the vendored public-domain implementation (lib/md5.{h,c}) ────────
+// Phase 3 slice 2: ONE signing code path on BOTH platforms — this replaced the
+// Windows CryptoAPI block and the slice-1 Linux placeholder. Byte-identity with
+// the CryptoAPI output is proven by md5_test (RFC 1321 vectors) and the live
+// scrobble round-trip gates on each platform (api_sig accepted == identical
+// hash on the wire). Lowercase-hex output shape unchanged.
 std::string LastFm::md5Hex(const std::string& s) {
-    HCRYPTPROV prov = 0;
-    HCRYPTHASH hash = 0;
+    MD5_CTX ctx;
+    MD5_Init(&ctx);
+    if (!s.empty()) MD5_Update(&ctx, s.data(), (unsigned long)s.size());
+    unsigned char digest[16];
+    MD5_Final(digest, &ctx);
+    static const char* hx = "0123456789abcdef";
     std::string out;
-    if (CryptAcquireContextW(&prov, nullptr, nullptr, PROV_RSA_FULL, CRYPT_VERIFYCONTEXT)) {
-        if (CryptCreateHash(prov, CALG_MD5, 0, 0, &hash)) {
-            if (CryptHashData(hash, reinterpret_cast<const BYTE*>(s.data()),
-                              (DWORD)s.size(), 0)) {
-                BYTE  digest[16];
-                DWORD len = sizeof(digest);
-                if (CryptGetHashParam(hash, HP_HASHVAL, digest, &len, 0)) {
-                    static const char* hx = "0123456789abcdef";
-                    for (int i = 0; i < 16; ++i) {
-                        out += hx[digest[i] >> 4];
-                        out += hx[digest[i] & 0x0F];
-                    }
-                }
-            }
-            CryptDestroyHash(hash);
-        }
-        CryptReleaseContext(prov, 0);
+    out.reserve(32);
+    for (int i = 0; i < 16; ++i) {
+        out += hx[digest[i] >> 4];
+        out += hx[digest[i] & 0x0F];
     }
     return out;
 }
-#else
-std::string LastFm::md5Hex(const std::string&) {
-    return {};   // slice-2 placeholder — see the block comment above
-}
-#endif
 
 // api_sig = md5( for each param sorted by name: name+value ... then + secret )
 std::string LastFm::sign(Params& params, const std::string& secret) {

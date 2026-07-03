@@ -27,13 +27,15 @@
 // headlessly; it stays covered by the live gates. Real network jitter, ad-pod
 // re-pin timing, and device interplay also stay with the live gates. What this
 // proves is the producer/ring/prebuffer/cancel SEMANTICS.
-#ifdef _WIN32
+// PORTABLE since Phase 3 slice 2: the HLS pump is fully seam-routed, so this
+// runs against WinINet on Windows and libcurl on Linux (both matrix jobs).
 
 #define MINIAUDIO_IMPLEMENTATION            // StreamSource.cpp holds decls only
 #include "miniaudio.h"
 
 #include "StreamSource.h"
 #include "core/IHttp.h"
+#include "PortUtil.h"   // sleepMs/tickMs (baseline Sleep/GetTickCount on Windows)
 #include "core/ISource.h"
 
 #include <fdk-aac/aacenc_lib.h>
@@ -171,15 +173,15 @@ struct FakeHls final : core::IHttp {
                 // A wedged origin: sit on the request until the caller's cancel
                 // token fires (bounded so a broken cancel can't hang the test).
                 in_blocked.store(true);
-                DWORD t0 = GetTickCount();
-                while ((long)(GetTickCount() - t0) < 30000) {
+                uint32_t t0 = port::tickMs();
+                while ((long)(port::tickMs() - t0) < 30000) {
                     if (req.cancel && req.cancel->load()) {
                         saw_cancel.store(true);
                         in_blocked.store(false);
                         core::finalizeCancelled(res);
                         return res;
                     }
-                    Sleep(10);
+                    port::sleepMs(10);
                 }
                 in_blocked.store(false);
                 res.ok = false;
@@ -221,17 +223,17 @@ static std::vector<float> drainFrames(core::ISource& src, int frames) {
         src.readFrames(buf, (uint32_t)n);
         all.insert(all.end(), buf, buf + (size_t)n * 2);
         left -= n;
-        Sleep(1);
+        port::sleepMs(1);
     }
     return all;
 }
 
 template <typename Pred>
 static bool waitFor(int timeout_ms, Pred pred) {
-    DWORD t0 = GetTickCount();
-    while ((long)(GetTickCount() - t0) < timeout_ms) {
+    uint32_t t0 = port::tickMs();
+    while ((long)(port::tickMs() - t0) < timeout_ms) {
         if (pred()) return true;
-        Sleep(10);
+        port::sleepMs(10);
     }
     return false;
 }
@@ -275,10 +277,10 @@ int main() {
         // ── 3. live window stalls -> underrun -> back to buffering, silent ────
         // (window_top untouched: every poll returns the same 4 segments, new=0)
         {
-            DWORD t0 = GetTickCount();
+            uint32_t t0 = port::tickMs();
             bool underrun = false;
             float buf[512 * 2];
-            while ((long)(GetTickCount() - t0) < 15000) { // drain fast, no pacing
+            while ((long)(port::tickMs() - t0) < 15000) { // drain fast, no pacing
                 ss.readFrames(buf, 512);
                 if (ss.buffering()) { underrun = true; break; }
             }
@@ -304,17 +306,17 @@ int main() {
             // Starve the ring so the producer goes back to the pump, then hand it
             // a new segment whose fetch blocks until cancelled.
             {
-                DWORD t0 = GetTickCount();
+                uint32_t t0 = port::tickMs();
                 float buf[512 * 2];
-                while ((long)(GetTickCount() - t0) < 15000 && !ss.buffering())
+                while ((long)(port::tickMs() - t0) < 15000 && !ss.buffering())
                     ss.readFrames(buf, 512);
             }
             { std::lock_guard<std::mutex> lk(fake.mtx); fake.window_top += 2; }
             CHECK(waitFor(8000, [&]{ return fake.in_blocked.load(); }));
 
-            DWORD t0 = GetTickCount();
+            uint32_t t0 = port::tickMs();
             ss.close();
-            DWORD dt = GetTickCount() - t0;
+            uint32_t dt = port::tickMs() - t0;
             std::printf("  close() during blocked segment fetch: %lu ms\n", (unsigned long)dt);
             CHECK(dt < 3000);                             // baseline gate: never the old 8s hang
             CHECK(fake.saw_cancel.load());                // the token actually reached the wire
@@ -327,6 +329,3 @@ int main() {
     std::printf("hls_pipeline_test: %d FAILURE(S)\n", g_fail);
     return 1;
 }
-#else
-int main() { return 0; }
-#endif

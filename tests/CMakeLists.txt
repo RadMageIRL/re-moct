@@ -1,5 +1,16 @@
 # Phase 0 pure-unit tests — link ONLY the pure units (no WinINet/ncurses/miniaudio),
 # so this builds & runs on Linux CI as well as MSYS2/UCRT64.
+
+# Per-platform HTTP transport for tests that link the REAL impl (slice 2): the
+# same test drives WinINet on Windows and libcurl on Linux — identical scenarios
+# and assertions against both transports, which IS the parity check.
+if(WIN32)
+    set(HTTP_IMPL ${CMAKE_SOURCE_DIR}/src/platform/win/HttpWinInet.cpp)
+    set(HTTP_LIBS wininet)
+else()
+    set(HTTP_IMPL ${CMAKE_SOURCE_DIR}/src/platform/linux/HttpCurl.cpp)
+    set(HTTP_LIBS CURL::libcurl pthread)
+endif()
 add_executable(iheart_sm_test
     iheart_sm_test.cpp
     ${CMAKE_SOURCE_DIR}/src/IHeartNowPlayingSM.cpp
@@ -27,65 +38,108 @@ target_include_directories(http_seam_test PRIVATE
     ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/lib)
 add_test(NAME http_seam_test COMMAND http_seam_test)
 
-# core::IHttp POST seam (group b) — Windows-only end-to-end request test. Links the
-# real LastFm/ListenBrainz consumers + the WinINet impl and injects a FakeHttp to
-# assert the request each consumer builds (verb, content-type, auth header, UTF-8
-# body). Windows-only because it links the consumers; Linux CI keeps the 3 pure suites.
+# Vendored MD5 (slice 2) — RFC 1321 reference vectors + padding-boundary lengths
+# + a raw-UTF-8 api_sig-shaped vector, against lib/md5.c (the one signing code
+# path behind LastFm's api_sig on BOTH platforms). Pure, both matrix jobs.
+add_executable(md5_test
+    md5_test.cpp
+    ${CMAKE_SOURCE_DIR}/lib/md5.c
+)
+target_include_directories(md5_test PRIVATE ${CMAKE_SOURCE_DIR}/lib)
+add_test(NAME md5_test COMMAND md5_test)
+
+# core::IHttp POST seam (group b) — end-to-end request test. Links the real
+# LastFm/ListenBrainz consumers + the REAL platform transport (satisfies
+# core::http(); the test injects a FakeHttp via setHttp to assert the request
+# each consumer builds: verb, content-type, auth header, UTF-8 body). Portable
+# since slice 2 (both matrix jobs).
+add_executable(scrobble_request_test
+    scrobble_request_test.cpp
+    ${CMAKE_SOURCE_DIR}/src/LastFm.cpp
+    ${CMAKE_SOURCE_DIR}/src/ListenBrainz.cpp
+    ${CMAKE_SOURCE_DIR}/src/Log.cpp
+    ${HTTP_IMPL}
+    ${CMAKE_SOURCE_DIR}/lib/md5.c
+)
+target_include_directories(scrobble_request_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/lib)
+target_link_libraries(scrobble_request_test PRIVATE ${HTTP_LIBS})
+add_test(NAME scrobble_request_test COMMAND scrobble_request_test)
+
+# group (c) — CoverArt request test. Links CoverArt (portable) + the real
+# transport; injects a FakeHttp to assert per-call UA, reject_truncated, and the
+# FollowSameScheme redirect policy. CDRipper AR/CTDB are covered by the pure
+# urlIsSecureScheme test + the Joan Osborne rip gate (that TU is too heavy to
+# link). Portable since slice 2.
+add_executable(group_c_request_test
+    group_c_request_test.cpp
+    ${CMAKE_SOURCE_DIR}/src/CoverArt.cpp
+    ${HTTP_IMPL}
+)
+target_include_directories(group_c_request_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/lib)
+target_link_libraries(group_c_request_test PRIVATE ${HTTP_LIBS})
+add_test(NAME group_c_request_test COMMAND group_c_request_test)
+
+# slice 4 — REAL-socket test of the cancel + session capabilities (localhost
+# fixture; a fake cannot prove these): prompt mid-body cancel (the "stop
+# mid-segment must not hang 8s" gate), keep-alive connection reuse across one
+# session (on Linux this is the live proof of the CURLSH share-handle pool),
+# and pre-cancelled fetch never touching the network. Portable since slice 2 —
+# one file, a platform shim, both transports.
+add_executable(http_cancel_test
+    http_cancel_test.cpp
+    ${HTTP_IMPL}
+)
+target_include_directories(http_cancel_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/lib)
+target_link_libraries(http_cancel_test PRIVATE ${HTTP_LIBS}
+    $<$<PLATFORM_ID:Windows>:ws2_32>)
+add_test(NAME http_cancel_test COMMAND http_cancel_test)
+# Every wait in the fixture is bounded (~2s socket caps, 300ms cancel) — a run
+# anywhere near this limit is a hang (the accept()-unblock class), not
+# slowness. Fail fast in CI instead of eating ctest's 25-min default.
+set_tests_properties(http_cancel_test PROPERTIES TIMEOUT 60)
+
+# slice 4 — IHeart metadata request test. Links the REAL IHeartRadio consumer +
+# the real transport and injects a FakeHttp to assert the session config (UA,
+# 5s timeout) + per-request shape (Accept header, pragma, 4MB cap, no cancel
+# token) and the three verified endpoints. Portable since slice 2.
+add_executable(iheart_request_test
+    iheart_request_test.cpp
+    ${CMAKE_SOURCE_DIR}/src/IHeartRadio.cpp
+    ${HTTP_IMPL}
+)
+target_include_directories(iheart_request_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/lib)
+target_link_libraries(iheart_request_test PRIVATE ${HTTP_LIBS})
+add_test(NAME iheart_request_test COMMAND iheart_request_test)
+
+# hls_pipeline_test: FakeHttp (core::setHttp) through the REAL StreamSource
+# HLS/AAC pipeline — open -> hlsConnect -> producerWorkerAAC -> segment pump ->
+# FDK decode -> ring -> readFrames. The Phase-0 Tier-2 replay idea realized on
+# the slice-4 seam: synthetic manifests + real FDK-encoded ADTS. Prebuffer,
+# underrun->rebuffer self-heal, timed-ID3 now-playing, and the prompt-close
+# cancel gate (headless twin of the "mid-segment stop <1s" 7of9 gate). The
+# ICY/continuous path (raw WinINet by design, Linux twin = slice 3) stays
+# live-gate-only. Portable since slice 2 — the HLS pump runs on both platforms.
+add_executable(hls_pipeline_test
+    hls_pipeline_test.cpp
+    ${CMAKE_SOURCE_DIR}/src/StreamSource.cpp
+    ${CMAKE_SOURCE_DIR}/src/IHeartRadio.cpp
+    ${CMAKE_SOURCE_DIR}/src/IHeartNowPlayingSM.cpp
+    ${CMAKE_SOURCE_DIR}/src/IHeartDeepLog.cpp
+    ${CMAKE_SOURCE_DIR}/src/Log.cpp
+    ${HTTP_IMPL}
+)
+target_include_directories(hls_pipeline_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/lib ${FDKAAC_INCLUDE})
+target_link_libraries(hls_pipeline_test PRIVATE ${FDKAAC_LIB} ${HTTP_LIBS}
+    $<$<PLATFORM_ID:Linux>:dl> $<$<PLATFORM_ID:Linux>:m>)
+add_test(NAME hls_pipeline_test COMMAND hls_pipeline_test)
+set_tests_properties(hls_pipeline_test PROPERTIES TIMEOUT 120)
+
 if(WIN32)
-    add_executable(scrobble_request_test
-        scrobble_request_test.cpp
-        ${CMAKE_SOURCE_DIR}/src/LastFm.cpp
-        ${CMAKE_SOURCE_DIR}/src/ListenBrainz.cpp
-        ${CMAKE_SOURCE_DIR}/src/platform/win/HttpWinInet.cpp
-        ${CMAKE_SOURCE_DIR}/src/Log.cpp
-    )
-    target_include_directories(scrobble_request_test PRIVATE
-        ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/lib)
-    target_link_libraries(scrobble_request_test PRIVATE wininet advapi32)
-    add_test(NAME scrobble_request_test COMMAND scrobble_request_test)
-
-    # group (c) — Windows-only CoverArt request test. Links CoverArt (portable) + the
-    # WinINet impl; injects a FakeHttp to assert per-call UA, reject_truncated, and the
-    # FollowSameScheme redirect policy. CDRipper AR/CTDB are covered by the pure
-    # urlIsSecureScheme test + the Joan Osborne rip gate (that TU is too heavy to link).
-    add_executable(group_c_request_test
-        group_c_request_test.cpp
-        ${CMAKE_SOURCE_DIR}/src/CoverArt.cpp
-        ${CMAKE_SOURCE_DIR}/src/platform/win/HttpWinInet.cpp
-    )
-    target_include_directories(group_c_request_test PRIVATE
-        ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/lib)
-    target_link_libraries(group_c_request_test PRIVATE wininet)
-    add_test(NAME group_c_request_test COMMAND group_c_request_test)
-
-    # slice 4 — Windows-only REAL-socket test of the WinINet cancel + session
-    # capabilities (localhost fixture; a fake cannot prove these): prompt mid-body
-    # cancel (the "stop mid-segment must not hang 8s" gate), keep-alive connection
-    # reuse across one session, and pre-cancelled fetch never touching the network.
-    add_executable(http_cancel_test
-        http_cancel_test.cpp
-        ${CMAKE_SOURCE_DIR}/src/platform/win/HttpWinInet.cpp
-    )
-    target_include_directories(http_cancel_test PRIVATE
-        ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/lib)
-    target_link_libraries(http_cancel_test PRIVATE wininet ws2_32)
-    add_test(NAME http_cancel_test COMMAND http_cancel_test)
-
-    # slice 4 — Windows-only IHeart metadata request test. Links the REAL IHeartRadio
-    # consumer + the WinINet impl and injects a FakeHttp to assert the session config
-    # (UA, 5s timeout) + per-request shape (Accept header, pragma, 4MB cap, no cancel
-    # token) and the three verified endpoints. hlsHttpGet's request shape is covered
-    # by http_cancel_test + the live gates (StreamSource's TU is too heavy to link).
-    add_executable(iheart_request_test
-        iheart_request_test.cpp
-        ${CMAKE_SOURCE_DIR}/src/IHeartRadio.cpp
-        ${CMAKE_SOURCE_DIR}/src/platform/win/HttpWinInet.cpp
-    )
-    target_include_directories(iheart_request_test PRIVATE
-        ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/lib)
-    target_link_libraries(iheart_request_test PRIVATE wininet)
-    add_test(NAME iheart_request_test COMMAND iheart_request_test)
-
     # slice 6 — Windows-only Discord IPC seam test. Links the REAL DiscordRP consumer
     # + the named-pipe impl TU (linked only to satisfy core::ipc(); never invoked —
     # the test injects a FakeIpc via constructor injection) and asserts the protocol
@@ -136,28 +190,6 @@ if(WIN32)
         ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/lib)
     add_test(NAME cd_pipeline_test COMMAND cd_pipeline_test)
     set_tests_properties(cd_pipeline_test PROPERTIES TIMEOUT 120)
-
-    # hls_pipeline_test: FakeHttp (core::setHttp) through the REAL StreamSource
-    # HLS/AAC pipeline — open -> hlsConnect -> producerWorkerAAC -> segment pump ->
-    # FDK decode -> ring -> readFrames. The Phase-0 Tier-2 replay idea realized on
-    # the slice-4 seam: synthetic manifests + real FDK-encoded ADTS. Prebuffer,
-    # underrun->rebuffer self-heal, timed-ID3 now-playing, and the prompt-close
-    # cancel gate (headless twin of the "mid-segment stop <1s" 7of9 gate). The
-    # ICY/continuous path (raw WinINet by design) stays live-gate-only.
-    add_executable(hls_pipeline_test
-        hls_pipeline_test.cpp
-        ${CMAKE_SOURCE_DIR}/src/StreamSource.cpp
-        ${CMAKE_SOURCE_DIR}/src/IHeartRadio.cpp
-        ${CMAKE_SOURCE_DIR}/src/IHeartNowPlayingSM.cpp
-        ${CMAKE_SOURCE_DIR}/src/IHeartDeepLog.cpp
-        ${CMAKE_SOURCE_DIR}/src/Log.cpp
-        ${CMAKE_SOURCE_DIR}/src/platform/win/HttpWinInet.cpp
-    )
-    target_include_directories(hls_pipeline_test PRIVATE
-        ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/lib ${FDKAAC_INCLUDE})
-    target_link_libraries(hls_pipeline_test PRIVATE ${FDKAAC_LIB} wininet)
-    add_test(NAME hls_pipeline_test COMMAND hls_pipeline_test)
-    set_tests_properties(hls_pipeline_test PROPERTIES TIMEOUT 120)
 
     # xfade_handoff_test: the REAL AudioManager on generated WAVs through a real
     # (muted) device — the swap-adjacent file path Slice B restructures: gapless

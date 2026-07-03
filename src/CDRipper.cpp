@@ -2,11 +2,13 @@
 #include "CDRipper.h"
 #include "ar_crc.h"
 #include "core/IHttp.h"     // core::IHttp seam (AR/CTDB fetch); WinINet lives behind it
+#include "core/ICdIo.h"     // core::ICdIo seam (slice 8); the CD IOCTLs live behind it
 
+// windows.h for the non-device Win32 this TU still uses (SHGetKnownFolderPath,
+// WideCharToMultiByte, Sleep, _wfopen paths) — winioctl.h/ntddcdrm.h are GONE:
+// all device access goes through core::ICdIo (src/platform/win/CdIoWin.cpp).
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
-#include <winioctl.h>
-#include <ntddcdrm.h>
 #include <shlobj.h>
 
 // FLAC C API
@@ -102,39 +104,30 @@ std::string CDRipper::buildOutputDir(const MBRelease& rel) {
     return music + "\\re-moct\\" + folder;
 }
 
-HANDLE CDRipper::openDrive(const std::string& dl) {
-    std::string path = "\\\\.\\"+dl+":";
-    return CreateFileA(path.c_str(), GENERIC_READ,
-                       FILE_SHARE_READ|FILE_SHARE_WRITE,
-                       nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+std::unique_ptr<core::ICdDevice> CDRipper::openDrive(const std::string& dl) {
+    // Spec→\\.\X: mapping and open flags live in the seam impl (CdIoWin.cpp) —
+    // this baseline's exact share flags are the ones preserved there.
+    core::ICdIo& io = io_ ? *io_ : core::cdio();
+    return io.open(dl);
 }
 
 // ─── C2 Error Pointer probe ───────────────────────────────────────────────────
 // Attempt a single-sector read in C2+data mode.
 // Returns true if drive supports C2 (non-zero C2 bytes returned cleanly).
-bool CDRipper::probeC2(HANDLE hCD) {
-    // Use RAW_READ_INFO with mode 2 (CDDA + C2) if available
-    // The standard RAW_READ_INFO TrackMode field doesn't have a C2 mode —
-    // C2 is queried via IOCTL_CDROM_GET_DRIVE_GEOMETRY and a feature request.
-    // Simplest probe: try reading with a larger buffer and check if
-    // IOCTL returns exactly SECTOR_BYTES_C2 bytes.
+bool CDRipper::probeC2(core::ICdDevice& dev) {
+    // The raw-read TrackMode doesn't have a C2 mode — C2 comes back iff the drive
+    // supports it and the buffer is sized for it. Simplest probe: read sector 0
+    // (always readable) with a C2-sized buffer and check if exactly
+    // SECTOR_BYTES_C2 bytes come back; a non-C2 drive returns SECTOR_BYTES.
     uint8_t buf[SECTOR_BYTES_C2] = {};
-    RAW_READ_INFO info {};
-    info.DiskOffset.QuadPart = 0; // sector 0 — always readable
-    info.SectorCount         = 1;
-    info.TrackMode           = CDDA;
-    DWORD bytes = 0;
-    // Probe: request SECTOR_BYTES_C2 bytes — if drive gives back C2 data
-    // it will fill the extra 294 bytes; if not it returns SECTOR_BYTES.
-    BOOL ok = DeviceIoControl(hCD, IOCTL_CDROM_RAW_READ,
-                              &info, sizeof(info),
-                              buf, SECTOR_BYTES_C2, &bytes, nullptr);
-    // C2 supported if ioctl succeeded and returned the larger buffer
-    return ok && bytes == SECTOR_BYTES_C2;
+    std::size_t got = 0;
+    bool ok = dev.readRaw(0, 1, /*want_c2=*/true, buf, SECTOR_BYTES_C2, got);
+    // C2 supported if the read succeeded and returned the larger buffer
+    return ok && got == SECTOR_BYTES_C2;
 }
 
 // ─── Sector read with retry + optional C2 awareness ──────────────────────────
-static bool readSectors(HANDLE hCD, DWORD lba, int count,
+static bool readSectors(core::ICdDevice& dev, DWORD lba, int count,
                         uint8_t* pcm_buf,  // SECTOR_BYTES*count output
                         bool use_c2,
                         int* c2_error_count = nullptr) {
@@ -145,19 +138,12 @@ static bool readSectors(HANDLE hCD, DWORD lba, int count,
                                 : SECTOR_BYTES     * count;
     std::vector<uint8_t> tmp(buf_size);
 
-    RAW_READ_INFO info {};
-    info.DiskOffset.QuadPart = (ULONGLONG)lba * 2048;
-    info.SectorCount         = (ULONG)count;
-    info.TrackMode           = CDDA;
-    DWORD bytes = 0;
-
-    bool ok = DeviceIoControl(hCD, IOCTL_CDROM_RAW_READ,
-                              &info, sizeof(info),
-                              tmp.data(), (DWORD)tmp.size(),
-                              &bytes, nullptr) != 0;
+    std::size_t bytes = 0;
+    bool ok = dev.readRaw((uint32_t)lba, (uint32_t)count, use_c2,
+                          tmp.data(), tmp.size(), bytes);
     if (!ok) return false;
 
-    if (use_c2 && bytes == (DWORD)SECTOR_BYTES_C2 * count) {
+    if (use_c2 && bytes == (std::size_t)SECTOR_BYTES_C2 * count) {
         // C2 mode returned — de-interleave: each sector is [2352 audio][294 c2]
         for (int s = 0; s < count; ++s) {
             const uint8_t* src = tmp.data() + s * SECTOR_BYTES_C2;
@@ -176,11 +162,11 @@ static bool readSectors(HANDLE hCD, DWORD lba, int count,
 }
 
 // Retry wrapper — falls back to single-sector on block failure
-static bool readSectorsWithRetry(HANDLE hCD, DWORD lba, int count,
+static bool readSectorsWithRetry(core::ICdDevice& dev, DWORD lba, int count,
                                  uint8_t* pcm_buf, bool use_c2,
                                  int* c2_errors = nullptr) {
     for (int attempt = 0; attempt <= 4; ++attempt) {
-        if (readSectors(hCD, lba, count, pcm_buf, use_c2, c2_errors))
+        if (readSectors(dev, lba, count, pcm_buf, use_c2, c2_errors))
             return true;
         Sleep(100 * (attempt+1));
         if (count > 1 && attempt == 1) {
@@ -188,7 +174,7 @@ static bool readSectorsWithRetry(HANDLE hCD, DWORD lba, int count,
             if (c2_errors) *c2_errors = 0;
             for (int s = 0; s < count; ++s) {
                 int c2e = 0;
-                if (!readSectors(hCD, lba+s, 1,
+                if (!readSectors(dev, lba+s, 1,
                                  pcm_buf + s*SECTOR_BYTES, use_c2, &c2e))
                     std::memset(pcm_buf + s*SECTOR_BYTES, 0, SECTOR_BYTES);
                 if (c2_errors) *c2_errors += c2e;
@@ -204,13 +190,10 @@ static bool readSectorsWithRetry(HANDLE hCD, DWORD lba, int count,
 // speed is in KB/sec: 0xFFFF = max, 176 = 1x, 1764 = 10x, 3528 = 20x.
 // Used to force a hardware-level cache eviction before Pass 2 by making the
 // drive physically shift its laser/spindle parameters.
-static void setDriveSpeed(HANDLE hCD, WORD speed_kbps) {
-    CDROM_SET_SPEED s = {};
-    s.RequestType = CdromSetSpeed;
-    s.ReadSpeed   = speed_kbps;
-    DWORD dummy = 0;
-    DeviceIoControl(hCD, IOCTL_CDROM_SET_SPEED,
-                    &s, sizeof(s), nullptr, 0, &dummy, nullptr);
+static void setDriveSpeed(core::ICdDevice& dev, WORD speed_kbps) {
+    // Canonical CDROM_SET_SPEED shape lives in the seam impl — byte-identical to
+    // this site's baseline (RequestType=CdromSetSpeed, WriteSpeed zero-init).
+    dev.setSpeed(speed_kbps);
 }
 
 // ─── Drive cache defeat ───────────────────────────────────────────────────────
@@ -218,7 +201,7 @@ static void setDriveSpeed(HANDLE hCD, WORD speed_kbps) {
 // that does NOT overlap the target's read-ahead zone, forcing the target's
 // sectors out of RAM so a re-read actually hits the platter. Without this, a
 // damaged disc can read identically twice and masquerade as deterministic.
-static void flushDriveCache(HANDLE hCD, DWORD target_lba, DWORD leadout_lba,
+static void flushDriveCache(core::ICdDevice& dev, DWORD target_lba, DWORD leadout_lba,
                             bool use_c2, int cache_kb = 4096) {
     const int need = (cache_kb * 1024) / SECTOR_BYTES + 16; // sectors > cache
     const DWORD end = leadout_lba ? leadout_lba
@@ -236,14 +219,14 @@ static void flushDriveCache(HANDLE hCD, DWORD target_lba, DWORD leadout_lba,
     for (int done = 0; done < need; done += SECTORS_PER_READ) {
         int n = std::min(SECTORS_PER_READ, need - done);
         if (lo + (DWORD)done + (DWORD)n >= end) break;
-        readSectorsWithRetry(hCD, lo + (DWORD)done, n, buf.data(), use_c2, &c2);
+        readSectorsWithRetry(dev, lo + (DWORD)done, n, buf.data(), use_c2, &c2);
     }
 }
 
 // CDDB disc ID — start_lba is already absolute (includes 150-sector pre-gap)
 uint32_t CDRipper::computeCDDB(const std::vector<CDTrack>& tracks,
-                               DWORD full_leadout_lba,
-                               const std::vector<DWORD>& data_track_lbas) {
+                               uint32_t full_leadout_lba,
+                               const std::vector<uint32_t>& data_track_lbas) {
     auto digit_sum = [](uint32_t n) {
         uint32_t s = 0;
         while (n > 0) { s += n % 10; n /= 10; }
@@ -274,7 +257,7 @@ uint32_t CDRipper::computeCDDB(const std::vector<CDTrack>& tracks,
 // OffsetFindCRC, the read fails, or nothing matches — caller then falls back to
 // the candidate-offset probe and ultimately the drive_offsets.h baseline.
 static bool detectPressingOffsetFrame450(
-        HANDLE hCD, const CDTrack& track1, int drive_offset, bool use_c2,
+        core::ICdDevice& dev, const CDTrack& track1, int drive_offset, bool use_c2,
         const std::vector<std::pair<uint32_t,int>>& db_frame450,  // = ar_db_v2[0]
         const std::string& log_path, int& out_pressing_offset)
 {
@@ -301,7 +284,7 @@ static bool detectPressingOffsetFrame450(
 
     std::vector<uint8_t> raw((size_t)read_count * SECTOR_BYTES);
     int c2e = 0;
-    if (!readSectorsWithRetry(hCD, track1.start_lba + (DWORD)read_start_sec,
+    if (!readSectorsWithRetry(dev, track1.start_lba + (DWORD)read_start_sec,
                               read_count, raw.data(), use_c2, &c2e))
         return false;
 
@@ -345,8 +328,8 @@ bool CDRipper::fetchARData(
         const std::string&                                  ar_cache_dir,
         std::vector<std::vector<std::pair<uint32_t,int>>>& out_v1,
         std::vector<std::vector<std::pair<uint32_t,int>>>& out_v2,
-        DWORD                                              full_leadout_lba,
-        const std::vector<DWORD>&                          data_track_lbas) {
+        uint32_t                                           full_leadout_lba,
+        const std::vector<uint32_t>&                       data_track_lbas) {
 
     if (tracks.empty()) return false;
     int ntracks = (int)tracks.size();
@@ -719,7 +702,7 @@ void CDRipper::tagFile(const std::string&         path,
 }
 
 // ─── Core track rip ───────────────────────────────────────────────────────────
-ARTrackResult CDRipper::ripTrack(HANDLE             hCD,
+ARTrackResult CDRipper::ripTrack(core::ICdDevice&   dev,
                                  const CDTrack&     track,
                                  int                track_idx,
                                  int                total_tracks,
@@ -929,7 +912,7 @@ ARTrackResult CDRipper::ripTrack(HANDLE             hCD,
         {
             std::vector<uint8_t> raw((size_t)preamble_secs * SECTOR_BYTES);
             int c2d = 0;
-            if (readSectorsWithRetry(hCD, preamble_lba, preamble_secs,
+            if (readSectorsWithRetry(dev, preamble_lba, preamble_secs,
                                      raw.data(), use_c2, &c2d)) {
                 std::memcpy(pbuf.data(), raw.data(),
                             (size_t)preamble_secs * SECTOR_SAMPLES * 2 * sizeof(int16_t));
@@ -962,7 +945,7 @@ ARTrackResult CDRipper::ripTrack(HANDLE             hCD,
         DWORD this_read = std::min((DWORD)BUF_SECTORS, remaining);
         int   c2_errs   = 0;
 
-        if (!readSectorsWithRetry(hCD, lba, (int)this_read, raw_buf,
+        if (!readSectorsWithRetry(dev, lba, (int)this_read, raw_buf,
                                   use_c2, &c2_errs)) {
             ok = false; break;
         }
@@ -1101,7 +1084,7 @@ ARTrackResult CDRipper::ripTrack(HANDLE             hCD,
         int16_t tail[SECTOR_SAMPLES * 2] = {};
         if (!is_last) {
             uint8_t extra_raw[SECTOR_BYTES]; int c2d = 0;
-            readSectorsWithRetry(hCD, lba, 1, extra_raw, use_c2, &c2d);
+            readSectorsWithRetry(dev, lba, 1, extra_raw, use_c2, &c2d);
             // The delivery starts exactly at the disc position we need — no skip
             std::memcpy(tail, extra_raw, (size_t)corr_sub_skip * 2 * sizeof(int16_t));
         }
@@ -1238,11 +1221,11 @@ void CDRipper::worker(std::string          drive_letter,
                       MBRelease            rel,
                       RipMode              mode,
                       ProgressCb           cb,
-                      HANDLE               hCD,
+                      std::unique_ptr<core::ICdDevice> dev,
                       int                  drive_offset,
                       std::string          drive_model,
-                      DWORD                full_leadout_lba,
-                      std::vector<DWORD>   data_track_lbas) {
+                      uint32_t             full_leadout_lba,
+                      std::vector<uint32_t> data_track_lbas) {
 
     state_.store(RipState::Ripping);
 
@@ -1265,10 +1248,12 @@ void CDRipper::worker(std::string          drive_letter,
         state_.store(RipState::Error); active_.store(false); return;
     }
 
-    if (hCD == INVALID_HANDLE_VALUE) {
-        DWORD err = GetLastError();
+    if (!dev) {
+        // Codeless message: the seam surfaces no OS error codes (IHttp/IIpc/INotify
+        // contract). The baseline's GetLastError here was read on the wrong thread
+        // (openDrive ran on the caller's) — it never reported the real code anyway.
         if (cb) { RipProgress p; p.state=RipState::Error;
-                  p.status_msg="Rip failed: drive open error "+std::to_string(err); cb(p); }
+                  p.status_msg="Rip failed: could not open drive"; cb(p); }
         state_.store(RipState::Error); active_.store(false); return;
     }
 
@@ -1301,7 +1286,7 @@ void CDRipper::worker(std::string          drive_letter,
             fclose(lf);
         }
     }
-    bool use_c2 = probeC2(hCD);
+    bool use_c2 = probeC2(*dev);
     {
         FILE* lf = _wfopen(utf8_to_wide(log_path).c_str(), L"a");
         if (lf) {
@@ -1394,11 +1379,9 @@ void CDRipper::worker(std::string          drive_letter,
         static constexpr int SB = CDSource::SECTOR_BYTES;
         static constexpr int SS = CDSource::SECTOR_SAMPLES;
         std::vector<uint8_t> probe(SB);
-        RAW_READ_INFO rri {}; rri.TrackMode = CDDA; rri.SectorCount = 1;
-        DWORD bpr = 0;
-        rri.DiskOffset.QuadPart = (LONGLONG)search_lo * 2048;
-        bool lo_ok = DeviceIoControl(hCD, IOCTL_CDROM_RAW_READ,
-                                     &rri, sizeof(rri), probe.data(), SB, &bpr, nullptr);
+        // Single-sector plain-CDDA probes — no C2 even when use_c2 (baseline shape)
+        std::size_t bpr = 0;
+        bool lo_ok = dev->readRaw(search_lo, 1, false, probe.data(), SB, bpr);
         bool lo_silent = true;
         if (lo_ok) {
             const int16_t* s = reinterpret_cast<const int16_t*>(probe.data());
@@ -1408,9 +1391,7 @@ void CDRipper::worker(std::string          drive_letter,
         if (lo_ok && !lo_silent) {
             while (search_hi > search_lo + 1) {
                 DWORD mid = (search_lo + search_hi) / 2;
-                rri.DiskOffset.QuadPart = (LONGLONG)mid * 2048;
-                bool ok = DeviceIoControl(hCD, IOCTL_CDROM_RAW_READ,
-                                          &rri, sizeof(rri), probe.data(), SB, &bpr, nullptr);
+                bool ok = dev->readRaw(mid, 1, false, probe.data(), SB, bpr);
                 bool silent = true;
                 if (ok) {
                     const int16_t* s = reinterpret_cast<const int16_t*>(probe.data());
@@ -1434,7 +1415,7 @@ void CDRipper::worker(std::string          drive_letter,
     }
 
     // ── Per-track rip ─────────────────────────────────────────────────────
-    setDriveSpeed(hCD, 0xFFFF);
+    setDriveSpeed(*dev, 0xFFFF);
     int total = (int)tracks.size();
 
     // CTDB end-trim needs the disc audio total up front. The byte stream CTDB
@@ -1484,7 +1465,7 @@ void CDRipper::worker(std::string          drive_letter,
 
         RGResult rg;
         ebur128_state* ebur_kept = nullptr;   // Pass 1 loudness state (kept unless Pass 2 wins)
-        ARTrackResult ar = ripTrack(hCD, trk, i, total,
+        ARTrackResult ar = ripTrack(*dev, trk, i, total,
                                     i==0, i==total-1,
                                     use_c2,
                                     flac_path, mp3_path, rg, cb,
@@ -1619,7 +1600,7 @@ void CDRipper::worker(std::string          drive_letter,
                 bool fr450_found    = false;
                 if (!ar_db_v2.empty())
                     fr450_found = detectPressingOffsetFrame450(
-                        hCD, trk, drive_offset, use_c2,
+                        *dev, trk, drive_offset, use_c2,
                         ar_db_v2[0], log_path, fr450_pressing);
 
                 if (fr450_found) {
@@ -1642,7 +1623,7 @@ void CDRipper::worker(std::string          drive_letter,
                         std::string probe_flac = flac_path + ".probe";
                         std::string probe_mp3  = mp3_path  + ".probe";
                         RGResult      rg_probe;
-                        ARTrackResult ar_probe = ripTrack(hCD, trk, i, total,
+                        ARTrackResult ar_probe = ripTrack(*dev, trk, i, total,
                                                           true, total == 1,
                                                           use_c2,
                                                           probe_flac, probe_mp3,
@@ -1694,13 +1675,13 @@ void CDRipper::worker(std::string          drive_letter,
             // Step 1: Drop to 10x (1764 KB/s). This forces the drive controller
             //   to recalibrate its laser tracking and spindle PLL, which has the
             //   side-effect of invalidating its sector cache.
-            setDriveSpeed(hCD, 1764);
+            setDriveSpeed(*dev, 1764);
             //
             // Step 2: Evict the read-ahead cache with a far multi-MB read so
             //   Pass 2 reads the platter, not RAM. A single-sector read can't
             //   flush a 512KB-2MB cache; flushDriveCache reads >4MB from a
             //   region far from the target. full_leadout_lba is in worker scope.
-            flushDriveCache(hCD, trk.start_lba, full_leadout_lba, use_c2);
+            flushDriveCache(*dev, trk.start_lba, full_leadout_lba, use_c2);
             //
             // Step 3: Give the spindle 500 ms to fully settle at the new speed
             //   before we start reading again.
@@ -1711,7 +1692,7 @@ void CDRipper::worker(std::string          drive_letter,
 
             RGResult      rg2;
             ebur128_state* ebur_p2 = nullptr;
-            ARTrackResult ar2 = ripTrack(hCD, trk, i, total,
+            ARTrackResult ar2 = ripTrack(*dev, trk, i, total,
                                          i==0, i==total-1,
                                          use_c2,
                                          tmp_flac, tmp_mp3, rg2, cb,
@@ -1766,7 +1747,7 @@ void CDRipper::worker(std::string          drive_letter,
             // Pass 2's loudness state is discarded unless it won (handled above).
             if (ebur_p2) ebur128_destroy(&ebur_p2);
             // Restore max speed for remaining tracks regardless of Pass 2 outcome
-            setDriveSpeed(hCD, 0xFFFF);
+            setDriveSpeed(*dev, 0xFFFF);
         }
         // ── Determinism check: [B] Local 2-pass (no AR oracle) ──────────────
         // No database to verify against, so the only safety net is reading the
@@ -1775,11 +1756,11 @@ void CDRipper::worker(std::string          drive_letter,
         // bytes from RAM and make a damaged rip look clean. Doubles rip time --
         // which is why it's a separate mode from fast best-effort [Y].
         else if (mode == RipMode::LocalVerify) {
-            flushDriveCache(hCD, trk.start_lba, full_leadout_lba, use_c2);
+            flushDriveCache(*dev, trk.start_lba, full_leadout_lba, use_c2);
             std::string det_flac = flac_path + ".det";
             std::string det_mp3  = mp3_path  + ".det";
             RGResult      rgd;
-            ARTrackResult ard = ripTrack(hCD, trk, i, total, i==0, i==total-1,
+            ARTrackResult ard = ripTrack(*dev, trk, i, total, i==0, i==total-1,
                                          use_c2, det_flac, det_mp3, rgd, cb,
                                          log_path, mode, drive_offset,
                                          ctdb_state.ctdb_crc, ctdb_state.ctdb_bytes,
@@ -2125,7 +2106,8 @@ void CDRipper::worker(std::string          drive_letter,
         }
     }
 
-    if (hCD != INVALID_HANDLE_VALUE) CloseHandle(hCD);
+    dev.reset();   // close the device here — the baseline CloseHandle position
+                   // (before the summary/log tail), not at worker scope exit
 
     // ── Write rip summary to log ──────────────────────────────────────────
     {
@@ -2204,11 +2186,11 @@ bool CDRipper::start(AudioManager&               audio,
     std::string        dl            = audio.cdSource().driveLetter();
     int                drv_offset    = audio.cdSource().driveOffset();
     std::string        drv_model     = audio.cdSource().driveModel();
-    DWORD              full_leadout  = audio.cdSource().fullLeadoutLba();
-    std::vector<DWORD> data_trk_lbas = audio.cdSource().dataTrackLbas();
-    HANDLE hCD = openDrive(dl);
+    uint32_t              full_leadout  = audio.cdSource().fullLeadoutLba();
+    std::vector<uint32_t> data_trk_lbas = audio.cdSource().dataTrackLbas();
+    auto dev = openDrive(dl);   // may be null — worker reports the error (as baseline)
     thread_ = std::thread(&CDRipper::worker, this,
-                          dl, tracks, out_dir, rel, mode, cb, hCD, drv_offset, drv_model,
+                          dl, tracks, out_dir, rel, mode, cb, std::move(dev), drv_offset, drv_model,
                           full_leadout, data_trk_lbas);
     return true;
 }

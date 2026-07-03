@@ -1,10 +1,13 @@
 #pragma once
 #ifdef _WIN32
 
-#define WIN32_LEAN_AND_MEAN
-#include <windows.h>
-#include <winioctl.h>   // CTL_CODE, DEVICE_TYPE etc — must come before ntddcdrm
-#include <ntddcdrm.h>   // IOCTL_CDROM_RAW_READ, RAW_READ_INFO, CDDA
+// Slice 8: device access goes through the core::ICdIo seam — this header is
+// platform-clean (no <windows.h>/<ntddcdrm.h>; AudioManager/UIManager and friends
+// no longer inherit Windows from this path).
+#include "core/ICdIo.h"
+
+#include <cstdint>
+#include <memory>
 #include <string>
 #include <vector>
 #include <thread>
@@ -13,14 +16,14 @@
 
 // ─── CD Track info ────────────────────────────────────────────────────────────
 struct CDTrack {
-    int    number;       // 1-based track number
-    DWORD  start_lba;    // logical block address of track start
-    DWORD  length_lba;   // length in sectors
-    int    duration_sec; // approximate duration
+    int      number;       // 1-based track number
+    uint32_t start_lba;    // logical block address of track start
+    uint32_t length_lba;   // length in sectors
+    int      duration_sec; // approximate duration
 };
 
 // ─── CDSource ─────────────────────────────────────────────────────────────────
-// Reads Red Book audio sectors from an optical drive via Win32 IOCTL,
+// Reads Red Book audio sectors from an optical drive via the core::ICdIo seam,
 // converts to float PCM, and feeds a ring buffer consumed by the audio callback.
 // Completely isolated from the existing ma_decoder path.
 
@@ -31,26 +34,28 @@ public:
     static constexpr int    SECTORS_PER_READ = 20;   // read chunk size
     static constexpr int    RING_SECTORS   = 200;    // ~3.4s buffer
 
-    CDSource() = default;
+    // Ctor injection (slice-6/7 pattern): tests pass a fake; nullptr = production
+    // default core::cdio(), resolved at open() (link-time bridge, no setCdio()).
+    explicit CDSource(core::ICdIo* io = nullptr) : io_(io) {}
     ~CDSource() { close(); }
 
     // Open drive (e.g. "D"). Returns false if no audio CD found.
     bool open(const std::string& drive_letter);
     void close();
 
-    bool isOpen()  const { return hCD_ != INVALID_HANDLE_VALUE; }
+    bool isOpen()  const { return dev_ != nullptr; }
     bool isPlaying() const { return playing_.load(); }
 
     // TOC
     const std::vector<CDTrack>& tracks() const { return tracks_; }
     std::string driveLetter()    const { return drive_letter_; }
-    DWORD       fullLeadoutLba()   const { return full_leadout_lba_; }
-    const std::vector<DWORD>& dataTrackLbas() const { return data_track_lbas_; }
+    uint32_t    fullLeadoutLba()   const { return full_leadout_lba_; }
+    const std::vector<uint32_t>& dataTrackLbas() const { return data_track_lbas_; }
 
     // Returns sector offsets suitable for DiscID computation:
     // [track1_start, track2_start, ..., trackN_start, lead_out]
-    std::vector<DWORD> tocOffsets() const {
-        std::vector<DWORD> offs;
+    std::vector<uint32_t> tocOffsets() const {
+        std::vector<uint32_t> offs;
         offs.reserve(tracks_.size() + 1);
         for (const auto& t : tracks_) offs.push_back(t.start_lba);
         // Lead-out = last track start + length
@@ -63,7 +68,7 @@ public:
     bool playTrack(int track_number);
     void stop();
     void stopReader() {
-        // Stop reader thread only — leaves hCD_ open for ripping
+        // Stop reader thread only — leaves the device open for ripping
         reader_stop_.store(true);
         playing_.store(false);
         if (reader_thread_.joinable()) reader_thread_.join();
@@ -78,16 +83,14 @@ public:
     void clearMediaRemoved()  { media_removed_.store(false); }
     bool checkMedia() {
         // Non-blocking check — returns false if disc is gone/tray open
-        if (hCD_ == INVALID_HANDLE_VALUE) return false;
-        DWORD dummy = 0;
-        bool ok = DeviceIoControl(hCD_, IOCTL_CDROM_CHECK_VERIFY,
-                                  nullptr, 0, nullptr, 0, &dummy, nullptr) != 0;
+        if (!dev_) return false;
+        bool ok = dev_->mediaPresent();
         if (!ok) media_removed_.store(true);
         return ok;
     }
 
     // Called by CDRipper — reads raw sectors using the existing open drive handle
-    bool readSectorsForRip(DWORD lba, int count, uint8_t* buf) {
+    bool readSectorsForRip(uint32_t lba, int count, uint8_t* buf) {
         return readSectors(lba, count, buf);
     }
 
@@ -109,12 +112,13 @@ public:
     int  durationSec()    const;
 
 private:
-    HANDLE                  hCD_            = INVALID_HANDLE_VALUE;
+    core::ICdIo*                     io_  = nullptr;  // injected; nullptr = core::cdio()
+    std::unique_ptr<core::ICdDevice> dev_;
     std::string             drive_letter_;
     std::string             drive_model_;
     int                     drive_offset_samples_ = 0;
-    DWORD                   full_leadout_lba_     = 0;  // includes all sessions
-    std::vector<DWORD>      data_track_lbas_;              // data tracks for CDDB
+    uint32_t                full_leadout_lba_     = 0;  // includes all sessions
+    std::vector<uint32_t>   data_track_lbas_;              // data tracks for CDDB
     bool                    offset_known_         = false;
     std::vector<CDTrack>    tracks_;
 
@@ -124,8 +128,8 @@ private:
     std::atomic<bool>       reader_stop_    { false };
     std::atomic<bool>       media_removed_  { false };
     std::atomic<int>        current_track_  { 0 };
-    std::atomic<DWORD>      track_end_lba_  { 0 };
-    std::atomic<DWORD>      current_lba_    { 0 };
+    std::atomic<uint32_t>   track_end_lba_  { 0 };
+    std::atomic<uint32_t>   current_lba_    { 0 };
 
     // Ring buffer (raw 16-bit stereo samples, interleaved)
     static constexpr int RING_SIZE = SECTOR_SAMPLES * RING_SECTORS * 2;
@@ -137,9 +141,8 @@ private:
     std::thread             reader_thread_;
 
     void readerWorker();
-    bool readSectors(DWORD lba, int count, uint8_t* buf);
+    bool readSectors(uint32_t lba, int count, uint8_t* buf);
 
-    std::string queryDriveModel();
     static int  lookupDriveOffset(const std::string& model);
 
     int  ringAvailable() const;

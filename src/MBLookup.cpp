@@ -88,7 +88,7 @@ std::string MBLookup::mb_base64(const uint8_t* data, size_t len) {
 // 2. SHA-1 the string
 // 3. Custom Base64 the 20-byte digest → 28-char DiscID
 std::string MBLookup::computeDiscId(int first_track, int last_track,
-                                     const std::vector<DWORD>& offsets) {
+                                     const std::vector<uint32_t>& offsets) {
     // offsets[0..last_track-1] = track starts, offsets[last_track] = lead-out
     std::ostringstream ss;
     ss << std::hex << std::uppercase << std::setfill('0');
@@ -98,7 +98,7 @@ std::string MBLookup::computeDiscId(int first_track, int last_track,
     ss << std::setw(8) << (last_track < (int)offsets.size() ? offsets[last_track] : 0);
     // 99 track offsets (pad unused with 0)
     for (int i = 0; i < 99; ++i) {
-        DWORD off = (i < (int)offsets.size() - 1) ? offsets[i] : 0;
+        uint32_t off = (i < (int)offsets.size() - 1) ? offsets[i] : 0;
         ss << std::setw(8) << off;
     }
     std::string s = ss.str();
@@ -169,7 +169,7 @@ MBRelease MBLookup::parseJson(const std::string& json_str) {
 
 // ─── Worker thread ────────────────────────────────────────────────────────────
 void MBLookup::worker(int first_track, int last_track,
-                       std::vector<DWORD> offsets, MBCallback cb) {
+                       std::vector<uint32_t> offsets, MBCallback cb) {
     // Rate limiting — enforce 1 req/sec
     {
         std::lock_guard<std::mutex> lk(rate_mutex_);
@@ -221,7 +221,7 @@ void MBLookup::worker(int first_track, int last_track,
 
 // ─── Public API ──────────────────────────────────────────────────────────────
 bool MBLookup::lookup(int first_track, int last_track,
-                      const std::vector<DWORD>& offsets, MBCallback cb) {
+                      const std::vector<uint32_t>& offsets, MBCallback cb) {
     if (active_.load()) return false;
     active_.store(true);
     cancel_.store(false);

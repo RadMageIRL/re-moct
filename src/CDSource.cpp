@@ -1,9 +1,16 @@
 #ifdef _WIN32
 #include "CDSource.h"
 #include "drive_offsets.h"   // full AccurateRip drive-offset DB (4885 drives)
+
+// windows.h ONLY for Sleep() in the reader thread (the DiscordRP.cpp precedent) —
+// ALL device access goes through the core::ICdIo seam (src/platform/win/CdIoWin.cpp).
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+
 #include <cstring>
 #include <cmath>
 #include <algorithm>
+#include <cctype>
 
 // ─── Open / Close ─────────────────────────────────────────────────────────────
 
@@ -11,57 +18,46 @@ bool CDSource::open(const std::string& drive_letter) {
     close();
     drive_letter_ = drive_letter;
 
-    // Open raw device handle
-    std::wstring path = L"\\\\.\\" + std::wstring(drive_letter.begin(), drive_letter.end()) + L":";
-    hCD_ = CreateFileW(path.c_str(),
-                       GENERIC_READ,
-                       FILE_SHARE_READ,
-                       nullptr,
-                       OPEN_EXISTING,
-                       FILE_FLAG_SEQUENTIAL_SCAN,
-                       nullptr);
-
-    if (hCD_ == INVALID_HANDLE_VALUE) return false;
+    // Open raw device via the seam (production default: core::cdio() — Windows
+    // IOCTL transport; tests inject a fake through the ctor)
+    core::ICdIo& io = io_ ? *io_ : core::cdio();
+    dev_ = io.open(drive_letter);
+    if (!dev_) return false;
 
     // Query drive model and look up AccurateRip read offset
-    drive_model_          = queryDriveModel();
+    drive_model_          = dev_->model();
     drive_offset_samples_ = lookupDriveOffset(drive_model_);
 
     // Read Table of Contents
-    CDROM_TOC toc {};
-    DWORD bytes = 0;
-    if (!DeviceIoControl(hCD_, IOCTL_CDROM_READ_TOC,
-                         nullptr, 0, &toc, sizeof(toc), &bytes, nullptr)) {
-        CloseHandle(hCD_);
-        hCD_ = INVALID_HANDLE_VALUE;
+    core::CdToc toc;
+    if (!dev_->readToc(toc)) {
+        dev_.reset();
         return false;
     }
 
     tracks_.clear();
     data_track_lbas_.clear();
     full_leadout_lba_ = 0;
-    int first = toc.FirstTrack;
-    int last  = toc.LastTrack;
+    int first = toc.first;
+    int last  = toc.last;
 
-    // Guard against a malformed TOC: TrackData has MAXIMUM_NUMBER_TRACKS (100)
-    // slots, and the lead-out for an N-track disc sits at index N, so N must be
-    // <= 99. FirstTrack/LastTrack are UCHARs, so a corrupt disc could report
+    // Guard against a malformed TOC: entries has core::CdToc::SLOTS (100) slots,
+    // and the lead-out for an N-track disc sits at index N, so N must be <= 99.
+    // first/last are uint8_t from the drive, so a corrupt disc could report
     // values that would over-read the array below.
-    static_assert(MAXIMUM_NUMBER_TRACKS >= 100, "CDROM_TOC TrackData too small");
     if (first < 1)  first = 1;
     if (last  > 99) last  = 99;
     if (last < first) {
-        CloseHandle(hCD_);
-        hCD_ = INVALID_HANDLE_VALUE;
+        dev_.reset();
         return false;
     }
 
     // Helper: convert MSF address to LBA (sectors from disc start)
-    // TOC Address[] = {0, minutes, seconds, frames}
-    auto msf_to_lba = [](const UCHAR addr[4]) -> DWORD {
-        return (DWORD)(addr[1]) * 60 * 75
-             + (DWORD)(addr[2]) * 75
-             + (DWORD)(addr[3]);
+    // CdTocEntry::msf = {minutes, seconds, frames}
+    auto msf_to_lba = [](const uint8_t msf[3]) -> uint32_t {
+        return (uint32_t)(msf[0]) * 60 * 75
+             + (uint32_t)(msf[1]) * 75
+             + (uint32_t)(msf[2]);
         // Note: do NOT subtract 150 here — Windows TOC addresses
         // are already absolute (include the 2s lead-in).
         // We subtract 150 when computing the read offset to get
@@ -70,20 +66,20 @@ bool CDSource::open(const std::string& drive_letter) {
 
     // ── Capture data tracks from TOC (for CDDB computation and disc ID) ──
     for (int t = first; t <= last; ++t) {
-        auto& te = toc.TrackData[t - 1];
-        if ((te.Control & 0x04) != 0)
-            data_track_lbas_.push_back(msf_to_lba(te.Address));
+        auto& te = toc.entries[t - 1];
+        if ((te.control & 0x04) != 0)
+            data_track_lbas_.push_back(msf_to_lba(te.msf));
     }
 
     for (int t = first; t <= last; ++t) {
-        auto& te = toc.TrackData[t - 1];
+        auto& te = toc.entries[t - 1];
         // Skip data tracks (control bit 4 set = data)
-        if ((te.Control & 0x04) != 0) continue;
+        if ((te.control & 0x04) != 0) continue;
 
-        DWORD start = msf_to_lba(te.Address);
-        DWORD end   = msf_to_lba(toc.TrackData[t].Address); // next track or leadout
+        uint32_t start = msf_to_lba(te.msf);
+        uint32_t end   = msf_to_lba(toc.entries[t].msf); // next track or leadout
 
-        DWORD len = (end > start) ? (end - start) : 0;
+        uint32_t len = (end > start) ? (end - start) : 0;
 
         CDTrack ct;
         ct.number       = t;
@@ -94,58 +90,48 @@ bool CDSource::open(const std::string& drive_letter) {
     }
 
     if (tracks_.empty()) {
-        CloseHandle(hCD_);
-        hCD_ = INVALID_HANDLE_VALUE;
+        dev_.reset();
         return false;
     }
 
 
 
-    // Standard TOC leadout = toc.TrackData[last] (first track after last)
-    full_leadout_lba_ = msf_to_lba(toc.TrackData[last].Address);
+    // Standard TOC leadout = toc.entries[last] (first track after last)
+    full_leadout_lba_ = msf_to_lba(toc.entries[last].msf);
 
     // For multi-session discs (Enhanced CD / CD Extra), get the last session
-    // leadout via IOCTL_CDROM_GET_LAST_SESSION — more reliable than FULL_TOC.
-    CDROM_TOC_SESSION_DATA last_sess {};
-    DWORD ls_bytes = 0;
-    if (DeviceIoControl(hCD_, IOCTL_CDROM_GET_LAST_SESSION,
-                        nullptr, 0, &last_sess, sizeof(last_sess), &ls_bytes, nullptr)
-        && last_sess.TrackData[0].TrackNumber > 1) {
+    // leadout via the seam's last-session query — more reliable than FULL_TOC.
+    uint8_t last_sess_first = 0;
+    if (dev_->lastSessionFirstTrack(last_sess_first) && last_sess_first > 1) {
         // There is a second session — read its TOC to get the real leadout
-        CDROM_TOC toc2 {};
-        DWORD bytes2 = 0;
-        if (DeviceIoControl(hCD_, IOCTL_CDROM_READ_TOC,
-                            nullptr, 0, &toc2, sizeof(toc2), &bytes2, nullptr)) {
+        core::CdToc toc2;
+        if (dev_->readToc(toc2)) {
             // toc2 may return same as toc1 on some drives; take the larger leadout
-            int last2 = toc2.LastTrack;
-            DWORD lo2 = msf_to_lba(toc2.TrackData[last2].Address);
+            int last2 = toc2.last;
+            uint32_t lo2 = msf_to_lba(toc2.entries[last2].msf);
             if (lo2 > full_leadout_lba_)
                 full_leadout_lba_ = lo2;
             // Also capture any data tracks from session 2 not in session 1
-            for (int t = toc2.FirstTrack; t <= last2; ++t) {
-                auto& te2 = toc2.TrackData[t - 1];
-                DWORD lba2 = msf_to_lba(te2.Address);
-                if ((te2.Control & 0x04) != 0) {
+            for (int t = toc2.first; t <= last2; ++t) {
+                auto& te2 = toc2.entries[t - 1];
+                uint32_t lba2 = msf_to_lba(te2.msf);
+                if ((te2.control & 0x04) != 0) {
                     // Only add if not already in list
                     bool already = false;
-                    for (DWORD d : data_track_lbas_) if (d == lba2) { already = true; break; }
+                    for (uint32_t d : data_track_lbas_) if (d == lba2) { already = true; break; }
                     if (!already) data_track_lbas_.push_back(lba2);
                 }
             }
         }
     }
 
-    // Reset speed to max after any disc scanning done in open()
+    // The baseline "reset speed to max" that lived here was DROPPED in slice 8:
+    // it sent a hand-rolled 6-byte struct where cdrom.sys expects the canonical
+    // CDROM_SET_SPEED, and was probe-confirmed rejected with ERROR_BAD_LENGTH —
+    // a lifelong silent no-op (return was ignored). Dropping it is behavior-
+    // identical. Actually resetting speed here (dev_->setSpeed(0xFFFF)) is a
+    // parked behavior improvement — see roadmap.md.
     // Enhanced CD track length correction is done lazily in CDRipper at rip time.
-    {
-        struct { WORD RequestType; WORD ReadSpeed; WORD WriteSpeed; } speed {};
-        speed.RequestType = 0;       // immediate
-        speed.ReadSpeed   = 0xFFFF;  // maximum
-        speed.WriteSpeed  = 0xFFFF;
-        DWORD sp_bytes = 0;
-        DeviceIoControl(hCD_, IOCTL_CDROM_SET_SPEED,
-                        &speed, sizeof(speed), nullptr, 0, &sp_bytes, nullptr);
-    }
 
     ring_.resize(RING_SIZE, 0);
     return true;
@@ -155,10 +141,7 @@ void CDSource::close() {
     data_track_lbas_.clear();
     full_leadout_lba_ = 0;
     stop();
-    if (hCD_ != INVALID_HANDLE_VALUE) {
-        CloseHandle(hCD_);
-        hCD_ = INVALID_HANDLE_VALUE;
-    }
+    dev_.reset();
     tracks_.clear();
     media_removed_.store(false);
     ring_write_.store(0);
@@ -216,7 +199,7 @@ void CDSource::readerWorker() {
     while (!reader_stop_.load()) {
         if (paused_.load()) { Sleep(20); continue; }
 
-        DWORD lba = current_lba_.load();
+        uint32_t lba = current_lba_.load();
         if (lba >= track_end_lba_.load()) {
             playing_.store(false);
             break;
@@ -226,17 +209,15 @@ void CDSource::readerWorker() {
         int avail = ringAvailable();
         if (avail > RING_SIZE / 2) { Sleep(10); continue; }
 
-        DWORD remaining = track_end_lba_.load() - lba;
-        int   count     = std::min((DWORD)BUF_SECTORS, remaining);
+        uint32_t remaining = track_end_lba_.load() - lba;
+        int      count     = std::min((uint32_t)BUF_SECTORS, remaining);
         if (count == 0) break;
 
         if (!readSectors(lba, count, buf.data())) {
             ++consecutive_errors;
 
             // Check if media is still present
-            DWORD dummy = 0;
-            bool media_ok = DeviceIoControl(hCD_, IOCTL_CDROM_CHECK_VERIFY,
-                                            nullptr, 0, nullptr, 0, &dummy, nullptr) != 0;
+            bool media_ok = dev_ && dev_->mediaPresent();
             if (!media_ok || consecutive_errors >= 10) {
                 // Drive ejected or unreadable — hard stop
                 // Flush ring so callback outputs silence immediately
@@ -266,13 +247,13 @@ void CDSource::readerWorker() {
 void CDSource::seekTo(int seconds) {
     if (current_track_.load() == 0) return;
     // Find track start LBA
-    DWORD track_start = 0;
+    uint32_t track_start = 0;
     for (auto& t : tracks_)
         if (t.number == current_track_.load()) { track_start = t.start_lba; break; }
 
     // Calculate target LBA: 75 sectors per second
-    DWORD target_lba = track_start + (DWORD)(seconds * 75);
-    DWORD track_end = track_end_lba_.load();
+    uint32_t target_lba = track_start + (uint32_t)(seconds * 75);
+    uint32_t track_end = track_end_lba_.load();
     if (track_end > 0 && target_lba >= track_end) target_lba = track_end - 1;
 
     // Stop reader, flush ring, seek, restart
@@ -288,18 +269,12 @@ void CDSource::seekTo(int seconds) {
     reader_thread_ = std::thread(&CDSource::readerWorker, this);
 }
 
-bool CDSource::readSectors(DWORD lba, int count, uint8_t* buf) {
-    RAW_READ_INFO info {};
-    // Windows quirk: DiskOffset uses 2048-byte sector scale even for audio
-    info.DiskOffset.QuadPart = (ULONGLONG)lba * 2048;
-    info.SectorCount         = (ULONG)count;
-    info.TrackMode           = CDDA;
-
-    DWORD bytes = 0;
-    return DeviceIoControl(hCD_, IOCTL_CDROM_RAW_READ,
-                           &info, sizeof(info),
-                           buf, SECTOR_BYTES * count,
-                           &bytes, nullptr) != 0;
+bool CDSource::readSectors(uint32_t lba, int count, uint8_t* buf) {
+    // Plain CDDA read, no C2 (playback path). The RAW_READ_INFO shape — including
+    // the Windows 2048-byte DiskOffset scale quirk — lives in the seam impl.
+    std::size_t got = 0;
+    return dev_ && dev_->readRaw(lba, (uint32_t)count, false,
+                                 buf, (std::size_t)SECTOR_BYTES * count, got);
 }
 
 // ─── Audio callback interface ─────────────────────────────────────────────────
@@ -326,7 +301,7 @@ int CDSource::positionSec() const {
     if (!current_track_.load()) return 0;
     for (auto& t : tracks_)
         if (t.number == current_track_.load()) {
-            DWORD played = current_lba_.load() - t.start_lba;
+            uint32_t played = current_lba_.load() - t.start_lba;
             return (int)(played / 75);
         }
     return 0;
@@ -370,36 +345,9 @@ int CDSource::ringRead(int16_t* dst, int samples) {
     return n;
 }
 
-// ─── Drive model query and offset lookup ──────────────────────────────────────
-#include <ntddstor.h>
-#include <cctype>
-
-std::string CDSource::queryDriveModel() {
-    if (hCD_ == INVALID_HANDLE_VALUE) return {};
-    std::vector<uint8_t> buf(512, 0);
-    STORAGE_PROPERTY_QUERY query = {};
-    query.PropertyId = StorageDeviceProperty;
-    query.QueryType  = PropertyStandardQuery;
-    DWORD bytes = 0;
-    if (!DeviceIoControl(hCD_, IOCTL_STORAGE_QUERY_PROPERTY,
-                         &query, sizeof(query),
-                         buf.data(), (DWORD)buf.size(), &bytes, nullptr))
-        return {};
-    auto* desc = reinterpret_cast<STORAGE_DEVICE_DESCRIPTOR*>(buf.data());
-    auto getString = [&](DWORD offset) -> std::string {
-        if (offset == 0 || offset >= bytes) return {};
-        const char* p = reinterpret_cast<const char*>(buf.data()) + offset;
-        size_t len = strnlen(p, bytes - offset);
-        std::string s(p, len);
-        s.erase(0, s.find_first_not_of(" \t\r\n"));
-        auto last = s.find_last_not_of(" \t\r\n");
-        if (last != std::string::npos) s.erase(last + 1);
-        return s;
-    };
-    std::string vendor  = getString(desc->VendorIdOffset);
-    std::string product = getString(desc->ProductIdOffset);
-    return vendor.empty() ? product : vendor + " " + product;
-}
+// ─── Drive offset lookup ──────────────────────────────────────────────────────
+// (Model query moved behind the seam — dev_->model(); the offset lookup below is
+// pure logic and stays consumer-side.)
 
 int CDSource::lookupDriveOffset(const std::string& model) {
     if (model.empty()) return 0;

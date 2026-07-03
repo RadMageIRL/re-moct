@@ -100,4 +100,20 @@ if(WIN32)
     target_include_directories(discord_ipc_test PRIVATE
         ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/lib)
     add_test(NAME discord_ipc_test COMMAND discord_ipc_test)
+
+    # slice 8 — Windows-only CD-I/O seam test. Links the REAL CDSource consumer
+    # + the IOCTL impl TU (linked only to satisfy core::cdio(); never invoked —
+    # the test injects a FakeCdIo via constructor injection) and asserts the TOC
+    # parse against canned discs: Relish-shaped non-standard pregap (T1 @ LBA 182),
+    # Enhanced-CD data track + second-session leadout, malformed-TOC guards,
+    # drive-model → AR offset lookup, media checks. The rip path's readRaw shape
+    # is proven by the Joan Osborne gate (CDRipper's TU is too heavy to link).
+    add_executable(cd_toc_test
+        cd_toc_test.cpp
+        ${CMAKE_SOURCE_DIR}/src/CDSource.cpp
+        ${CMAKE_SOURCE_DIR}/src/platform/win/CdIoWin.cpp
+    )
+    target_include_directories(cd_toc_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/lib)
+    add_test(NAME cd_toc_test COMMAND cd_toc_test)
 endif()

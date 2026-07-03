@@ -43,6 +43,7 @@ if(WIN32)
         ${CMAKE_SOURCE_DIR}/src/platform/win/HttpWinInet.cpp
         ${CMAKE_SOURCE_DIR}/src/platform/win/IpcWinPipe.cpp
         ${CMAKE_SOURCE_DIR}/src/platform/win/NotifyWinToast.cpp
+        ${CMAKE_SOURCE_DIR}/src/platform/win/CdIoWin.cpp
     )
 endif()
 

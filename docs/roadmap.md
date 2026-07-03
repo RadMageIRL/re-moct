@@ -160,10 +160,25 @@ carve the ABI first.
   returned KWIN 97.7 (the group-(a) twin); digital iHeart HLS (Z100 zc1469)
   PLAYED — segment pump at edgeLag 0, FDK 48→44.1k, live iHeart nowPlaying
   through the CurlSession, and audible-output proof: 4 s off the Pulse sink
-  monitor at RMS 5791 / 100% non-zero samples. Scrobble round-trips (the
-  Windows MD5-vendoring regression + Linux accents-intact) run by Dos with his
-  keys. Findings recorded, not fixed (parked below): logDir grandparent mkdir;
-  radio-browser nl1/at1 mirrors DNS-dead (de1 fine, fallback loop works).
+  monitor at RMS 5791 / 100% non-zero samples. **Scrobble round-trips PASSED
+  both platforms** (standalone probe, Dos's real keys, run after the commit at
+  Dos's order): Windows/WinINet — the MD5-vendoring wire regression —
+  updateNowPlaying + scrobble ACCEPTED by Last.fm (api_sig signed by the
+  vendored MD5), ListenBrainz validate (RadMageIRL) + single ACCEPTED; Linux/
+  libcurl — the identical four calls ACCEPTED, Björk/Jóga accents over raw
+  UTF-8 POSTFIELDS. **Slice-2 follow-up (Dos-found on the Debian VM, fixed
+  same day):** ^U/^G/^B dead on Linux — NOT the terminal: a single `#ifdef
+  _WIN32` around Ctrl+D in handleInput's key switch spanned ^D/^B/^F/^G/^U/
+  ^Y/^R, deleting the portable handlers from the Linux build; a minimal-curses
+  key probe proved the tty delivers all the codes (so the slice-1 IXON-only
+  termios stays — ISIG/IEXTEN were NOT taken). Fix = per-case gates with the
+  reason on each; ^B/^G/^U now common; ^D (Discord, slice 4), ^F (MBSearch
+  overlay handlers still win-gated), ^Y/^R (CD, slice 6) stay gated — those
+  three keys come alive with their slices. Verified: ^U/^G/^B open their
+  prompts in the Linux TUI, ^Q quits; Windows 14/14 (preprocessed output
+  unchanged); Linux 10/10. Findings recorded, not fixed (parked below):
+  logDir grandparent mkdir; radio-browser nl1/at1 mirrors DNS-dead (de1
+  fine, fallback loop works).
 - **Phase 3 slice 1 — portable core compiles, links, and PLAYS on Linux: DONE.**
   The whole-file `#ifdef _WIN32` gates came off 21 files (11 TUs + 10 headers);
   `include/PortUtil.h` landed with the rule that makes it safe: **every helper's

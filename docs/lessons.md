@@ -86,6 +86,22 @@
 - Cosmetic iteration is fine ("dessert"), but the Phase 0 harness is the "vegetables"
   that make the next big refactor safe — don't let polish indefinitely defer it.
 
+## Platform gating
+- **Gate `#ifdef _WIN32` per-case with the reason on each, never per-region —
+  and when keys die on one platform, probe the terminal before blaming it.**
+  Slice 1 wrapped a REGION of handleInput's key switch for Ctrl+D (Discord);
+  the span silently deleted six OTHER handlers (^B/^F/^G/^U/^Y/^R) from the
+  Linux build — the symptom (some control keys dead, others fine) looked
+  exactly like tty line-discipline theft, and the first "fix" (clearing
+  ISIG/IEXTEN) was about to remove ^C on no evidence. A 30-line minimal-curses
+  probe with the app's exact init settled it in one run: every code reached
+  getch(), so the bug had to be app-side. Rules: (1) each gated `case` gets
+  its own `#ifdef` + a comment naming WHY (which slice un-gates it); (2) a
+  dead-key report on Linux = run the key probe FIRST — the terminal is
+  innocent until getch() says otherwise; (3) grep `#ifdef _WIN32` spans in
+  dispatch switches when porting — a gate around one feature's case swallows
+  its neighbors invisibly (the build stays green; the keys just vanish).
+
 ## WSL build/test discipline — one run, one read, the log is the only truth
 - Run every build/test FOREGROUND, redirected to a log, with an exit marker:
   `<cmd> > /root/out.log 2>&1; echo EXIT=$?`. Then read the log ONCE:

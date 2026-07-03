@@ -15,9 +15,17 @@
   PLAYED — pump at edgeLag 0, live nowPlaying via CurlSession, audible output
   proven by sink-monitor capture (RMS 5791, 100% non-zero). NOTE: the progress
   bar in radio mode only displays metadata — it does not move (Dos-confirmed
-  expected; do not chase a static readout as a bug). Scrobble round-trips
-  (Windows MD5 regression + Linux accents): Dos, with his keys — Linux keys go
-  in `~/.config/RE-MOCT/` (UPPERCASE — lowercase is silently ignored).
+  expected; do not chase a static readout as a bug). **Scrobble round-trips
+  PASSED both platforms** (standalone probe + Dos's real keys): Last.fm
+  updateNowPlaying + scrobble ACCEPTED and ListenBrainz validate (RadMageIRL)
+  + single ACCEPTED — on Windows/WinINet (the MD5 wire regression) AND
+  Linux/libcurl (Björk/Jóga accents). Linux keys live in `~/.config/RE-MOCT/`
+  (UPPERCASE — lowercase is silently ignored).
+- **Key-fix follow-up (`b2abb12`):** Linux ^U/^G/^B dead — an `#ifdef _WIN32`
+  span in handleInput's key switch deleted seven cases from the Linux build;
+  the terminal was proven innocent by a key probe (termios stays IXON-only).
+  Per-case gates now; ^B/^G/^U live on Linux (verified: all three prompts
+  open in the TUI); ^F/^Y/^R/^D stay gated until their slices (4/6).
 - **Hard-won:** POSIX `close()` does NOT wake a blocked `accept()` — first
   Linux http_cancel run hung forever; fix = shutdown-then-close
   (`stopListener()`) + ctest TIMEOUT 60. Also pinned in lessons.md: WSL

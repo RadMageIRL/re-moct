@@ -26,6 +26,15 @@ if(WIN32 AND REMOCT_STATIC_PROBE)
     message(STATUS "STATIC PROBE: preferring .a archives over .dll.a import stubs")
 endif()
 
+# ── Option C: PDCursesMod wingui (Windows single-exe truecolor) ─────────────
+# Toggle with -DREMOCT_PDCURSES=ON (Windows only). Renders the TUI via the
+# vendored PDCursesMod wingui/GDI port instead of ncursesw, guaranteeing
+# truecolor for Awesome mode. OFF by default -> Windows keeps ncursesw. Linux
+# is always ncursesw and ignores this. Defining it swaps the curses selection
+# below AND makes Curses.h include <curses.h> (PDCurses) via the REMOCT_PDCURSES
+# compile definition on the remoct target.
+option(REMOCT_PDCURSES "Windows: render via vendored PDCursesMod wingui instead of ncursesw" OFF)
+
 # ── Sources ────────────────────────────────────────────────────────────────
 set(REMOCT_SOURCES
     src/main.cpp
@@ -118,10 +127,10 @@ target_include_directories(remoct PRIVATE
     ${FDKAAC_INCLUDE}
 )
 if(WIN32)
-    target_include_directories(remoct PRIVATE
-        ${MSYS2_PREFIX}/include
-        ${MSYS2_PREFIX}/include/ncursesw
-    )
+    target_include_directories(remoct PRIVATE ${MSYS2_PREFIX}/include)
+    if(NOT REMOCT_PDCURSES)
+        target_include_directories(remoct PRIVATE ${MSYS2_PREFIX}/include/ncursesw)
+    endif()
 else()
     # Debian keeps the wide-char build's headers under /usr/include/ncursesw —
     # putting it on the path makes <ncurses.h> resolve to the ncursesw variant
@@ -162,12 +171,43 @@ find_library(FDKAAC_LIB NAMES fdk-aac
     PATHS "${MSYS2_PREFIX}/lib" REQUIRED)
 find_path(FDKAAC_INCLUDE NAMES fdk-aac/aacdecoder_lib.h
     PATHS "${MSYS2_PREFIX}/include" REQUIRED)
+if(WIN32 AND REMOCT_STATIC_PROBE)
+    # fdk-aac stays DYNAMIC by design even under the static single-exe build:
+    # the exe and the remoct_stream plugin share it, so one libfdk-aac.dll = one
+    # codec state (static in the exe + a plugin copy would alias into two decoder
+    # states). Force the import lib past the static-first suffix preference. This
+    # normal-var set() shadows the .a the find_library above cached.
+    set(FDKAAC_LIB "${MSYS2_PREFIX}/lib/libfdk-aac.dll.a")
+endif()
 message(STATUS "fdk-aac: ${FDKAAC_LIB}")
-find_library(NCURSESW_LIB NAMES ncursesw
-    PATHS "${MSYS2_PREFIX}/lib" REQUIRED)
-find_library(PANELW_LIB NAMES panelw
-    PATHS "${MSYS2_PREFIX}/lib")
-message(STATUS "ncursesw: ${NCURSESW_LIB}")
+# ── Curses: PDCursesMod wingui (Windows+REMOCT_PDCURSES) or ncursesw ────────
+if(WIN32 AND REMOCT_PDCURSES)
+    # Vendored PDCursesMod (pinned; see lib/pdcursesmod/VENDOR.md). Build the
+    # wingui/GDI port as a static lib: portable core (pdcurses/*.c) + the 7
+    # platform TUs (wingui/*.c, which #include the needed common/*.c helpers).
+    set(PDC_DIR "${CMAKE_SOURCE_DIR}/lib/pdcursesmod")
+    file(GLOB PDC_CORE_SRC "${PDC_DIR}/pdcurses/*.c")
+    set(PDC_WINGUI_SRC
+        "${PDC_DIR}/wingui/pdcclip.c"  "${PDC_DIR}/wingui/pdcdisp.c"
+        "${PDC_DIR}/wingui/pdcgetsc.c" "${PDC_DIR}/wingui/pdckbd.c"
+        "${PDC_DIR}/wingui/pdcscrn.c"  "${PDC_DIR}/wingui/pdcsetsc.c"
+        "${PDC_DIR}/wingui/pdcutil.c")
+    add_library(pdcurses_wingui STATIC ${PDC_CORE_SRC} ${PDC_WINGUI_SRC})
+    target_include_directories(pdcurses_wingui PUBLIC "${PDC_DIR}")
+    # PDC_WIDE + PDC_FORCE_UTF8: single-column wide glyphs + UTF-8 (box-drawing,
+    # viz blocks). The wingui GDI port draws its own colours (truecolor).
+    target_compile_definitions(pdcurses_wingui PRIVATE PDC_WIDE PDC_FORCE_UTF8)
+    target_link_libraries(pdcurses_wingui PUBLIC gdi32 comdlg32 winmm)
+    # Silence third-party warnings; this is vendored code, not ours to fix.
+    target_compile_options(pdcurses_wingui PRIVATE -w)
+    message(STATUS "curses: PDCursesMod wingui (vendored, static) - Option C")
+else()
+    find_library(NCURSESW_LIB NAMES ncursesw
+        PATHS "${MSYS2_PREFIX}/lib" REQUIRED)
+    find_library(PANELW_LIB NAMES panelw
+        PATHS "${MSYS2_PREFIX}/lib")
+    message(STATUS "ncursesw: ${NCURSESW_LIB}")
+endif()
 
 # ── TagLib ─────────────────────────────────────────────────────────────────
 find_package(PkgConfig QUIET)
@@ -185,10 +225,20 @@ else()
 endif()
 target_include_directories(remoct PRIVATE ${TAGLIB_INCLUDE_DIRS})
 
+# ── Curses linkage (selected above) ────────────────────────────────────────
+if(WIN32 AND REMOCT_PDCURSES)
+    target_link_libraries(remoct PRIVATE pdcurses_wingui)
+    # Curses.h -> <curses.h> (PDCursesMod) instead of ncursesw.
+    target_compile_definitions(remoct PRIVATE REMOCT_PDCURSES)
+else()
+    target_link_libraries(remoct PRIVATE
+        ${NCURSESW_LIB}
+        $<$<BOOL:${PANELW_LIB}>:${PANELW_LIB}>
+    )
+endif()
+
 # ── Link ───────────────────────────────────────────────────────────────────
 target_link_libraries(remoct PRIVATE
-    ${NCURSESW_LIB}
-    $<$<BOOL:${PANELW_LIB}>:${PANELW_LIB}>
     ${TAGLIB_LIBRARIES}
     ${FLAC_LIB}
     ${LAME_LIB}

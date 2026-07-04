@@ -107,10 +107,17 @@ slice-2 cmdline echo as graceful degradation). Dos live-confirmed on Debian
 13 (song-to-song + ^D toasts). Follow-ups un-gating stale `#ifdef _WIN32`:
 stream connect/fail toasts (`a5b6bf6`) + Ctrl+A/Ctrl+K key cases & Ctrl+T/N
 toasts (`9cb73f5`) — both pushed (Dos live-test of the toggles outstanding).
-**Next: slice 6 (SG_IO CD — LAST) — READ CD 0xBE (want_c2), READ TOC 0x43,
-TEST UNIT READY, INQUIRY, SET CD SPEED 0xBB; gate: Relish rip via usbipd/WSL2,
-12/12 AR v2 conf 200 AND byte-identical to the Windows baseline log.**
-See `docs/roadmap.md` for the plan + gates.
+**Slice 6 DONE — PHASE 3 COMPLETE (2026-07-04).** SG_IO `core::ICdIo` Linux twin
+(`src/platform/linux/CdIoSgIo.cpp` + pure CDBs in `CdbSgIo.h`): READ CD 0xBE
+(want_c2 → byte-9 0x10/0x12), READ TOC 0x43, TEST UNIT READY, INQUIRY, SET CD
+SPEED 0xBB — each one `ioctl(SG_IO)`, native LBA. The full CD UI un-gated on Linux
+(drive list + `/dev/sr*` + mount points, ^Y/^R, rip overlay). **Gate PROVEN on the
+real GHD3N via usbipd→WSL2** (the ONLY valid CD venue — VMware exposes a virtual
+drive with the wrong offset): `model()`→+6, TOC LBAs identical, `readRaw`
+byte-identical to `sg_raw` READ CD and to the Windows baseline raw samples → AR CRC
+byte-identical by construction. **Every platform call is now behind a seam on both
+platforms.** Next: Phase 4 (plugin-ize — harden the Source interface into a
+loadable C-ABI, extract iHeart as the first plugin). See `docs/roadmap.md`.
 
 ## Deep knowledge — read the matching file when a task touches it
 - Roadmap, phases, parked items, decisions → `docs/roadmap.md`

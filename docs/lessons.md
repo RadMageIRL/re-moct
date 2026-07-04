@@ -193,6 +193,40 @@
   byte level without eyes on the Discord window. Honest limit: socat creates
   the socket, so the flatpak/snap discovery candidates stay fixture-proven.
 
+## CD transport / SG_IO (Phase 3 slice 6)
+- **A virtualized CD drive is NOT the physical drive — it has a different model
+  string, hence a different (usually default +0) AccurateRip offset, hence
+  different corrected bytes.** VMware Workstation Pro presents its own
+  `NECVMWar VMware SATA CD00`, not the passed-through `HL-DT-ST DVDRW GHD3N`, so a
+  Linux rip there resolved +0 (not the GHD3N's +6), came out 6 samples misaligned,
+  matched no AR entry, and ran sub-1x (virtual-drive emulation). This is the
+  `model()`→offset load-bearing risk made concrete: the offset lookup is
+  consumer-side and keyed on the INQUIRY string, so a different drive silently
+  shifts the sample window and reads like a read bug. The byte-identical CD gate
+  REQUIRES the exact physical drive whose offset the DB expects — for us that is
+  the GHD3N via **usbipd→WSL2**, never a hypervisor's virtual CD. (The tell it was
+  NOT a transport bug: the VMware raw reads matched Windows once offset-aligned —
+  `raw[+6]` = Windows corrected sample 0.)
+- **Prove a byte-identical transport port WITHOUT the full app: compile the
+  production impl standalone and `cmp` it against a trusted reference tool.** For
+  the SG_IO CD seam, `g++ -I include a_tiny_main.cpp src/platform/linux/CdIoSgIo.cpp`
+  links the real `core::cdio()` (it's `#ifdef __linux__`, self-contained), so a
+  10-line `main` calls the actual `model()`/`readToc()`/`readRaw()` against
+  `/dev/sr0`. Then `cmp` `readRaw`'s bytes against `sg_raw -r 2352 /dev/sr0 be 04
+  00 00 00 b6 00 00 01 10 00 00` (the identical READ CD 0xBE CDB): IDENTICAL proves
+  the transport returns exactly what the drive's READ CD returns — no full remoct
+  build (curl/fdk/taglib/…) needed. Reconcile display formats against the app's own
+  dump code before crying "mismatch": remoct packs samples as `(R<<16)|L`
+  (CDRipper.cpp), so a naive `L,R` printf looks word-swapped though the bytes are
+  identical.
+- **usbipd attach needs a RUNNING WSL2 distro** ("There is no WSL 2 distribution
+  running") — start a background keep-alive (`wsl -d Debian -e bash -lc "sleep N"`)
+  first, then `"C:\Program Files\usbipd-win\usbipd.exe" attach --wsl --busid 4-1`.
+  "Device busy (exported)" = something on the Windows side (or another hypervisor)
+  holds the drive — free it there first. WSL default user is `dostrom` (uid 1000,
+  in the `cdrom` group → `/dev/sr0` reads need no sudo; `/home/dostrom` is writable,
+  `/root` is NOT). Detach with `usbipd detach --busid 4-1` when done (the ritual).
+
 ## WSL build/test discipline — one run, one read, the log is the only truth
 - Run every build/test FOREGROUND, redirected to a log, with an exit marker:
   `<cmd> > /root/out.log 2>&1; echo EXIT=$?`. Then read the log ONCE:

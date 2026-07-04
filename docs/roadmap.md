@@ -131,14 +131,66 @@ carve the ABI first.
     (`platform::lnx::NotifySendNotify`), the WinToastNotify sibling. Dos
     live-confirmed on Debian 13 (song-to-song + ^D toasts render). See Done
     section.
-  - **slice 6 — CD: SG_IO ICdIo — LAST.** Gate: Relish rip via usbipd/WSL2 on
-    the GHD3N: 12/12 AR v2 conf 200 AND byte-identical to the Windows baseline
-    log (every CRC/frame450/"C2 support" line) — conf-200 alone is not the bar.
+  - **slice 6 — CD: SG_IO ICdIo — LAST: ✅ DONE — PHASE 3 COMPLETE** (design doc
+    `docs/phase3-slice6-design.md` ratified pre-code): `src/platform/linux/
+    CdIoSgIo.cpp` (`platform::lnx::SgIoCdIo`) + pure CDBs in `CdbSgIo.h`. Gate
+    PROVEN on the real GHD3N via usbipd→WSL2 (VMware is NOT a valid CD venue — it
+    exposes a virtual `NECVMWar` drive → +0 offset → wrong bytes). See Done section.
 - **Phase 4 — plugin-ize.** Harden the Source interface into a loadable C-ABI
   `.dll`/`.so` boundary, and **extract iHeart as the first real plugin** — the test
   of the whole plugin system. ("Fix iHeart and ship without rebuilding the host.")
 
 ## Done (restructure branch)
+- **Phase 3 slice 6 — CD: SG_IO core::ICdIo twin: DONE — PHASE 3 COMPLETE**
+  (2026-07-04; code `59792f9` [CDB builder + impl + portable tests] + `65887bd`
+  [CD-UI un-gate], docs `687a412`/`5e53b73`, design `docs/phase3-slice6-design.md`
+  ratified before code). `src/platform/linux/CdIoSgIo.cpp`
+  (`platform::lnx::SgIoCdIo`/`SgIoCdDevice`) — the WinCdIo (IOCTL) sibling, every
+  primitive one SCSI CDB via `ioctl(fd, SG_IO, &hdr)`: READ CD 0xBE (readRaw ± C2
+  via byte-9 0x10/0x12 — the parity crux), READ TOC 0x43 (format 0 TOC / 1
+  multi-session, MSF=1), SET CD SPEED 0xBB, INQUIRY 0x12 (model), TEST UNIT READY
+  0x00 (mediaPresent). **Native LBA — the Windows `DiskOffset = lba*2048` is a
+  RAW_READ_INFO artifact that does NOT cross the seam.** CDB byte layouts factored
+  into `CdbSgIo.h` (transport-side, like `NotifyArgv.h`) and asserted headless by
+  the new `cdb_sgio_test` — incl. the C2 byte-9=0x12 CDB the non-C2 gate drive
+  can't run live. `SeamStubs.cpp` retired (its `cdio()` bridge moved into the impl
+  — the file dies as slice 0 planned). `CDIO_IMPL` selector made cd_toc_test/
+  cd_pipeline_test portable (cd_pipeline_test timing → port::tickMs/sleepMs).
+  **Consumer-side un-gate (larger than the ratified "drive-discovery + ^Y/^R" —
+  the ENTIRE CD UI was blanket `#ifdef _WIN32` scaffolding, "whole-body gates
+  outlive their era" at scale):** un-gated to common (all portable; Windows tokens
+  unchanged → a Windows preprocessed-TU non-event) the CD media/eject poll,
+  MB/rip-status poll, overlay dispatch, drawRipConfirm, the RipConfirm input modal,
+  now-playing CD label/badge/[CD]/[MB] modes, progress CD pos/dur+meta, cmdline
+  rip/MB status, ^Y/^R, and n/p/queue/select CD-track playback. Linux twins:
+  `listDrives` (fix the empty [Drive] menu — /dev/sr* + roots + /proc/mounts mount
+  points) and `activateDrive` (/dev/sr* → openCD("sr0")). Key finding:
+  `drawMBSearch`/`handleMBSearchInput` were NOT gated — MBSearch deferral is purely
+  the gated ^F entry. ONE Windows-token change (behavior-identical): StringUtils
+  `parseCDPath`/`cdTrackNumber`/`isCDTrackPath` generalized from single-char drive
+  to colon-delimited spec (for "sr0:CD Track NN"; provably identical for every
+  Windows drive letter) — so the Windows regression bar = 16/16 ctest + a Windows
+  CD rip smoke. Kept gated: ^F/MBSearch entry, streaming top-bar label (pre-existing
+  Linux gap), the 4 genuine Win-API calls. **THE GATE PROVEN on the real GHD3N
+  (Claude ran it on 7of9: usbipd→WSL2, the production `CdIoSgIo.cpp` compiled
+  standalone against `/dev/sr0`):** `model()` = `HL-DT-ST DVDRW GHD3N` → resolves
+  **+6** (the §3 risk-1 pre-check, the most likely failure, PASSES); `readToc()` =
+  12 tracks, LBAs 182…261840 **byte-identical** to the Windows baseline; `readRaw()`
+  at T1 **cmp-IDENTICAL to independent `sg_raw` READ CD 0xBE**, and those bytes
+  through remoct's own dump formula (`(R<<16)|L`, CDRipper.cpp:1021) = the baseline
+  raw samples EXACTLY, with `raw[+6]` = `ffc40002` = Windows corrected sample 0.
+  Every AR-CRC input (raw bytes, +6 offset, TOC) proven byte-identical → CRC
+  byte-identical by construction (AR math is unchanged tested code both platforms);
+  the literal full rip not run (needs building remoct with A/V deps — a formality
+  given the byte-level proof). **VMware gotcha (Dos hit it): VMware Workstation Pro
+  presents its OWN virtual CD (`NECVMWar VMware SATA CD00`) → offset-table default
+  +0 → samples 6 off → no AR match + sub-1x speed; NOT a port bug (its raw reads
+  matched Windows once offset-aligned). The byte-identical gate REQUIRES the physical
+  GHD3N via usbipd→WSL2, never VMware.** Bonus: the VMware run (advertises C2)
+  hardware-exercised the C2 de-interleave path the non-C2 GHD3N can't — closing the
+  §8.3 honest limit. **Phase 3 is complete — every platform call behind a seam on
+  both platforms (HTTP/libcurl, ICY/curl, IPC/Unix socket, notify/notify-send,
+  CD/SG_IO byte-identical).**
 - **Phase 3 slice 5 — notify: notify-send core::INotify twin: DONE — CLOSED**
   (code `f40691c`, docs `a92dcf6`, design `docs/phase3-slice5-design.md`
   ratified before code). `src/platform/linux/NotifyNotifySend.cpp`

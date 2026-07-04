@@ -98,8 +98,18 @@ common; discord_ipc_test portable + new both-platform ipc_echo_test; Windows
 TUI via npiperelay bridge — title/artist + iTunes art accepted, track change,
 lazy reconnect. **100% CLOSED: Dos verified on native Debian 13 + real
 Discord install — end-to-end all good**).
-**Next: slice 5 (notify: libnotify — gate: real notification via dunst;
-headless = documented best-effort no-op). Then slice 6 (SG_IO CD — LAST).**
+**Slice 5 DONE — CLOSED: notify-send `core::INotify` twin**
+(`NotifyNotifySend.cpp` = `platform::lnx::NotifySendNotify`; runs
+`notify-send -a RE-MOCT -- <title> <body>` via fork()+execvp(), argv-safe —
+no shell, `--` option-injection guard; argv builder in `NotifyArgv.h`,
+transport-side; new Linux-only `notify_argv_test`; Linux 14/14; kept the
+slice-2 cmdline echo as graceful degradation). Dos live-confirmed on Debian
+13 (song-to-song + ^D toasts). Follow-ups un-gating stale `#ifdef _WIN32`:
+stream connect/fail toasts (`a5b6bf6`, pushed) + Ctrl+A/Ctrl+K key cases
+(applied, pending live-test).
+**Next: slice 6 (SG_IO CD — LAST) — READ CD 0xBE (want_c2), READ TOC 0x43,
+TEST UNIT READY, INQUIRY, SET CD SPEED 0xBB; gate: Relish rip via usbipd/WSL2,
+12/12 AR v2 conf 200 AND byte-identical to the Windows baseline log.**
 See `docs/roadmap.md` for the plan + gates.
 
 ## Deep knowledge — read the matching file when a task touches it

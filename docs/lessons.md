@@ -115,6 +115,19 @@
   means its consumer is gated out; treat those warnings as porting TODOs,
   not noise. End-of-slice ritual now: `grep -n "#ifdef _WIN32" | audit each
   span` over files the slice made portable.
+- **Third instance (slice-5 follow-up, Ctrl+A/Ctrl+K): a per-case gate whose
+  comment can't name an unported dependency is a missed un-gate, not a
+  deferral — audit EVERY gated case's reason, not just the reported one.** The
+  key switch documents why ^D/^F/^Y/^R are gated (Discord readiness / MBSearch
+  overlay still Windows-gated / CD slice 6), but ^A (deep iHeart log) and ^K
+  (digital-vs-raw stream) sat under bare `#ifdef _WIN32` with NO reason — both
+  depend on nothing unported (IHeartDeepLog portable since slice 1; both stream
+  paths since slices 2/3), so they were simply forgotten un-gates: dead on Linux
+  (no toggle, no toast), reported by Dos closing slice 5. Rule: when un-gating
+  per-reason, sweep the neighbours — a gated `case` with no nameable unported
+  dep is a bug. (Toast-only variant: ^T/^N run their function but their
+  `showTrackToast` is still `#ifdef _WIN32` — the toggle works, the toast is
+  silent on Linux; same class, cosmetic.)
 
 ## Raw ICY transport (Phase 3 slice 3)
 - **Disable ALPN before speaking hand-written HTTP/1.x over a curl
@@ -198,6 +211,15 @@
   log file, never in the process table. If you find yourself checking ps or
   relaunching, stop — go read the log. (Cost three loops in the slice-2
   session before being pinned.)
+- **`/tmp` is a per-invocation tmpfs, wiped between separate `wsl.exe` calls;
+  `/root` persists.** Each `wsl.exe -d Debian …` launch that lets the distro
+  idle out clears `/tmp` — a harness / fake-binary / capture file written there
+  in one call is GONE in the next — while `/root` (ext4) survives (that's why
+  the synced source tree and build dir persist across calls but a `/tmp`
+  scratch file doesn't). Put anything that must outlive a single call under
+  `/root`, or do the whole write-run-read in ONE `bash < script.sh` invocation.
+  (Cost one loop in slice 5 chasing an "empty" argv capture a prior call had
+  actually written to a since-wiped `/tmp`.)
 
 ## Readouts / estimators
 - **The "live VBR" bitrate estimator was a linear position model — a

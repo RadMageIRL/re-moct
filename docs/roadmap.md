@@ -126,8 +126,11 @@ carve the ABI first.
     survived an on-air track change). See Done section. **Final 100% close
     CONFIRMED: Dos verified on a native Debian 13 desktop with a real Discord
     install — end-to-end all good (native socket discovery, no bridge).**
-  - **slice 5 — notify: libnotify.** Gate: real notification via dunst;
-    headless = documented best-effort no-op (the contract).
+  - **slice 5 — notify: notify-send core::INotify: ✅ DONE — CLOSED** (design
+    doc `docs/phase3-slice5-design.md` ratified pre-code): `NotifyNotifySend.cpp`
+    (`platform::lnx::NotifySendNotify`), the WinToastNotify sibling. Dos
+    live-confirmed on Debian 13 (song-to-song + ^D toasts render). See Done
+    section.
   - **slice 6 — CD: SG_IO ICdIo — LAST.** Gate: Relish rip via usbipd/WSL2 on
     the GHD3N: 12/12 AR v2 conf 200 AND byte-identical to the Windows baseline
     log (every CRC/frame450/"C2 support" line) — conf-200 alone is not the bar.
@@ -136,6 +139,44 @@ carve the ABI first.
   of the whole plugin system. ("Fix iHeart and ship without rebuilding the host.")
 
 ## Done (restructure branch)
+- **Phase 3 slice 5 — notify: notify-send core::INotify twin: DONE — CLOSED**
+  (code `f40691c`, docs `a92dcf6`, design `docs/phase3-slice5-design.md`
+  ratified before code). `src/platform/linux/NotifyNotifySend.cpp`
+  (`platform::lnx::NotifySendNotify`) — the WinToastNotify sibling. Same shape
+  as the frozen Windows impl: spawn the OS notifier as an external process,
+  DETACHED, reap on a throwaway thread so the UI thread never blocks; where
+  Windows runs `powershell -EncodedCommand`, Linux runs
+  `notify-send -a RE-MOCT -- <title> <body>` via **fork()+execvp()**.
+  Decisions (Dos, pre-code): (1) notify-send subprocess over linked libnotify —
+  the doctrine twin of the Windows shell-out, zero link dep (libnotify's edge
+  thin: both need a running daemon AND the detached thread since show() blocks
+  on D-Bus); (2) the interim Linux cmdline echo (slice-2 `4f0b240`) KEPT as the
+  permanent graceful-degradation surface (comment-only retitle); (3) NEW
+  Linux-only `notify_argv_test`. **Injection safety = argv, never a shell** (the
+  Linux analog of the Windows `-EncodedCommand` no-outer-quoting fix, one level
+  lower): title/body are argv slots (quotes/apostrophes/`;`/accents inert), the
+  leading `--` stops a dash-leading title being read as an option. argv builder
+  factored into `NotifyArgv.h` (transport-side under platform/linux, NOT core)
+  so the test can assert it headless. SeamStubs.cpp dropped StubNotify +
+  notifier() bridge (only CD stub left for slice 6);
+  NotifyWinToast.cpp/INotify.h/Toast.h/DiscordRP **zero diff**. Verified on
+  7of9/WSL2: build clean, **Linux ctest 14/14** (was 13; notify_argv_test +
+  notify_toast_test green), real impl linked not stub; transport proven headless
+  via a fake notify-send on PATH (real `core::notifier().notify()` delivered
+  every slot VERBATIM — `Björk` accents, `Don't "Stop"` quotes, `; rm -rf /`
+  each in ONE argv slot; the intact `;`-metachar = the no-shell proof; returned
+  promptly no hang; no-daemon → child `_exit(127)` swallowed, graceful no-op).
+  Windows = comment-only + `if(UNIX)`-guarded additions, toast path untouched.
+  **Dos live-confirmed on native Debian 13**: song-to-song toasts render, ^D
+  Discord toast + RPC on/off works. **Two Dos-found Linux-parity follow-ups
+  un-gating stale `#ifdef _WIN32` (same class as `4f0b240`/`91caf7a`): (a)
+  async stream connect/fail toasts ("Streaming"/"FAILED") — `a5b6bf6`, PUSHED;
+  (b) Ctrl+A (deep iHeart log) + Ctrl+K (digital-vs-raw stream) key cases,
+  wholly compiled out on Linux — applied, ctest 14/14, pending Dos's go +
+  live-test.** Baseline (NOT a regression, left as-is per Dos): override-queue↔
+  song doesn't toast on EITHER platform (the file toast keys on
+  `playlist_.current()`, which queue plays bypass by design). Same-class cosmetic
+  gap noted: ^T/^N toggles work but their toast is still `#ifdef _WIN32`.
 - **Phase 3 slice 4 — IPC: Unix-domain-socket core::IIpc twin: DONE** (code
   `671d2b3`; design `docs/phase3-slice4-design.md`, ratified before code).
   `src/platform/linux/IpcUnixSocket.cpp` (`platform::lnx::UnixSocketIpc` /

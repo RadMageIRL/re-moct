@@ -9,5 +9,8 @@ Drop the release screenshots here (referenced by the root `README.md` and
 - `playlist.png` - the two-pane browser + playlist view during playback.
 - `ripping.png` - the CD rip panel / AccurateRip status (optional third shot).
 
-> Placeholder: no images are committed yet - capture from a real terminal session.
-> Keep them reasonably sized (e.g. ≤ 1600px wide, PNG) so the repo stays light.
+<img width="2602" height="1204" alt="image" src="https://github.com/user-attachments/assets/cbb5fb55-1d1d-40d9-be89-b91456ffa19d" />
+
+<img width="1263" height="532" alt="image" src="https://github.com/user-attachments/assets/724a8853-0ea2-4fe2-acad-45b3a7589999" />
+
+

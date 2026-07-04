@@ -398,3 +398,40 @@ target_link_libraries(plugin_stream_test PRIVATE ${FDKAAC_LIB} ${HTTP_LIBS}
 add_test(NAME plugin_stream_test COMMAND plugin_stream_test)
 set_tests_properties(plugin_stream_test PROPERTIES TIMEOUT 60)
 
+# plugin_hls_parity_test (Phase 4 slice d — the identical-to-compiled-in gate):
+# runs identical synthetic HLS/ADTS through the REAL host HTTP service crossing
+# (FakeHttp -> core::HostServices table -> plugin HostServiceHttp -> StreamSource)
+# twice compiled-in (remoct_stream_plugin_query, D4) and once through the LOADED
+# remoct_stream.{so,dll} (core::loadPlugin), asserting byte-identical PCM. It links
+# the plugin stack compiled-in (the reference) + the plugin host + the loader, and
+# depends on remoct_stream for the .so path. NO HTTP_IMPL: FakeHttp is the IHttp,
+# so core::http() is never odr-used (proving the plugin needs no host transport).
+add_executable(plugin_hls_parity_test
+    plugin_hls_parity_test.cpp
+    ${CMAKE_SOURCE_DIR}/plugins/stream/StreamPluginAdapter.cpp
+    ${CMAKE_SOURCE_DIR}/plugins/stream/HostServiceHttp.cpp
+    ${CMAKE_SOURCE_DIR}/plugins/stream/StreamSource.cpp
+    ${CMAKE_SOURCE_DIR}/plugins/stream/IHeartRadio.cpp
+    ${CMAKE_SOURCE_DIR}/plugins/stream/IHeartNowPlayingSM.cpp
+    ${CMAKE_SOURCE_DIR}/plugins/stream/IHeartDeepLog.cpp
+    ${CMAKE_SOURCE_DIR}/src/PluginSource.cpp
+    ${CMAKE_SOURCE_DIR}/src/PluginHostServices.cpp
+    ${CMAKE_SOURCE_DIR}/src/PluginHost.cpp
+    ${PLUGINLOADER_IMPL}
+    ${CMAKE_SOURCE_DIR}/src/Log.cpp
+)
+target_include_directories(plugin_hls_parity_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/lib ${CMAKE_SOURCE_DIR}/plugins/stream ${FDKAAC_INCLUDE})
+# StreamSource's SACRED raw ICY loop (compiled-in here) needs its private raw
+# transport — wininet / libcurl — NOT the core::IHttp seam (which stays out: HTTP
+# crosses via the FakeHttp->HostServices table). Same libs the plugin target links.
+target_link_libraries(plugin_hls_parity_test PRIVATE ${FDKAAC_LIB} ${PLUGINLOADER_LIBS}
+    $<$<PLATFORM_ID:Windows>:wininet>
+    $<$<PLATFORM_ID:Linux>:CURL::libcurl>
+    $<$<PLATFORM_ID:Linux>:dl> $<$<PLATFORM_ID:Linux>:m> $<$<PLATFORM_ID:Linux>:pthread>)
+target_compile_definitions(plugin_hls_parity_test PRIVATE
+    REMOCT_STREAM_PATH="$<TARGET_FILE:remoct_stream>")
+add_dependencies(plugin_hls_parity_test remoct_stream)
+add_test(NAME plugin_hls_parity_test COMMAND plugin_hls_parity_test)
+set_tests_properties(plugin_hls_parity_test PROPERTIES TIMEOUT 90)
+

@@ -9,11 +9,11 @@ It is a homage to [MOC](http://moc.daper.net/) (Music On Console) with a twist. 
 it becomes *RE-MOCT* - the remix: a comet progress bar, a sub-cell block visualizer, and
 breathing animations. The mode toggle is the whole point.
 
-```
+<br>
 <img width="1278" height="646" alt="image" src="https://github.com/user-attachments/assets/8ae162e9-750d-427a-a96d-136287046bef" />
 <br><br>
 <img width="1279" height="616" alt="image" src="https://github.com/user-attachments/assets/03bf66f0-f62e-46d2-8a41-176393a48b3d" />
-```
+<br>
 
 ## Screenshots
 

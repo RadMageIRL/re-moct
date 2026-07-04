@@ -39,10 +39,6 @@ static void win32_console_init() {}
 static UIManager*    g_ui    = nullptr;
 static AudioManager* g_audio = nullptr;
 
-#ifndef _WIN32
-static void handle_sigwinch(int) { if (g_ui) g_ui->requestRedraw(); }
-#endif
-
 static void handle_sigsegv(int) {
     // Miniaudio decoder crashed on a corrupt MP3 frame.
     // Signal track end so the UI skips to next track.
@@ -197,9 +193,12 @@ int main(int argc, char* argv[]) {
         g_audio = &audio;
         std::signal(SIGSEGV, handle_sigsegv);
 
-#ifndef _WIN32
-        std::signal(SIGWINCH, handle_sigwinch);
-#endif
+        // NOTE deliberately NO custom SIGWINCH handler: ncursesw installs its
+        // own at initscr(), which is what turns a terminal resize into
+        // KEY_RESIZE through getch() — the resize path UIManager already
+        // handles (KEY_RESIZE → relayout). Installing ours DISPLACED that
+        // handler, so ncurses never learned the new size and redraws happened
+        // at the stale geometry (the Dos-found resize bug on the Debian VM).
 
         ui.run();
 

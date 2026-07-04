@@ -1,5 +1,4 @@
 #pragma once
-#ifdef _WIN32
 
 #include <string>
 #include <vector>
@@ -29,4 +28,3 @@ private:
     static std::string httpGet(const std::string& url);
 };
 
-#endif // _WIN32

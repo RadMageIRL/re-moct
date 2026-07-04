@@ -1,5 +1,4 @@
 #pragma once
-#ifdef _WIN32
 
 #include <string>
 
@@ -45,4 +44,3 @@ private:
                                const std::string& token, long* http_status);
 };
 
-#endif // _WIN32

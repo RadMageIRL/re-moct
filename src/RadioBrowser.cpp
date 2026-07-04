@@ -1,23 +1,12 @@
-#ifdef _WIN32
 
 #include "RadioBrowser.h"
+#include "core/IHttp.h"
 
-#define WIN32_LEAN_AND_MEAN
-#include <windows.h>
-#include <wininet.h>
 #include <cctype>
 #include "json.hpp"
 
 
 namespace {
-
-std::wstring toWide(const std::string& s) {
-    if (s.empty()) return {};
-    int n = MultiByteToWideChar(CP_UTF8, 0, s.c_str(), (int)s.size(), nullptr, 0);
-    std::wstring w((size_t)n, 0);
-    MultiByteToWideChar(CP_UTF8, 0, s.c_str(), (int)s.size(), w.data(), n);
-    return w;
-}
 
 std::string urlEncode(const std::string& s) {
     static const char* hex = "0123456789ABCDEF";
@@ -39,36 +28,16 @@ const char* kMirrors[] = {
 
 } // namespace
 
+// HTTP GET via the core::IHttp seam (WinINet impl). Parity with the former inline
+// WinINet GET: same 6 s fail-fast timeout (so a down mirror doesn't hang the UI),
+// same 4 MB cap, HTTP status ignored (empty body -> caller tries the next mirror),
+// default UA + redirect-follow.
 std::string RadioBrowser::httpGet(const std::string& url) {
-    std::wstring wurl = toWide(url);
-
-    HINTERNET inet = InternetOpenW(
-        L"RE-MOCT/1.0.0-rc1 (https://github.com/RadMageIRL/re-moct)",
-        INTERNET_OPEN_TYPE_PRECONFIG, nullptr, nullptr, 0);
-    if (!inet) return {};
-
-    // Bound the blocking time so a down mirror fails fast instead of hanging the UI.
-    DWORD timeout = 6000;  // ms
-    InternetSetOptionW(inet, INTERNET_OPTION_CONNECT_TIMEOUT, &timeout, sizeof(timeout));
-    InternetSetOptionW(inet, INTERNET_OPTION_RECEIVE_TIMEOUT, &timeout, sizeof(timeout));
-    InternetSetOptionW(inet, INTERNET_OPTION_SEND_TIMEOUT,    &timeout, sizeof(timeout));
-
-    HINTERNET conn = InternetOpenUrlW(inet, wurl.c_str(), nullptr, 0,
-        INTERNET_FLAG_RELOAD | INTERNET_FLAG_SECURE | INTERNET_FLAG_NO_CACHE_WRITE, 0);
-    if (!conn) { InternetCloseHandle(inet); return {}; }
-
-    std::string body;
-    char  buf[4096];
-    DWORD bytes = 0;
-    while (InternetReadFile(conn, buf, sizeof(buf), &bytes)) {
-        if (bytes == 0) break;
-        body.append(buf, bytes);
-        if (body.size() > 4 * 1024 * 1024) break;  // 4MB safety cap
-    }
-
-    InternetCloseHandle(conn);
-    InternetCloseHandle(inet);
-    return body;
+    core::HttpRequest req;
+    req.url        = url;
+    req.timeout_ms = 6000;             // fail fast on a down mirror
+    req.max_body   = 4u * 1024 * 1024; // 4 MB safety cap (unchanged)
+    return core::http().fetch(req).body;
 }
 
 std::vector<RadioStation> RadioBrowser::search(const std::string& query, int limit) {
@@ -122,4 +91,3 @@ void RadioBrowser::countClick(const std::string& stationuuid) {
     httpGet(std::string(kMirrors[0]) + "/json/url/" + stationuuid);
 }
 
-#endif // _WIN32

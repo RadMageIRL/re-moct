@@ -11,8 +11,8 @@
 //  refactor; this module keeps its own httpGet, matching the current per-module pattern.)
 
 #include "CoverArt.h"
-#include "StringUtils.h"        // utf8_to_wide (+ windows.h via WIN32_LEAN_AND_MEAN)
-#include <wininet.h>
+#include "Version.h"            // REMOCT_VERSION (single source) for the cover-art UA
+#include "core/IHttp.h"         // core::IHttp seam (transport); no windows.h/wininet here
 #include "json.hpp"             // nlohmann single-header (vendored)
 #include <string>
 #include <vector>
@@ -39,60 +39,36 @@ std::vector<uint8_t> bytesByMbid(const std::string& mb_id) {
     for (const auto& url : {
             "https://coverartarchive.org/release/"+mb_id+"/front-500",
             "https://coverartarchive.org/release/"+mb_id+"/front"}) {
-        auto wurl = utf8_to_wide(url);
-        HINTERNET inet = InternetOpenW(L"RE-MOCT/1.0.0-rc1 (https://github.com/RadMageIRL/re-moct)",
-                                       INTERNET_OPEN_TYPE_PRECONFIG, nullptr, nullptr, 0);
-        if (!inet) continue;
-        HINTERNET conn = InternetOpenUrlW(inet, wurl.c_str(), nullptr, 0,
-            INTERNET_FLAG_RELOAD | INTERNET_FLAG_SECURE |
-            INTERNET_FLAG_NO_CACHE_WRITE |
-            INTERNET_FLAG_IGNORE_REDIRECT_TO_HTTP |
-            INTERNET_FLAG_IGNORE_REDIRECT_TO_HTTPS, 0);
-        if (!conn) { InternetCloseHandle(inet); continue; }
-        DWORD status=0, sz=sizeof(status);
-        HttpQueryInfoW(conn, HTTP_QUERY_STATUS_CODE|HTTP_QUERY_FLAG_NUMBER, &status, &sz, nullptr);
-        std::vector<uint8_t> data; bool over=false;
-        if (status==200) {   // require a real 200, not an unreadable/redirect status
-            char buf[8192]; DWORD bytes=0;
-            while (InternetReadFile(conn,buf,sizeof(buf),&bytes)&&bytes>0) {
-                data.insert(data.end(),(uint8_t*)buf,(uint8_t*)buf+bytes);
-                if (data.size()>10*1024*1024) { over=true; break; }  // bound, then reject
-            }
+        core::HttpRequest req;
+        req.url              = url;
+        req.max_body         = 10u * 1024 * 1024;   // bound, then reject/clear on cap
+        req.reject_truncated = true;                // never embed a truncated cover
+        req.redirect         = core::RedirectPolicy::FollowSameScheme;  // CAA: no http<->https downgrade
+        // user_agent left empty -> seam default (full UA), matching the old bytesByMbid.
+        core::HttpResponse r = core::http().fetch(req);
+        if (r.status == 200) {   // require a real 200, not an unreadable/redirect status
+            std::vector<uint8_t> data(r.body.begin(), r.body.end());
+            // A capped read was cleared by the seam (reject_truncated), so a truncated
+            // body arrives empty here -> looksLikeImage() fails and we never embed it.
+            if (looksLikeImage(data)) return data;
         }
-        InternetCloseHandle(conn); InternetCloseHandle(inet);
-        // A capped read leaves a TRUNCATED body whose leading magic bytes still
-        // look like an image — never embed that. Oversize -> treat as no match.
-        if (!over && looksLikeImage(data)) return data;   // never return a non-image/truncated body
     }
     return {};
 }
 
-// Minimal WinINet GET into a byte buffer. true on HTTP 200 (or unknown) with data.
+// Minimal GET into a byte buffer via the core::IHttp seam. true on HTTP 200 (or unknown
+// status) with data. 10 MB cap -> reject/clear (a truncated body is unusable). Per-call UA.
 static bool httpGet(const std::string& url, std::vector<uint8_t>& out,
-                          const wchar_t* user_agent) {
+                          const std::string& user_agent) {
     out.clear();
-    auto wurl = utf8_to_wide(url);
-    HINTERNET inet = InternetOpenW(user_agent, INTERNET_OPEN_TYPE_PRECONFIG,
-                                   nullptr, nullptr, 0);
-    if (!inet) return false;
-    HINTERNET conn = InternetOpenUrlW(inet, wurl.c_str(), nullptr, 0,
-        INTERNET_FLAG_RELOAD | INTERNET_FLAG_SECURE | INTERNET_FLAG_NO_CACHE_WRITE, 0);
-    if (!conn) { InternetCloseHandle(inet); return false; }
-    DWORD status = 0, sz = sizeof(status);
-    HttpQueryInfoW(conn, HTTP_QUERY_STATUS_CODE | HTTP_QUERY_FLAG_NUMBER,
-                   &status, &sz, nullptr);
-    if (status == 200 || status == 0) {
-        char buf[8192]; DWORD bytes = 0;
-        while (InternetReadFile(conn, buf, sizeof(buf), &bytes) && bytes > 0) {
-            out.insert(out.end(), (uint8_t*)buf, (uint8_t*)buf + bytes);
-            if (out.size() > 10 * 1024 * 1024) {     // bound the body, then reject it:
-                InternetCloseHandle(conn); InternetCloseHandle(inet);
-                out.clear();                          // a truncated body is not usable
-                return false;                         // JSON would fail to parse; image
-            }                                         // would be a corrupt partial cover
-        }
-    }
-    InternetCloseHandle(conn); InternetCloseHandle(inet);
+    core::HttpRequest req;
+    req.url              = url;
+    req.user_agent       = user_agent;
+    req.max_body         = 10u * 1024 * 1024;
+    req.reject_truncated = true;
+    core::HttpResponse r = core::http().fetch(req);
+    if (r.status == 200 || r.status == 0)          // accept 200 or unknown, as before
+        out.assign(r.body.begin(), r.body.end());
     return !out.empty();
 }
 
@@ -165,7 +141,7 @@ std::vector<uint8_t> bytesByText(const std::string& artist,
         std::string url = "https://itunes.apple.com/search?term=" + term
                         + "&entity=album&limit=10";
         std::vector<uint8_t> body;
-        if (httpGet(url, body, L"RE-MOCT/1.0.0-rc1")) {
+        if (httpGet(url, body, "RE-MOCT/" REMOCT_VERSION)) {
             try {
                 auto j = nlohmann::json::parse(
                              std::string((char*)body.data(), body.size()));
@@ -181,7 +157,7 @@ std::vector<uint8_t> bytesByText(const std::string& artist,
                 if (!best_url.empty()) {
                     auto pos = best_url.rfind("100x100");   // bump to 600x600
                     if (pos != std::string::npos) best_url.replace(pos, 7, "600x600");
-                    if (httpGet(best_url, img, L"RE-MOCT/1.0.0-rc1") && looksLikeImage(img))
+                    if (httpGet(best_url, img, "RE-MOCT/" REMOCT_VERSION) && looksLikeImage(img))
                         return img;
                     img.clear();
                 }
@@ -194,7 +170,7 @@ std::vector<uint8_t> bytesByText(const std::string& artist,
         std::string url = "https://api.deezer.com/search/album?q=" + term
                         + "&limit=10";
         std::vector<uint8_t> body;
-        if (httpGet(url, body, L"RE-MOCT/1.0.0-rc1")) {
+        if (httpGet(url, body, "RE-MOCT/" REMOCT_VERSION)) {
             try {
                 auto j = nlohmann::json::parse(
                              std::string((char*)body.data(), body.size()));
@@ -212,7 +188,7 @@ std::vector<uint8_t> bytesByText(const std::string& artist,
                     if (score > best_score) { best_score = score; best_url = aurl; }
                 }
                 if (!best_url.empty()) {
-                    if (httpGet(best_url, img, L"RE-MOCT/1.0.0-rc1") && looksLikeImage(img))
+                    if (httpGet(best_url, img, "RE-MOCT/" REMOCT_VERSION) && looksLikeImage(img))
                         return img;
                     img.clear();
                 }
@@ -279,7 +255,7 @@ std::string urlByText(const std::string& artist,
         std::string url = "https://itunes.apple.com/search?term=" + term
                         + "&entity=album&limit=10";
         std::vector<uint8_t> body;
-        if (httpGet(url, body, L"RE-MOCT/1.0.0-rc1")) {
+        if (httpGet(url, body, "RE-MOCT/" REMOCT_VERSION)) {
             try {
                 auto j = nlohmann::json::parse(
                              std::string((char*)body.data(), body.size()));
@@ -306,7 +282,7 @@ std::string urlByText(const std::string& artist,
         std::string url = "https://api.deezer.com/search/album?q=" + term
                         + "&limit=10";
         std::vector<uint8_t> body;
-        if (httpGet(url, body, L"RE-MOCT/1.0.0-rc1")) {
+        if (httpGet(url, body, "RE-MOCT/" REMOCT_VERSION)) {
             try {
                 auto j = nlohmann::json::parse(
                              std::string((char*)body.data(), body.size()));
@@ -379,7 +355,7 @@ std::string urlBySong(const std::string& artist,
         std::string url = "https://itunes.apple.com/search?term=" + term
                         + "&entity=song&limit=10";
         std::vector<uint8_t> body;
-        if (httpGet(url, body, L"RE-MOCT/1.0.0-rc1")) {
+        if (httpGet(url, body, "RE-MOCT/" REMOCT_VERSION)) {
             try {
                 auto j = nlohmann::json::parse(
                              std::string((char*)body.data(), body.size()));
@@ -402,7 +378,7 @@ std::string urlBySong(const std::string& artist,
         std::string url = "https://api.deezer.com/search/track?q=" + term
                         + "&limit=10";
         std::vector<uint8_t> body;
-        if (httpGet(url, body, L"RE-MOCT/1.0.0-rc1")) {
+        if (httpGet(url, body, "RE-MOCT/" REMOCT_VERSION)) {
             try {
                 auto j = nlohmann::json::parse(
                              std::string((char*)body.data(), body.size()));

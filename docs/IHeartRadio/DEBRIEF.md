@@ -1,21 +1,21 @@
-# RE-MOCT — iHeartRadio Stream & Metadata Engineering Debrief - use at your own risk / no affiliation with IHeartRadio
+# RE-MOCT - iHeartRadio Stream & Metadata Engineering Debrief - use at your own risk / no affiliation with IHeartRadio
 
-> **Project:** RE-MOCT (Music On Console Terminal) — a C++20 terminal music player, CD ripper, and internet-radio client
+> **Project:** RE-MOCT (Music On Console Terminal) - a C++20 terminal music player, CD ripper, and internet-radio client
 > **Repository:** github.com/RadMageIRL/re-moct
 > **Date:** 2026-06-26
 > **Author:** (RadMageIRL)
 > **Status:** Implemented & verified against live Z100 (WHTZ-FM, iHeart station 1469)
 
-A field report on how RE-MOCT identifies, plays, and labels iHeartRadio stations — including the two distinct streams iHeart serves, the anonymous handshake that unlocks the ad-reduced "web player" rendition, why the now-playing metadata behaves the way it does, and the diagnostic harness that let us prove all of it. Written to be shared: every claim here came from a probe or a captured log, not from assumption.
+A field report on how RE-MOCT identifies, plays, and labels iHeartRadio stations - including the two distinct streams iHeart serves, the anonymous handshake that unlocks the ad-reduced "web player" rendition, why the now-playing metadata behaves the way it does, and the diagnostic harness that let us prove all of it. Written to be shared: every claim here came from a probe or a captured log, not from assumption.
 
 ---
 
 ## TL;DR
 
 - iHeart serves **two different audio streams** for the same station: a **raw broadcast simulcast** (the over-the-air signal, full terrestrial ad load) and an **ad-reduced "digital" rendition** (what the web player plays, server-side ad insertion replacing/shortening breaks).
-- They share the **same live-edge segment-number clock** but carry **different content** — so "same segment number" does **not** mean "same audio."
+- They share the **same live-edge segment-number clock** but carry **different content** - so "same segment number" does **not** mean "same audio."
 - The digital rendition is reachable with an **anonymous, unauthenticated handshake**: append a player query string (with a random `listenerId`, **no account, no `profileId`**) to the base URL; the edge mints a short-lived `rj-tok` via a 302 and serves the digital variant.
-- For now-playing, the **in-band manifest metadata is the only source aligned to the audio you actually hear.** iHeart's JSON APIs (`trackHistory`, `currentTrackMeta`) describe the **digital timeline**, which runs **~85 s ahead** of the raw broadcast — useful but wrong for raw audio.
+- For now-playing, the **in-band manifest metadata is the only source aligned to the audio you actually hear.** iHeart's JSON APIs (`trackHistory`, `currentTrackMeta`) describe the **digital timeline**, which runs **~85 s ahead** of the raw broadcast - useful but wrong for raw audio.
 - RE-MOCT reconciles sources with a **debounced state machine** and exposes a **Ctrl+K toggle** between raw and digital modes (sticky, with automatic fallback to raw if the handshake fails).
 - Everything above was nailed down with an **opt-in NDJSON deep-analysis log** and a set of standalone probes.
 
@@ -25,7 +25,7 @@ A field report on how RE-MOCT identifies, plays, and labels iHeartRadio stations
 
 iHeart HLS streams are notoriously hard to label. Playing the raw `…/zc####/hls.m3u8` URL gives you clean audio but the obvious now-playing sources fight you:
 
-- The in-band ID3 in iHeart segments carries only an HLS timestamp `PRIV` frame — **no song title**.
+- The in-band ID3 in iHeart segments carries only an HLS timestamp `PRIV` frame - **no song title**.
 - iHeart's ICY metadata is nonstandard and breaks conventional parsers.
 - The `trackHistory` JSON endpoint **freezes for minutes** on some stations (Z100 went dark for 32+ minutes in one capture) and serves an out-of-order "Pnp" feed.
 - The web/app players look perfect, but only because they read iHeart's own synced metadata glued to a stream you're not playing.
@@ -38,9 +38,9 @@ The goal: identify what's actually airing on the stream **RE-MOCT** plays, hones
 
 The whole investigation followed one rule: **probe first, then fix; never assume.** Three tools made it tractable.
 
-1. **Standalone probes** (`SniffIHeartRadio`, `LatencyProbe`, `StreamHandshakeProbe`) — small WinINet programs that isolate one network behavior at a time, separate from the audio path.
-2. **An opt-in deep-analysis log** (`Ctrl+A`) — one NDJSON record per reconciliation tick capturing every metadata source, the audio playback position, the state-machine internals, and the stream mode, side by side.
-3. **Cross-checking against the live web player** via browser devtools — every endpoint and stream URL was captured from real traffic before being reproduced.
+1. **Standalone probes** (`SniffIHeartRadio`, `LatencyProbe`, `StreamHandshakeProbe`) - small WinINet programs that isolate one network behavior at a time, separate from the audio path.
+2. **An opt-in deep-analysis log** (`Ctrl+A`) - one NDJSON record per reconciliation tick capturing every metadata source, the audio playback position, the state-machine internals, and the stream mode, side by side.
+3. **Cross-checking against the live web player** via browser devtools - every endpoint and stream URL was captured from real traffic before being reproduced.
 
 Several early hypotheses were **killed by data**, which is the point:
 
@@ -66,9 +66,9 @@ This was the keystone finding, and it inverts the intuitive assumption that "clo
 
 ### Timing & sync, as measured
 
-- A `LatencyProbe` comparing the two playlists' live-edge segment numbers showed **`+0.0 s` on every sample** — same timeline clock.
+- A `LatencyProbe` comparing the two playlists' live-edge segment numbers showed **`+0.0 s` on every sample** - same timeline clock.
 - Yet by ear the web player ran **minutes ahead** in *music*. Reconciliation: the segment-number grid is shared, but **SSAI swaps content within it**. The digital stream spends ad-break time on songs, so its musical rotation runs ahead and the two converge only intermittently (we watched them sync on "Post Malone – Circles").
-- The JSON metadata API leads the raw audio by a **steady ~85 s**, song after song, in the *same rotation* — because it describes the digital timeline, not the broadcast.
+- The JSON metadata API leads the raw audio by a **steady ~85 s**, song after song, in the *same rotation* - because it describes the digital timeline, not the broadcast.
 
 ```
  wall-clock ───────────────────────────────────────────────────────────►
@@ -108,7 +108,7 @@ sequenceDiagram
 
     C->>E: GET base + player params<br/>(listenerId=<rand>, companionAds=false,<br/>pname=live_profile, … NO profileId)
     E-->>C: 302 Found<br/>Location: nXXb-e2/…/hls.m3u8?rj-tok=AAAB…&rj-ttl=5
-    Note right of E: token minted for arbitrary ids<br/>(short TTL — re-minted every connect)
+    Note right of E: token minted for arbitrary ids<br/>(short TTL - re-minted every connect)
 
     C->>N: GET (follow redirect with fresh rj-tok)
     N-->>C: 200 master playlist<br/>#EXT-X-STREAM-INF → variant (params carried)
@@ -117,19 +117,19 @@ sequenceDiagram
     N-->>C: 200 media playlist<br/>(#EXTINF + in-band song metadata)
 
     C->>S: GET …/main/<N>.aac segments
-    S-->>C: audio — ad-reduced DIGITAL rendition
+    S-->>C: audio - ad-reduced DIGITAL rendition
 
     Note over C,S: Raw mode = identical chain WITHOUT the params.<br/>Same segment-number grid, different content.
 ```
 
-### Solution code — build the digital URL
+### Solution code - build the digital URL
 
 The minimal anonymous param set, with a fresh random `listenerId` per connect:
 
 ```cpp
 // Append the iHeart web-player param set to a raw zc####/hls.m3u8 base URL so the
 // edge mints a token and serves the ad-reduced DIGITAL rendition. Minimal anonymous
-// set (no profileId/skey — proven sufficient by StreamHandshakeProbe), fresh random
+// set (no profileId/skey - proven sufficient by StreamHandshakeProbe), fresh random
 // listenerId per connect.
 std::string StreamSource::hlsBuildDigitalUrl(const std::string& base) {
     if (base.find('?') != std::string::npos) return base;     // already parameterized
@@ -155,9 +155,9 @@ std::string StreamSource::hlsBuildDigitalUrl(const std::string& base) {
 }
 ```
 
-### Solution code — try digital, fall back to raw
+### Solution code - try digital, fall back to raw
 
-The whole feature is graceful-degradation: if any step of the digital attempt fails, fall back to the bare URL **once** so behavior degrades to exactly "today," never worse. The `rj-tok` TTL is a non-issue because the token is never reused — every connect re-runs the 302.
+The whole feature is graceful-degradation: if any step of the digital attempt fails, fall back to the bare URL **once** so behavior degrades to exactly "today," never worse. The `rj-tok` TTL is a non-issue because the token is never reused - every connect re-runs the 302.
 
 ```cpp
 // Resolve + initial poll. If a requested DIGITAL attempt fails at any step, fall
@@ -201,7 +201,7 @@ There are exactly **three** candidate now-playing sources for an iHeart HLS stre
 
 ### Why `currentTrackMeta` is demoted (despite being the "best looking" source)
 
-It was initially recorded as a dead 410 endpoint. It isn't — it needs `?defaultMetadata=true`, then returns a full structured payload (`artist`, `title`, `album`, `imagePath`, `startTime`/`endTime`) or **`204 No Content`** on a break. But the deep log proved it is **redundant with `trackHistory`** (same upstream API — they go blind together) and **on the digital timeline** (so it leads the raw audio). Identifying songs from it would display the *next* song while the current one plays. It survives only as optional album-art/album enrichment when it agrees with the manifest.
+It was initially recorded as a dead 410 endpoint. It isn't - it needs `?defaultMetadata=true`, then returns a full structured payload (`artist`, `title`, `album`, `imagePath`, `startTime`/`endTime`) or **`204 No Content`** on a break. But the deep log proved it is **redundant with `trackHistory`** (same upstream API - they go blind together) and **on the digital timeline** (so it leads the raw audio). Identifying songs from it would display the *next* song while the current one plays. It survives only as optional album-art/album enrichment when it agrees with the manifest.
 
 ```cpp
 bool IHeartRadio::pollCurrentTrackMeta(CurrentTrack* out) {
@@ -221,7 +221,7 @@ bool IHeartRadio::pollCurrentTrackMeta(CurrentTrack* out) {
     json j;
     try { j = json::parse(body); } catch (...) { return false; }
 
-    // epoch may be ms (currentTrackMeta) or s — normalise to seconds.
+    // epoch may be ms (currentTrackMeta) or s - normalise to seconds.
     auto toSec = [](long long v) -> long long {
         return (v > 100000000000LL) ? (v / 1000) : v;
     };
@@ -240,7 +240,7 @@ bool IHeartRadio::pollCurrentTrackMeta(CurrentTrack* out) {
 
 ### Manifest classification
 
-The manifest is parsed at the **live-edge** `#EXTINF` line. The decisive discriminators are the `song_spot` letter (`M`/`F` = song, `T` = traffic/ad), "Spot Block" markers, and zero-length boundary segments — a plain `title=`/`artist=` check alone is not enough, because ad and boundary lines also carry those attributes.
+The manifest is parsed at the **live-edge** `#EXTINF` line. The decisive discriminators are the `song_spot` letter (`M`/`F` = song, `T` = traffic/ad), "Spot Block" markers, and zero-length boundary segments - a plain `title=`/`artist=` check alone is not enough, because ad and boundary lines also carry those attributes.
 
 ```cpp
 static IHeartMfCls classifyIHeartManifest(const std::string& body,
@@ -280,7 +280,7 @@ bool thCurrent = !iheart_th_cache_.empty() && iheart_th_ended_ <= CUR;   // play
 // Confidence-ordered target for this tick.
 std::string st = iheart_.stationName();
 IHNow tgtKind; std::string tgtDisp;
-if (!mfSong.empty())             { tgtKind = IHNow::Song; tgtDisp = mfSong; }   // manifest song — highest confidence
+if (!mfSong.empty())             { tgtKind = IHNow::Song; tgtDisp = mfSong; }   // manifest song - highest confidence
 else if (cls == IHeartMfCls::Ad) {                                              // active in-band ad: OVERRIDE the
     tgtKind = IHNow::Ad;                                                        // schedule-based trackHistory song
     tgtDisp = st.empty() ? "Commercial break" : (st + " - Commercial break");
@@ -294,25 +294,25 @@ else                             { tgtKind = IHNow::Live;                       
 
 ## 6. Presentation & the "dual-blind"
 
-The committed display string is what the user sees. Because the manifest is audio-aligned, when it commits a song that is genuinely what's playing. The hard case — Z100's "dual-blind," where `trackHistory` freezes for tens of minutes — turned out **not** to be unsolvable: the manifest goes "RICH" (carries real song metadata) when songs actually air and covered songs the JSON API completely missed. The long `LIVE` stretches mostly coincided with real talk/ad dayparts, where `LIVE` is the honest answer.
+The committed display string is what the user sees. Because the manifest is audio-aligned, when it commits a song that is genuinely what's playing. The hard case - Z100's "dual-blind," where `trackHistory` freezes for tens of minutes - turned out **not** to be unsolvable: the manifest goes "RICH" (carries real song metadata) when songs actually air and covered songs the JSON API completely missed. The long `LIVE` stretches mostly coincided with real talk/ad dayparts, where `LIVE` is the honest answer.
 
-The deep log captured the manifest recovering **"Riton – Friday"** while `trackHistory` had been frozen for **32 minutes** — the manifest-primary design doing exactly its job.
+The deep log captured the manifest recovering **"Riton – Friday"** while `trackHistory` had been frozen for **32 minutes** - the manifest-primary design doing exactly its job.
 
 ---
 
-## 7. Debug logging — the deep-analysis capture
+## 7. Debug logging - the deep-analysis capture
 
 Diagnosing any of this required seeing every source at the same instant, including the **audio playback position** (which the standalone probes can't see). RE-MOCT writes an opt-in NDJSON log (`Ctrl+A`) to `%APPDATA%\RE-MOCT\logs\remoct-deep-analysis-<ts>.log`.
 
 Design points that made it useful:
 
 - **One self-contained record per tick**, emitted **before** the debounce early-returns, so a metadata freeze shows up as data, not a gap.
-- **Event-driven + heartbeat** write policy: a record is written when any *semantic* field changes, or every 30 s otherwise. A freeze therefore appears as identical heartbeat records with a **climbing `thEnded` and advancing `mfSeq`** — the freeze signature — rather than silence. Staleness counters are deliberately **excluded** from the change-signature so they don't defeat the heartbeat collapse.
+- **Event-driven + heartbeat** write policy: a record is written when any *semantic* field changes, or every 30 s otherwise. A freeze therefore appears as identical heartbeat records with a **climbing `thEnded` and advancing `mfSeq`** - the freeze signature - rather than silence. Staleness counters are deliberately **excluded** from the change-signature so they don't defeat the heartbeat collapse.
 - Each record carries: manifest class + song, `trackHistory` + staleness, `currentTrackMeta` status/fields, audio position, the state-machine internals, and the **stream mode** (`raw`/`digital`) with a per-connect sequence number.
 
 ```cpp
 DWORD tick = GetTickCount();
-std::string s = sigOf(r);   // semantic fields only — excludes thEnded/audioSec/timestamps
+std::string s = sigOf(r);   // semantic fields only - excludes thEnded/audioSec/timestamps
 bool changed   = first || (s != g_last_sig);
 bool heartbeat = first || (tick - g_last_write_tick >= kHeartbeatMs);   // 30s
 if (!changed && !heartbeat) return;
@@ -333,25 +333,25 @@ Sample record (abridged), digital mode:
 ## 8. Key findings (all empirically established)
 
 1. iHeart serves **two streams** (raw broadcast vs digital/SSAI) at the **same live-edge clock** but with **different content**.
-2. The digital rendition is unlocked by an **anonymous handshake** — random `listenerId`, **no account, no `profileId`**.
+2. The digital rendition is unlocked by an **anonymous handshake** - random `listenerId`, **no account, no `profileId`**.
 3. The **in-band manifest is the only audio-aligned now-playing source** for the raw stream; it's an **independent subsystem** from iHeart's JSON API.
-4. `trackHistory` and `currentTrackMeta` are the **same upstream pipeline** — they stall together and both describe the **digital** timeline (~85 s ahead of raw audio).
-5. `currentTrackMeta` is alive (`?defaultMetadata=true`), `200`/`204`-honest, and rich — but **redundant and timeline-wrong for identification**; useful only as enrichment.
-6. The "Z100 dual-blind" is an **iHeart JSON pipeline stall**, not a total blind — the manifest covers it when songs air.
+4. `trackHistory` and `currentTrackMeta` are the **same upstream pipeline** - they stall together and both describe the **digital** timeline (~85 s ahead of raw audio).
+5. `currentTrackMeta` is alive (`?defaultMetadata=true`), `200`/`204`-honest, and rich - but **redundant and timeline-wrong for identification**; useful only as enrichment.
+6. The "Z100 dual-blind" is an **iHeart JSON pipeline stall**, not a total blind - the manifest covers it when songs air.
 7. The perceived "100 s lag" is **metadata-runs-ahead (~85 s) plus the player's ~20 s prime buffer**, *not* a rendition latency (segment numbers sync `+0.0 s`).
 
 ---
 
 ## 9. Limitations & honest caveats
 
-- **Detection on the raw stream is at the ceiling for this approach.** The two real sources (manifest, `trackHistory`) are both used; the third (`currentTrackMeta`) adds nothing for identification. You can't tune detection to produce signal the feed doesn't carry. The one path *past* this ceiling is **audio fingerprinting** (e.g. Chromaprint/AcoustID) on the decoded audio — timeline-perfect and station-agnostic, but a larger build with a database dependency.
+- **Detection on the raw stream is at the ceiling for this approach.** The two real sources (manifest, `trackHistory`) are both used; the third (`currentTrackMeta`) adds nothing for identification. You can't tune detection to produce signal the feed doesn't carry. The one path *past* this ceiling is **audio fingerprinting** (e.g. Chromaprint/AcoustID) on the decoded audio - timeline-perfect and station-agnostic, but a larger build with a database dependency.
 - **The handshake is undocumented and can change.** It's mitigated by the always-available **raw fallback** and by logging the digital-vs-fallback outcome, so a future break degrades gracefully and is observable.
-- **Digital mode imports iHeart's personalization layer** — targeted ads and a tracking beacon — and the `listenerId`, though random per session, is a tracking handle. It is therefore **opt-in, default-off, and per-keypress**, never silent.
+- **Digital mode imports iHeart's personalization layer** - targeted ads and a tracking beacon - and the `listenerId`, though random per session, is a tracking handle. It is therefore **opt-in, default-off, and per-keypress**, never silent.
 - Findings are characterized primarily on **Z100 (1469)**; manifest "richness" is **daypart-dependent** and varies by station.
 
 ---
 
-## Appendix — probe tools
+## Appendix - probe tools
 
 | Tool | Purpose |
 |---|---|

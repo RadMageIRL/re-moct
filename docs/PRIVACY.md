@@ -4,7 +4,7 @@
 
 Your privacy is a priority. RE-MOCT is a local-first, terminal-based application: it runs on your machine, plays your files, and stores its data on disk. The developer operates **no servers** and collects **no data** from you.
 
-However, RE-MOCT is not an offline-only application. Several of its features — metadata lookup, internet radio, scrobbling, and Discord presence — work by contacting third-party services. This policy explains exactly what is sent, to whom, and when.
+However, RE-MOCT is not an offline-only application. Several of its features - metadata lookup, internet radio, scrobbling, and Discord presence - work by contacting third-party services. This policy explains exactly what is sent, to whom, and when.
 
 ## 1. What the Developer Collects
 
@@ -14,14 +14,14 @@ However, RE-MOCT is not an offline-only application. Several of its features —
 
 All of your audio files, playlists, ripped tracks, and configuration stay on your local machine. RE-MOCT only reads the directories you explicitly point it at for playback and ripping; it does not scan the rest of your file system.
 
-Configuration — including recent/favorite tracks and the credentials described in Section 4 — is stored in a plaintext file:
+Configuration - including recent/favorite tracks and the credentials described in Section 4 - is stored in a plaintext file:
 
 - **Windows:** `%APPDATA%\RE-MOCT\remoct.conf`
 - **Linux:** `~/.config/RE-MOCT/remoct.conf`
 
 ## 3. Third-Party Network Services
 
-RE-MOCT contacts external services to provide specific features. These requests are made **as a result of actions you take** (identifying a disc, ripping, tuning a station, enabling scrobbling) — they are not background activity. The relevant services are:
+RE-MOCT contacts external services to provide specific features. These requests are made **as a result of actions you take** (identifying a disc, ripping, tuning a station, enabling scrobbling) - they are not background activity. The relevant services are:
 
 | Feature | Service(s) | What is sent |
 | --- | --- | --- |

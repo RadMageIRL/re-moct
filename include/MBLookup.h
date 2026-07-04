@@ -1,8 +1,5 @@
 #pragma once
-#ifdef _WIN32
 
-#define WIN32_LEAN_AND_MEAN
-#include <windows.h>
 #include <string>
 #include <vector>
 #include <atomic>
@@ -77,7 +74,7 @@ public:
     // Start async DiscID lookup. Returns false if already in progress.
     // toc_offsets: sector offsets for each track (1-based), plus lead-out as last entry.
     bool lookup(int first_track, int last_track,
-                const std::vector<DWORD>& toc_offsets,
+                const std::vector<uint32_t>& toc_offsets,
                 MBCallback cb);
 
     // Search MusicBrainz by artist + album text.
@@ -102,7 +99,7 @@ public:
 
     // Compute DiscID from TOC data (public for testing)
     static std::string computeDiscId(int first_track, int last_track,
-                                     const std::vector<DWORD>& offsets);
+                                     const std::vector<uint32_t>& offsets);
 
     // URL-encode a UTF-8 string for use in query parameters
     static std::string urlEncode(const std::string& s);
@@ -117,7 +114,7 @@ private:
 
     // DiscID worker (existing)
     void worker(int first_track, int last_track,
-                std::vector<DWORD> offsets, MBCallback cb);
+                std::vector<uint32_t> offsets, MBCallback cb);
 
     // Text search worker
     void searchWorker(std::string artist, std::string album, MBSearchCallback cb);
@@ -142,4 +139,3 @@ private:
     static std::string mb_base64(const uint8_t* data, size_t len);
 };
 
-#endif // _WIN32

@@ -1,24 +1,33 @@
 #include "DiscordRP.h"
-#ifdef _WIN32
 #include <vector>
 #include <cstring>
 #include <ctime>
 #include <cstdio>
+
+// pid for the activity payload only — the pipe transport lives behind
+// core::IIpc since slice 6 (Windows named pipe; Unix-socket sibling = slice 4).
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>   // GetCurrentProcessId
+static unsigned long rpPid() { return (unsigned long)GetCurrentProcessId(); }
+#else
+#include <unistd.h>
+static unsigned long rpPid() { return (unsigned long)getpid(); }
+#endif
 
 // Discord IPC framing: [opcode u32 LE][length u32 LE][payload bytes].
 // Opcodes: 0 HANDSHAKE, 1 FRAME, 2 CLOSE, 3 PING, 4 PONG.
 
 bool DiscordRP::ensureConnected() {
     if (connected()) return true;
-    if (pipe_ == INVALID_HANDLE_VALUE) {
+    if (!channel_) {
+        // Discord listens on one of ten slots — probe them in order (protocol
+        // knowledge, so it stays here; the seam maps the name to the pipe path).
         for (int i = 0; i <= 9; ++i) {
-            wchar_t name[64];
-            swprintf(name, 64, L"\\\\.\\pipe\\discord-ipc-%d", i);
-            HANDLE h = CreateFileW(name, GENERIC_READ | GENERIC_WRITE, 0,
-                                   nullptr, OPEN_EXISTING, 0, nullptr);
-            if (h != INVALID_HANDLE_VALUE) { pipe_ = h; break; }
+            channel_ = ipc_->connect("discord-ipc-" + std::to_string(i));
+            if (channel_) break;
         }
-        if (pipe_ == INVALID_HANDLE_VALUE) return false;   // Discord not running
+        if (!channel_) return false;   // Discord not running
     }
     if (!handshaked_) {
         std::string hs = "{\"v\":1,\"client_id\":\"" + app_id_ + "\"}";
@@ -30,41 +39,26 @@ bool DiscordRP::ensureConnected() {
 }
 
 bool DiscordRP::writeFrame(uint32_t opcode, const std::string& payload) {
-    if (pipe_ == INVALID_HANDLE_VALUE) return false;
+    if (!channel_) return false;
     // Header + payload must go out as a single write or the pipe breaks.
     std::vector<char> buf(8 + payload.size());
     uint32_t len = (uint32_t)payload.size();
     std::memcpy(buf.data() + 0, &opcode, 4);
     std::memcpy(buf.data() + 4, &len,    4);
     std::memcpy(buf.data() + 8, payload.data(), payload.size());
-    DWORD wrote = 0;
-    if (!WriteFile(pipe_, buf.data(), (DWORD)buf.size(), &wrote, nullptr) ||
-        wrote != buf.size()) {
+    if (!channel_->send(buf.data(), buf.size())) {
         disconnect();
         return false;
     }
     return true;
 }
 
-// Peek the pipe until data is available or the timeout elapses, so a wedged
-// Discord client can never block the UI thread on ReadFile.
-bool DiscordRP::waitReadable(int timeout_ms) {
-    if (pipe_ == INVALID_HANDLE_VALUE) return false;
-    const int step = 10;
-    for (int waited = 0; waited <= timeout_ms; waited += step) {
-        DWORD avail = 0;
-        if (!PeekNamedPipe(pipe_, nullptr, 0, nullptr, &avail, nullptr))
-            return false;            // pipe closed/broken
-        if (avail >= 8) return true; // at least a header is ready
-        Sleep(step);
-    }
-    return false;
-}
-
 bool DiscordRP::drainOneFrame() {
-    if (!waitReadable(1000)) { disconnect(); return false; }
-    char hdr[8]; DWORD got = 0;
-    if (!ReadFile(pipe_, hdr, 8, &got, nullptr) || got != 8) { disconnect(); return false; }
+    // Bounded wait for a full header so a wedged Discord client can never block
+    // the UI thread on a read (the seam peeks; nothing is consumed until it's there).
+    if (!channel_ || !channel_->waitReadable(8, 1000)) { disconnect(); return false; }
+    char hdr[8]; std::size_t got = 0;
+    if (!channel_->recvSome(hdr, 8, got) || got != 8) { disconnect(); return false; }
     uint32_t op, len;
     std::memcpy(&op,  hdr + 0, 4);
     std::memcpy(&len, hdr + 4, 4);
@@ -72,9 +66,9 @@ bool DiscordRP::drainOneFrame() {
     // a process squatting the discord-ipc pipe would otherwise resize() up to 4 GB.
     if (len > (1u << 20)) { disconnect(); return false; }
     std::string body; body.resize(len);
-    DWORD total = 0;
+    std::size_t total = 0;
     while (total < len) {
-        if (!ReadFile(pipe_, &body[total], len - total, &got, nullptr) || got == 0) {
+        if (!channel_->recvSome(&body[total], len - total, got) || got == 0) {
             disconnect();
             return false;
         }
@@ -107,7 +101,7 @@ void DiscordRP::setActivity(const std::string& details, const std::string& state
     if (!ensureConnected()) return;
 
     std::string a = "{\"cmd\":\"SET_ACTIVITY\",\"args\":{\"pid\":";
-    a += std::to_string((unsigned long)GetCurrentProcessId());
+    a += std::to_string(rpPid());
     a += ",\"activity\":{";
     bool comma = false;
     auto field = [&](const std::string& body) {
@@ -132,14 +126,13 @@ void DiscordRP::setActivity(const std::string& details, const std::string& state
 void DiscordRP::clearActivity() {
     if (!connected()) return;
     std::string a = "{\"cmd\":\"SET_ACTIVITY\",\"args\":{\"pid\":";
-    a += std::to_string((unsigned long)GetCurrentProcessId());
+    a += std::to_string(rpPid());
     a += ",\"activity\":null},\"nonce\":\"" + std::to_string((long)time(nullptr)) + "\"}";
     if (writeFrame(1, a)) drainOneFrame();
 }
 
 void DiscordRP::disconnect() {
-    if (pipe_ != INVALID_HANDLE_VALUE) { CloseHandle(pipe_); pipe_ = INVALID_HANDLE_VALUE; }
+    channel_.reset();      // closes the pipe; no CLOSE frame sent (baseline behavior)
     handshaked_ = false;
 }
 
-#endif // _WIN32

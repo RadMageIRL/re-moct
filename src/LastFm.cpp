@@ -1,12 +1,12 @@
-#ifdef _WIN32
-
 #include "LastFm.h"
 #include "Log.h"
+#include "core/IHttp.h"
 
-#define WIN32_LEAN_AND_MEAN
-#include <windows.h>
-#include <wininet.h>
-#include <wincrypt.h>
+// Vendored public-domain MD5 (lib/md5.{h,c}, Peslyak/Openwall — kept byte-
+// verbatim upstream, hence the extern "C" here rather than a header patch).
+extern "C" {
+#include "md5.h"
+}
 #include <algorithm>
 #include <cctype>
 #include <cstdio>
@@ -23,32 +23,27 @@ static void lflog(const char* fmt, ...) {
     Log::write("lastfm", buf);
 }
 
-static const char* kUA  = "RE-MOCT/1.0.0-rc1 (https://github.com/RadMageIRL/re-moct)";
 static const char* kHost = "ws.audioscrobbler.com";
 static const char* kPath = "/2.0/";
 
-// ─── MD5 via Windows CryptoAPI (guaranteed-correct; no hand-rolled hash) ───────
+// ─── MD5 via the vendored public-domain implementation (lib/md5.{h,c}) ────────
+// Phase 3 slice 2: ONE signing code path on BOTH platforms — this replaced the
+// Windows CryptoAPI block and the slice-1 Linux placeholder. Byte-identity with
+// the CryptoAPI output is proven by md5_test (RFC 1321 vectors) and the live
+// scrobble round-trip gates on each platform (api_sig accepted == identical
+// hash on the wire). Lowercase-hex output shape unchanged.
 std::string LastFm::md5Hex(const std::string& s) {
-    HCRYPTPROV prov = 0;
-    HCRYPTHASH hash = 0;
+    MD5_CTX ctx;
+    MD5_Init(&ctx);
+    if (!s.empty()) MD5_Update(&ctx, s.data(), (unsigned long)s.size());
+    unsigned char digest[16];
+    MD5_Final(digest, &ctx);
+    static const char* hx = "0123456789abcdef";
     std::string out;
-    if (CryptAcquireContextW(&prov, nullptr, nullptr, PROV_RSA_FULL, CRYPT_VERIFYCONTEXT)) {
-        if (CryptCreateHash(prov, CALG_MD5, 0, 0, &hash)) {
-            if (CryptHashData(hash, reinterpret_cast<const BYTE*>(s.data()),
-                              (DWORD)s.size(), 0)) {
-                BYTE  digest[16];
-                DWORD len = sizeof(digest);
-                if (CryptGetHashParam(hash, HP_HASHVAL, digest, &len, 0)) {
-                    static const char* hx = "0123456789abcdef";
-                    for (int i = 0; i < 16; ++i) {
-                        out += hx[digest[i] >> 4];
-                        out += hx[digest[i] & 0x0F];
-                    }
-                }
-            }
-            CryptDestroyHash(hash);
-        }
-        CryptReleaseContext(prov, 0);
+    out.reserve(32);
+    for (int i = 0; i < 16; ++i) {
+        out += hx[digest[i] >> 4];
+        out += hx[digest[i] & 0x0F];
     }
     return out;
 }
@@ -74,53 +69,26 @@ std::string LastFm::urlEncode(const std::string& s) {
     return out;
 }
 
-// ─── HTTP ──────────────────────────────────────────────────────────────────
+// ─── HTTP via the core::IHttp seam (WinINet impl) ────────────────────────────
+// Signing + body assembly stay here (md5Hex / sign / postWriteCall); only transport
+// moved. Parity: UA is the seam default (byte-identical to the app UA), 8 s
+// connect+receive timeout, HTTPS from scheme, HTTP status ignored (writes gate on
+// the JSON `error` field in postWriteCall).
 std::string LastFm::httpGet(const std::string& url) {
-    HINTERNET inet = InternetOpenA(kUA, INTERNET_OPEN_TYPE_PRECONFIG, nullptr, nullptr, 0);
-    if (!inet) return {};
-    DWORD t = 8000;
-    InternetSetOptionA(inet, INTERNET_OPTION_CONNECT_TIMEOUT, &t, sizeof(t));
-    InternetSetOptionA(inet, INTERNET_OPTION_RECEIVE_TIMEOUT, &t, sizeof(t));
-    HINTERNET conn = InternetOpenUrlA(inet, url.c_str(), nullptr, 0,
-        INTERNET_FLAG_RELOAD | INTERNET_FLAG_SECURE | INTERNET_FLAG_NO_CACHE_WRITE, 0);
-    if (!conn) { InternetCloseHandle(inet); return {}; }
-    std::string body; char buf[2048]; DWORD got = 0;
-    while (InternetReadFile(conn, buf, sizeof(buf), &got) && got > 0)
-        body.append(buf, got);
-    InternetCloseHandle(conn);
-    InternetCloseHandle(inet);
-    return body;
+    core::HttpRequest req;
+    req.url        = url;
+    req.timeout_ms = 8000;
+    return core::http().fetch(req).body;
 }
 
 std::string LastFm::httpPost(const std::string& path, const std::string& body) {
-    HINTERNET inet = InternetOpenA(kUA, INTERNET_OPEN_TYPE_PRECONFIG, nullptr, nullptr, 0);
-    if (!inet) return {};
-    DWORD t = 8000;
-    InternetSetOptionA(inet, INTERNET_OPTION_CONNECT_TIMEOUT, &t, sizeof(t));
-    InternetSetOptionA(inet, INTERNET_OPTION_RECEIVE_TIMEOUT, &t, sizeof(t));
-
-    HINTERNET conn = InternetConnectA(inet, kHost, INTERNET_DEFAULT_HTTPS_PORT,
-                                      nullptr, nullptr, INTERNET_SERVICE_HTTP, 0, 0);
-    if (!conn) { InternetCloseHandle(inet); return {}; }
-
-    HINTERNET req = HttpOpenRequestA(conn, "POST", path.c_str(), nullptr, nullptr, nullptr,
-        INTERNET_FLAG_SECURE | INTERNET_FLAG_RELOAD | INTERNET_FLAG_NO_CACHE_WRITE, 0);
-    if (!req) { InternetCloseHandle(conn); InternetCloseHandle(inet); return {}; }
-
-    const char* hdr = "Content-Type: application/x-www-form-urlencoded\r\n";
-    std::string resp;
-    if (HttpSendRequestA(req, hdr, (DWORD)-1L,
-                         (LPVOID)body.data(), (DWORD)body.size())) {
-        char buf[2048]; DWORD got = 0;
-        while (InternetReadFile(req, buf, sizeof(buf), &got) && got > 0)
-            resp.append(buf, got);
-    } else {
-        lflog("httpPost: HttpSendRequest failed err=%lu", GetLastError());
-    }
-    InternetCloseHandle(req);
-    InternetCloseHandle(conn);
-    InternetCloseHandle(inet);
-    return resp;
+    core::HttpRequest req;
+    req.method       = "POST";
+    req.url          = std::string("https://") + kHost + path;   // ws.audioscrobbler.com + /2.0/
+    req.body         = body;
+    req.content_type = "application/x-www-form-urlencoded";
+    req.timeout_ms   = 8000;
+    return core::http().fetch(req).body;
 }
 
 // Build the form body from signed params + api_sig + format=json, POST it,
@@ -168,7 +136,9 @@ bool LastFm::requestToken(const std::string& api_key, const std::string& secret,
 
 bool LastFm::getSession(const std::string& api_key, const std::string& secret,
                         const std::string& token,
-                        std::string& session_key_out, std::string& username_out) {
+                        std::string& session_key_out, std::string& username_out,
+                        int* error_out) {
+    if (error_out) *error_out = 0;   // 0 = transport-level failure (or success)
     Params p = { {"api_key", api_key}, {"method", "auth.getSession"}, {"token", token} };
     std::string sig = sign(p, secret);
     std::string url = std::string("https://") + kHost + kPath
@@ -179,7 +149,10 @@ bool LastFm::getSession(const std::string& api_key, const std::string& secret,
     if (body.empty()) return false;
     try {
         auto j = nlohmann::json::parse(body);
-        if (!j.contains("session")) return false;
+        if (!j.contains("session")) {
+            if (error_out) *error_out = j.value("error", 0);
+            return false;
+        }
         session_key_out = j["session"].value("key",  std::string());
         username_out    = j["session"].value("name", std::string());
     } catch (...) { return false; }
@@ -218,4 +191,3 @@ bool LastFm::scrobble(const std::string& api_key, const std::string& secret,
     return postWriteCall(p, sig);
 }
 
-#endif // _WIN32

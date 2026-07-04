@@ -37,6 +37,7 @@ struct DigiConfig {
     // UI theme toggle (Ctrl+T): false = Classic, true = Awesome (rounded panels)
     bool  awesome_mode = false;
     bool  prefer_digital_stream = false;   // iHeart: try web-player (ad-reduced) rendition; raw broadcast otherwise
+    bool  iheart_probe_minted   = false;   // probe: use a minted anonymous profileId on the digital handshake (deep-log A/B only)
 
     // Nerd Font pane-title icons (Ctrl+N). Requires a Nerd Font terminal font.
     bool  nerd_icons = false;

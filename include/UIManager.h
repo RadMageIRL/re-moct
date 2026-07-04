@@ -14,18 +14,17 @@
 #include <atomic>
 #include <thread>
 #include <unordered_set>
-#ifdef _WIN32
 #include "MBLookup.h"
 #include "CDRipper.h"
 #include "RadioBrowser.h"
 #include "LastFm.h"
 #include "ListenBrainz.h"
 #include "DiscordRP.h"
-#endif
 #include "AudioManager.h"
 #include "miniaudio.h"
 #include "LrcData.h"
 #include "Mp4Chapters.h"
+#include "core/INotify.h"
 
 class PlaylistManager;
 struct DigiConfig;
@@ -38,9 +37,12 @@ enum class UIOverlay { None, RipConfirm, MBSearch };
 
 class UIManager {
 public:
+    // notify == nullptr -> the production platform notifier (core::notifier());
+    // tests inject a fake here (constructor injection — no setNotify global).
     UIManager(PlaylistManager& playlist, AudioManager& audio,
               DigiConfig& config,
-              const std::string& initial_dir = "");
+              const std::string& initial_dir = "",
+              core::INotify* notify = nullptr);
     ~UIManager();
 
     void run();
@@ -48,6 +50,15 @@ public:
     const std::string& currentDir() const { return current_dir_; }
 
 private:
+    // Notifications seam (slice 7): injected fake in tests, core::notifier() in prod.
+    core::INotify* notify_;
+    // Same name/arity as the pre-slice-7 free function, so every toast call site
+    // in UIManager.cpp compiles unchanged (class scope hides the 4-arg adapter in
+    // Toast.h); forwards to that adapter with the injected notifier. Defined in
+    // UIManager.cpp.
+    void showTrackToast(const std::string& title, const std::string& artist,
+                        const std::string& album);
+
     WINDOW* win_title_    = nullptr;
     WINDOW* win_cwd_      = nullptr;
     WINDOW* win_dir_      = nullptr;
@@ -111,6 +122,11 @@ private:
     bool show_remaining_ = false;
     bool show_clock_     = false;
     bool show_hidden_    = false;
+    // iHeart deep-analysis capture toggle (Ctrl+A). Host-tracked since slice c:
+    // IHeartDeepLog moved into the streaming plugin, so the state is pushed across
+    // the ABI (audio_.setDeepLog) rather than read back from the plugin. Diagnostic,
+    // not persisted.
+    bool deeplog_on_     = false;
     int  sleep_minutes_  = 0;   // 0 = disabled
     std::chrono::steady_clock::time_point sleep_start_;  // show hidden (dot) files in browser   // show wall clock in title bar
 
@@ -196,7 +212,6 @@ private:
     std::string cd_drive_letter_;
     int         cd_poll_ticks_   = 0;
     int         cd_fail_count_   = 0;
-#ifdef _WIN32
     MBLookup    mb_lookup_;
     std::atomic<bool> mb_fetching_ { false };
     std::string mb_error_;    // protected by mb_mutex_
@@ -232,7 +247,18 @@ private:
     UIOverlay   ui_overlay_    = UIOverlay::None;
     std::string rip_status_;   // shown in cmdline during/after rip
     int         rip_msg_ticks_ = 0;  // auto-clear counter
-#endif  // consecutive media check failures  // name of active preset, empty if custom
+
+#ifndef _WIN32
+    // Cmdline echo (KEPT past slice 5): a real notify-send toast now renders on
+    // a Linux desktop with a notification daemon, but headless/no-daemon Linux
+    // (WSL2, CI, SSH) shows nothing — so every showTrackToast message ALSO
+    // surfaces in the cmdline bar for a few seconds, the always-visible
+    // graceful-degradation surface (otherwise toast-only flows like ^B "logged
+    // in as" / ^G "approve in browser" look dead). Same shape as rip_status_/
+    // rip_msg_ticks_.
+    std::string status_msg_;
+    int         status_msg_ticks_ = 0;
+#endif
 
     // Recently played virtual dir state
     bool in_recent_      = false;
@@ -281,7 +307,6 @@ private:
     std::string scrob_artist_, scrob_track_, scrob_album_;
     std::string scrob_normid_;           // canonical identity of the committed track (relabel dedup)
     std::string discord_radio_art_;      // last iHeart digital cover URL pushed to Discord ("" = logo)
-#ifdef _WIN32
     // Discord Rich Presence (Ctrl+D). Mirrors the scrobbler's track-change moment.
     DiscordRP   discord_{"1519141025195491338"};   // RE-MOCT application id
     bool        discord_active_       = false;      // an activity is currently set
@@ -305,7 +330,6 @@ private:
                                const std::string& album,
                                const std::string& key,
                                bool song = false);
-#endif
     long        scrob_start_ = 0;        // unix time the current track started
     bool        scrob_done_  = false;    // already scrobbled this track
     void        updateScrobbler();       // called each tick; fires now-playing + scrobble

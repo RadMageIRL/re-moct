@@ -1,5 +1,4 @@
 #pragma once
-#ifdef _WIN32
 
 #include <string>
 
@@ -47,4 +46,3 @@ std::string path();
 
 } // namespace Log
 
-#endif // _WIN32

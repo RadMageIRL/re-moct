@@ -1,0 +1,1043 @@
+# RE-MOCT roadmap
+
+## Direction (decided)
+Linux-first to establish a clean core/platform boundary, **then** plugin-ability,
+with **iHeart extracted as the first real loadable plugin** as the proof of the
+plugin system. Porting forces the boundary clean; an interface proven across two
+platforms is more trustworthy. Get there in two moves: prove an internal
+compile-time Source interface first, **then** harden it into a C-ABI DLL/SO. Don't
+carve the ABI first.
+
+> **Spotify is dropped for now.** It was the thing that tempted us to pull plugins
+> ahead of the Linux port; without it, the original ordering is cleaner. The
+> Source-interface design stays transport-agnostic (see `architecture.md`) so a
+> future sidecar-style service plugin remains possible, but it is not on the plan.
+
+## Phases (in order)
+- **Phase 0 - offline unit-test safety net: ✅ DONE (in the form pursued).** The
+  pure-unit half landed and is verified: `IHeartNowPlayingSM` (now-playing decision
+  logic - threadless, no network) and `ar_crc` (AccurateRip CRC math) extracted as pure
+  units with offline `ctest` coverage (`iheart_sm_test`, `ar_crc_test`). **Honest scope:
+  the originally-envisioned full streaming record/replay harness was NOT built** - the
+  safety net took the form of pure extractions + offline unit tests, which proved
+  sufficient to make the Phase 1 seam work safe. A true capture/replay harness remains
+  available to build later if a future refactor needs it.
+- **Phase 1 - platform abstraction / cleanup.** Replace platform-specific calls with
+  seams (interfaces), not `#ifdef`s:
+  - HTTP: consolidate the per-module WinINet GET helpers behind one `core::IHttp`
+    seam (Linux = libcurl later; later still, host provides transport to plugins).
+    Migrated in groups, split by verification method:
+    - **slice 1 / group (a) - GET/JSON: ✅ DONE** (commit `94eb8cb`): MBLookup +
+      RadioBrowser. See Done section.
+    - **group (b) - POST scrobble: ✅ DONE** (commit `7c13baf`): LastFm + ListenBrainz.
+      See Done section.
+    - **group (c) - bytes + redirect: ✅ DONE** (commit `dd5f792`): CoverArt + CDRipper
+      (AR/CTDB). See Done section. **`hlsHttpGet` was pulled OUT of (c)** and deferred -
+      it was not a clean one-shot.
+    - **slice 4 - the audio-thread pair (sites 7 & 8): ✅ DONE** (commit `4c72b09`):
+      StreamSource `hlsHttpGet` + IHeart metadata, via the cancel-token +
+      persistent-session (`IHttpSession`) extension. **HTTP consolidation is 8/8 -
+      fully closed.** The fork is resolved: both sites migrated. See Done section.
+      The live StreamSource audio read loop (`InternetReadFile`→ring) stays OUT
+      entirely, permanently - proven byte-identical by diff in slice 4.
+  - **slice 5 - core/platform directory reorg (HTTP seam): ✅ DONE** (commit
+    `1977539`): `include/core/` + `src/platform/win/` established on the finished
+    HTTP seam. See Done section. The remaining seams below BUILD INTO this
+    structure (interfaces → `include/core/`, Windows impls → `src/platform/win/`);
+    they are not relocated later.
+  - **slice 6 - IPC: Discord named-pipe → `core::IIpc`: ✅ DONE** (commit `89285d8`):
+    the first seam built INTO the slice-5 structure. See Done section. (Linux =
+    Unix socket, Phase 3.)
+  - **slice 7 - notifications: Toast/PowerShell → `core::INotify`: ✅ DONE** (commit
+    `dde7041`): third seam built INTO the slice-5 structure; second ctor-injection
+    consumer. See Done section. (Linux = libnotify/notify-send, Phase 3.)
+  - **slice 8 - CD access: Windows IOCTL → `core::ICdIo`: ✅ DONE** (commit
+    `14aebec`): the LAST platform seam - Phase 1's seam work is complete. See
+    Done section. (Linux = SG_IO on /dev/srN, Phase 3.)
+  - Clear the parked concurrency debt where cheap.
+- **Phase 2 - internal Source interface: ✅ DONE** (slices 0/A/B landed; slice
+  C formally DECLINED by decision, 2026-07-03 - see below and the Decisions
+  log). The goal - an internal compile-time `core::ISource` proven against all
+  four real sources (local file, iHeart, ICY, CD) with zero new dependencies -
+  was achieved at slice B under the slice-0 replay net + live gates.
+  **Design approved (2026-07-02):**
+  `core::ISource` at `include/core/ISource.h` - readFrames (the audio-callback
+  contract, fixed 44100/stereo/f32) / caps (seekable, finite, live) /
+  positionSec / durationSec / seekTo / close. **`open()` and metadata are
+  deliberately OUT of the v1 contract** (see Decisions log). Slices:
+  - **slice 0 - thin replay net: ✅ DONE** (commit `7adae12`): the regression
+    net for the whole phase - see Done section. These tests retarget through
+    `ISource*` in slice A and gate every later slice.
+  - **slice A - contract + push sources: ✅ DONE** (commit `0b7acf4`): ISource
+    landed; StreamSource + CDSource implement it (signature harmonization only -
+    concurrency boxes provably unopened: `src/StreamSource.cpp` diff EMPTY,
+    sacred-symbol grep over the full diff zero hits); pipeline tests retarget
+    through `ISource*`. See Done section.
+  - **slice B - LocalFileSource extraction: ✅ DONE** (commit `845a155`): the
+    heaviest slice - the audio-thread swap became a pointer move + RETIREMENT
+    under the unchanged release/acquire protocol. See Done section.
+  - **slice C - callback dispatch through ISource*: ❌ DECLINED** (2026-07-03,
+    go/no-go assessment, Dos confirmed). Not "polish not worth it" - the polish
+    is INCORRECT: a single active-`ISource*` is factually wrong for the file
+    branch, which runs TWO live sources during a crossfade (varispeed needs the
+    file source specifically; the mix and gapless fill read `next_src_`) - only
+    3 of the 6 callback readFrames sites could even use it. The real costs were
+    structural, not the (unmeasurable) vtable: a second source of truth for
+    "what's playing" that can disagree with the mode flags mid-transition (the
+    teardown-ordering class slice 0 guards), and a fourth audio-thread change
+    class (the pointer goes stale at every swap - the F2 lesson replayed). The
+    mode flags/branches stay regardless (file-only ReplayGain, CD-only live-BPM,
+    per-branch buffering/track-end are semantics, not debt). Nothing downstream
+    needs it: Phase 3 recompiles the portable core unchanged; Phase 4's plugin
+    dispatch is its own boundary. Virtual dispatch through the interface is
+    already proven on every ctest run (the pipeline tests drive the real
+    machinery through `ISource&`).
+- **Phase 3 - Linux port. IN PROGRESS** (kickoff 2026-07-03; readiness survey +
+  slicing approved - `docs/phase3-readiness.md`). Forces the boundary clean. WSL2
+  (Debian Trixie, provisioned on 7of9) as the fast inner loop, GitHub Actions
+  matrix (windows msys2/UCRT64 + debian:trixie container) as the source of truth.
+  Strictly a PARITY port - no new features, no visual changes. Approved slicing:
+  - **slice 0 - CI matrix + env + seam stubs: ✅ DONE** (commit `27735f5`): see
+    Done section. CD-gate venue RESOLVED on evidence: usbipd→WSL2, no VM.
+  - **slice 1 - portable core compiles + links on Linux: ✅ DONE** (the
+    platform-util layer, the mechanical de-Win32 classes, whole-file `_WIN32`
+    wraps de-gated, StreamSource header detox with the sacred ICY loop gated
+    VERBATIM; MD5 stayed a Linux placeholder - vendoring rides with slice 2 as
+    decided). Gate PASSED: remoct played a WAV to completion on Linux
+    (PulseAudio sink-input live) + Windows ctest 13/13 before AND after. See
+    Done section.
+  - **slice 2 - HTTP: libcurl IHttp: ✅ DONE** (sessions, cancel token,
+    RedirectPolicy, read_error; vendored MD5 both platforms; http_cancel_test
+    made portable - one file, both transports). See Done section.
+  - **slice 3 - ICY raw-loop Linux twin: ✅ DONE** (commit `5c823f8`; design
+    doc `docs/phase3-slice3-design.md` ratified pre-code): curl CONNECT_ONLY +
+    curl_easy_recv, pull-read shape verbatim, offset-0 invariant. Gate PASSED:
+    live station audible on Linux (Pulse RMS 6393), StreamTitle across 2+
+    transitions, prompt switch; Windows preprocessed TU bit-identical. New
+    both-platform `icy_pipeline_test` closes the slice-0 "ICY live-gate-only"
+    limit. See Done section. **The platform boundary's raw-transport work is
+    complete** - slices 4/5/6 are seam impls.
+  - **slice 4 - IPC: Unix-socket IIpc: ✅ DONE - 100% CLOSED** (design doc
+    `docs/phase3-slice4-design.md` ratified pre-code): `IpcUnixSocket.cpp`
+    (`platform::lnx::UnixSocketIpc`), the WinPipeIpc sibling. Gates PASSED -
+    Windows 16/16 (UIManager preprocessed TU bit-identical), Linux 13/13,
+    live socat echo probe, AND live Discord RP from Linux via the
+    npiperelay bridge (real Discord accepted title/artist + iTunes art,
+    survived an on-air track change). See Done section. **Final 100% close
+    CONFIRMED: Dos verified on a native Debian 13 desktop with a real Discord
+    install - end-to-end all good (native socket discovery, no bridge).**
+  - **slice 5 - notify: notify-send core::INotify: ✅ DONE - CLOSED** (design
+    doc `docs/phase3-slice5-design.md` ratified pre-code): `NotifyNotifySend.cpp`
+    (`platform::lnx::NotifySendNotify`), the WinToastNotify sibling. Dos
+    live-confirmed on Debian 13 (song-to-song + ^D toasts render). See Done
+    section.
+  - **slice 6 - CD: SG_IO ICdIo - LAST: ✅ DONE - PHASE 3 COMPLETE** (design doc
+    `docs/phase3-slice6-design.md` ratified pre-code): `src/platform/linux/
+    CdIoSgIo.cpp` (`platform::lnx::SgIoCdIo`) + pure CDBs in `CdbSgIo.h`. Gate
+    PROVEN on the real GHD3N via usbipd→WSL2 (VMware is NOT a valid CD venue - it
+    exposes a virtual `NECVMWar` drive → +0 offset → wrong bytes). See Done section.
+- **Phase 4 - plugin-ize. ✅ COMPLETE (2026-07-04).** The Source interface is now a
+  loadable C-ABI `.dll`/`.so` boundary and **iHeart (the streaming source) is the first
+  real plugin** - the whole plugin system is proven. **"Fix iHeart and ship without
+  rebuilding the host" is literally true**, and identical-to-compiled-in is a deterministic
+  byte-identity ctest on both matrix legs (slice d). All four slices DONE & PUSHED; the
+  **restructure branch is feature-complete** (merge to `dev`/`main` is Dos's call). Readiness
+  + ABI design ratified: `docs/phase4-readiness.md`
+  (§2 = the frozen C boundary; Boundary A = the first plugin is the STREAMING SOURCE
+  entire - StreamSource + iHeart metadata + ICY - iHeart as its headline capability).
+  - **slice (a) - freeze the C ABI against a disposable plugin: ✅ DONE.** `include/core/
+    remoct_plugin.h` (the frozen v1 SDK: one export `remoct_plugin_query` → POD
+    `RemoctPlugin` op table + injected `RemoctHostServices`; C linkage, noexcept, nobody
+    frees across the line; major-gate + struct-size versioning). The plugin loader is the
+    5th platform seam (`core::IPluginLoader` + `PluginLoaderWin`/`PluginLoaderPosix`);
+    policy (`validatePlugin`/`loadPlugin`) stays consumer-side in `PluginHost`. Proven by
+    a pure-C sine test plugin + `plugin_loader_test` (load → version-gate reject paths →
+    full lifecycle), both platforms. See Done.
+  - **slice (b) - host drives a source through the ABI + the HTTP service shim: ✅ DONE.**
+    StreamSource still compiled IN - an in-process plugin via `remoct_stream_plugin_query()`
+    (acquisition flips to `loadPlugin()` in (c)). Cancel unified on `int32_t`; the shim
+    (`PluginHostServices`) bridges the ABI to `core::IHttp` (host-owned response memory,
+    verbatim cancel passthrough); the adapter (`StreamPluginAdapter`) + driver
+    (`core::PluginSource`) replace AudioManager's by-value `stream_source_`. See Done.
+  - **slice (c) - extract the stream stack as a real `.so/.dll`: ✅ DONE** (2026-07-04;
+    design `docs/phase4-slice-c-design.md` ratified pre-code; live-gated both platforms).
+    StreamSource + IHeartRadio + SM + DeepLog + the adapter moved to `plugins/stream/`
+    (`git mv`, blame preserved), built as `remoct_stream.{so,dll}` exporting
+    `remoct_plugin_query`; acquisition flipped to `core::loadPlugin()`; iHeart/HLS HTTP
+    rewired `core::http()` → the injected host services (the shim inverted plugin-side as
+    `HostServiceHttp`); FDK-AAC + own miniaudio impl (`MA_NO_DEVICE_IO`) + the sacred raw
+    ICY transport moved into the plugin. See Done section.
+  - **slice (d) - the identical-to-compiled-in gate: ✅ DONE - PHASE 4 COMPLETE** (2026-07-04;
+    design ratified pre-code in the session log). `plugin_hls_parity_test` runs identical
+    synthetic HLS/ADTS through the REAL host HTTP crossing (FakeHttp → `core::HostServices`
+    table → plugin `HostServiceHttp` → StreamSource) three times - twice compiled-in
+    (`remoct_stream_plugin_query`, kept per D4) and once through the LOADED `remoct_stream.
+    {so,dll}` (`core::loadPlugin`) - asserting **byte-identical PCM**. Gate (both platforms):
+    `refA==refB` (determinism proven in-test), `refA==loaded` (the thesis), `rms>0.15`
+    (real audio), `segment_gets>0` (crossed the shim). See Done section.
+
+## Done (restructure branch)
+- **Phase 4 slice (d) - the identical-to-compiled-in gate: DONE - PHASE 4 COMPLETE**
+  (2026-07-04, code `c581f70`). New `tests/plugin_hls_parity_test.cpp`: a deterministic
+  headless proof that the LOADED `remoct_stream.{so,dll}` produces **byte-identical PCM** to
+  the compiled-in reference, on every ctest, both matrix legs. **The crossing (the crux):**
+  a `FakeHls` (`core::IHttp`) is injected AS THE HOST HTTP SERVICE - `core::HostServices(fake).
+  table()` - and BOTH the compiled-in reference (`remoct_stream_plugin_query`, kept per slice-c
+  D4) and the loaded module cross that SAME table (`FakeHls` → `HostServices` → `svc_fetch` →
+  plugin `HostServiceHttp` → `StreamSource.fetch`, full request/response marshal + host-malloc/
+  free round-trip). NOT `core::setHttp` - and the plugin *can't* bypass the shim (`grep
+  core::http() plugins/stream/ = 0` since slice c), so byte-identical PCM proves the ABI
+  marshalling is transparent, not merely that "HTTP happened". The only variable between
+  reference and loaded is compiled-in symbol vs `dlopen`/`dlsym` - a one-variable controlled
+  experiment; `segment_gets>0` makes the crossing observable. **Three runs, four asserts:**
+  `refA`, `refB` (SAME compiled-in descriptor) → `refA==refB` is a DETERMINISM self-check that
+  fails FIRST if the protocol flakes (so a flake can never masquerade as a `.so` fidelity bug);
+  `loaded` → `refA==loaded` is the thesis; `rms(refA)>0.15` (=0.343) proves it's real decoded
+  audio not two identical silences; `segment_gets>0` (=2) the crossing. **Determinism is
+  engineered, not assumed:** the 44100 fixture keeps the whole capture path in fixed-point/
+  integer math (FDK-AAC fixed-point decode → `int16` ring → exact `int16→float` `x/32768`), so
+  it is independent of the two separately-compiled targets' float flags; and the drain is a
+  fixed head window captured after prebuffer with `DRAIN(1.5s) < PREBUFFER(3s)`, so the ring
+  can never underrun during it → no silence-fill → fixed decoded audio regardless of producer
+  thread timing. **Named limit (honest):** the RESAMPLE path's byte-identity is deliberately
+  NOT asserted (a 48 kHz fixture would be float-flag-sensitive across the two targets); it stays
+  covered behaviorally by the live gates. The HLS fixture (FDK-ADTS sine + `FakeHls`) was
+  factored into `tests/hls_fixture.h` so `hls_pipeline_test` (behavioral: underrun/self-heal/
+  cancel - unchanged) and the parity test share one copy. **Live-parity layer banked in slice
+  (c):** ICY + iHeart audible from the loaded `.so` (WSL RMS) + the negative control (remove the
+  `.so` → silent) both platforms + Dos's Windows scrobble/Discord/re-pin run; re-pin is
+  byte-verbatim (sacred audit = 0), identical by construction. **Two non-audio residuals**
+  (outside `read_frames`, accepted): the Ctrl+A deep-log toast dropped the plugin-side path;
+  the plugin's `Log` has its own `g_enabled`. Verified: Windows ctest 20/20, Linux 21/21;
+  `refA==refB==loaded` byte-identical both platforms (rms 0.343, `segment_gets` 2). **Phase 4
+  is complete - the plugin is real, and provably identical to compiled-in.**
+- **Phase 4 slice (c) - extract the streaming source as the first real `.so/.dll`: DONE**
+  (2026-07-04; design `docs/phase4-slice-c-design.md` ratified pre-code). The streaming
+  stack (StreamSource + IHeartRadio + IHeartNowPlayingSM + IHeartDeepLog + StreamPluginAdapter)
+  moved via `git mv` (blame preserved) into `plugins/stream/`, built as a MODULE library
+  `remoct_stream.{so,dll}` (`PREFIX ""`) exporting the ONE ABI symbol `remoct_plugin_query`
+  (the in-process `remoct_stream_plugin_query()` kept so `plugin_stream_test` stays the
+  compiled-in byte-identity reference). **The acquisition flip:** `AudioManager` loads the
+  module beside the binary (`port::exeDir()/plugins/…`, the new PortUtil helper) via
+  `core::loadPlugin()`; a failed load leaves `PluginSource` `valid()==false` → streaming
+  disabled, host alive (the slice-a reject paths, now production; `beginStream` guards +
+  toasts). **The HTTP rewire (the crux):** the two `core::http()` call sites
+  (StreamSource HLS session + IHeartRadio) rewired to an injected `core::IHttp&`; plugin-side
+  `plugin::HostServiceHttp : core::IHttp` is the slice-b shim INVERTED - it forwards
+  `openSession`/`fetch` to the injected `RemoctHostServices` C table (cancel `const int32_t*`
+  verbatim), so the moved code is otherwise unchanged. Audit: `grep core::http()
+  plugins/stream/ = 0`; the StreamSource diff = exactly the 2 rewire lines + ctor threading
+  (sacred ring/`prebuffered_`/`ringClear`/re-pin/150 untouched), IHeartNowPlayingSM a
+  byte-pure move. **Nuance (lessons.md):** the plugin links `-lwininet`/`CURL::libcurl` for
+  StreamSource's PRIVATE raw ICY loop (moved verbatim) - that is NOT the `core::IHttp` seam
+  (which stays host-side, crossing via the table); two HTTP consumers, only the seam crosses.
+  Own miniaudio impl (`MA_NO_DEVICE_IO`, decode/convert only - host owns the device) + FDK-AAC
+  moved in; dual miniaudio/Log impls safe under `dlopen(RTLD_LOCAL)`/per-module symbol space.
+  **Row-8 (build/survey caught what the outbound `core::http()` survey missed):** the host's
+  Ctrl+A called `IHeartDeepLog::toggle()`/`path()` directly - a host→plugin call rewired to
+  `set_config("deeplog", …)` + host-tracked state, exactly the sibling Ctrl+K handler's shape
+  (readiness §3). `xfade_handoff_test` dropped the moved files (AudioManager no longer names a
+  streaming symbol - proof the cut is clean) and links the loader instead. **Gates, both
+  platforms:** Windows build clean + ctest 19/19; Linux build clean + ctest 20/20;
+  loaded-module ABI round-trip (`loadPlugin` → create → caps → set_config → destroy) identical
+  Win/Linux. **LIVE from the loaded module:** WSL RMS - ICY 2111.6 (99.9% nz, nowPlaying
+  "Chris Zippel – Around, Arrived" + [LIVE]) + iHeart digital 4412.7 (100% nz, nowPlaying
+  "SABRINA CARPENTER – Feather" + [LIVE]); **negative control** - remove the `.so` → sink
+  silent (RMS 0.0), proving playback runs through the module (host binary carries no
+  StreamSource symbol). Windows live confirmed by Dos (iHeart + ICY audible, nowPlaying,
+  scrobble, re-pin). **"Fix iHeart and ship without rebuilding the host" is now literally
+  true.** Next = slice (d): `hls_pipeline_test` through the boundary (byte-identical PCM).
+- **Phase 4 slice (b) - host drives the streaming source through the plugin C ABI +
+  the HTTP service shim: DONE** (2026-07-04; design `docs/phase4-slice-b-design.md`
+  ratified pre-code, §5a cancel decision = option A). StreamSource stays compiled INTO
+  the host - an in-process plugin reached by a direct `remoct_stream_plugin_query()` call
+  (the ONLY (b)→(c) difference: (c) flips that to the `.so`'s export via `loadPlugin()`;
+  the driving code is byte-identical across the flip). Three parts: **(1) cancel unified
+  on `int32_t`** - `core::HttpRequest::cancel` `std::atomic<bool>*` → `const int32_t*`
+  (the ABI cancel type); a shared `core::httpCancelRequested()` reads it via
+  `std::atomic_ref<int32_t>` acquire-load; both transports call it. `StreamSource::stop_`
+  stays `std::atomic<bool>` (icyHop + its 22 sites untouched); a NEW plain `int32_t
+  http_cancel_` is written ONLY through a `setStop()` helper at `stop_`'s two write sites
+  (can't drift) and passed as `&http_cancel_` - zero reinterpret, conforming atomic_ref on
+  both sides (the literal "retype stop_ to atomic<int32_t>" was rejected: reading a
+  `std::atomic` via `atomic_ref` is non-conforming per [atomics.ref.generic] - see
+  lessons.md). Gate: cancel abort Win 393 ms / Linux 302 ms (the slice-4 ≤one-receive-
+  timeout property survived bool→int32). **(2) the HTTP service shim** `PluginHostServices`
+  (`core::HostServices(IHttp&)` fills a `RemoctHostServices` table): sessions wrap
+  `IHttpSession`; `http_fetch` translates `RemoctHttpReq`↔`HttpRequest` and passes the
+  `int32_t*` cancel through verbatim (zero bridging); response body/final_url are
+  malloc'd host-side and freed by `http_response_free` - nobody frees across the boundary;
+  every entry noexcept. **(3) adapter + driver + rewire:** `StreamPluginAdapter`
+  (`remoct_stream_plugin_query()` → a `RemoctPlugin` table 1:1 over an in-tree
+  StreamSource; callbacks are internal-linkage C++ statics assigned to C fn-ptrs, the same
+  pattern as miniaudio's `maDataCallback`); `core::PluginSource` (the host driver, same
+  method names StreamSource had - `url()`/`paused()` HOST-TRACKED, confirming they are not
+  ABI surface; metadata via snprintf-grow). AudioManager's `StreamSource stream_source_`
+  became `core::HostServices host_services_{}` + `core::PluginSource stream_plugin_{...}`
+  (in-class init so `= default` ctor holds). **Audio-thread delta = exactly one set-once
+  indirect call:** `readFrames` now goes through pointers set ONCE at construction (same
+  lifetime as the by-value member), under the unchanged `stream_mode_` guard, teardown
+  quiesces the device before close/destroy - ring/producer/`prebuffered_` byte-unchanged.
+  New tests (both platforms): `plugin_http_shim_test` (FakeHttp: translation + cancel
+  passthrough + ownership), `plugin_stream_test` (real StreamSource driven via the raw C
+  table AND `PluginSource`; a dead-port open fails fast → headless). **Verified: Windows
+  full build clean + ctest 16→19/19 (`plugin_stream_test` 20/20; xfade + hls/icy green);
+  Linux `plugin_*` tests + `AudioManager.cpp` clean.** LIVE gate BOTH PLATFORMS: Linux
+  pre-check (WSL2 pty) - SomaFM ICY audible through `PluginSource`, RDPSink.monitor RMS
+  4488.9 / 100% non-zero, nowPlaying + [LIVE] across the ABI (iHeart HLS was DNS-dead in
+  WSL - env quirk, not the driver); Windows - Dos confirmed digital iHeart + ICY play.
+- **Phase 4 slice (a) - freeze the plugin C ABI against a disposable plugin: DONE**
+  (2026-07-04). `include/core/remoct_plugin.h` - the FROZEN v1 SDK C header (compiles as
+  C, proven by the pure-C sine plugin): `REMOCT_ABI_VERSION 1`, one export
+  `remoct_plugin_query()` → a POD `RemoctPlugin` op table + an injected `RemoctHostServices`
+  (incl. the full HTTP-service PODs, frozen now though the sine plugin ignores them).
+  Fundamentals pinned: C linkage only, noexcept everywhere, nobody frees across the line,
+  major-version gate + struct-size additive growth. **The plugin loader is the 5th platform
+  seam** (LoadLibrary/dlopen are platform calls): `include/core/IPluginLoader.h` +
+  `src/platform/win/PluginLoaderWin.cpp` (LoadLibraryExW) + `src/platform/linux/
+  PluginLoaderPosix.cpp` (dlopen RTLD_NOW|RTLD_LOCAL) - `void*`→fn-ptr via memcpy
+  (warning-free under -Wpedantic). Policy stays consumer-side (the seam split): `include/
+  PluginHost.h` + `src/PluginHost.cpp` - pure `validatePlugin()` (null/AbiMismatch/TooSmall/
+  MissingRequiredFn) + `LoadedPlugin` RAII (module unloads AFTER the borrowed descriptor)
+  + `loadPlugin()`. Disposable `tests/plugin_sine.c` (pure C, dependency-free deterministic
+  ramp, built as a shared MODULE lib) + `tests/plugin_loader_test.cpp` (loads the real
+  `.dll/.so` via the seam, drives the full lifecycle through the C table, unit-tests the
+  version-gate reject paths). The loader is NOT in the remoct target yet - the host
+  consumer arrives in slice (b); it's built by the test + the `remoct_linux_seams`
+  platform-clean OBJECT check. Verified: Windows full build + ctest 16/16→17/17
+  (`plugin_loader_test`, 24 checks); Linux standalone (gcc sine `.so` + g++ loader test,
+  `-Wall -Wextra -Wpedantic` clean) PASSED.
+- **Phase 3 slice 6 - CD: SG_IO core::ICdIo twin: DONE - PHASE 3 COMPLETE**
+  (2026-07-04; code `59792f9` [CDB builder + impl + portable tests] + `65887bd`
+  [CD-UI un-gate], docs `687a412`/`5e53b73`, design `docs/phase3-slice6-design.md`
+  ratified before code). `src/platform/linux/CdIoSgIo.cpp`
+  (`platform::lnx::SgIoCdIo`/`SgIoCdDevice`) - the WinCdIo (IOCTL) sibling, every
+  primitive one SCSI CDB via `ioctl(fd, SG_IO, &hdr)`: READ CD 0xBE (readRaw ± C2
+  via byte-9 0x10/0x12 - the parity crux), READ TOC 0x43 (format 0 TOC / 1
+  multi-session, MSF=1), SET CD SPEED 0xBB, INQUIRY 0x12 (model), TEST UNIT READY
+  0x00 (mediaPresent). **Native LBA - the Windows `DiskOffset = lba*2048` is a
+  RAW_READ_INFO artifact that does NOT cross the seam.** CDB byte layouts factored
+  into `CdbSgIo.h` (transport-side, like `NotifyArgv.h`) and asserted headless by
+  the new `cdb_sgio_test` - incl. the C2 byte-9=0x12 CDB the non-C2 gate drive
+  can't run live. `SeamStubs.cpp` retired (its `cdio()` bridge moved into the impl
+  - the file dies as slice 0 planned). `CDIO_IMPL` selector made cd_toc_test/
+  cd_pipeline_test portable (cd_pipeline_test timing → port::tickMs/sleepMs).
+  **Consumer-side un-gate (larger than the ratified "drive-discovery + ^Y/^R" -
+  the ENTIRE CD UI was blanket `#ifdef _WIN32` scaffolding, "whole-body gates
+  outlive their era" at scale):** un-gated to common (all portable; Windows tokens
+  unchanged → a Windows preprocessed-TU non-event) the CD media/eject poll,
+  MB/rip-status poll, overlay dispatch, drawRipConfirm, the RipConfirm input modal,
+  now-playing CD label/badge/[CD]/[MB] modes, progress CD pos/dur+meta, cmdline
+  rip/MB status, ^Y/^R, and n/p/queue/select CD-track playback. Linux twins:
+  `listDrives` (fix the empty [Drive] menu - /dev/sr* + roots + /proc/mounts mount
+  points) and `activateDrive` (/dev/sr* → openCD("sr0")). Key finding:
+  `drawMBSearch`/`handleMBSearchInput` were NOT gated - MBSearch deferral is purely
+  the gated ^F entry. ONE Windows-token change (behavior-identical): StringUtils
+  `parseCDPath`/`cdTrackNumber`/`isCDTrackPath` generalized from single-char drive
+  to colon-delimited spec (for "sr0:CD Track NN"; provably identical for every
+  Windows drive letter) - so the Windows regression bar = 16/16 ctest + a Windows
+  CD rip smoke. Kept gated: ^F/MBSearch entry, streaming top-bar label (pre-existing
+  Linux gap), the 4 genuine Win-API calls. **THE GATE PROVEN on the real GHD3N
+  (Claude ran it on 7of9: usbipd→WSL2, the production `CdIoSgIo.cpp` compiled
+  standalone against `/dev/sr0`):** `model()` = `HL-DT-ST DVDRW GHD3N` → resolves
+  **+6** (the §3 risk-1 pre-check, the most likely failure, PASSES); `readToc()` =
+  12 tracks, LBAs 182…261840 **byte-identical** to the Windows baseline; `readRaw()`
+  at T1 **cmp-IDENTICAL to independent `sg_raw` READ CD 0xBE**, and those bytes
+  through remoct's own dump formula (`(R<<16)|L`, CDRipper.cpp:1021) = the baseline
+  raw samples EXACTLY, with `raw[+6]` = `ffc40002` = Windows corrected sample 0.
+  Every AR-CRC input (raw bytes, +6 offset, TOC) proven byte-identical → CRC
+  byte-identical by construction (AR math is unchanged tested code both platforms);
+  the literal full rip not run (needs building remoct with A/V deps - a formality
+  given the byte-level proof). **VMware gotcha (Dos hit it): VMware Workstation Pro
+  presents its OWN virtual CD (`NECVMWar VMware SATA CD00`) → offset-table default
+  +0 → samples 6 off → no AR match + sub-1x speed; NOT a port bug (its raw reads
+  matched Windows once offset-aligned). The byte-identical gate REQUIRES the physical
+  GHD3N via usbipd→WSL2, never VMware.** Bonus: the VMware run (advertises C2)
+  hardware-exercised the C2 de-interleave path the non-C2 GHD3N can't - closing the
+  §8.3 honest limit. **Phase 3 is complete - every platform call behind a seam on
+  both platforms (HTTP/libcurl, ICY/curl, IPC/Unix socket, notify/notify-send,
+  CD/SG_IO byte-identical).**
+- **Phase 3 slice 5 - notify: notify-send core::INotify twin: DONE - CLOSED**
+  (code `f40691c`, docs `a92dcf6`, design `docs/phase3-slice5-design.md`
+  ratified before code). `src/platform/linux/NotifyNotifySend.cpp`
+  (`platform::lnx::NotifySendNotify`) - the WinToastNotify sibling. Same shape
+  as the frozen Windows impl: spawn the OS notifier as an external process,
+  DETACHED, reap on a throwaway thread so the UI thread never blocks; where
+  Windows runs `powershell -EncodedCommand`, Linux runs
+  `notify-send -a RE-MOCT -- <title> <body>` via **fork()+execvp()**.
+  Decisions (Dos, pre-code): (1) notify-send subprocess over linked libnotify -
+  the doctrine twin of the Windows shell-out, zero link dep (libnotify's edge
+  thin: both need a running daemon AND the detached thread since show() blocks
+  on D-Bus); (2) the interim Linux cmdline echo (slice-2 `4f0b240`) KEPT as the
+  permanent graceful-degradation surface (comment-only retitle); (3) NEW
+  Linux-only `notify_argv_test`. **Injection safety = argv, never a shell** (the
+  Linux analog of the Windows `-EncodedCommand` no-outer-quoting fix, one level
+  lower): title/body are argv slots (quotes/apostrophes/`;`/accents inert), the
+  leading `--` stops a dash-leading title being read as an option. argv builder
+  factored into `NotifyArgv.h` (transport-side under platform/linux, NOT core)
+  so the test can assert it headless. SeamStubs.cpp dropped StubNotify +
+  notifier() bridge (only CD stub left for slice 6);
+  NotifyWinToast.cpp/INotify.h/Toast.h/DiscordRP **zero diff**. Verified on
+  7of9/WSL2: build clean, **Linux ctest 14/14** (was 13; notify_argv_test +
+  notify_toast_test green), real impl linked not stub; transport proven headless
+  via a fake notify-send on PATH (real `core::notifier().notify()` delivered
+  every slot VERBATIM - `Björk` accents, `Don't "Stop"` quotes, `; rm -rf /`
+  each in ONE argv slot; the intact `;`-metachar = the no-shell proof; returned
+  promptly no hang; no-daemon → child `_exit(127)` swallowed, graceful no-op).
+  Windows = comment-only + `if(UNIX)`-guarded additions, toast path untouched.
+  **Dos live-confirmed on native Debian 13**: song-to-song toasts render, ^D
+  Discord toast + RPC on/off works. **Two Dos-found Linux-parity follow-ups
+  un-gating stale `#ifdef _WIN32` (same class as `4f0b240`/`91caf7a`): (a)
+  async stream connect/fail toasts ("Streaming"/"FAILED") - `a5b6bf6`, PUSHED;
+  (b) Ctrl+A (deep iHeart log) + Ctrl+K (digital-vs-raw stream) key cases
+  (wholly compiled out on Linux - no toggle, no toast) PLUS the Ctrl+T (theme)
+  / Ctrl+N (nerd icons) toasts (function ran but the `showTrackToast` was
+  `#ifdef _WIN32`) - un-gated, `9cb73f5`, PUSHED, ctest 14/14 (Dos live-test of
+  the toggles outstanding). Left correctly deferred: Ctrl+F (MBSearch overlay
+  still Windows-gated), Ctrl+Y/Ctrl+R (CD, slice 6).** Baseline (NOT a
+  regression, left as-is per Dos decision A): override-queue↔song doesn't toast
+  on EITHER platform (the file toast keys on `playlist_.current()`, which queue
+  plays bypass by design).
+- **Phase 3 slice 4 - IPC: Unix-domain-socket core::IIpc twin: DONE** (code
+  `671d2b3`; design `docs/phase3-slice4-design.md`, ratified before code).
+  `src/platform/linux/IpcUnixSocket.cpp` (`platform::lnx::UnixSocketIpc` /
+  `UnixSocketChannel`) - the WinPipeIpc sibling, mapping the three primitives
+  onto what they were shaped for at slice 6: **send** = one `::send()` with
+  `MSG_NOSIGNAL` (LOAD-BEARING: dead peer → `false` like WriteFile, not a
+  SIGPIPE death); **waitReadable** = the Windows 10 ms peek-poll loop shape
+  verbatim, `poll()`+`FIONREAD` in PeekNamedPipe's slot (queued bytes count
+  toward min_bytes even after peer close - pinned on the Windows baseline
+  first; the wait slice wakes early on arriving data, latency-only named
+  accepted-better); **recvSome** = one blocking `::recv()`, EOF → false;
+  EINTR retried throughout (ncurses' SIGWINCH must not read as a broken
+  channel). Endpoint discovery in the impl: base = `$XDG_RUNTIME_DIR` →
+  `$TMPDIR`/`$TMP`/`$TEMP` → `/tmp` (canonical discord-rpc order), plain
+  first then flatpak/snap subdirs - the Discord-install knowledge leak NAMED
+  and accepted at design review (DiscordRP stays zero-diff; Windows identical
+  by construction). SeamStubs shed StubIpc + the ipc() bridge. DiscordRP.cpp/
+  .h and IpcWinPipe.cpp: **zero diff**; IIpc.h doc-comments only. UIManager
+  Discord gate sweep (the slice-2 "^D comes alive at slice 4" promise): dtor
+  art-join, startDiscordArtLookup, the RP block, stopped-state clear, the
+  early-return term, the ^D case - all common now; **Windows UIManager
+  preprocessed TU bit-identical to baseline** (the cmp caught a 1-line
+  re-flow of the un-gated if-condition - fixed by keeping the baseline's own
+  line breaks; lessons.md). Tests: discord_ipc_test portable (IPC_IMPL
+  pattern, pure protocol - 12th Linux target); NEW both-platform
+  **ipc_echo_test** (13th) - a REAL local server through the REAL impl
+  (CreateNamedPipe fixture / Unix-socket listener in a sandboxed
+  XDG_RUNTIME_DIR): whole-buffer send, waitReadable min_bytes/timeout/
+  broken-peer semantics, recvSome byte-accounting drain + EOF, dead-peer send
+  false-with-process-alive (the MSG_NOSIGNAL regression case), buffered-then-
+  close, and the Linux flatpak/snap/env discovery order - run green on the
+  UNTOUCHED Windows impl FIRST (slice-3 baseline-first pattern). Verified:
+  Windows ctest 15/15 baseline → 16/16 after; Linux 13/13 first run. **Live
+  gates:** socat echo probe - the real DiscordRP + real impl against a real
+  external Unix socket, handshake `{"v":1,...}` and SET_ACTIVITY observed on
+  the wire as ONE write per frame; **live Discord RP from Linux via the
+  npiperelay+socat bridge** (Windows Discord's pipe as a genuine Unix socket
+  - the wire capture shows production Discord's READY for the logged-in
+  user, "Doja Cat - Say So" ACCEPTED with the remoct_logo asset resolved,
+  the async iTunes art refresh ACCEPTED (`mp:external/...600x600bb.jpg`), a
+  natural on-air track change (Ariana Grande) pushed through, and after a
+  bridge kill+restart the NEXT track (JoJo) drove the lazy reconnect: failed
+  send → disconnect → fresh handshake + restored RP with art). Honest
+  limits, documented: the bridge's socket is socat's (flatpak/snap
+  candidates stay fixture-proven); Windows live ^D is a formality (TU
+  bit-identical; the same Discord displayed the Linux RP). **100% CLOSE
+  CONFIRMED: Dos verified on a native Debian 13 desktop with a real Discord
+  install - end-to-end all good, native socket discovery (no bridge).** (code `5c823f8`;
+  design `docs/phase3-slice3-design.md`, ratified before code). The LAST raw
+  transport: StreamSource's continuous ICY path now has a Linux twin - curl
+  `CONNECT_ONLY=1` (TCP+TLS) + hand-spoken HTTP/1.0 ICY request + hand-parsed
+  response headers ("ICY 200 OK" tolerance is OURS - that's the feature) +
+  `curl_easy_recv` in `InternetReadFile`'s refill slot, preserving the
+  pull-read shape verbatim. **Windows byte-verbatim held at the strongest
+  standard: the preprocessed `_WIN32` translation unit is bit-identical to
+  baseline (`g++ -E -P` diff EMPTY);** every deleted diff line was inside the
+  two slice-1 Linux placeholder stubs. THE correctness crux (offset-0
+  invariant): bytes received past the header terminator prime `raw_buf_`, so
+  `readAudio()`'s transport-blind metaint arithmetic stays exact; `hConn_`
+  (the slice-1 void* twin) holds the CURL* so the shared `onRead`/`rawRead`
+  null-guards work unmodified; redirects by hand via the portable
+  hlsResolveUrl twin (cap 5); stop_ polled per 100 ms recv-wait slice with an
+  8 s dry bound mirroring RECEIVE_TIMEOUT (close on a blocked read measured
+  **7703 ms Windows / 75 ms Linux** - the named accepted-better delta).
+  **Probe-first paid twice:** (1) ALPN must be DISABLED
+  (`CURLOPT_SSL_ENABLE_ALPN=0`) - with it, cloudflare negotiates HTTP/2 and
+  the hand-written request dies; (2) baseline finding - **WinINet yields
+  `icy_metaint=0` on an "ICY 200 OK" status line** (true SHOUTcast v1):
+  Windows plays via ADTS/MP3 resync but never parses titles there - reality
+  pinned per-platform in the test; the twin parses ICY status (named better).
+  New **`icy_pipeline_test`** (both platforms): a REAL localhost ICY server
+  through the REAL Continuous pipeline - run green on the UNTOUCHED Windows
+  baseline FIRST (slice-B pattern); covers metaint alignment across two title
+  transitions, Icy-MetaData request, server-drop reconnect self-heal, bounded
+  close, no-metaint passthrough - closes the slice-0 honest limit ("ICY
+  cannot be replayed headlessly"). Verified: Windows ctest 15/15, Linux
+  11/11. **Live gates:** Linux TUI played Dance Wave (https + cloudflare
+  redirect followed live, MP3 continuous path) - Pulse sink-monitor RMS 6393
+  / 99.97% non-zero, StreamTitle across 2+ transitions in the [LIVE] display
+  (6 flips logged + a real song change on SomaFM), station switch → new
+  connect ~1.4 s after keypress, metaint 16384/45000 parsed live; Windows
+  non-event proven live (same two stations through the verbatim path via a
+  temp harness - titles, RMS, close 15 ms/0 ms). Five wild station shapes
+  probe-validated pre-code (http, https, ICY-status v1, no-metaint,
+  multi-hop redirect). Test-infra gotcha recorded: ^U takes URL THEN a
+  station-name prompt (Enter skips) - script the full prompt flow.
+- **Phase 3 slice 2 - HTTP: libcurl core::IHttp + vendored MD5, both platforms
+  green: DONE.** Design doc: `docs/phase3-slice2-design.md` (approved before
+  code). `src/platform/linux/HttpCurl.cpp` (`platform::lnx::CurlHttp`/
+  `CurlSession`) - the WinINet sibling, same TU layout, `core::http()/setHttp()`
+  with the identical g_override shape. Key mappings (full table in the design
+  doc): **sessions = a held CURLSH share handle** (CONNECT+DNS+SSL_SESSION
+  caches, mutex-locked) + one easy handle PER fetch via CURLOPT_SHARE - keep-
+  alive reuse across fetches AND thread-safe concurrent fetches (single shared
+  easy handle rejected: can't run two transfers); **cancel** = pre-check + XFER-
+  INFOFUNCTION polling the atomic (accepted-better residual: cancel works during
+  CONNECT on Linux, WinINet can't); **timeout_ms = CONNECTTIMEOUT_MS + LOW_
+  SPEED_LIMIT/TIME stall guard, deliberately NOT CURLOPT_TIMEOUT_MS** (a whole-
+  transfer deadline would kill healthy slow downloads - behavior WinINet never
+  had); FollowSameScheme = REDIR_PROTOCOLS_STR pinned to the original scheme;
+  WinINet cache flags = no-op (curl has no client cache); proxy = env-var
+  convention. SeamStubs dropped StubHttp + the http bridges. **MD5 vendored as
+  byte-verbatim upstream `lib/md5.{h,c}`** (Peslyak/Openwall public domain) +
+  `extern "C"` - approved deviation from the design's header-only shape
+  (unmodified upstream = smaller trust surface, the "verbatim moves are safer"
+  principle); root CMake gains LANGUAGES C; LastFm::md5Hex = ONE code path both
+  platforms (CryptoAPI block + slice-1 Linux placeholder both deleted). New
+  `md5_test` (RFC 1321 vectors + 55/56/64/65 padding boundaries + a raw-UTF-8
+  api_sig-shaped vector, every custom vector independently confirmed against
+  Python hashlib). **Tests now portable via HTTP_IMPL/HTTP_LIBS:** http_cancel
+  (platform shim; scenario B = live proof the CURLSH pool reuses ONE TCP
+  connection), scrobble_request, group_c_request, iheart_request, hls_pipeline.
+  **Windows 14/14, Linux 4→10/10.** Hard-won fix: first Linux run hung forever -
+  POSIX close() does NOT wake a thread blocked in accept() (Windows closesocket
+  does); fixed with shutdown-then-close (stopListener) + ctest TIMEOUT 60 so the
+  hang class fails CI fast (lessons.md). **Live gates on Linux, all through the
+  real libcurl transport:** MB standalone probe fed the REAL Relish TOC from the
+  2026-06-21 rip log → `Joan Osborne - Relish (1995)`, all 12 track titles
+  (in-app CD→MB flow re-verifies at slice 6); RadioBrowser search in the TUI
+  returned KWIN 97.7 (the group-(a) twin); digital iHeart HLS (Z100 zc1469)
+  PLAYED - segment pump at edgeLag 0, FDK 48→44.1k, live iHeart nowPlaying
+  through the CurlSession, and audible-output proof: 4 s off the Pulse sink
+  monitor at RMS 5791 / 100% non-zero samples. **Scrobble round-trips PASSED
+  both platforms** (standalone probe, Dos's real keys, run after the commit at
+  Dos's order): Windows/WinINet - the MD5-vendoring wire regression -
+  updateNowPlaying + scrobble ACCEPTED by Last.fm (api_sig signed by the
+  vendored MD5), ListenBrainz validate (RadMageIRL) + single ACCEPTED; Linux/
+  libcurl - the identical four calls ACCEPTED, Björk/Jóga accents over raw
+  UTF-8 POSTFIELDS. **Slice-2 follow-up (Dos-found on the Debian VM, fixed
+  same day):** ^U/^G/^B dead on Linux - NOT the terminal: a single `#ifdef
+  _WIN32` around Ctrl+D in handleInput's key switch spanned ^D/^B/^F/^G/^U/
+  ^Y/^R, deleting the portable handlers from the Linux build; a minimal-curses
+  key probe proved the tty delivers all the codes (so the slice-1 IXON-only
+  termios stays - ISIG/IEXTEN were NOT taken). Fix = per-case gates with the
+  reason on each; ^B/^G/^U now common; ^D (Discord, slice 4), ^F (MBSearch
+  overlay handlers still win-gated), ^Y/^R (CD, slice 6) stay gated - those
+  three keys come alive with their slices. Verified: ^U/^G/^B open their
+  prompts in the Linux TUI, ^Q quits; Windows 14/14 (preprocessed output
+  unchanged); Linux 10/10. Findings recorded, not fixed (parked below):
+  logDir grandparent mkdir; radio-browser nl1/at1 mirrors DNS-dead (de1
+  fine, fallback loop works).
+- **Phase 3 slice 1 - portable core compiles, links, and PLAYS on Linux: DONE.**
+  The whole-file `#ifdef _WIN32` gates came off 21 files (11 TUs + 10 headers);
+  `include/PortUtil.h` landed with the rule that makes it safe: **every helper's
+  Windows expansion is the baseline call verbatim** (sleepMs==::Sleep,
+  tickMs==::GetTickCount incl. uint32 wrap shape, fopenUtf8==_wfopen(utf8_to_wide)),
+  so adoption is a rename, not a behavior change. Per-file: CDSource/IHeartRadio/
+  DiscordRP (getpid twin) trivial; Log + IHeartDeepLog rewritten portable
+  (std::filesystem/chrono/localtimeSafe; same dated-file/trim/heartbeat
+  contracts; Linux logs → $XDG_STATE_HOME/re-moct per the XDG decision); CDRipper
+  mechanical (fopenUtf8 ×~30, kSep per-platform separator so Windows rip logs
+  stay byte-identical for the slice-6 diff gate, buildOutputDir Windows branch
+  verbatim + XDG_MUSIC_DIR twin, DWORD→uint32_t word-boundary safe); LastFm MD5
+  = deliberate Linux placeholder ("" api_sig - slice 2 vendors the real one both
+  platforms, as decided); **StreamSource detox: the ICY raw transport (connect's
+  WinINet body, the rawRead InternetReadFile loop) moved INSIDE `#ifdef _WIN32`
+  byte-verbatim - on Linux connect() refuses Continuous mode with a clear error
+  until the slice-3 twin; HLS path fully portable (hlsResolveUrl got a portable
+  RFC-3986-ish twin for InternetCombineUrlA); HINTERNET members exist as inert
+  void* twins so the machinery compiles unreferenced**; AudioManager/UIManager.h
+  member gates stripped; ShellExecuteA → xdg-open twin; utf8_to_wide got a Linux
+  UTF-32 twin (reuses utf8_next - one decoder for draw + column math); version
+  tag per-platform (-win byte-identical / -linux). Audits: zero sacred symbols
+  in the StreamSource diff (ringClear/prebuffered_/ring machinery all context);
+  every StreamSource change line in 5 enumerated classes (Sleep/tick renames,
+  DWORD→uint32_t, gate insertion, include swap, hlsResolveUrl split); no
+  unguarded platform includes outside src/platform/win; PortUtil.h included
+  from .cpp files only. **Gate: on WSL2 Trixie, remoct's TUI came up in a tmux
+  pty, browsed, and played a 20 s WAV to COMPLETION - progress bar/bitrate/BPM
+  readouts live, PulseAudio sink-input "remoct" uncorked - and Windows ctest
+  ran 13/13 both before and after the port edits (baseline first, regression
+  after). Linux ctest 4/4. CI Linux job now builds the FULL remoct binary.**
+  **Slice-1 follow-up (Dos-found on the independent Debian VM, fixed same
+  day):** (1) Ctrl+Q dead on Linux - CONFIRMED IXON: cbreak() leaves tty
+  flow control on, so the driver ate ^Q/XON before curses saw key 17; fixed
+  by clearing IXON via termios in the UIManager ctor, Linux-only (raw() was
+  rejected - it also takes ISIG). (2) Resize didn't redraw - root cause was
+  OUR OWN `#ifndef _WIN32` SIGWINCH handler in main.cpp DISPLACING ncursesw's,
+  so KEY_RESIZE was never queued; fixed by deleting it - the existing
+  KEY_RESIZE relayout path now runs. (3) Ctrl+U radio confirmed EXPECTED-dead
+  (HTTP stub until slice 2, ICY slice 3) and graceful - app alive, no crash.
+  Verified: ^Q clean exit + resize relayout + ^U graceful all in the WSL2
+  pty; Windows 13/13 again (both changes Linux-only). Remaining nits:
+  config-dir casing (~/.config/RE-MOCT vs re-moct state dir) parked; live
+  Windows listen spot-check still with Dos.
+- **Phase 3 slice 0 - CI matrix + Linux env + seam stubs: DONE** (readiness
+  survey + approval: docs `ebf5382`; code `27735f5`). The survey's decisive
+  findings (full detail in `docs/phase3-readiness.md`): the tree is pervasively
+  whole-file `#ifdef _WIN32`-gated (a naive Linux build = empty shell), so the
+  survey de-gated all 23 TUs and compiled them against real Trixie headers -
+  **12/23 clean today**, the rest classified (trivial Sleep/localtime →
+  mechanical file/time APIs → LastFm MD5 decision → structural: StreamSource
+  raw ICY loop + gated UIManager/AudioManager members). Both known-unknowns
+  GREEN: ncursesw on Linux = COLORS=256/PAIRS=65536 + wide-API round-trip 3/3
+  (the COLORS=8 ceiling was a Windows/MSYS2-terminfo artifact); miniaudio =
+  PulseAudio backend live in WSL2, 27k frames through the real callback at
+  44100/stereo/f32. CMake configures on Linux UNCHANGED; the 4 pure suites
+  passed on Linux before any changes. **CD gate resolved on evidence: the
+  GHD3N is USB (JMicron bridge, busid 4-1) - usbipd-win 5.3.0 attached it to
+  WSL2 as a real scsi3-mmc `/dev/sr0`+`/dev/sg4`; sg_inq INQUIRY, cdparanoia
+  full TOC (12 tracks - Relish, T1 LBA 32 = MSF 182 − the 150 preamble,
+  conventions reconciling exactly as pinned), and a raw READ CD 0xBE returned
+  SCSI Good, 2352 bytes, byte-identical on re-read. No VM.** Landed: CI
+  workflow (debian:trixie container job - matched with the WSL2 loop,
+  non-free enabled for fdk-aac; windows msys2/UCRT64 job, full suite);
+  `src/platform/linux/SeamStubs.cpp` (inert contract-failure stubs + the four
+  core:: link-time bridges, `platform::lnx` namespace - `linux` is a macro
+  under gnu dialects; each seam slice replaces its stub with its real impl
+  file); CMake MSYS2 block guarded WIN32 + `remoct_linux_seams` OBJECT target.
+  Verified: Windows baseline 13/13 BEFORE changes, regression 13/13 AFTER;
+  Linux CI steps rehearsed in WSL2 (configure rc=0, stubs -Wall/-Wextra/
+  -Wpedantic clean, ctest 4/4); then the real matrix green on push.
+- **iHeart rabbit-hole desync - CLOSED WITH EVIDENCE** (2026-07-03 analysis
+  session; no code, analysis of `logs/iheart/` = 38 deep-log captures, 4,783
+  reconciliation ticks over 34.2 h, + the 07-02 operational log). Findings:
+  - **Stage-B promotion: REJECTED.** Its trigger (a fresh parallel session's
+    live edge showing music before the primary) occurred **0 times in 8
+    instrumented Stage-A episodes** - the lane sat on ads up to 115 s until the
+    primary's break cleared on its own, every time. iHeart's SSAI stitches new
+    joiners into ad pods too; the premise is false in every observed case.
+    **Faster manifest polling + staggered-peek machinery: also rejected** -
+    deferred behind this capture, killed by the same premise.
+  - **edgeLag is FLAT (never exceeded 2 segments in 598 polls, incl. a 1,091 s
+    ad span):** we never fall behind the manifest edge - the desync is in WHAT
+    the edge serves, not our lag. edgeLag-gated re-pin is dead.
+  - **The 35 s LIVE_STALL fallback is validated and well-placed:** 16/85 Live
+    runs self-resolved <30 s (stall correctly silent); all 68 stalled runs
+    ended in a Song commit (fire ~+41 s observed, recover by 60–89 s total).
+  - **The real holes split in two:** Class A (unfixable-by-design - one unpaid
+    cartcutId looping 8–12 min while iHeart's OWN trackHistory/ctm reported no
+    current song: broadcast-side break, nothing to rejoin) vs Class B
+    (session-side staleness with OOB-PROVEN live music, ~1 per ~6 h, 131–300 s,
+    and no mechanism arms from committed-Ad today) → the parked Class-B
+    OOB-gated re-pin candidate above. Signal quality: 3 mfCls flickers and
+    zero manifest freezes in 34.2 h.
+- **Canonical SET_SPEED in CDSource::open - RESOLVED** (commit `d2ad038`; the
+  slice-8 parked improvement). The resurrected baseline intent: open() now
+  issues `dev_->setSpeed(0xFFFF)` through the ICdIo seam (the canonical 12-byte
+  CDROM_SET_SPEED control-run C proved works) at the exact site where the
+  hand-rolled 6-byte no-op was dropped. Value decision: **0xFFFF** - baseline
+  author's stated intent, CDRipper's own restore convention, and most drives'
+  unset default, so the common fresh-open case sounds unchanged; what's new is
+  DETERMINISM in the pathological case (a rip aborted mid-Pass-2 no longer
+  leaves the drive at 10x for subsequent playback). Rejected: 176/1x (real
+  underrun hazard - refill rate == consumption rate leaves no headroom to
+  rebuild the ring cushion after a seek flush); 1764/10x quiet-mid held as a
+  NAMED FALLBACK, taken only if the listen gate ever finds max audibly
+  objectionable (evidence-first, not speculative). Contract in the net:
+  cd_toc_test asserts exactly one setSpeed(0xFFFF) on successful open, zero on
+  failed open. CDRipper zero diff. Gate: live playback on drive G - 10 s clean
+  (no stalls), seek landed, close clean; ctest 13/13.
+- **VBR bitrate readout - RESOLVED as a product decision** (commit `adacbb1`).
+  The survey finding that decided it: the "live VBR estimate" was a linear
+  position model (`(pos/dur)·file_size`, differentiated) whose steady-state
+  derivative is constant BY CONSTRUCTION - it never showed local-frame VBR
+  variation, only the file average made less accurate (tag/album-art bytes
+  inflate file_size, +2-4%) with a seek spike (76-90k kbps in the one delta
+  window that swallowed the jump; A/B-probed identical on pre-slice-B baseline
+  `3d4e061` - pre-existing, slice B exonerated). Decision (a): return TagLib's
+  nominal/average for VBR exactly as CBR/lossless already did; one-shot static
+  size/duration fallback for tagless files; estimator + 3 mutable members
+  retired (net −40 lines). Renamed `liveBitrateKbps` → `bitrateKbps` - names
+  are documentation; the old name re-forms the wrong mental model. Rejected:
+  (b) label-as-instantaneous (enshrines a misreading - it never was),
+  (d) spike-suppress-only (keeps fictional liveness to preserve noise).
+  Gate: probe across a forward seek - VBR pinned 264/264/264 (was peak
+  90,569), CBR 256 steady, FLAC 967 steady; ctest 13/13.
+- **Phase 2 slice B - LocalFileSource extraction: DONE** (commit `845a155`).
+  The file path became the third ISource implementation: `include/
+  LocalFileSource.h` + `src/LocalFileSource.cpp` (open_decoder/prime_decoder/
+  populate_track_info moved verbatim; seek-prime + cursor moved verbatim into
+  methods; TrackInfo hoisted to `include/TrackInfo.h`, zero call-site changes).
+  **The crux (correctness argument ratified before code):** initCrossfade's
+  audio-thread by-value ma_decoder struct copy became a pointer move under the
+  IDENTICAL `next_decoder_initialised_` release/acquire protocol - the atomic
+  appears in the diff only as unchanged context. The outgoing source is
+  **retired, not freed** (audio thread parks it in retired_src_; pollEvents
+  reaps on the main thread under the existing track_swap_flag_ synchronizes-
+  with edge) - closing latent baseline race F2 (UI-thread positionSec vs the
+  swap): the raced deref now always hits a live decoder, strictly narrower
+  than the baseline's torn-struct read, and the audio callback no longer
+  frees heap. Bonus: removes reliance on ma_decoder being trivially
+  relocatable. Audio-thread diff = exactly three enumerated change classes
+  (swap block, reads→readFrames at the same sites, guards); effect chains and
+  per-mode branches byte-identical; StreamSource/CDSource/CDRipper zero diff.
+  Named residuals/removals in lessons.md. Verified: ctest 13/13 (xfade +S5
+  replace-preload, added test-first), 5× stable; headless mechanics gate ALL
+  PASS (MP3 seek storm, varispeed 1.50× + boundary suppression, repeat-one,
+  device-switch continuity, 11 h .m4b, **88.9 M positionSec reads hammered
+  through a live crossfade swap**); live listen gate passed on 7of9
+  (crossfade/gapless/varispeed/MP3 seek-prime/chapters - "works as previous").
+- **Phase 2 slice A - core::ISource + push sources: DONE** (commit `0b7acf4`).
+  `include/core/ISource.h` (new, platform-free, standalone-compile verified):
+  readFrames (audio-callback contract, fixed 44100/stereo/f32; ring-backed
+  sources always return frame_count and signal end via their own state -
+  pull-decoded sources short-read at EOF, slice B) / caps (seekable, finite,
+  live - declared, never faked) / positionSec / durationSec / seekTo / close.
+  open()/metadata/pause deliberately excluded (Decisions log). StreamSource
+  implements it with **zero .cpp hunks** (positionSec widened int→double
+  inline; caps=live; durationSec=0; seekTo=false); CDSource with three
+  byte-equivalent signature harmonizations (seekTo(int)→bool seekTo(double),
+  position/duration int→double - integer math preserved, widened) + caps=
+  seekable+finite; CD's extended surface stays concrete. AudioManager: exactly
+  4 consumer casts; UIManager + CDRipper compiled unchanged. The slice-0 net
+  retargeted through `core::ISource&` - the fidelity/prebuffer assertions now
+  also prove interface dispatch - plus new contract blocks per source. Audit:
+  sacred-symbol grep over the diff = zero hits; virtual dispatch added only on
+  UI-thread query paths (the audio callback still reads through concrete
+  members - dispatch there is slice C, deferred). Build clean, ctest 13/13,
+  repeated-run stable.
+- **Phase 2 slice 0 - thin replay net: DONE** (commit `7adae12`). Three tests
+  that lock down the producer/consumer audio-machinery SEMANTICS headlessly,
+  through the seams Phase 1 built - the safety net decision #1 required before
+  the Source-interface refactor touches the audio path (a diff audit protects
+  code that moves unopened; these protect the seams the refactor deliberately
+  changes). Zero production-code changes; ctest 13/13, stable across repeated
+  runs. **This is Phase 2's regression net: slice A retargets these tests
+  through `ISource*` and every subsequent slice gates on them.**
+  - `cd_pipeline_test`: FakeCdIo through the REAL CDSource playback pipeline
+    (playTrack → readerWorker → SPSC ring → readFrames). Byte-exact PCM fidelity
+    across the thread boundary (never-zero pattern keyed on absolute disc
+    position), seek flush/restart at target LBA, pause continuity, consumer-stall
+    backpressure, transient-error silence-fill (exactly count×1176 zeros
+    in-stream, LBA advanced), media-removal hard stop + latch, stopReader-leaves-
+    device-open (the CDRipper handoff), playback-never-requests-C2.
+  - `hls_pipeline_test`: FakeHttp via `core::setHttp()` through the REAL
+    StreamSource HLS/AAC pipeline (open → hlsConnect → producerWorkerAAC →
+    segment pump → FDK decode → ring → readFrames) - the Phase-0 Tier-2
+    record/replay idea realized cheaply on the slice-4 seam. Synthetic manifests
+    + REAL ADTS generated at test start by FDK-encoding a sine (no binary
+    fixtures in the repo). Prebuffer, live-window stall → underrun → rebuffer
+    self-heal, timed-ID3 (TIT2/TPE1) → nowPlaying, and the prompt-close cancel
+    gate: close() during a wedged segment fetch returned in **16 ms** with the
+    cancel token observed at the fake transport - the slice-4 "mid-segment stop
+    <1 s" property now runs on every ctest, headlessly.
+  - `xfade_handoff_test`: REAL AudioManager on generated WAVs through a real
+    MUTED device - the swap-adjacent file path slice B restructures: gapless EOF
+    short-read → audio-thread swap → track_swap_flag_ → pollEvents install
+    ordering (swap lands before the track-end callback fires), crossfade
+    trigger/two-decoder mix/isCrossfading visibility/completion (a preload
+    event, NOT a track_end), clearNext mid-crossfade (the device-stop quiesce
+    branch), end-without-preload. Needs audio hardware: SKIPs (exit 77) when no
+    device opens, so the cd/hls tests remain the always-on net.
+  - **Honest limits:** the ICY/continuous path (rawRead → InternetReadFile, raw
+    WinINet by design) cannot be replayed headlessly - live gates only. Real-time
+    callback cadence, device bring-up ordering, and real ad-pod re-pin timing
+    also stay with the 7of9 live gates.
+- **Phase 1 slice 8 - CD-I/O seam (Windows CD IOCTLs → core::ICdIo): DONE**
+  (commit `14aebec`). The LAST platform seam, BUILT INTO the slice-5 boundary:
+  `include/core/ICdIo.h` + `src/platform/win/CdIoWin.cpp` (`platform::win::WinCdIo`
+  / `WinCdDevice`). Interface = raw optical-drive transport, 8 primitives modeled on
+  the two real consumers: factory `open(drive-spec)` → device object (dtor closes;
+  concurrent opens of one drive are CONTRACT - CDSource holds its device for playback
+  while CDRipper opens a second per rip), `readToc` (raw MSF handed over - MSF→LBA
+  math and the "do NOT subtract 150" contract stay consumer-side),
+  `lastSessionFirstTrack` (the one value the Enhanced-CD detect consumes), `readRaw`
+  (lba/sectors/want_c2/buffer/got), `setSpeed`, `mediaPresent`, `model`. Every impl
+  method is ONE baseline DeviceIoControl moved parameter-identical (the lba*2048
+  DiskOffset quirk now impl-side). `want_c2` is an EXPLICIT flag - advisory on
+  Windows (buffer size IS the request, the baseline shape) but it's what SG_IO's CDB
+  error-field bits need at Phase 3; buffer-size-implies-C2 was the one
+  Windows-only assumption in the baseline and it's gone. Bytes-returned (`got`) is
+  surfaced - the C2 probe (`got == 2646`) and the de-interleave branch depend on it.
+  ALL rip/disc logic stayed consumer-side (the IHttp/IIpc/INotify split): AR CRC
+  math, 150-sector preamble, normalizeSkip/arPreambleReadable, disc-ID
+  normalization, frame450 sweep, Enhanced-CD silence search + +174, retry/
+  silence-fill, cache-flush, C2 interpretation, drive-offset table.
+  **Ownership: ctor injection per consumer** (the slice-6/7 pattern, now ×2):
+  `CDSource(ICdIo* = nullptr)` + `CDRipper(ICdIo* = nullptr)` defaulting to
+  `core::cdio()` (link-time bridge only, no setCdio()). Header detox rode along as
+  designed: CDSource.h no longer includes windows.h/ntddcdrm.h (AudioManager/
+  UIManager stop inheriting Windows from this path); CDTrack + MBLookup TOC params
+  DWORD→uint32_t, type-only. CDSource's hand-rolled 6-byte SET_SPEED was DROPPED,
+  not migrated - probe-confirmed rejected by cdrom.sys with ERROR_BAD_LENGTH, a
+  lifelong silent no-op (see parked item). Unified open flags (ripper's shape;
+  CDSource residuals inert and documented in lessons.md). New `cd_toc_test`
+  (10th ctest target): FakeCdIo via ctor injection through the REAL CDSource -
+  Relish-shaped non-standard pregap (T1 @ LBA 182), Enhanced-CD data track +
+  session-2 leadout, malformed-TOC clamps, model→offset lookup, media checks.
+  **Two-layer verified: ctest 10/10 + THE hardware gate** - Joan Osborne Relish
+  ripped through the seam on the GHD3N: 12/12 AR v2 conf 200, per-track
+  crc_v1/crc_v2, all 12 pcm_crc32, frame450 global/local, the T1 first-16-samples
+  dump, and "C2 support: no" ALL byte-identical to the pre-migration baseline log
+  (diff-verified line-by-line); .bin cache saved; CD playback + seek through the
+  seam confirmed, with the two-concurrent-opens contract exercised live.
+- **Phase 1 slice 7 - notifications seam (Toast/PowerShell → core::INotify): DONE**
+  (commit `dde7041`). Third seam BUILT INTO the slice-5 boundary:
+  `include/core/INotify.h` + `src/platform/win/NotifyWinToast.cpp`
+  (`platform::win::WinToastNotify`; `git mv` from src/Toast.cpp - rename held at 64%,
+  injection-fix history preserved). Interface = "show the user a transient
+  notification": ONE primitive, `notify(title, body)` - two strings, no icon/duration
+  params (the baseline never set either; ToastImageAndText02's image slot was never
+  populated). Contract is the baseline's: fire-and-forget, non-blocking (the win impl
+  spawns PowerShell from a detached thread, 5 s bounded reap, CREATE_NO_WINDOW),
+  best-effort with NO error reporting (baseline swallowed CreateProcess failure),
+  callable from any thread (impl stateless per call). CONTENT stayed consumer-side -
+  the IHttp/IIpc protocol/transport split: Toast.h is now a header-only, platform-free
+  content adapter, `showTrackToast(title, artist, album, INotify&)`, keeping the
+  baseline mapping verbatim (artist PREPENDS the title: "Artist - Title"; empty album
+  → "RE-MOCT" body) including its status-shape inversion (("Streaming", station, "")
+  → "station - Streaming" - baseline, not fixed). The escape/UTF-16LE/base64
+  `-EncodedCommand`/CreateProcess transport block moved byte-identical (one identifier
+  rename, `esc(top)`→`esc(title)`; emitted bytes unchanged) - that block fixed a real
+  quote-injection bug and is frozen. The `'RE-MOCT'` CreateToastNotifier id stays
+  impl-side (platform attribution - the Linux twin's `notify-send -a`).
+  **Ownership: constructor injection again** - UIManager is the ONE consumer class
+  (33 call sites, all in UIManager.cpp): `UIManager(..., core::INotify* = nullptr)`
+  defaulting to `core::notifier()` (link-time bridge only, no `setNotify()`; named
+  notifier() to avoid the notify().notify() stutter). A private 3-arg member wrapper
+  hides the 4-arg adapter, so all 33 call sites compiled textually unchanged. New
+  `notify_toast_test` (9th ctest target, portable - no PowerShell/process spawn):
+  FakeNotify through the REAL Toast.h adapter, 8 cases (mapping branches, the
+  dominant (msg,"","") status shape, the Streaming inversion, adapter-must-NOT-escape
+  - escaping is the transport's job - and call ordering). Two-layer verified:
+  ctest 9/9 + live gate on this machine - toasts fire from the real triggers (track
+  change, status toggles), quote-injection ('/") and accented-metadata (Björk) probes
+  confirmed in Action Center, synchronous script run exit 0 (Show() succeeded).
+- **Phase 1 slice 6 - IPC seam (Discord named-pipe → core::IIpc): DONE** (commit
+  `89285d8`). First seam BUILT INTO the slice-5 boundary: `include/core/IIpc.h` +
+  `src/platform/win/IpcWinPipe.cpp` (`platform::win::WinPipeIpc`). Interface =
+  "local bidirectional byte channel", three primitives modeled on the one real
+  consumer: `send` (whole buffer, ONE OS write - Discord's framing breaks on split
+  writes), `waitReadable(min_bytes, timeout_ms)` (bounded peek-poll, 10 ms baseline
+  granularity preserved in the impl), `recvSome` (one blocking OS read; callers
+  loop). `IIpc::connect(logical-name)` - the impl owns name→path mapping
+  (`\\.\pipe\<name>`; Linux `$XDG_RUNTIME_DIR/<name>` at Phase 3). The asymmetric
+  read shape is deliberate parity: bounded header wait, UNbounded body reads -
+  a higher-level `recvExact(timeout)` would have invented semantics the baseline
+  doesn't have. Protocol stayed consumer-side in DiscordRP (framing, the
+  discord-ipc-0..9 probe, handshake, 1 MB squatter cap, CLOSE handling, lazy
+  reconnect, payload/nonce/escape) - the IHttp protocol/transport split.
+  **Ownership: constructor injection, NOT a second transitional global** -
+  `DiscordRP(app_id, core::IIpc* = nullptr)` defaulting to `core::ipc()` (declared
+  in core, defined in the impl TU - link-time bridge only, no `setIpc()`); one
+  consumer with one obvious injection point didn't justify the http()/setHttp()
+  pattern, and the ctor param IS the DI endgame shape. DiscordRP.cpp is
+  pipe-API-free (`windows.h` only for `GetCurrentProcessId`, the IHeartRadio
+  shape); DiscordRP.h no longer includes `windows.h` at all (UIManager.h stops
+  inheriting it from this path). New `discord_ipc_test` (8th ctest target):
+  FakeIpc via ctor injection asserts handshake bytes, probe order, SET_ACTIVITY
+  framing + jsonEscape, activity-null clear, CLOSE→reject, and
+  reconnect-after-death. Two-layer verified: ctest 8/8 + live Discord on this
+  machine - RP with title/artist/art, track-change update, Discord-restart
+  reconnect, clear-on-toggle (all four gates). `src/platform/linux/` still
+  deliberately absent.
+- **Phase 1 slice 5 - core/platform directory reorg (HTTP seam only): DONE** (commit
+  `1977539`). Pure relocation - `git mv include/IHttp.h include/core/IHttp.h` +
+  `git mv src/HttpWinInet.cpp src/platform/win/HttpWinInet.cpp` (both true renames,
+  95%/98% similarity - history preserved). Include statements changed to
+  `#include "core/IHttp.h"` across all 15 referencing sites (2 headers, 7 src
+  consumers, the impl, 5 tests) - chosen over adding `include/core` to the search
+  path so the layer boundary is visible at every include site and future core
+  headers follow the same pattern with zero extra CMake. CMake: main target + 4
+  test targets' `HttpWinInet.cpp` paths updated; no include-dir changes (`include/`
+  already on every target's path). Diff surface: 18 files, 29+/29− - provably
+  move-plus-paths only. Verified: clean reconfigure+rebuild (rm -rf build) 50/50,
+  ctest 7/7 same results, remoct.exe launches and plays a local file.
+  **Deliberately scoped to the one finished seam** - reorg-first on known-good code
+  establishes the boundary once; IPC / notifications / CD-IOCTL get built into it,
+  not relocated later. `src/platform/linux/` NOT created - it's the libcurl (+ Unix
+  socket, libnotify, SG_IO) home when Phase 3 arrives.
+- **Phase 1 slice 4 - HTTP seam, sites 7 & 8 (the audio-thread pair): DONE** (commit
+  `4c72b09`). **HTTP consolidation 8/8 - fully closed.** `core::IHttp` gained the two
+  capabilities the audio sites needed, both defaulting inert (six shipped sites
+  byte-identical):
+  - **Cancellation:** `HttpRequest::cancel` (`const std::atomic<bool>*`, polled before
+    open + before each chunk read - baseline `stop_` granularity) + `HttpResponse::
+    cancelled` (ok=false, partial body CLEARED via pure `finalizeCancelled()`), so a
+    consumer's own stop is never mistaken for network death (reconnect/backoff safe).
+  - **Persistent sessions:** `IHttpSession` + `IHttp::openSession(HttpSessionConfig)`
+    with a default forwarding impl (fakes/tests unchanged); `WinInetSession` holds one
+    `InternetOpen` handle (UA + timeouts at creation) and adds KEEP_CONNECTION per
+    fetch. Session lifetime is the caller's: hls dies in `disconnect()` (fresh per
+    re-handshake/re-pin), IHeart lives with the object - exact baseline lifetimes.
+  - Also: `pragma_no_cache` request field (both audio baselines sent it; default off)
+    and `read_error` response flag - an implementation-time survey correction (hls
+    FAILS on a mid-body read error, unlike the other six; a partial segment must not
+    reach the decoder). Accepted residuals recorded in `lessons.md`.
+  - StreamSource: only `disconnect`/`hlsEnsureSession`/`hlsHttpGet` touched (3 diff
+    hunks); `InternetReadFile` remains ONLY in `rawRead` (live loop), `InternetOpenUrl`
+    only in `connect()`'s ICY branch. IHeartRadio.cpp is now **WinINet-free** (nullptr
+    cancel - boundedness stays the deliberate 5 s timeout; wiring `stop_` into its
+    polls is a parked, separate decision).
+  - Tests 7/7: `http_seam_test` +4 pure cases; new `http_cancel_test` (localhost
+    socket fixture - mid-body abort 373 ms, keep-alive reuse = 1 connection observed,
+    pre-cancelled = zero network); new `iheart_request_test` (real consumer + injected
+    fake, all three endpoints). Two-layer verified: real-world on 7of9 - digital iHeart
+    plays clean, **mid-segment stop aborts <1 s** (the regression this design must not
+    introduce), stop-during-switch clean, now-playing + Discord art intact, ad-onset
+    re-pin a non-event, ICY/SHOUTcast behaviorally unregressed.
+- **Phase 1 slice 3 - HTTP seam, group (c): DONE** (commit `dd5f792`, pushed). CoverArt
+  (`bytesByMbid`, `httpGet`) + CDRipper (AR `.bin`, CTDB) migrated to `core::http().fetch()`;
+  **both files WinINet-free** (CoverArt now portable - no `windows.h`). New interface
+  capability exercised for real: `RedirectPolicy` enum (FollowAll default = byte-identical to
+  the old `follow_redirects=true`; **FollowSameScheme** for CAA cross-scheme-downgrade
+  protection); `finalizeBody()` **clears** the body on `reject_truncated`+truncated (CoverArt's
+  10 MB reject/clear); plain-HTTP AR/CTDB get **no SECURE flag** (scheme-derived via
+  `urlIsSecureScheme`). Per-call UAs preserved (CTDB short, AR/CAA default). Tests: pure
+  extensions (byte passthrough, `final_url`, clear-on-reject, `urlIsSecureScheme`) + Windows-only
+  `group_c_request_test`. Two-layer verified: `ctest` 5/5 + real-world on 7of9 (Joan Osborne
+  12/12 AR v2 conf 200 byte-identical through the seam's plain-HTTP AR fetch, `.bin` still
+  saved; cover art resolves in tags + Discord RPC).
+  - **HTTP consolidation now 6/8 sites migrated** (a: MBLookup, RadioBrowser; b: LastFm,
+    ListenBrainz; c: CoverArt, CDRipper) - this closes the *straightforward* HTTP work. The
+    remaining two (`hlsHttpGet`, IHeart metadata) both touch the audio pipeline and are
+    deferred go/no-go items needing a cancel token / persistent-session design.
+  - Minor: CTDB's two distinct failure log lines collapsed to the generic `HTTP: 0` block
+    (result preserved: false/inconclusive) - cosmetic.
+- **Phase 1 slice 2 - HTTP seam, group (b): DONE** (commit `7c13baf`, pushed). LastFm +
+  ListenBrainz GET/POST helpers migrated to `core::http().fetch()`; **both files now
+  WinINet-free** (ListenBrainz has no `windows.h` at all - portable). Added the seam's
+  **non-GET path** (`InternetCrackUrlW`→`InternetConnectW`→`HttpOpenRequestW`→
+  `HttpSendRequestW`); the request **body is sent as raw UTF-8 bytes, never widened**.
+  Signing (md5 `api_sig`), body-building, and status gating (`accepted()` on HTTP 200)
+  stay consumer-side. POST path sets CONNECT+RECEIVE only (no SEND - matches the scrobble
+  baseline). Interface unchanged - the slice-1 `body`/`content_type`/`headers` fields
+  covered it. Added transitional `core::setHttp()` injection hook + Windows-only
+  `scrobble_request_test`. Two-layer verified: `ctest` 4/4 + real-world Björk/Jóga scrobble
+  round-trip on Last.fm + ListenBrainz (accents intact - raw-UTF-8 wire path confirmed;
+  ListenBrainz status gate exercised on a live submit).
+  - Remaining HTTP: group (c) - CoverArt, CDRipper (AR/CTDB, plain-HTTP), StreamSource
+    `hlsHttpGet` (bytes + `final_url`); IHeart metadata still its own deferred go/no-go.
+- **Phase 1 slice 1 - HTTP seam, group (a): FIXED/DONE** (commit `94eb8cb`, pushed).
+  `core::IHttp` interface (`include/IHttp.h`, portable - no `windows.h`) +
+  `platform::win::WinInetHttp` impl (`src/HttpWinInet.cpp`, `if(WIN32)`). MBLookup +
+  RadioBrowser GET helpers now call `core::http().fetch()`. Parity verified vs baseline:
+  4 MB cap both, RadioBrowser 6 s timeout, MBLookup no timeout, default UA byte-identical,
+  HTTP status ignored, WinINet default redirect-follow. FakeHttp-backed `http_seam_test`
+  added (real parse shapes: RadioBrowser `url_resolved`→`url` fallback, MB nested
+  `artist-credit`). Two-layer verified: `ctest` 3/3 + real-world on 7of9 (Relish MB lookup
+  resolved metadata; RadioBrowser "kwin" search returned KWIN 97.7).
+  - `core::http()` is a TRANSITIONAL global (endgame = injection; see `architecture.md`).
+  - At the later `src/core` + `src/platform/{win,linux}` reorg, `IHttp.h` moves to
+    `include/core/` and `HttpWinInet.cpp` to `src/platform/win/`. (Done - slice 5.)
+  - Remaining HTTP work (groups b, c, IHeart) tracked under Phase 1 above.
+- **CDRipper negative drive-offset preamble OOB read + wrong CRC phase: FIXED**
+  (commit `1a2235a`). Floored offset decomposition (`ar::normalizeSkip`) + signed
+  preamble guard (`ar::arPreambleReadable`) extracted into `ar_crc.h` and wired into
+  `CDRipper::ripTrack`; the 150-sector preamble is untouched. Covered by `ar_crc_test`
+  (invariants, OOB-index witness, phase/CRC equivalence on a synthetic disc,
+  boundaries); the +6 path is unregressed (Joan Osborne re-rip 12/12 AR v2 conf 200,
+  byte-identical CRCs).
+  - Open: real negative-offset **hardware** validation remains a HydrogenAudio
+    cross-check item - the synthetic suite proves the logic, not on-drive behavior.
+
+## Parked / deferred (not disturbed)
+- **Config/state dir casing unification (Linux):** the config dir is `~/.config/RE-MOCT`
+  (uppercase, existing Config branch) while logs/state land under `$XDG_STATE_HOME/re-moct`
+  (lowercase). Harmless but inconsistent; unify the casing as its own tiny change.
+- **`port::logDir()` doesn't create the grandparent** (slice-1 residual, found
+  at the slice-2 gates): it mkdirs `$HOME/.local/state` and `re-moct` but not
+  `~/.local` - on a fresh account the operational log silently no-ops. Windows
+  unaffected (%TEMP% always exists). Fix = `std::filesystem::create_directories`
+  as its own tiny change.
+- **radio-browser mirror list refresh:** nl1/at1 are DNS-dead (de1 alive, the
+  fallback loop copes). Refresh the list - or resolve mirrors via the
+  documented `all.api.radio-browser.info` DNS rotation - someday.
+- **Latent baseline OOB on corrupt multi-session TOCs:** CDSource's session-2 block
+  indexes `entries[toc2.last]` unclamped (baseline did the same with TrackData) - a
+  corrupt disc reporting last>99 over-reads the array. Preserved as-is in slice 8
+  (no ride-along logic); fix alongside the session-2 guards as its own change.
+- **Wire `stop_` into IHeart's metadata polls as a cancel token:** would cut worst-case
+  `close()` latency by ~5 s. Deliberately NOT done in slice 4 (a behavior improvement,
+  not parity) - take it only as its own decided change.
+- **Prompt interrupt of a fully stalled connect/read** (cross-thread handle-close):
+  baseline gap that slice 4 intentionally preserved (parity); the existing note in
+  `StreamSource::close()` still stands. Future hardening item.
+- **Track Info album tag decode:** an album field with accented chars (`é`) renders as
+  `??` in the Track Info panel (same neighborhood as the earlier `¿` on the 4 Non Blondes
+  filename) - a local tag-read/display decode artifact. **NOT in the scrobble path** (album
+  isn't scrobbled to Recent Tracks; artist/title were clean over the wire - confirmed in
+  group (b)). A separate local tag-decode thread to look at later.
+- **Class-B OOB-gated re-pin (PARKED, not greenlit - from the 2026-07-03 desync
+  analysis):** extend the existing 35 s stall re-pin to also fire from the
+  COMMITTED-AD state when gated on out-of-band liveness - sketch: `stState==Ad`
+  sustained >60–90 s WHILE trackHistory/ctm shows a current fresh song. Targets
+  the fixable hole class exactly (session loops a stale slate while OOB proves
+  the broadcast returned): observed ~1 per ~6 h of listening, 131–300 s each
+  (sharpest case: 206 s with thCurrent on 8/9 ticks and TWO fresh songs seen
+  out-of-band). Reuses the re-pin mechanism that went 68-for-68 → Song in the
+  corpus; adds no new machinery; the OOB gate was false throughout every
+  broadcast-side (Class A) hole, so it can't fire into a real break. **Honest
+  caveat: a fresh handshake DURING a Class-B hole was never captured - "re-pin
+  escapes the stuck session" is strongly plausible but not directly proven; the
+  first live gate settles it. This is a real audio-path change (re-pin from a
+  new state): full design-first pass + Dos sign-off when chosen, not before.**
+- **Retire the Stage-A staging-lane scaffold (optional cleanup, own change):**
+  inert logging-only observer; its data did its job (killed Stage-B). No
+  urgency - costs nothing dormant. Do NOT fold into other commits.
+- Scrobble back-to-back duplicate: source commits from debounced `IHNow` + TTL dedup.
+- StreamSource `isOpen()` race (consumed in staging lane, defer); `driveOffsetKnown()`
+  always-false (skip, no payoff); AAC re-pin doesn't reset FDK (defer, ADTS resyncs).
+- ICY/SHOUTcast metadata improvement (structural protocol limit); ICY ingest
+  sanitization (station-ID stripping).
+- Comb-filter / harmonic-sum tempogram for BPM (shelved).
+
+## Decisions log
+- **Slice C declined - Phase 2 closed at A+B (2026-07-03).** Dispatch
+  uniformity in the audio callback would add a second source of truth for the
+  playing mode (a cross-thread `active_src_` pointer that every transition must
+  keep agreeing with the mode flags) plus a fourth audio-thread change class
+  (the pointer staleness at every crossfade swap - the F2/retirement lesson
+  replayed), while the single-active-source abstraction is factually WRONG
+  during a crossfade (two live sources; 3 of 6 call sites can't use it - the
+  hlsHttpGet lesson at callback scale: if the abstraction requires pretending,
+  it's wrong). No Phase 3/4 dependency. The per-mode branches are semantics,
+  not debt. **Revisit only if Phase 4's plugin registry generates a concrete
+  need - and design it there, not here.**
+- **Phase 2 ISource contract (approved 2026-07-02): model the real four, don't
+  force uniformity.** `core::ISource` = readFrames/caps/positionSec/durationSec/
+  seekTo/close at `include/core/ISource.h` (first core-owned non-platform
+  contract; Phase 3 sources and Phase 4 plugins implement the same interface).
+  What made a uniform frame contract honest: all paths already converged on
+  fixed 44100/stereo/f32, and StreamSource/CDSource::readFrames are deliberately
+  identical. Deliberate EXCLUSIONS: **`open()` stays out** (three irreconcilable
+  open shapes - file path, stream URL + async-connect orchestration that must
+  stay in AudioManager, CD drive+track container; a uniform open(string) would
+  push connect orchestration into sources or fake a CD URL scheme - Phase 4's
+  problem, the ABI-leak to resist). **Metadata stays out** (least-uniform facet:
+  file = full TagLib upfront, CD = TOC + external MB lookup, stream = time-
+  varying nowPlaying/art; the unified-metadata trap is where a Phase-4 shape
+  sneaks in - grow later per the RedirectPolicy precedent if a real consumer
+  needs it). CD's extended surface (TOC/offset/model/stopReader/checkMedia,
+  consumed by CDRipper + UIManager) stays concrete beside the interface.
+  **Standing rule: if any of the four sources needs pretending to fit, that's
+  stop-and-redesign, not push-through.** Slice C (callback dispatch) is optional
+  and declinable - the per-mode callback branches gate logic that must not unify.
+- **Slice 0 net-first (decision #1, 2026-07-02): thin replay net before the
+  refactor, not the full capture harness and not bare diff audits.** Diff audits
+  protect what moves unopened (slices 4/8 proved that); the new timing risk is at
+  the seams the refactor deliberately changes (callback dispatch, teardown
+  ordering, crossfade swap). The Phase-1 seams (setHttp/FakeCdIo) made the net a
+  1-session build vs 3-5 for a full instrumented capture harness.
+- **300ms post-track-change seek lockout: REJECTED.** Silent dropped seeks in every
+  track-change window were worse than the rare benign held-key leak they prevented.
+  The track-stamp guard (discard a buffered seek if the track changed) was kept - it's
+  costless and prevents the genuinely-wrong case with no deadzone.
+- **Crossfade head-completion: UI-only.** Read the existing `crossfading_` atomic via
+  `isCrossfading()` and let the comet head ride to 100% while crossfading; releases
+  cleanly when the swap clears the flag. No audio-thread changes. Awesome-mode only;
+  Classic keeps MOC's snap.
+- **Don't carve the ABI first.** Internal compile-time interface → prove → then DLL.
+- **Probe-first** for any new parsing/protocol work.

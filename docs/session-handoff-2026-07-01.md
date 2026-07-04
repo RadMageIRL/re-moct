@@ -1,10 +1,10 @@
-# Session handoff — 2026-07-01 (Phase 0 + negative-offset bug)
+# Session handoff - 2026-07-01 (Phase 0 + negative-offset bug)
 
 Read this at the start of the next session to pick up cleanly. Pairs with
 `CLAUDE.md`, `roadmap.md`, `lessons.md`, `architecture.md`, `streaming.md`.
 
 ## Pinned constraint (do not re-litigate)
-The **150-sector offset is a physical property of the disc** — a design aspect of
+The **150-sector offset is a physical property of the disc** - a design aspect of
 AccurateRip, worked out across the HydrogenAudio forum posts at
 https://hydrogenaudio.org/index.php/topic,97603.0.html. It is correct by design.
 Never "fix" the 150. (Also recorded in `lessons.md`, the `ar_crc.h` comment, and the
@@ -19,7 +19,7 @@ negative-offset fix commit.)
 - **Nested-repo handled.** Parent `E:\code` is a junk remote-less git repo; added
   `remoct/` to `E:\code\.gitignore` so it stops tracking the real repo. `remoct`'s
   own `.git` is its root.
-- **Knowledge base committed** — `CLAUDE.md` + `docs/*.md`, `.gitignore`, README.
+- **Knowledge base committed** - `CLAUDE.md` + `docs/*.md`, `.gitignore`, README.
 - **Phase 0 COMPLETE** (both extractions landed, tested, committed on `restructure`):
   - iHeart now-playing decision logic → pure `IHeartNowPlayingSM.{h,cpp}` (threadless,
     no network, no windows.h). `StreamSource` is now a thin adapter calling it.
@@ -30,7 +30,7 @@ negative-offset fix commit.)
   + wrong CRC phase. Root cause: truncating `/` and `%` on a negative `total_skip`
   gave a negative `sub_skip` → (a) `pbuf.data()+sub_skip*2` underflowed the buffer
   (OOB read), (b) main path gated `> 0` silently dropped it → wrong CRC phase. Fix:
-  pure helpers in `ar_crc.h` — `normalizeSkip()` (floored decomposition, `sub_skip`
+  pure helpers in `ar_crc.h` - `normalizeSkip()` (floored decomposition, `sub_skip`
   always `[0,588)`, byte-identical to old math for non-negative input) and
   `arPreambleReadable()` (signed bounds guard replacing a `(DWORD)` cast that wrapped
   negatives to ~4e9). Wired into `CDRipper` preamble + main paths, dropped the `> 0`
@@ -42,7 +42,7 @@ negative-offset fix commit.)
 - **Build:** clean, `remoct.exe` at `build\bin\remoct.exe`.
 - **Open caveat:** the negative-offset fix is proven in **logic** (synthetic tests)
   and **non-regressing** on the +6 drive (Joan Osborne re-rip, byte-identical CRCs).
-  It is NOT validated on real negative-offset **hardware** — Dos has none. That final
+  It is NOT validated on real negative-offset **hardware** - Dos has none. That final
   validation stays an open **HydrogenAudio cross-check item**.
 
 ## Build / test commands (7of9, MSYS2 UCRT64)
@@ -56,14 +56,14 @@ C:\msys64\usr\bin\bash.exe -l -c 'export PATH=/ucrt64/bin:$PATH && cd /e/code/re
 ```
 - **Build FIRST, then ctest** ("No tests were found" = ctest ran before a build).
 - If a fresh test target is added and ctest can't find it, prefer the explicit
-  `cmake -S . -B build -G Ninja && cmake --build build` form — it pins the source dir
+  `cmake -S . -B build -G Ninja && cmake --build build` form - it pins the source dir
   and forces reconfigure, avoiding stale-cache / wrong-root ambiguity.
-- The main build's target count (e.g. `26/26`, `30/30`) is NOT the test signal —
+- The main build's target count (e.g. `26/26`, `30/30`) is NOT the test signal -
   tests compile in the `tests/` subdir; the real proof is `ctest` finding + running
   them. Trust `ctest` output, not the link-line count.
 
 ## Operating lessons for the local agent (this session)
-- **Verify before commit — always.** The agent repeatedly tried to commit before the
+- **Verify before commit - always.** The agent repeatedly tried to commit before the
   build/tests were confirmed. Hold the line: build → ctest → (for CD work) re-rip a
   known disc → THEN commit. A commit should be a known-good checkpoint.
 - **Two-layer verification.** `ctest` proves the *logic* off-disc; running the real
@@ -72,23 +72,23 @@ C:\msys64\usr\bin\bash.exe -l -c 'export PATH=/ucrt64/bin:$PATH && cd /e/code/re
 - **Trust the build/output over the agent's claims.** There was a file-sync episode
   where the agent asserted edits/wiring were present but the build contradicted it.
   Ground truth = what compiles and what `ctest`/the rip say.
-- **VS Code agent > PowerShell agent** for this work — visible diffs, edits land
+- **VS Code agent > PowerShell agent** for this work - visible diffs, edits land
   reliably, less "which file where" confusion. Same model, better harness.
 - **Design-first, no code.** Have the agent propose the approach (root cause, fix,
-  test plan) and confirm the boundary before it writes — catches wrong turns cheaply.
+  test plan) and confirm the boundary before it writes - catches wrong turns cheaply.
 - **Split by verification method.** iHeart (offline test) and ar_crc (disc rip) were
   committed as separate batches because they verify differently. Keep that pattern.
 - **Header-only helpers are fine.** `normalizeSkip`/`arPreambleReadable` live inline
-  in `ar_crc.h` (no `ar_crc.cpp` change needed) — that's correct, not an omission.
+  in `ar_crc.h` (no `ar_crc.cpp` change needed) - that's correct, not an omission.
   A clean build/link is proof nothing's missing.
 
 ## Where the roadmap stands
 - Phase 0 ✅ done. Negative-offset bug ✅ retired (logic proven; hardware validation
   open per above). Update `roadmap.md` to move that entry out of "Parked" (small
   docs commit).
-- **Next: Phase 1 — platform abstraction / cleanup** (the `src/core` +
+- **Next: Phase 1 - platform abstraction / cleanup** (the `src/core` +
   `src/platform/{win,linux}` split; HTTP consolidation 8 WinINet → one `http_get`;
-  IPC / notify / CD-IOCTL seams). This is **large and invasive** — start it in a
+  IPC / notify / CD-IOCTL seams). This is **large and invasive** - start it in a
   FRESH, unhurried session, in VS Code, and break it into small pieces (e.g. HTTP
   consolidation first) rather than one marathon.
 - Later: Phase 2 (internal Source interface), Phase 3 (Linux port), Phase 4 (iHeart

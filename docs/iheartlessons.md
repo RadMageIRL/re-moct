@@ -1,11 +1,11 @@
-# RE-MOCT — iHeart Radio: Algorithms, Functions & Lessons Learned
+# RE-MOCT - iHeart Radio: Algorithms, Functions & Lessons Learned
 
 > Reference for a local Claude agent working on RE-MOCT's iHeart digital-stream
 > handling (`StreamSource.*`, `IHeartRadio.*`, `IHeartDeepLog.*`).
 > **Legend:** ✅ confirmed from logs/code · 🟡 strong hypothesis (not fully proven)
 > · ❌ ruled out / dead end · 🔧 current mechanism in code.
 > Test station throughout: **zc4366 "Sacramento's Relaxing Favorites"** (a
-> "manifest-primary" station — see §3). Behavior differs by station class.
+> "manifest-primary" station - see §3). Behavior differs by station class.
 
 ---
 
@@ -14,11 +14,11 @@
 - iHeart live stations are **HLS** (`.m3u8` + AAC segments) served from
   `*.revma.ihrhls.com`. Canonical entry: `https://stream.revma.ihrhls.com/zc<id>/hls.m3u8`.
 - ✅ **Two renditions:**
-  - **Raw broadcast** (default) — plain `hls.m3u8`.
-  - **Digital / web-player** ("Ctrl+K" mode) — same URL with the web-player
+  - **Raw broadcast** (default) - plain `hls.m3u8`.
+  - **Digital / web-player** ("Ctrl+K" mode) - same URL with the web-player
     handshake query params appended (`hlsBuildDigitalUrl`). This is the **same
     stream the iHeart web player uses**, *not* a raw-only bypass. (Earlier notes
-    that called digital mode a "raw-feed bypass of SSAI" were **wrong** — see §8.)
+    that called digital mode a "raw-feed bypass of SSAI" were **wrong** - see §8.)
 - 🔧 Producer thread pulls segments over WinINet → FDK-AAC decode → resample
   48k→44.1k → int16 SPSC ring → audio callback (`readFrames`). Mirrors CDSource.
 - 🔧 `hlsPollMedia` re-fetches the media playlist on the target-duration cadence
@@ -48,12 +48,12 @@ Three independent channels, **only one is audio-aligned**:
 |---|---|---|---|
 | **Manifest EXTINF** (`song_spot`, `title`, ids) | per-segment class + title | primary on manifest-stations | **~live edge (ahead of audio)** |
 | **trackHistory / currentTrackMeta** (`currentTrackMeta` JSON API) | current track + album art | often **HTTP 204** (empty) on this station | ✅ **audio-aligned** ("rides the same timeline as audio") |
-| **In-band ID3** (in AAC segments) | — | ✅ useless here: `tag found (ver=2.4 size=63) but no TIT2/TPE1` | n/a |
+| **In-band ID3** (in AAC segments) | - | ✅ useless here: `tag found (ver=2.4 size=63) but no TIT2/TPE1` | n/a |
 
 - ✅ Album art is sourced from **currentTrackMeta (`ctm.imagePath`)**, gated on a
   title-match against the committed label. Because ctm is audio-aligned, **art is
   already correctly timed**; the *label* was the thing running ahead (see §6).
-- 🟡 currentTrackMeta returning 204 a lot is why the LIVE-floor logic exists — when
+- 🟡 currentTrackMeta returning 204 a lot is why the LIVE-floor logic exists - when
   ctm is blank and the manifest is ambiguous, we have no clean now-playing.
 
 ---
@@ -71,12 +71,12 @@ EXTINF `title`/`url` attributes (quotes are backslash-escaped in the raw body:
 ```
 
 Fields RE-MOCT parses:
-- ✅ **`song_spot`** — `M`/`F` = music, `T` = ad/spot. The primary class signal.
-- ✅ **`spotInstanceId`** — `-1` = station id / promo / voice-track ("spot-id");
+- ✅ **`song_spot`** - `M`/`F` = music, `T` = ad/spot. The primary class signal.
+- ✅ **`spotInstanceId`** - `-1` = station id / promo / voice-track ("spot-id");
   a real id = a **paid** commercial.
-- ✅ **`cartcutId`** — the ad's identity. **Same id repeating = a stuck loop;
+- ✅ **`cartcutId`** - the ad's identity. **Same id repeating = a stuck loop;
   a sequence of distinct ids = a genuine long pod.** (Empty for music / boundary
-  segments — the parser must handle empty values; see the `attr()` lambda, which
+  segments - the parser must handle empty values; see the `attr()` lambda, which
   was fixed so an empty `KEY=\"\"` doesn't swallow the next field name.)
 
 ### `cls` (derived class), logged in the poll line and deep log
@@ -121,11 +121,11 @@ Fields RE-MOCT parses:
 - 🔧 `ringClear()` is the canonical re-pin reset hook: it also resets the label
   publish queue (§6) and arms the fade-in.
 
-### Why "we lose the front of the song" on a re-pin — ✅ measured
+### Why "we lose the front of the song" on a re-pin - ✅ measured
 On a break, the **primary session's own edge stays `cls=other` (slate) at
-`edgeLag=0`** the entire floor — it never reveals the returning song. The song
+`edgeLag=0`** the entire floor - it never reveals the returning song. The song
 only appears via the **fresh handshake** done by the re-pin itself. So:
-- A "music-edge trigger reading the *primary's* cls" **cannot work** — the primary
+- A "music-edge trigger reading the *primary's* cls" **cannot work** - the primary
   never sees music until it re-pins. (This is the SSAI stale-session effect, §8.)
 - How far into the song we land = how long after the song actually went live at
   the edge the **35s timer** happened to fire. Random alignment → variable loss.
@@ -135,7 +135,7 @@ only appears via the **fresh handshake** done by the re-pin itself. So:
 
 ---
 
-## 6. Display vs audio timing — the publish-delay 🔧
+## 6. Display vs audio timing - the publish-delay 🔧
 
 - The label commits off the live edge (ahead). To align the **TUI + Discord +
   scrobble** with what's actually heard, each committed now-playing string is held
@@ -156,11 +156,11 @@ only appears via the **fresh handshake** done by the re-pin itself. So:
 target=10000ms mseq=… total=3 new=N disc=D pending=P newest=… nextPlay=…
 edgeLag=L(~Ls) ringSec=R cls=… pdt=0 digital=1 armed=A
 ```
-- `edgeLag` — segments behind our own manifest's newest (self-relative, ~10s each).
+- `edgeLag` - segments behind our own manifest's newest (self-relative, ~10s each).
   Healthy/normal-break = 0–1. **Does not climb on normal breaks.**
-- `ringSec` — seconds of decoded audio buffered (consume-side margin, ~5–6s steady).
-- `cls` — newest-segment class (§3). `armed` — re-pin one-shot armed/cooldown.
-- `pdt` — `EXT-X-PROGRAM-DATE-TIME` present. ✅ **Always 0 on this station** →
+- `ringSec` - seconds of decoded audio buffered (consume-side margin, ~5–6s steady).
+- `cls` - newest-segment class (§3). `armed` - re-pin one-shot armed/cooldown.
+- `pdt` - `EXT-X-PROGRAM-DATE-TIME` present. ✅ **Always 0 on this station** →
   absolute pdt-vs-wallclock drift is **not measurable** here.
 
 **Deep log** (Ctrl+A, NDJSON, `%APPDATA%\RE-MOCT\logs\remoct-deep-analysis-*.log`):
@@ -177,7 +177,7 @@ edgeLag=L(~Ls) ringSec=R cls=… pdt=0 digital=1 armed=A
 staging: arming parallel digital session
 staging: open OK, prebuffering parallel session
 staging: peek cls=<music|ad|other|none> prebuf=<0|1> +<N>s   ← per poll while armed
-staging: READY at music edge +<N>s — clean blend point reached
+staging: READY at music edge +<N>s - clean blend point reached
 staging: primary break cleared (no blend needed) -> teardown
 ```
 The `+Ns` on `peek cls=music` vs the 35s timer = the true, display-independent
@@ -185,7 +185,7 @@ measure of how much sooner a peek-driven re-pin could land in the song.
 
 ---
 
-## 8. SSAI / stale-session behavior — the central insight 🟡→✅
+## 8. SSAI / stale-session behavior - the central insight 🟡→✅
 
 - iHeart inserts ads server-side (SSAI) into the **same** stream the web player
   uses. We are on that stream in digital mode (§1).
@@ -197,7 +197,7 @@ measure of how much sooner a peek-driven re-pin could land in the song.
   could:** session aging. A fresh/known session gets bounded, decisioned pods; an
   aged/anonymous session drifts toward longer house/slate fill. The web player's
   cap is likely a side effect of staying continuously registered (a periodic
-  keepalive call we don't make). **Not yet proven** — needs the web player's full
+  keepalive call we don't make). **Not yet proven** - needs the web player's full
   network trace through a break to find the recurring keepalive call.
 - ✅ Overnight reality check: with the re-pin active, **no 15–20 min block ever
   appeared** (longest run ~5.7 min, of *distinct* paid ads = a genuine pod). The
@@ -206,22 +206,22 @@ measure of how much sooner a peek-driven re-pin could land in the song.
 
 ---
 
-## 9. Staging lane (dual-stream peek) — current state 🔧
+## 9. Staging lane (dual-stream peek) - current state 🔧
 
 - 🔧 **Stage A (shipped, observer only):** on entering the LIVE floor, the
   coordinator spawns a second `StreamSource` (constructed `is_lane_=true` so it
-  can't recurse and is side-effect-inert — scrobble/Discord poll the primary
+  can't recurse and is side-effect-inert - scrobble/Discord poll the primary
   instance only; `is_lane_` also suppresses the lane's deep-log writes). It opens
   a parallel digital session on a detached thread (never blocking the primary
   producer), prebuffers, and watches **its own** fresh edge for `cls=music`.
   Audio path untouched; existing re-pin still drives playback.
-- ✅ Overnight: lane **armed 11×, reached READY only 1×** — the primary's 35s
+- ✅ Overnight: lane **armed 11×, reached READY only 1×** - the primary's 35s
   re-pin/break-clear beats it ~10/11. The one success reached READY in ~20s.
 - **Stage B (not built):** when the lane's fresh edge hits `cls=music`, **promote**
-  (swap the lane's ring in) instead of tearing down — a clean swap landing on a
+  (swap the lane's ring in) instead of tearing down - a clean swap landing on a
   music edge rather than a blind hard snap.
 - **Stage C (not built):** equal-power crossfade over the swap (the only piece
-  that touches `readFrames`/mixing — the real risk; do last).
+  that touches `readFrames`/mixing - the real risk; do last).
 - 🟡 Stage B is the *only* thing that can land near a song's start, because only
   the fresh peek sees the song before the timer (§5/§8). Whether it's worth it
   depends on the `peek cls=music +Ns` numbers (§7): big gap (20s+) on the breaks
@@ -231,13 +231,13 @@ measure of how much sooner a peek-driven re-pin could land in the song.
 
 ## 10. Dead ends & rejected approaches
 
-- ❌ Cracking/cloning `profileId`/`skey`/`listenerId` — inert for content (§1).
-- ❌ Gating the re-pin on `edgeLag` alone — `edgeLag` stays 0–1 through normal
+- ❌ Cracking/cloning `profileId`/`skey`/`listenerId` - inert for content (§1).
+- ❌ Gating the re-pin on `edgeLag` alone - `edgeLag` stays 0–1 through normal
   breaks *and* (apparently) through the slate floor, so it can't see the stall.
-- ❌ "Music-edge trigger on the **primary's** cls" — primary edge is stuck on
+- ❌ "Music-edge trigger on the **primary's** cls" - primary edge is stuck on
   slate; never shows music pre-re-pin (§5).
-- ❌ Faster manifest polling / staggered-peek machinery — parked; not needed yet.
-- ❌ The 4×-fresh handshake capture for issue-1 root cause — measures fresh-vs-fresh
+- ❌ Faster manifest polling / staggered-peek machinery - parked; not needed yet.
+- ❌ The 4×-fresh handshake capture for issue-1 root cause - measures fresh-vs-fresh
   at one instant, not aging over a long-running session. Wrong axis.
 - 🟡 `bam.nr-data.net` POSTs in the web player = New Relic telemetry, **not** a
   stream control call. Red herring.
@@ -246,14 +246,14 @@ measure of how much sooner a peek-driven re-pin could land in the song.
 
 ## 11. Current open items
 
-1. **Staging `peek cls=music +Ns` data** (step-1 logging just added) — collect a
+1. **Staging `peek cls=music +Ns` data** (step-1 logging just added) - collect a
    session with several ad→song transitions; the spread of `+Ns` vs the 35s timer
    decides whether Stage B is worth building.
-2. **Web-player keepalive hunt** (issue-1 root cause) — needs a full browser
+2. **Web-player keepalive hunt** (issue-1 root cause) - needs a full browser
    network trace of one web-player session held through a break, to find the
    *recurring* (not startup) iHeart API call we don't make.
-3. **Stage B / C** — pending (1).
-4. **True 15–20 min block** — still never captured with deep log armed (re-pins
+3. **Stage B / C** - pending (1).
+4. **True 15–20 min block** - still never captured with deep log armed (re-pins
    may be preventing it). If one occurs, read `cartcutId`: distinct = real pod
    (keepalive territory) · same repeating = stuck loop (re-pin escapes it).
 
@@ -264,7 +264,7 @@ measure of how much sooner a peek-driven re-pin could land in the song.
 - Ring-buffer state transitions are subtle; `prebuffered_` + `ringClear()` in both
   producer re-pin paths. Changes to concurrency-sensitive paths need explicit
   justification.
-- `readFrames` / `producerWorkerAAC` are the audio hot path — keep them
+- `readFrames` / `producerWorkerAAC` are the audio hot path - keep them
   byte-identical unless the change *is* the audio change. Verify with a diff.
 - A second `StreamSource` instance is naturally side-effect-inert (scrobble/Discord
   poll the primary only); `is_lane_` covers the one global (deep log).
@@ -272,4 +272,4 @@ measure of how much sooner a peek-driven re-pin could land in the song.
   prefer surgical diffs. Trust **log timestamps over by-ear estimates** (display
   lags audio ~10–15s by design).
 - Distinguish ✅ confirmed from 🟡 hypothesis. Several past wrong turns came from
-  treating a confident theory as fact — verify against a log before changing code.
+  treating a confident theory as fact - verify against a log before changing code.

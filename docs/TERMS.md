@@ -10,7 +10,7 @@ RE-MOCT is a free, open-source, terminal-based application provided **as-is** fo
 
 ### 2. No Warranty
 
-This software is provided "as is," without warranty of any kind, express or implied, including but not limited to the warranties of merchantability, fitness for a particular purpose, and non-infringement. In no event shall the authors be liable for any claim, damages, or other liability — including but not limited to data loss, corrupted rips, or loss of media — whether in an action of contract, tort, or otherwise, arising from, out of, or in connection with the software or its use.
+This software is provided "as is," without warranty of any kind, express or implied, including but not limited to the warranties of merchantability, fitness for a particular purpose, and non-infringement. In no event shall the authors be liable for any claim, damages, or other liability - including but not limited to data loss, corrupted rips, or loss of media - whether in an action of contract, tort, or otherwise, arising from, out of, or in connection with the software or its use.
 
 ### 3. User Responsibility
 

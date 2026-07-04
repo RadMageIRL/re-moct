@@ -10,20 +10,9 @@ it becomes *RE-MOCT* - the remix: a comet progress bar, a sub-cell block visuali
 breathing animations. The mode toggle is the whole point.
 
 ```
-┌─ RE-MOCT – Music On Console Terminal [REPEAT ALL] [SHUFFLE] [CD] [Tragic Kingdom (1995)] v1.0.0 ─┐
->> [Drives]
-┌─────────────────────────────────┐  ┌─ Playlist [14]  46m 8s ──────────────────────────────────────────┐
-│ [Recent]                        │  │ > No Doubt – Spiderwebs                                      4:28 │
-│ [FAVs]                          │  │   No Doubt – Excuse Me Mr.                                   3:05 │
-│ [Bookmarks]                     │  │   No Doubt – Just a Girl                                     3:29 │
-│ C:\                             │  │   No Doubt – Happy Now?                                      3:43 │
-│ F:\  ◄─ CD drive                │  │   No Doubt – Different People                                4:35 │
-└─────────────────────────────────┘  └──────────────────────────────────────────────────────────────────┘
-┌──────────────────────────────────────────────────────────────────────┐
-│ ════════════════════════════════════░░░░░░░░░░░░░░░░  2:14 / 4:28   │
-└──────────────────────────────────────────────────────────────────────┘
- Ripping track 5/14  [47%]  8.3x  C2  →  AR: [A v2 OK conf=84]
- SPC:pause  n/p:next/prev  [/]:seek  -/+:vol  Tab:focus  Enter:play  ?:help  ^Q:quit
+<img width="1278" height="646" alt="image" src="https://github.com/user-attachments/assets/8ae162e9-750d-427a-a96d-136287046bef" />
+<br><br>
+<img width="1279" height="616" alt="image" src="https://github.com/user-attachments/assets/03bf66f0-f62e-46d2-8a41-176393a48b3d" />
 ```
 
 ## Screenshots

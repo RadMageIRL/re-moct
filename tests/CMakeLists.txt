@@ -40,6 +40,18 @@ add_executable(notify_toast_test notify_toast_test.cpp)
 target_include_directories(notify_toast_test PRIVATE ${CMAKE_SOURCE_DIR}/include)
 add_test(NAME notify_toast_test COMMAND notify_toast_test)
 
+# notify-send argv builder (slice 5) — Linux-only, as the CD tests are Windows-
+# only. Proves the injection-safety surface headless: buildNotifyArgv() puts
+# title/body in argv slots verbatim (no shell) with a leading "--" so a
+# dash-leading title can't be read as an option. The argv (NotifyArgv.h) lives
+# under src/platform/linux/ — transport knowledge, not in the core headers.
+if(UNIX)
+    add_executable(notify_argv_test notify_argv_test.cpp)
+    target_include_directories(notify_argv_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src/platform/linux)
+    add_test(NAME notify_argv_test COMMAND notify_argv_test)
+endif()
+
 # core::IHttp seam — pure FakeHttp-backed parse test (no WinINet, Linux-CI safe).
 add_executable(http_seam_test http_seam_test.cpp)
 target_include_directories(http_seam_test PRIVATE

@@ -244,11 +244,13 @@ private:
     int         rip_msg_ticks_ = 0;  // auto-clear counter
 
 #ifndef _WIN32
-    // Toast fallback (interim until slice 5 libnotify): notifications are an
-    // inert stub on Linux, so every showTrackToast message ALSO surfaces in
-    // the cmdline bar for a few seconds — otherwise flows that answer only
-    // via toast (^B "logged in as", ^G "approve in browser") look dead.
-    // Same shape as rip_status_/rip_msg_ticks_. Revisit at slice 5.
+    // Cmdline echo (KEPT past slice 5): a real notify-send toast now renders on
+    // a Linux desktop with a notification daemon, but headless/no-daemon Linux
+    // (WSL2, CI, SSH) shows nothing — so every showTrackToast message ALSO
+    // surfaces in the cmdline bar for a few seconds, the always-visible
+    // graceful-degradation surface (otherwise toast-only flows like ^B "logged
+    // in as" / ^G "approve in browser" look dead). Same shape as rip_status_/
+    // rip_msg_ticks_.
     std::string status_msg_;
     int         status_msg_ticks_ = 0;
 #endif

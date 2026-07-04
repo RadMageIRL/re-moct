@@ -143,10 +143,12 @@ void UIManager::showTrackToast(const std::string& title, const std::string& arti
                                const std::string& album) {
     ::showTrackToast(title, artist, album, *notify_);
 #ifndef _WIN32
-    // Toast fallback (interim until slice 5 — see UIManager.h): mirror the
-    // adapter's title mapping (artist prepends) into the cmdline bar so
-    // toast-only feedback is visible on Linux. Sanitized: the bar draws via
-    // the narrow API and metadata can carry non-ASCII.
+    // Cmdline echo (KEPT past slice 5 — see UIManager.h): a real notify-send
+    // toast now lands on a Linux desktop with a daemon, but headless/no-daemon
+    // Linux (WSL2, CI, SSH) renders nothing — so mirror the adapter's title
+    // mapping (artist prepends) into the cmdline bar as the always-visible
+    // graceful-degradation surface. Sanitized: the bar draws via the narrow API
+    // and metadata can carry non-ASCII.
     status_msg_ = sanitizeForDisplay(artist.empty() ? title
                                                     : artist + " - " + title);
     status_msg_ticks_ = 0;

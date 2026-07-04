@@ -8,29 +8,23 @@
 //             bridges moved there; libcurl now backs the seam for real.
 //   slice 4 — IpcUnixSocket.cpp: ✅ LANDED — the IPC stub + core::ipc() bridge
 //             moved there; a Unix domain socket backs the seam for real.
-//   slice 5 — NotifyLibnotify.cpp (notify-send/libnotify, app id "RE-MOCT")
+//   slice 5 — NotifyNotifySend.cpp: ✅ LANDED — the notify stub + core::notifier()
+//             bridge moved there; notify-send (app id "RE-MOCT") backs it for real.
 //   slice 6 — CdIoSgIo.cpp      (SG_IO on /dev/srN: READ CD 0xBE, READ TOC 0x43,
 //                                TEST UNIT READY, INQUIRY, SET CD SPEED 0xBB)
 //
-// Stub behavior is the CONTRACT'S failure mode, not an abort: IPC/CD
-// connect/open return nullptr ("not listening" / "can't open"), notify is a
-// best-effort no-op (the interface swallows failure by design). A consumer
-// wired through a stub degrades exactly as it would with an absent Discord /
-// missing drive — behavior the Windows consumers already handle.
+// Stub behavior is the CONTRACT'S failure mode, not an abort: CD open returns
+// nullptr ("can't open"). A consumer wired through a stub degrades exactly as it
+// would with a missing drive — behavior the Windows consumers already handle.
 //
 // Namespace note: `platform::lnx`, not `platform::linux` — `linux` is a predefined
 // macro under -std=gnu++ dialects; the tree builds with extensions off today, but
 // the name must not break if that ever changes.
 #ifdef __linux__
 
-#include "core/INotify.h"
 #include "core/ICdIo.h"
 
 namespace platform::lnx {
-
-struct StubNotify final : core::INotify {
-    void notify(const std::string&, const std::string&) override {}   // best-effort no-op
-};
 
 struct StubCdIo final : core::ICdIo {
     std::unique_ptr<core::ICdDevice> open(const std::string&) override {
@@ -43,12 +37,8 @@ struct StubCdIo final : core::ICdIo {
 namespace core {
 
 // (http()/setHttp() live in HttpCurl.cpp since slice 2;
-//  ipc() lives in IpcUnixSocket.cpp since slice 4.)
-
-INotify& notifier() {
-    static platform::lnx::StubNotify instance;
-    return instance;
-}
+//  ipc() lives in IpcUnixSocket.cpp since slice 4;
+//  notifier() lives in NotifyNotifySend.cpp since slice 5.)
 
 ICdIo& cdio() {
     static platform::lnx::StubCdIo instance;

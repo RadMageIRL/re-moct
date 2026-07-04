@@ -1,19 +1,23 @@
-# RE-MOCT — Music On Console Terminal
+# RE-MOCT - Music On Console Terminal
 
-A feature-rich terminal audio player and CD ripper for Windows, built with C++20, ncurses, miniaudio, TagLib, libFLAC, LAME, and libebur128. Inspired by MOC (Music On Console), extended far beyond it.
+**RE-MOCT** is a terminal music player, CD ripper, and internet-radio client for
+**Windows and Linux**, written in C++20 on ncurses, miniaudio, TagLib, libFLAC, LAME,
+libebur128, and FDK-AAC.
+
+It is a homage to [MOC](http://moc.daper.net/) (Music On Console) with a twist. In
+**Classic mode** it stays faithful and minimal. Hit **Ctrl+T** for **Awesome mode** and
+it becomes *RE-MOCT* - the remix: a comet progress bar, a sub-cell block visualizer, and
+breathing animations. The mode toggle is the whole point.
 
 ```
-┌─ RE-MOCT – Music On Console Terminal [REPEAT ALL] [SHUFFLE] [CD] [Tragic Kingdom (1995)] v1.0.0-rc1 ─┐
+┌─ RE-MOCT – Music On Console Terminal [REPEAT ALL] [SHUFFLE] [CD] [Tragic Kingdom (1995)] v1.0.0 ─┐
 >> [Drives]
 ┌─────────────────────────────────┐  ┌─ Playlist [14]  46m 8s ──────────────────────────────────────────┐
 │ [Recent]                        │  │ > No Doubt – Spiderwebs                                      4:28 │
 │ [FAVs]                          │  │   No Doubt – Excuse Me Mr.                                   3:05 │
 │ [Bookmarks]                     │  │   No Doubt – Just a Girl                                     3:29 │
 │ C:\                             │  │   No Doubt – Happy Now?                                      3:43 │
-│ D:\                             │  │   No Doubt – Different People                                4:35 │
-│ E:\                             │  │   No Doubt – Hey You                                         3:34 │
-│ F:\  ◄─ CD drive                │  │   No Doubt – The Climb                                       6:38 │
-│ G:\                             │  │   No Doubt – Sixteen                                         3:22 │
+│ F:\  ◄─ CD drive                │  │   No Doubt – Different People                                4:35 │
 └─────────────────────────────────┘  └──────────────────────────────────────────────────────────────────┘
 ┌──────────────────────────────────────────────────────────────────────┐
 │ ════════════════════════════════════░░░░░░░░░░░░░░░░  2:14 / 4:28   │
@@ -22,400 +26,107 @@ A feature-rich terminal audio player and CD ripper for Windows, built with C++20
  SPC:pause  n/p:next/prev  [/]:seek  -/+:vol  Tab:focus  Enter:play  ?:help  ^Q:quit
 ```
 
+## Screenshots
+
+See [`docs/screenshots/`](docs/screenshots/) - the 256-color visualizer (Awesome mode)
+and a playlist/rip view. The public feature guide is [`docs/index.html`](docs/index.html).
+
 ## Features
 
-### Playback
-- Plays MP3, FLAC, OGG, WAV, AAC, and any format supported by miniaudio
-- Gapless crossfade between tracks (configurable duration)
-- Repeat (track / all) and shuffle modes
-- Seek forward/back, volume control
-- Per-track play count and last-played tracking
-- 10-band equalizer (Tab+E)
-- ReplayGain tag support for consistent volume
+**Local playback**
+- MP3, FLAC, OGG, WAV, AAC/HE-AAC, and `.m4b` audiobooks (chapter navigation)
+- Gapless playback, configurable crossfade, varispeed
+- Repeat (track/all), shuffle, seek, volume, 10-band equalizer
+- ReplayGain tag support; per-track play counts
+- LRC lyrics, tag editor (via TagLib), queue, bookmarks, favorites (star key), goto bar
+- Split-pane UI: directory browser + playlist/views; full-text playlist search
 
-### Library
-- Split-pane: directory browser (left) + playlist/views (right)
-- Drag-and-drop reorder in playlist
-- Per-folder sort (name / date / size)
-- Version-tracked note history with LCS diff in linked CODEX app
-- Recent tracks, Favorites (FAVs) with star key, Bookmarks
-- Full-text search across the playlist
-- Tag editor (read/write via TagLib) — Title, Artist, Album, Year, Track
-- Lyrics display (LRC file support)
-- Queue system (separate from playlist)
-- Goto bar for fast directory navigation
+**CD playback & ripping** (Ctrl+Y)
+- Red Book CD playback + MusicBrainz disc lookup (Ctrl+R)
+- Three rip modes:
+  - **[A] AccurateRip** - network CRC verify against accuraterip.com + drive-offset correction
+  - **[C] CUETools Database** - offset-immune whole-disc CRC32 (cue.tools/db)
+  - **[Y] Local** - best-effort offline rip
+- Every mode: FLAC + MP3 output, embedded cover art (Cover Art Archive), EBU R128
+  ReplayGain tags, C2 error-pointer detection, dual-pass on mismatch, per-rip logs
 
-### CD Playback
-- Red Book audio CD playback via Win32 IOCTL raw reads
-- MusicBrainz disc lookup (Ctrl+R) — fetches album/track metadata
-- Displays album/artist/year in title bar while CD is loaded
-- Automatic track enumeration and length display
+**Internet radio & streaming**
+- RadioBrowser (radio-browser.info) station search (Ctrl+U to add by URL)
+- ICY/SHOUTcast streaming with live StreamTitle metadata
+- iHeartRadio via HLS, with now-playing reconciliation and a digital (web-player) path
 
-### CD Ripping (Ctrl+Y)
-Three extraction modes selectable per-rip:
+**Scrobbling & presence**
+- Last.fm (Ctrl+G) and ListenBrainz (Ctrl+B) scrobbling + now-playing
+- Discord Rich Presence with album art
 
-```
-╔════════════════════════════════════════════════════════════════════╗
-║         re-moct // SECURE AUDIO EXTRACTION PANEL                  ║
-╠════════════════════════════════════════════════════════════════════╣
-║ CD-ROM Target : F:\                                                ║
-║ Disc          : 14 Tracks  (No Doubt - Tragic Kingdom)             ║
-╠════════════════════════════════════════════════════════════════════╣
-║ Select Ripping Strategy:                                           ║
-║   [A] AccurateRip Mode  - Network CRC verify + drive offset        ║
-║   [C] CUETools Mode     - Global CRC32 verify (offset-immune)      ║
-║   [Y] Local Master      - Best-effort offline, clean encoding      ║
-║   [N] Abort / Cancel    - Return to previous media navigation      ║
-╠════════════════════════════════════════════════════════════════════╣
-║ Output: C:\Users\...\Music\re-moct\No Doubt - Tragic Kingdom (1995)║
-╚════════════════════════════════════════════════════════════════════╝
-```
-
-**Mode [A] — AccurateRip:** Full network handshake with accuraterip.com. Computes AR CRCv1 and CRCv2 checksums per track (per the whipper/CUETools reference implementation) and verifies against the database. Saves raw `.bin` payload and human-readable manifest to `.ar-db-info/` in the album folder.
-
-**Mode [C] — CUETools:** Computes CTDBID (CRC32 of entire disc audio with ±10 sector trim for drive-offset immunity), queries cue.tools/db. Does not perform Reed-Solomon parity repair (verification only in this release).
-
-**Mode [Y] — Local:** Best-effort rip with no network calls. Fastest. No AR/CTDB overhead.
-
-**All modes produce:**
-- FLAC (level 5, lossless)
-- MP3 (LAME V0 VBR)
-- Cover art embedded in both formats (fetched from Cover Art Archive via MusicBrainz)
-- `folder.jpg` in album directory
-- EBU R128 ReplayGain tags (track + album)
-- Per-rip log in `logs/` subfolder
-- C2 error pointer detection (if drive supports it)
-- Dual-pass ripping on CRC mismatch
-
-**Output structure:**
-```
-Music\re-moct\
-└── No Doubt - Tragic Kingdom (1995)\
-    ├── 01 - Spiderwebs.flac
-    ├── 01 - Spiderwebs.mp3
-    ├── 02 - Excuse Me Mr..flac
-    ├── 02 - Excuse Me Mr..mp3
-    ├── ...
-    ├── folder.jpg
-    ├── logs\
-    │   └── rip_20260617_143022.log
-    └── .ar-db-info\
-        ├── accuraterip-id.txt
-        └── 001dafc6-013faad0-d20df90e.bin
-```
-
-**Tags written (FLAC Vorbis / MP3 ID3v2):**
-- Title, Artist, Album, Year, Track number
-- ENCODER = `RE-MOCT v1.0.0-rc1`
-- ACCURATERIP = status string (e.g. `AR v2 OK (conf 84)`)
-- ACCURATERIPCRC = computed CRCv2 hex
-- ACCURATERIPCOUNT = confidence score
-- REPLAYGAIN_TRACK_GAIN / TRACK_PEAK
-- REPLAYGAIN_ALBUM_GAIN / ALBUM_PEAK
-
-## Prerequisites (MSYS2 UCRT64)
-
-Open an **MSYS2 UCRT64** shell:
-
-```bash
-pacman -S --needed \
-    mingw-w64-ucrt-x86_64-gcc \
-    mingw-w64-ucrt-x86_64-cmake \
-    mingw-w64-ucrt-x86_64-ninja \
-    mingw-w64-ucrt-x86_64-ncurses \
-    mingw-w64-ucrt-x86_64-taglib \
-    mingw-w64-ucrt-x86_64-flac \
-    mingw-w64-ucrt-x86_64-lame \
-    mingw-w64-ucrt-x86_64-libebur128
-```
-
-Drop `miniaudio.h` into `lib/`:
-```bash
-curl -L https://raw.githubusercontent.com/mackron/miniaudio/master/miniaudio.h \
-     -o lib/miniaudio.h
-```
-
-Also drop `nlohmann/json.hpp` into `lib/`:
-```bash
-curl -L https://github.com/nlohmann/json/releases/latest/download/json.hpp \
-     -o lib/json.hpp
-```
+**Cross-platform & plugin architecture**
+- Runs on **Windows** (MSYS2 UCRT64) and **Linux** (Debian Trixie); every platform
+  call sits behind a seam with a Windows and a Linux implementation
+- The streaming source is a **real loadable plugin** (`remoct_stream.{so,dll}`) driven
+  through a frozen C ABI - a streaming fix ships as a rebuilt plugin, no host rebuild
 
 ## Build
 
+See **[BUILD.md](BUILD.md)** for full per-platform instructions (Windows/MSYS2 and
+Debian/Trixie). In short, on an MSYS2 UCRT64 shell with the toolchain installed:
+
 ```bash
-C:\msys64\usr\bin\bash.exe -l -c \
-  'export PATH=/ucrt64/bin:$PATH && cd /e/code/remoct && \
-   rm -rf build && mkdir build && cd build && cmake .. -G Ninja && ninja'
+cmake -S . -B build -G Ninja && cmake --build build
 ```
 
-Binary: `build\bin\remoct.exe`
+Binary: `build/bin/remoct.exe` (Windows) / `build/bin/remoct` (Linux), with the streaming
+plugin built beside it in `build/bin/plugins/`.
 
-**Required DLLs alongside remoct.exe:**
-```
-C:\msys64\ucrt64\bin\libFLAC.dll
-C:\msys64\ucrt64\bin\libmp3lame.dll
-C:\msys64\ucrt64\bin\libebur128.dll
-```
+## Keybindings (selection)
 
-## Keybindings
-
-### Global
-| Key | Action |
-|-----|--------|
-| `Tab` | Toggle focus: DirBrowser ↔ Playlist |
-| `Enter` | Play file / enter directory |
-| `Space` | Pause / Resume |
-| `s` | Stop |
-| `n` / `p` | Next / Previous track |
-| `[` / `]` | Seek back / forward 5s |
-| `-` / `+` | Volume down / up |
-| `Ctrl+Q` | Quit |
-| `?` | Toggle help pane |
-
-### Directory Browser
-| Key | Action |
-|-----|--------|
-| `j` / `↓` | Navigate down |
-| `k` / `↑` | Navigate up |
-| `←` / `h` | Go to parent directory |
-| `a` | Add selection to playlist |
-| `*` | Star / unstar (add to FAVs) |
-| `g` | Goto bar (type path) |
-| `b` | Add bookmark |
-
-### Playlist / Queue
-| Key | Action |
-|-----|--------|
-| `d` | Delete track from playlist |
-| `q` | Add to queue |
-| `Q` | Show queue pane |
-| `Shift+↑/↓` | Drag-and-drop reorder |
-
-### Views (right pane)
-| Key | Action |
-|-----|--------|
-| `Shift+T` | Track info / tag editor |
-| `Shift+L` | Lyrics |
-| `Shift+A` | About |
-| `Shift+B` | Bookmarks |
-| `Shift+E` | EQ (10-band equalizer) |
-| `Shift+D` | Devices |
-
-### CD Functions (CD mode only)
-| Key | Action |
-|-----|--------|
-| `Ctrl+R` | Fetch MusicBrainz metadata |
-| `Ctrl+Y` | Open rip mode selection panel |
+| Key | Action | Key | Action |
+|-----|--------|-----|--------|
+| `Tab` | Toggle DirBrowser ↔ Playlist | `Ctrl+T` | Toggle Classic / Awesome mode |
+| `Enter` | Play file / enter directory | `Ctrl+U` | Add / play a stream by URL |
+| `Space` | Pause / Resume | `Ctrl+R` | CD → MusicBrainz metadata |
+| `n` / `p` | Next / Previous | `Ctrl+Y` | Open CD rip panel |
+| `[` / `]` | Seek back / forward | `Ctrl+G` / `Ctrl+B` | Last.fm / ListenBrainz login |
+| `-` / `+` | Volume down / up | `Ctrl+D` | Discord Rich Presence toggle |
+| `*` | Star / unstar (FAVs) | `Ctrl+A` | iHeart deep-analysis log toggle |
+| `?` | Help pane | `Ctrl+P` | iHeart minted-profileId probe (experimental, off by default) |
+| `Ctrl+Q` | Quit | `Shift+T/L/A/E/D` | Track/Lyrics/About/EQ/Devices views |
 
 ## Configuration
 
-Config file: `%APPDATA%\re-moct\remoct.conf`
+Config file:
+- **Windows:** `%APPDATA%\re-moct\remoct.conf`
+- **Linux:** `$XDG_CONFIG_HOME/re-moct/remoct.conf` (falls back to `~/.config/re-moct/`)
+
+> ⚠ **`remoct.conf` stores scrobbling credentials in plaintext** (Last.fm session key,
+> ListenBrainz token). It is machine-local; keep it private and do not commit it - it is
+> gitignored. RE-MOCT transmits no audio and stores no third-party data beyond what a
+> request needs.
 
 ```ini
-# Playback
 volume=5
 repeat=all          # off / track / all
 shuffle=0
-
-# Crossfade
 crossfade=1
 crossfade_ms=2000
-
-# UI
 theme=dark
-
-# Favorites (FIFO, max 50)
-fav=C:\Music\Pink Floyd
 fav=C:\Music\No Doubt
-
-# Bookmarks
 bookmark=C:\Music\Lossless
 ```
 
-## Project Structure
+## Documentation
 
-```
-remoct/
-├── CMakeLists.txt
-├── BUILD.md
-├── README.md
-├── lib/
-│   ├── miniaudio.h          ← miniaudio, download separately
-│   └── json.hpp             ← nlohmann/json, download separately
-├── include/                 (headers; .cpp counterpart in src/ unless noted)
-│   ├── UIManager.h          ← ncurses UI: panes, modals, Classic/Awesome
-│   ├── AudioManager.h       ← miniaudio backend, lock-free ring, crossfade
-│   ├── PlaylistManager.h    ← playlist, queue, recent, favs, [Radio]/[Books]
-│   ├── CDSource.h           ← Win32 IOCTL CD playback + TOC/sector read
-│   ├── CDRipper.h           ← CD ripping (AR/CTDB/Local modes)
-│   ├── ar_crc.h             ← pure AccurateRip CRC math (off-disc testable)
-│   ├── drive_offsets.h      ← AccurateRip drive-offset table (header-only)
-│   ├── MBLookup.h           ← MusicBrainz disc ID + Discogs lookup
-│   ├── CoverArt.h           ← cover art fetch (iTunes/Deezer/CAA) + embed
-│   ├── StreamSource.h       ← HTTP/HLS radio producer, ring buffer, re-pin
-│   ├── AacDecoder.h         ← FDK-AAC / HE-AAC stream decode
-│   ├── IHeartRadio.h        ← iHeart station resolve + metadata API
-│   ├── IHeartNowPlayingSM.h ← pure now-playing reconciliation state machine
-│   ├── IHeartDeepLog.h      ← opt-in NDJSON deep-analysis log (Ctrl+A)
-│   ├── RadioBrowser.h       ← radio-browser.info station search
-│   ├── Mp4Chapters.h        ← .m4b audiobook chapter parsing
-│   ├── LastFm.h             ← Last.fm scrobbling
-│   ├── ListenBrainz.h       ← ListenBrainz scrobbling
-│   ├── DiscordRP.h          ← Discord Rich Presence (named-pipe IPC)
-│   ├── LrcData.h            ← LRC lyrics parser
-│   ├── Config.h             ← config file read/write
-│   ├── Log.h                ← logging + rotation
-│   ├── Toast.h              ← transient status messages
-│   └── StringUtils.h        ← UTF-8/wide, column-aware text (header-only)
-├── src/                     (implementations; mirror include/ + main.cpp)
-│   ├── main.cpp
-│   ├── UIManager.cpp        ← all UI logic (largest TU)
-│   ├── AudioManager.cpp     ← miniaudio device, CD + stream audio paths
-│   ├── PlaylistManager.cpp
-│   ├── CDSource.cpp         ← TOC read, raw sector read, drive-offset DB
-│   ├── CDRipper.cpp         ← FLAC+MP3 encode, AR CRC, CTDB, ReplayGain
-│   ├── ar_crc.cpp
-│   ├── MBLookup.cpp         ← WinInet MB/Discogs API, JSON parse
-│   ├── CoverArt.cpp
-│   ├── StreamSource.cpp
-│   ├── AacDecoder.cpp
-│   ├── IHeartRadio.cpp
-│   ├── IHeartNowPlayingSM.cpp
-│   ├── IHeartDeepLog.cpp
-│   ├── RadioBrowser.cpp
-│   ├── Mp4Chapters.cpp
-│   ├── LastFm.cpp
-│   ├── ListenBrainz.cpp
-│   ├── DiscordRP.cpp
-│   ├── LrcData.cpp
-│   ├── Config.cpp
-│   ├── Log.cpp
-│   └── Toast.cpp
-└── tests/                   ← Phase 0 pure-unit tests (ctest)
-    ├── CMakeLists.txt
-    ├── ar_crc_test.cpp      ← AccurateRip CRC + offset normalization
-    └── iheart_sm_test.cpp   ← now-playing state machine
-```
+- **[BUILD.md](BUILD.md)** - building on Windows and Linux
+- **[CHANGELOG.md](CHANGELOG.md)** - release notes
+- **[CONTRIBUTING.md](CONTRIBUTING.md)** - conventions and discipline
+- **[THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)** - dependency licenses & obligations
+- **[docs/](docs/)** - architecture, AccurateRip pipeline, streaming internals, the
+  iHeart case study ([docs/IHeartRadio/](docs/IHeartRadio/)), and reference rip logs
+  ([docs/samples/](docs/samples/))
+- **[tools/](tools/)** - standalone educational protocol/timing probes
 
-## AccurateRip Implementation Notes
+## License
 
-The AR verification follows the whipper / CUETools reference implementation:
-
-**Disc ID computation:**
-```
-rel_lba[i] = absolute_lba[i] - 150      (normalize: track 1 = 0)
-disc_id1    = sum(rel_lba) + leadout_rel
-disc_id2    = sum(rel_lba[i] * (i+1)) + leadout_rel * (ntracks+1)
-cddb_id     = standard FreeDB formula on absolute LBAs
-```
-
-**URL format:**
-```
-http://www.accuraterip.com/accuraterip/[id1[7]]/[id1[6]]/[id1[5]]/
-    dbar-NNN-disc_id1-disc_id2-cddb_id.bin
-```
-(all lowercase, nibbles extracted by string index position)
-
-**CRC computation (per whipper accuraterip-checksum.c):**
-```cpp
-// mul_by increments for EVERY sample (including boundary-skipped ones)
-// Skip enforced via range check, not by withholding the counter
-for each sample:
-    uint32_t samp = left | (right << 16)   // L in low bits, R in high
-    if (mul_by >= ar_check_from && mul_by <= ar_check_to):
-        uint64_t p = (uint64_t)samp * mul_by
-        csum_hi += upper32(p)
-        csum_lo += lower32(p)
-    mul_by++
-
-crc_v1 = csum_lo
-crc_v2 = csum_lo + csum_hi
-
-// Track boundaries:
-// First track: ar_check_from = 5*588 = 2940 (skip first 2940 samples)
-// Last track:  ar_check_to   = total_samples - 2940
-// Other tracks: full range (1 to total_samples)
-```
-
-**Binary payload format (.bin file):**
-```
-Per chunk (13 + ntracks*9 bytes):
-  [1]  track_count
-  [4]  disc_id1 (LE)
-  [4]  disc_id2 (LE)
-  [4]  cddb_id  (LE)
-  Per track (9 bytes):
-    [1]  confidence
-    [4]  main_crc    (checksum to compare against crc_v1 or crc_v2)
-    [4]  frame450_crc (offset-detection checksum, reserved for future use)
-```
-
-## Drive Offset Database
-
-CDSource queries the drive model on open via `IOCTL_STORAGE_QUERY_PROPERTY` and looks up the AccurateRip read offset from a built-in table in `CDSource.cpp`. HL-DT-ST (LG laptop) drives default to +6 samples. Unknown drives default to 0.
-
-To add your drive, find it at https://www.accuraterip.com/driveoffsets.htm and add an entry to `lookupDriveOffset()` in `src/CDSource.cpp`.
-
-## Rip Log Format
-
-Each rip writes a timestamped log to `<album_dir>\logs\rip_YYYYMMDD_HHMMSS.log`:
-
-```
-RE-MOCT CD Rip Log
-==================
-Album  : Tragic Kingdom
-Artist : No Doubt
-Year   : 1995
-Drive  : F  (offset +6 samples)
-Tracks : 14
-Mode   : AccurateRip
-Output : C:\Users\...\Music\re-moct\No Doubt - Tragic Kingdom (1995)
-
-=== AccurateRip ===
-ntracks=14 cddb=d20df90e disc_id1=001dafc6 disc_id2=013faad0
-TRY 001dafc6/013faad0 -> HTTP 200
-HIT! disc_id1=001dafc6 disc_id2=013faad0 size=1112
-
-Track 1 Pass 1: crc_v1(=csum_lo)=c1541003  crc_v2(=csum_lo+hi)=...  status=1 (AR v2 OK)
-  DB main_crcs (8):
-    crc=c1541003 conf=84  <-- MATCH v1
-    crc=37643fe3 conf=200
-    ...
-
-=== Summary ===
-AR: 13 v2 + 1 v1 matched, 0 not found / 14 total
-ReplayGain: album gain=-8.43 dB peak=1.033159
-  Track 01: [AR v2 OK] conf=84  rg=-8.36dB
-  Track 02: [AR v2 OK] conf=83  rg=-7.91dB
-  ...
-```
-
-## CTDB (CUETools) Mode Notes
-
-CTDBID = CRC32 of entire disc audio with first and last 10 sectors (23,520 bytes) trimmed. This makes the ID independent of drive read offset — any drive within ±10 sectors produces the same ID.
-
-Queried at `http://db.cuetools.net/lookup2.php?version=3&ctdb=1&disc=<id>&tracks=<n>`
-
-Reed-Solomon parity repair is not implemented in this release. Mode [C] currently provides verification status (Correct / Correctable / Unknown) without repair.
-
-## Version History
-
-**v1.0.0-rc1** (current)
-- Full CD ripper with AccurateRip, CUETools, and Local modes
-- A/C/Y/N rip mode selection panel
-- Dual-pass ripping with CRC verification
-- EBU R128 ReplayGain (inline, no second pass)
-- MusicBrainz cover art from Cover Art Archive
-- C2 error pointer detection
-- Drive read offset lookup (CDSource)
-- Per-rip logs + `.ar-db-info/` binary cache
-- CUETools-standard ACCURATERIP* tags
-- FAVs system (star key)
-- Tag editor
-- 10-band EQ
-- Queue system
-- Goto bar
-- LRC lyrics
-- Bookmarks
-- Crossfade / gapless playback
+RE-MOCT is released under the **MIT License** - see [LICENSE](LICENSE). It links and
+vendors third-party components under their own licenses; redistribution obligations
+(notably FDK-AAC, TagLib, and LAME) are documented in
+[THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).

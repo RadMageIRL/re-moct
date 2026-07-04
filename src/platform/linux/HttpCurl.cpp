@@ -61,7 +61,7 @@ void ensureGlobalInit() {
 }
 
 bool wasCancelled(const core::HttpRequest& req) {
-    return req.cancel && req.cancel->load();
+    return core::httpCancelRequested(req.cancel);   // int32 flag via atomic_ref
 }
 
 // Per-transfer state threaded through the callbacks.

@@ -44,7 +44,7 @@ bool StreamSource::open(const std::string& url) {
 
     url_ = url;
     last_error_.clear();
-    stop_.store(false);
+    setStop(false);                // clears stop_ + the HTTP-cancel mirror
     paused_.store(false);
     prebuffered_.store(false);
     playing_.store(false);
@@ -87,7 +87,7 @@ bool StreamSource::open(const std::string& url) {
 }
 
 void StreamSource::close() {
-    stop_.store(true);
+    setStop(true);                 // sets stop_ + the HTTP-cancel mirror
     // The producer owns the WinINet handles and decoder; it exits within one
     // read chunk because onRead() returns MA_AT_END as soon as stop_ is set,
     // then tears its own resources down. (Promptly interrupting a fully stalled
@@ -391,7 +391,7 @@ bool StreamSource::hlsHttpGet(const std::string& url, std::string* out_text,
     req.url             = url;
     req.pragma_no_cache = true;                 // baseline INTERNET_FLAG_PRAGMA_NOCACHE
     req.max_body        = 8u * 1024u * 1024u;   // baseline 8 MB cap-and-keep
-    req.cancel          = &stop_;
+    req.cancel          = &http_cancel_;         // plain int32 flag; ABI cancel type
     core::HttpResponse res = hls_session_->fetch(req);
 
     if (res.cancelled) return false;            // our own stop, not a network failure

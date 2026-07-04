@@ -247,6 +247,19 @@ private:
     std::atomic<bool>       playing_     { false };
     std::atomic<bool>       paused_      { false };
     std::atomic<bool>       stop_        { false };
+    // ABI-typed (plain int32) mirror of stop_'s cancel signal, for the HTTP cancel
+    // token (Phase 4 slice b). A plain int32 — NOT std::atomic — so it crosses the
+    // plugin C ABI as `const int32_t*` (remoct_plugin.h) with no reinterpret, and is
+    // accessed atomically via std::atomic_ref on both sides (owner writes it in
+    // setStop; the transport reads it via core::httpCancelRequested), never mixing a
+    // std::atomic over the same bytes (which would be non-conforming). Written only
+    // through setStop() so it can never drift from stop_.
+    int32_t                 http_cancel_ = 0;
+    // Set/clear the stop signal + its ABI-typed HTTP-cancel mirror as one operation.
+    void setStop(bool s) {
+        stop_.store(s);
+        std::atomic_ref<int32_t>(http_cancel_).store(s ? 1 : 0, std::memory_order_release);
+    }
     std::atomic<bool>       prebuffered_ { false };
     std::atomic<int>        position_sec_{ 0 };
     std::atomic<uint64_t>   frames_drained_{ 0 };  // for position; advanced by readFrames

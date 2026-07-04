@@ -15,7 +15,13 @@
 #include "LocalFileSource.h"  // the file path as a source object (slice B)
 #include <memory>
 #include "CDSource.h"
-#include "StreamSource.h"
+// Phase 4 slice b: the streaming source is driven through the plugin C ABI. The
+// host holds a PluginSource (the driver) over the in-process StreamSource adapter
+// descriptor, plus the HTTP service table it hands the plugin at create. It no
+// longer includes StreamSource.h directly — the source is behind the ABI now.
+#include "PluginSource.h"
+#include "PluginHostServices.h"
+#include "StreamPluginAdapter.h"
 
 enum class PlaybackState { Stopped, Playing, Paused };
 
@@ -111,7 +117,7 @@ public:
     // ── Streaming (internet radio) mode ───────────────────────────────────────
     bool     streamMode()        const { return stream_mode_.load(); }
     // Prefer the iHeart digital (web-player) rendition on the next stream connect.
-    void     setPreferDigital(bool b) { stream_source_.setPreferDigital(b); }
+    void     setPreferDigital(bool b) { stream_plugin_.setPreferDigital(b); }
     // True while a stream connect is being negotiated off the UI thread.
     bool     streamConnecting()  const { return stream_connecting_.load(); }
     // Non-blocking radio start: stops current playback, negotiates the stream on
@@ -120,11 +126,11 @@ public:
     // UI consumes these once to toast the outcome of a backgrounded connect.
     bool     takeStreamConnected() { return stream_just_connected_.exchange(false); }
     bool     takeStreamFailed()    { return stream_just_failed_.exchange(false); }
-    bool     streamBuffering()   const { return stream_source_.buffering(); }
-    std::string streamNowPlaying() const { return stream_source_.nowPlaying(); }
-    std::string streamArtUrl()     const { return stream_source_.currentArtUrl(); } // iHeart digital cover ("" -> use logo)
-    std::string streamUrl()      const { return stream_source_.url(); }   // URL actually streaming
-    int      streamPositionSec() const { return (int)stream_source_.positionSec(); }
+    bool     streamBuffering()   const { return stream_plugin_.buffering(); }
+    std::string streamNowPlaying() const { return stream_plugin_.nowPlaying(); }
+    std::string streamArtUrl()     const { return stream_plugin_.currentArtUrl(); } // iHeart digital cover ("" -> use logo)
+    std::string streamUrl()      const { return stream_plugin_.url(); }   // URL actually streaming
+    int      streamPositionSec() const { return (int)stream_plugin_.positionSec(); }
 
     // Called by track-end callback to pre-load next track for crossfade/gapless
     // Returns false if next track can't be opened
@@ -195,13 +201,19 @@ private:
     std::atomic<bool>          cd_mode_  { false };
     CDSource                   cd_source_;
     std::atomic<bool>          stream_mode_  { false };
-    StreamSource               stream_source_;
+    // The HTTP service table handed to the streaming plugin at create, backed by
+    // core::http(). Declared BEFORE stream_plugin_ so it is constructed first
+    // (the plugin instance is created with its table()). Both live as long as
+    // AudioManager — the ABI service-lifetime contract.
+    core::HostServices         host_services_{};
+    core::PluginSource         stream_plugin_{ remoct_stream_plugin_query(),
+                                               host_services_.table() };
 
     // ── Async stream connect (StreamSource::open runs off the UI thread) ──
     // beginStream() stops current playback and spawns a worker that runs the slow
     // open() (connect + producer spawn); pollStreamConnect() (called each tick from
     // pollEvents) brings up the device on success. A single worker ever touches
-    // stream_source_; a depth-1 "latest-wins" slot honors a station picked mid-connect;
+    // stream_plugin_; a depth-1 "latest-wins" slot honors a station picked mid-connect;
     // a generation counter lets a file/CD start interrupt and supersede a connect.
     std::atomic<bool>          stream_connecting_   { false }; // worker in flight
     std::atomic<bool>          stream_connect_done_ { false }; // worker finished; result pending

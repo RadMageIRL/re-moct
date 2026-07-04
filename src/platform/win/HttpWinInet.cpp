@@ -78,7 +78,7 @@ std::string queryFinalUrl(HINTERNET h) {
 }
 
 bool wasCancelled(const core::HttpRequest& req) {
-    return req.cancel && req.cancel->load();
+    return core::httpCancelRequested(req.cancel);   // int32 flag via atomic_ref
 }
 
 void readBody(HINTERNET h, const core::HttpRequest& req, core::HttpResponse& res) {

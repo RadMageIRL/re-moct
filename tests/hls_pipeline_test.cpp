@@ -175,7 +175,7 @@ struct FakeHls final : core::IHttp {
                 in_blocked.store(true);
                 uint32_t t0 = port::tickMs();
                 while ((long)(port::tickMs() - t0) < 30000) {
-                    if (req.cancel && req.cancel->load()) {
+                    if (core::httpCancelRequested(req.cancel)) {
                         saw_cancel.store(true);
                         in_blocked.store(false);
                         core::finalizeCancelled(res);

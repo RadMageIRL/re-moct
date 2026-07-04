@@ -200,13 +200,13 @@ int main() {
     //           transport-side contract (finalizeCancelled on a set token) holds ----
     {
         FakeHttp h; h.next.ok = true;
-        std::atomic<bool> stop{false};
+        int32_t stop{0};                        // ABI cancel type (plain int32)
         core::HttpRequest rq; rq.url = "https://seg/1.aac"; rq.cancel = &stop;
         h.fetch(rq);
         CHECK(h.last.cancel == &stop);          // pointer passthrough, no copy games
-        stop.store(true);                       // model the transport's per-chunk poll
+        std::atomic_ref<int32_t>(stop).store(1, std::memory_order_release);  // per-chunk poll
         core::HttpResponse rs; rs.body = "partial";
-        if (h.last.cancel && h.last.cancel->load()) core::finalizeCancelled(rs);
+        if (core::httpCancelRequested(h.last.cancel)) core::finalizeCancelled(rs);
         CHECK(rs.cancelled && !rs.ok && rs.body.empty());
     }
 

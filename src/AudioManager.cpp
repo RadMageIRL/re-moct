@@ -100,7 +100,7 @@ bool AudioManager::play(const std::string& path) {
     // audio callback stops entering the stream branch, then join the producer).
     if (stream_mode_.load()) {
         stream_mode_.store(false);
-        stream_source_.close();
+        stream_plugin_.close();
     }
     // Exit CD mode if switching to file playback
     if (cd_mode_.load()) {
@@ -334,8 +334,8 @@ void AudioManager::togglePause() {
         return;
     }
     if (stream_mode_.load()) {
-        stream_source_.pause(!stream_source_.paused());
-        state_.store(stream_source_.paused() ? PlaybackState::Paused
+        stream_plugin_.pause(!stream_plugin_.paused());
+        state_.store(stream_plugin_.paused() ? PlaybackState::Paused
                                              : PlaybackState::Playing);
         return;
     }
@@ -359,7 +359,7 @@ void AudioManager::stop() {
         return;
     }
     if (stream_mode_.load()) {
-        stream_source_.close();
+        stream_plugin_.close();
         stream_mode_.store(false);
         state_.store(PlaybackState::Stopped);
         if (device_initialised_) {
@@ -578,7 +578,7 @@ void AudioManager::onDataCallback(void* output, ma_uint32 frame_count) {
     // ── Stream mode: read from StreamSource ring buffer ──────────────────
     if (stream_mode_.load()) {
         float* out = static_cast<float*>(output);
-        stream_source_.readFrames(out, frame_count);  // 44100/stereo; silence while buffering
+        stream_plugin_.readFrames(out, frame_count);  // 44100/stereo; silence while buffering
 
         float vol = volume_.load();
         if (vol != 1.0f)
@@ -1081,7 +1081,7 @@ bool AudioManager::openCD(const std::string& drive_letter) {
     // Exit stream mode if active before entering CD mode.
     if (stream_mode_.load()) {
         stream_mode_.store(false);
-        stream_source_.close();
+        stream_plugin_.close();
     }
     // teardown handles already-stopped device safely
     teardown();
@@ -1144,7 +1144,7 @@ void AudioManager::beginStream(const std::string& url) {
 // Stop current playback and spawn the connect worker. Caller holds state_mutex_.
 void AudioManager::startStreamConnectLocked(const std::string& url) {
     // Stop whatever is playing so its callback releases the device before the
-    // worker touches stream_source_. (stream_mode_ is cleared first, so a prior
+    // worker touches stream_plugin_. (stream_mode_ is cleared first, so a prior
     // stream's callback stops entering the stream branch.)
     if (cd_mode_.load()) { cd_source_.stop(); cd_source_.close(); cd_mode_.store(false); }
     stream_mode_.store(false);
@@ -1173,9 +1173,9 @@ void AudioManager::startStreamConnectLocked(const std::string& url) {
     if (stream_connect_thread_.joinable()) stream_connect_thread_.join();
     stream_connect_thread_ = std::thread([this, url]() {
         // The slow part — connect + producer spawn — entirely off the UI thread.
-        // The worker touches only stream_source_; the device is brought up later
+        // The worker touches only stream_plugin_; the device is brought up later
         // on the main thread once this succeeds.
-        bool ok = stream_source_.open(url);
+        bool ok = stream_plugin_.open(url);
         {
             std::lock_guard<std::mutex> lk(stream_connect_mtx_);
             stream_connect_ok_ = ok;
@@ -1204,9 +1204,9 @@ void AudioManager::pollStreamConnect() {
     if (superseded) {
         // A file/CD/newer stream started while we were connecting — discard this
         // stream without touching the device or state the new playback now owns.
-        stream_source_.close();
+        stream_plugin_.close();
     } else if (!ok) {
-        stream_source_.close();
+        stream_plugin_.close();
         stream_mode_.store(false);
         state_.store(PlaybackState::Stopped);
         stream_just_failed_.store(true);
@@ -1228,7 +1228,7 @@ void AudioManager::pollStreamConnect() {
             state_.store(PlaybackState::Playing);
             stream_just_connected_.store(true);
         } else {
-            stream_source_.close();
+            stream_plugin_.close();
             stream_mode_.store(false);
             state_.store(PlaybackState::Stopped);
             stream_just_failed_.store(true);

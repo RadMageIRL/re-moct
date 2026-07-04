@@ -11,6 +11,7 @@
 // "does core stay portable" seam test (it compiles on Linux CI as-is).
 #pragma once
 #include <atomic>
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <vector>
@@ -42,15 +43,31 @@ struct HttpRequest {
     // sites set it in their baselines (manifest polls must never be served stale by an
     // intermediary); default false keeps the six previously-migrated sites byte-identical.
     bool   pragma_no_cache  = false;
-    // Cancel token (slice 4): the transport polls this before opening and before each
-    // chunk read, and aborts the fetch when it reads true — the same granularity as
-    // StreamSource's baseline per-chunk stop_ check, so worst-case abort latency stays
-    // one receive-timeout on a stalled read, never the remaining body. fetch() is
-    // synchronous, so the pointed-to atomic only has to outlive the call (it sits on
-    // the caller's stack path by construction). nullptr = not cancellable (default —
-    // all one-shot sites unchanged).
-    const std::atomic<bool>* cancel = nullptr;
+    // Cancel token (slice 4; Phase 4 slice b: unified on int32_t). The transport polls
+    // this before opening and before each chunk read (via httpCancelRequested below)
+    // and aborts the fetch when it reads nonzero — the same per-chunk granularity as
+    // StreamSource's baseline stop check, so worst-case abort latency stays one
+    // receive-timeout on a stalled read, never the remaining body. Typed as a plain
+    // int32_t* (was std::atomic<bool>*) so it is EXACTLY the plugin C-ABI cancel type
+    // (remoct_plugin.h RemoctHttpReq::cancel): the host HTTP service shim forwards the
+    // plugin's flag straight through, no reinterpret, no width/endianness question. The
+    // pointee is a plain int32 the OWNER writes via std::atomic_ref<int32_t> (NOT a
+    // std::atomic over the same bytes — mixing the two is non-conforming); it only has
+    // to outlive the synchronous fetch(). nullptr = not cancellable (default — all
+    // one-shot sites unchanged).
+    const int32_t* cancel = nullptr;
 };
+
+// Poll a cancel token (HttpRequest::cancel, i.e. the plugin ABI's const int32_t*): true
+// iff non-null and nonzero. The owner writes the flag via std::atomic_ref<int32_t>; the
+// transport reads it here the same way — the standard-correct atomic access of a plain
+// POD int shared across the C boundary (const_cast is safe: the pointee is a non-const
+// flag, and we only load). Pure, header-only, both platforms.
+inline bool httpCancelRequested(const int32_t* cancel) {
+    return cancel &&
+           std::atomic_ref<int32_t>(*const_cast<int32_t*>(cancel))
+               .load(std::memory_order_acquire) != 0;
+}
 
 // The response. `body` is a byte buffer (text consumers treat it as a string; binary
 // consumers copy out). `ok` = transport succeeded; `status` = HTTP code (0 if unread).

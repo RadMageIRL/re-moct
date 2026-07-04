@@ -31,6 +31,17 @@ else()
     set(CDIO_IMPL ${CMAKE_SOURCE_DIR}/src/platform/linux/CdIoSgIo.cpp)
     set(CDIO_LIBS pthread)
 endif()
+# Per-platform plugin-loader transport (Phase 4 slice a) — the same idea as
+# HTTP_IMPL/IPC_IMPL: one test file drives the Windows LoadLibrary loader AND the
+# Linux dlopen loader through the identical core::loadPlugin policy.
+if(WIN32)
+    set(PLUGINLOADER_IMPL ${CMAKE_SOURCE_DIR}/src/platform/win/PluginLoaderWin.cpp)
+    set(PLUGINLOADER_LIBS "")
+else()
+    set(PLUGINLOADER_IMPL ${CMAKE_SOURCE_DIR}/src/platform/linux/PluginLoaderPosix.cpp)
+    set(PLUGINLOADER_LIBS dl)
+endif()
+
 add_executable(iheart_sm_test
     iheart_sm_test.cpp
     ${CMAKE_SOURCE_DIR}/src/IHeartNowPlayingSM.cpp
@@ -289,6 +300,9 @@ if(WIN32)
         ${CMAKE_SOURCE_DIR}/src/AudioManager.cpp
         ${CMAKE_SOURCE_DIR}/src/LocalFileSource.cpp
         ${CMAKE_SOURCE_DIR}/src/StreamSource.cpp
+        ${CMAKE_SOURCE_DIR}/src/StreamPluginAdapter.cpp
+        ${CMAKE_SOURCE_DIR}/src/PluginSource.cpp
+        ${CMAKE_SOURCE_DIR}/src/PluginHostServices.cpp
         ${CMAKE_SOURCE_DIR}/src/CDSource.cpp
         ${CMAKE_SOURCE_DIR}/src/IHeartRadio.cpp
         ${CMAKE_SOURCE_DIR}/src/IHeartNowPlayingSM.cpp
@@ -308,4 +322,71 @@ if(WIN32)
     add_test(NAME xfade_handoff_test COMMAND xfade_handoff_test)
     set_tests_properties(xfade_handoff_test PROPERTIES TIMEOUT 180 SKIP_RETURN_CODE 77)
 endif()
+
+# ── Phase 4 slice (a) — the plugin C-ABI: freeze the contract against a
+# disposable plugin ──────────────────────────────────────────────────────────
+# plugin_sine: a pure-C sine source built as a shared MODULE library. Compiled
+# as C, so it also proves include/core/remoct_plugin.h is genuinely
+# C-consumable (nothing C++ leaked across the ABI). PREFIX "" drops the "lib"
+# so the loaded name is stable across platforms; the test loads it by absolute
+# path, so no rpath/PATH juggling.
+add_library(plugin_sine MODULE plugin_sine.c)
+target_include_directories(plugin_sine PRIVATE ${CMAKE_SOURCE_DIR}/include)
+set_target_properties(plugin_sine PROPERTIES PREFIX "")
+
+# plugin_loader_test: loads plugin_sine from a REAL .dll/.so through the
+# core::IPluginLoader seam + core::loadPlugin policy, drives the full lifecycle
+# through the C table, and unit-tests the version gate's reject paths. Both jobs.
+add_executable(plugin_loader_test
+    plugin_loader_test.cpp
+    ${CMAKE_SOURCE_DIR}/src/PluginHost.cpp
+    ${PLUGINLOADER_IMPL}
+)
+target_include_directories(plugin_loader_test PRIVATE ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(plugin_loader_test PRIVATE ${PLUGINLOADER_LIBS})
+# The built plugin's absolute path, resolved at generate time.
+target_compile_definitions(plugin_loader_test PRIVATE
+    SINE_PLUGIN_PATH="$<TARGET_FILE:plugin_sine>")
+add_dependencies(plugin_loader_test plugin_sine)
+add_test(NAME plugin_loader_test COMMAND plugin_loader_test)
+set_tests_properties(plugin_loader_test PROPERTIES TIMEOUT 60)
+
+# plugin_http_shim_test: the host HTTP service shim (PluginHostServices) over a
+# FakeHttp — proves the RemoctHostServices table translates requests/responses,
+# passes the plugin's int32_t* cancel through with ZERO bridging, honors a set
+# cancel, and owns/free's the response host-side. Deterministic; both jobs. (The
+# real-transport int32 cancel granularity is locked by http_cancel_test.)
+add_executable(plugin_http_shim_test
+    plugin_http_shim_test.cpp
+    ${CMAKE_SOURCE_DIR}/src/PluginHostServices.cpp
+    ${CMAKE_SOURCE_DIR}/src/Log.cpp
+)
+target_include_directories(plugin_http_shim_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/lib)
+add_test(NAME plugin_http_shim_test COMMAND plugin_http_shim_test)
+set_tests_properties(plugin_http_shim_test PROPERTIES TIMEOUT 60)
+
+# plugin_stream_test: the streaming source driven through the plugin C ABI — the
+# in-process StreamSource adapter (remoct_stream_plugin_query) exercised via the
+# raw C table AND via core::PluginSource (the driver AudioManager uses). Links the
+# real StreamSource stack (like hls_pipeline_test) + the plugin host files; a
+# dead-port open() fails fast so it's headless and quick. Both jobs.
+add_executable(plugin_stream_test
+    plugin_stream_test.cpp
+    ${CMAKE_SOURCE_DIR}/src/StreamPluginAdapter.cpp
+    ${CMAKE_SOURCE_DIR}/src/PluginSource.cpp
+    ${CMAKE_SOURCE_DIR}/src/PluginHostServices.cpp
+    ${CMAKE_SOURCE_DIR}/src/StreamSource.cpp
+    ${CMAKE_SOURCE_DIR}/src/IHeartRadio.cpp
+    ${CMAKE_SOURCE_DIR}/src/IHeartNowPlayingSM.cpp
+    ${CMAKE_SOURCE_DIR}/src/IHeartDeepLog.cpp
+    ${CMAKE_SOURCE_DIR}/src/Log.cpp
+    ${HTTP_IMPL}
+)
+target_include_directories(plugin_stream_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/lib ${FDKAAC_INCLUDE})
+target_link_libraries(plugin_stream_test PRIVATE ${FDKAAC_LIB} ${HTTP_LIBS}
+    $<$<PLATFORM_ID:Linux>:dl> $<$<PLATFORM_ID:Linux>:m>)
+add_test(NAME plugin_stream_test COMMAND plugin_stream_test)
+set_tests_properties(plugin_stream_test PROPERTIES TIMEOUT 60)
 

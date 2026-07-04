@@ -30,6 +30,10 @@ set(REMOCT_SOURCES
     src/CDRipper.cpp
     src/CoverArt.cpp
     src/StreamSource.cpp
+    # Phase 4 slice b: the streaming source is driven through the plugin C ABI.
+    src/StreamPluginAdapter.cpp   # RemoctPlugin table over StreamSource (in-process; -> .so in slice c)
+    src/PluginSource.cpp          # host-side driver over a RemoctPlugin table
+    src/PluginHostServices.cpp    # RemoctHostServices HTTP shim over core::IHttp
     src/IHeartNowPlayingSM.cpp
     src/ar_crc.cpp
     src/AacDecoder.cpp
@@ -81,6 +85,11 @@ if(UNIX)
         ${CMAKE_SOURCE_DIR}/src/platform/linux/IpcUnixSocket.cpp
         ${CMAKE_SOURCE_DIR}/src/platform/linux/NotifyNotifySend.cpp
         ${CMAKE_SOURCE_DIR}/src/platform/linux/CdIoSgIo.cpp
+        # Phase 4 slice (a): the plugin-loader seam (dlopen). Not yet in the
+        # remoct target — the host consumer arrives in slice (b) — but built here
+        # so CI proves src/platform/linux/ stays platform-clean, and by the
+        # plugin_loader_test on both jobs.
+        ${CMAKE_SOURCE_DIR}/src/platform/linux/PluginLoaderPosix.cpp
     )
     target_include_directories(remoct_linux_seams PRIVATE ${CMAKE_SOURCE_DIR}/include)
     if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")

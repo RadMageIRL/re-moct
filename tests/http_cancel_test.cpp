@@ -162,8 +162,14 @@ int main() {
         auto session = http.openSession(cfg);
         CHECK(session != nullptr);
 
-        std::atomic<bool> stop{false};
-        std::thread canceller([&] { sleepMs(300); stop.store(true); });
+        // The cancel flag is a plain int32 (the ABI cancel type) accessed via
+        // std::atomic_ref on both sides — the conforming way to share a POD int
+        // across the (future) C boundary; no std::atomic over the same bytes.
+        int32_t stop{0};
+        std::thread canceller([&] {
+            sleepMs(300);
+            std::atomic_ref<int32_t>(stop).store(1, std::memory_order_release);
+        });
 
         core::HttpRequest req;
         req.url    = "http://127.0.0.1:" + std::to_string(lis.port) + "/seg1.aac";
@@ -244,7 +250,7 @@ int main() {
         auto session = http.openSession(cfg);
         CHECK(session != nullptr);
 
-        std::atomic<bool> stop{true};     // already stopped before the call
+        int32_t stop{1};                  // already stopped before the call
         core::HttpRequest req;
         req.url    = "http://127.0.0.1:" + std::to_string(lis.port) + "/never";
         req.cancel = &stop;

@@ -245,6 +245,14 @@ void UIManager::initColours() {
     start_color();
     use_default_colors();
 
+    // Split by mode (design spec section 6.5): theme.conf governs Classic; the named
+    // truecolor palettes fully own Awesome. No layering, no 8-colour degradation of a
+    // truecolor palette. Awesome sets its own pairs (incl. solid base bg) and returns.
+    if (config_.awesome_mode) {
+        applyAwesomeTheme();
+        return;
+    }
+
     // Built-in defaults (index 0 unused; slots 1..13 map to CP_*). These reproduce
     // the previous hard-coded pairs exactly, so a missing theme.conf changes nothing.
     short fg[14] = { 0,
@@ -267,6 +275,84 @@ void UIManager::initColours() {
     // themed viz pairs are fg==bg solid fills (a partial block would be invisible),
     // so the sub-cell lower-block glyphs (▁..▇) need a real bg to show their height.
     init_pair(CP_VIZ_TIP, fg[CP_VIZ_PEAK], -1);
+}
+
+void UIManager::applyAwesomeTheme() {
+    if (!has_colors()) return;
+    // start_color()/use_default_colors() are guaranteed by the callers (initColours
+    // routes here; the F8 handler re-applies after they have already run). We only
+    // re-init pairs — no window rebuild — so a live cycle is just a recolour.
+    const AwesomeTheme& t = kAwesomeThemes[config_.awesome_theme];
+
+    // Semantic -> colour-pair mapping (design spec section 4.2). Every otherwise
+    // transparent role takes bg = base so glyphs never sit on terminal-bg patches
+    // inside a base-filled pane. The four viz pairs stay fg==bg solid fills; the
+    // derived viz tip keeps a base bg so its fractional lower-block glyph shows.
+    struct PairDef { short pair; unsigned fg; unsigned bg; };
+    const PairDef defs[] = {
+        { CP_TITLE,              t.title,    t.base     },
+        { CP_FOCUSED,            t.selfg,    t.focus    },
+        { CP_SELECTED,           t.selfg,    t.accent   },
+        { CP_PROGRESS,           t.prog,     t.base     },
+        { CP_STATUS_OK,          t.ok,       t.base     },
+        { CP_STATUS_ERR,         t.err,      t.base     },
+        { CP_BORDER,             t.border,   t.base     },
+        { CP_DIM,                t.dim,      t.base     },
+        { CP_VIZ_LOW,            t.viz_low,  t.viz_low  },
+        { CP_VIZ_MID,            t.viz_mid,  t.viz_mid  },
+        { CP_VIZ_HIGH,           t.viz_high, t.viz_high },
+        { CP_VIZ_PEAK,           t.viz_peak, t.viz_peak },
+        { CP_SELECTED_UNFOCUSED, t.text,     t.border   },
+        { CP_VIZ_TIP,            t.viz_peak, t.base     },
+    };
+
+    if (COLORS >= 256 && can_change_color()) {
+        // Truecolor path: dedupe the palette's unique hex values, assign custom slot
+        // ids starting at 16 (0..15 reserved for base ANSI), init_color() each, then
+        // reference them by slot id. Re-applying a theme re-init_colors the same slot
+        // pool with new values — no leak, no window rebuild.
+        std::vector<std::pair<unsigned, short>> slots;   // hex -> assigned slot id
+        short next = 16;
+        auto slotFor = [&](unsigned hex) -> short {
+            for (const auto& s : slots) if (s.first == hex) return s.second;
+            const short id = next++;
+            const int r = (int)((hex >> 16) & 0xff);
+            const int g = (int)((hex >> 8)  & 0xff);
+            const int b = (int)( hex        & 0xff);
+            auto sc = [](int c) -> short { return (short)((c * 1000 + 127) / 255); };  // 0..255 -> 0..1000
+            init_color(id, sc(r), sc(g), sc(b));
+            slots.push_back({ hex, id });
+            return id;
+        };
+        for (const auto& d : defs)
+            init_pair(d.pair, slotFor(d.fg), slotFor(d.bg));
+    } else {
+        // Fallback: map each hex to the nearest of the first min(COLORS,16) basic
+        // colours by weighted RGB distance (2dr^2 + 4dg^2 + 3db^2). Graceful path for
+        // TERM=xterm / terminals without can_change_color().
+        struct RGB { int r, g, b; };
+        static const RGB kBasic16[16] = {
+            {0x00,0x00,0x00},{0x80,0x00,0x00},{0x00,0x80,0x00},{0x80,0x80,0x00},
+            {0x00,0x00,0x80},{0x80,0x00,0x80},{0x00,0x80,0x80},{0xc0,0xc0,0xc0},
+            {0x80,0x80,0x80},{0xff,0x00,0x00},{0x00,0xff,0x00},{0xff,0xff,0x00},
+            {0x00,0x00,0xff},{0xff,0x00,0xff},{0x00,0xff,0xff},{0xff,0xff,0xff},
+        };
+        const int limit = (COLORS >= 16) ? 16 : (COLORS >= 8 ? 8 : (COLORS > 0 ? COLORS : 8));
+        auto nearest = [&](unsigned hex) -> short {
+            const int r = (int)((hex >> 16) & 0xff);
+            const int g = (int)((hex >> 8)  & 0xff);
+            const int b = (int)( hex        & 0xff);
+            long best = -1; short bi = 0;
+            for (int i = 0; i < limit; ++i) {
+                const long dr = r - kBasic16[i].r, dg = g - kBasic16[i].g, db = b - kBasic16[i].b;
+                const long d  = 2*dr*dr + 4*dg*dg + 3*db*db;
+                if (best < 0 || d < best) { best = d; bi = (short)i; }
+            }
+            return bi;
+        };
+        for (const auto& d : defs)
+            init_pair(d.pair, nearest(d.fg), nearest(d.bg));
+    }
 }
 
 void UIManager::loadTheme(short* fg, short* bg) {
@@ -1709,6 +1795,7 @@ void UIManager::drawHelp() {
         { "Ctrl+Y",         "Rip CD  (A=AccurateRip  C=CUETools  Y=Local  B=Local 2-pass)" },
         { "Ctrl+D",         "Toggle Discord Rich Presence" },
         { "Ctrl+T",         "Toggle Classic / Awesome theme" },
+        { "F8",             "Cycle Awesome theme" },
         { "~",              "Reload theme.conf colours (live)" },
         { "Ctrl+N",         "Toggle Nerd Font icons (needs Nerd Font)" },
         { "Ctrl+A",         "Toggle deep-analysis iHeart log (diagnostic)" },
@@ -3859,10 +3946,16 @@ void UIManager::handleInput(int ch) {
         case 20:  // Ctrl+T — toggle Classic / Awesome theme
             config_.awesome_mode = !config_.awesome_mode;
             config_.save();
+            // Re-init colour pairs for the new mode BEFORE rebuilding windows: Awesome
+            // gives CP_DIM a solid base bg, so createWindows()'s wbkgd(CP_DIM) then fills
+            // every pane (and the title/cwd/cmdline strips) with the themed base; Classic
+            // restores the transparent -1 defaults so it re-inherits the terminal bg.
+            initColours();
             resizeWindows();        // rebuild panes with theme-aware geometry +
             redraw_needed_.store(true);   // full shrink-safe screen wipe
-            showTrackToast(config_.awesome_mode ? "Theme: Awesome"
-                                               : "Theme: Classic", "", "");
+            showTrackToast(config_.awesome_mode
+                               ? (std::string("Awesome - ") + kAwesomeThemes[config_.awesome_theme].name)
+                               : std::string("Theme: Classic"), "", "");
             break;
         case 14:  // Ctrl+N — toggle Nerd Font title icons (needs a Nerd Font)
             config_.nerd_icons = !config_.nerd_icons;
@@ -3871,6 +3964,38 @@ void UIManager::handleInput(int ch) {
             showTrackToast(config_.nerd_icons ? "Nerd icons: ON (needs Nerd Font)"
                                               : "Nerd icons: OFF", "", "");
             break;
+        case KEY_F(8): {  // cycle the Awesome-mode named palette (F8)
+            if (!config_.awesome_mode) {
+                // F8 only cycles in Awesome mode; hint otherwise (Classic keeps its
+                // theme.conf colours; named palettes are an Awesome feature).
+#ifndef _WIN32
+                status_msg_ = "Themes live in Awesome mode (Ctrl+T)";
+                status_msg_ticks_ = 0;
+                redraw_needed_.store(true);
+#else
+                showTrackToast("Themes live in Awesome mode (Ctrl+T)", "", "");
+#endif
+                break;
+            }
+            config_.awesome_theme = (config_.awesome_theme + 1) % kNumAwesomeThemes;
+            config_.save();
+            applyAwesomeTheme();          // recolour in place — pairs are global, no rebuild
+            clearok(stdscr, TRUE);
+            redraw_needed_.store(true);
+            const std::string name = kAwesomeThemes[config_.awesome_theme].name;
+            // F8 is a repeat key: desktop notify only when the user opted into toasts;
+            // otherwise the recolour + in-TUI status line is the feedback (no notify spam).
+            if (config_.toast_enabled) {
+                showTrackToast("Theme: " + name, "", "");
+            } else {
+#ifndef _WIN32
+                status_msg_ = "Theme: " + name;
+                status_msg_ticks_ = 0;
+                redraw_needed_.store(true);
+#endif
+            }
+            break;
+        }
         // Per-case Windows gates below (slice-2 fix): a single #ifdef here
         // used to span ^D/^B/^F/^G/^U/^Y/^R, silently deleting the portable
         // scrobbler-login and radio-URL keys from the Linux build (Dos-found:

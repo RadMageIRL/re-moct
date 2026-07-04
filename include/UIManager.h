@@ -24,6 +24,7 @@
 #include "miniaudio.h"
 #include "LrcData.h"
 #include "Mp4Chapters.h"
+#include "AwesomeThemes.h"
 #include "core/INotify.h"
 
 class PlaylistManager;
@@ -384,4 +385,8 @@ private:
 
     void initColours();
     void loadTheme(short* fg, short* bg);   // overrides defaults from theme.conf
+    // Re-inits the colour pairs from kAwesomeThemes[config_.awesome_theme] without
+    // rebuilding windows (truecolor via init_color, or nearest-ANSI-16 fallback).
+    // Idempotent; safe to call repeatedly (F8 cycle, Ctrl+T into Awesome).
+    void applyAwesomeTheme();
 };

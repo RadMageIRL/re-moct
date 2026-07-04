@@ -3899,16 +3899,21 @@ void UIManager::handleInput(int ch) {
             break;
 #endif
         case 7:  // Ctrl+G — Last.fm login (stateful: request token, then exchange)
-            if (config_.lastfm_key.empty() || config_.lastfm_secret.empty()) {
+            if (!config_.lastfm_session.empty()) {
+                // Already logged in — report it, mirroring ^B. (Re-auth = clear
+                // lastfm-session in the conf, same convention as ListenBrainz.)
+                showTrackToast("Last.fm: logged in as " + config_.lastfm_user, "", "");
+            } else if (config_.lastfm_key.empty() || config_.lastfm_secret.empty()) {
                 openInputBar(InputMode::LastfmKey, "");   // first-time: prompt in-app
             } else if (config_.lastfm_pending.empty()) {
                 sclog("ctrl+G: begin auth");
                 lastfmBeginAuth();
             } else {
                 std::string sk, user;
+                int err = 0;
                 bool ok = LastFm::getSession(config_.lastfm_key, config_.lastfm_secret,
-                                             config_.lastfm_pending, sk, user);
-                sclog("ctrl+G: getSession ok=%d user=%s", (int)ok, user.c_str());
+                                             config_.lastfm_pending, sk, user, &err);
+                sclog("ctrl+G: getSession ok=%d err=%d user=%s", (int)ok, err, user.c_str());
                 if (ok) {
                     config_.lastfm_session = sk;
                     config_.lastfm_user    = user;
@@ -3916,8 +3921,22 @@ void UIManager::handleInput(int ch) {
                     config_.save();
                     lf_poll_active_.store(false);   // stop any background poll
                     showTrackToast("Last.fm: logged in as " + user, "", "");
+                } else if (err == 14) {
+                    // Token valid but not authorized yet — keep it; re-arm the
+                    // auto-poll so clicking Allow still completes hands-free.
+                    startLastfmPoll(config_.lastfm_pending);
+                    showTrackToast("Last.fm: approve in browser - finishes automatically", "", "");
+                } else if (err != 0) {
+                    // Definitive API rejection (15 expired / 4 invalid / other):
+                    // the pending token can never succeed — drop it and start a
+                    // fresh auth right away instead of looping on a dead token.
+                    config_.lastfm_pending.clear();
+                    config_.save();
+                    sclog("ctrl+G: pending token dead (err=%d), restarting auth", err);
+                    lastfmBeginAuth();
                 } else {
-                    showTrackToast("Last.fm: auth failed - press Ctrl+G to retry", "", "");
+                    // Transport failure — token may still be good, keep it.
+                    showTrackToast("Last.fm: network error - press Ctrl+G to retry", "", "");
                 }
             }
             break;

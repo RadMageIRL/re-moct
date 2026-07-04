@@ -14,9 +14,13 @@ public:
     static bool requestToken(const std::string& api_key, const std::string& secret,
                              std::string& token_out, std::string& authorize_url_out);
     // Step 2: after the user authorizes, exchange the token for a session key.
+    // On failure, *error_out (if given) gets the Last.fm API error code
+    // (14 = token not yet authorized, 15 = token expired, 4 = invalid token),
+    // or 0 when the failure was transport-level (no parseable API response).
     static bool getSession(const std::string& api_key, const std::string& secret,
                            const std::string& token,
-                           std::string& session_key_out, std::string& username_out);
+                           std::string& session_key_out, std::string& username_out,
+                           int* error_out = nullptr);
 
     // ── Scrobbling (wired into playback next step) ──
     static bool updateNowPlaying(const std::string& api_key, const std::string& secret,

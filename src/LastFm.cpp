@@ -136,7 +136,9 @@ bool LastFm::requestToken(const std::string& api_key, const std::string& secret,
 
 bool LastFm::getSession(const std::string& api_key, const std::string& secret,
                         const std::string& token,
-                        std::string& session_key_out, std::string& username_out) {
+                        std::string& session_key_out, std::string& username_out,
+                        int* error_out) {
+    if (error_out) *error_out = 0;   // 0 = transport-level failure (or success)
     Params p = { {"api_key", api_key}, {"method", "auth.getSession"}, {"token", token} };
     std::string sig = sign(p, secret);
     std::string url = std::string("https://") + kHost + kPath
@@ -147,7 +149,10 @@ bool LastFm::getSession(const std::string& api_key, const std::string& secret,
     if (body.empty()) return false;
     try {
         auto j = nlohmann::json::parse(body);
-        if (!j.contains("session")) return false;
+        if (!j.contains("session")) {
+            if (error_out) *error_out = j.value("error", 0);
+            return false;
+        }
         session_key_out = j["session"].value("key",  std::string());
         username_out    = j["session"].value("name", std::string());
     } catch (...) { return false; }

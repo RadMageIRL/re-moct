@@ -513,7 +513,16 @@ void UIManager::run() {
             flushPendingSeek();
         updateScrobbler();
         updateBookProgress();
-#ifdef _WIN32
+        // Async stream connect/fail confirmation toasts. Un-gated at slice 5:
+        // this was #ifdef _WIN32 slice-1 scaffolding from when notify was a
+        // Linux no-op. Streams are ported (slices 2/3) and every dep here is
+        // portable — takeStreamConnected/Failed are plain atomics, stationLabel/
+        // streamUrl already run on Linux via drawProgress. Windows is a
+        // preprocessed non-event (the block already compiled under _WIN32); this
+        // only ADDS the toasts to the Linux build. The file-track toast below
+        // deliberately skips streams (curIsStream), so these own stream toasts —
+        // no double toast. (Dos-found closing slice 5: "Streaming"/"FAILED"
+        // toasts were dead on Linux — same class as 4f0b240 / 91caf7a.)
         if (audio_.takeStreamConnected()) {
             // Label from the URL actually streaming, not playlist_.current(): a
             // station launched from the override queue has no playlist row, so
@@ -523,7 +532,6 @@ void UIManager::run() {
         }
         if (audio_.takeStreamFailed())
             showTrackToast("Radio stream connect FAILED", "", "");
-#endif
 
         // Force periodic resize check and redraw every ~80ms
         static int resize_poll = 0;

@@ -37,15 +37,22 @@ inline std::wstring utf8_to_wide(const std::string& s) {
 #endif
 
 // ─── CD track path detection ──────────────────────────────────────────────────
-// Synthetic CD path format: "<letter>:CD Track NN" (e.g. "F:CD Track 01").
-// The tag is anchored at index 2 and the suffix must be digits only, so a real
-// Windows path that merely contains the substring — e.g.
-// "D:\Music\Best CD Tracks\01.flac" — never matches.
+// Synthetic CD path format: "<spec>:CD Track NN" — "F:CD Track 01" on Windows
+// (single drive letter), "sr0:CD Track 01" on Linux (SG_IO device, slice 6).
+// <spec> is the drive key: 1+ chars, no ':'. The "CD Track " tag is anchored
+// right after the first colon and the suffix must be digits only, so a real path
+// that merely contains the substring — e.g. "D:\Music\Best CD Tracks\01.flac" —
+// never matches. Generalizing from the old index-1 colon (colon-delimited spec)
+// is behavior-identical for every Windows single-char drive.
 inline bool isCDTrackPath(const std::string& p) {
-    if (p.size() < 12 || p[1] != ':') return false;
-    if (p.compare(2, 9, "CD Track ") != 0) return false;   // must start at index 2
-    for (size_t i = 11; i < p.size(); ++i)
-        if (p[i] < '0' || p[i] > '9') return false;         // digits-only track number
+    auto colon = p.find(':');
+    if (colon == std::string::npos || colon == 0) return false;  // need a non-empty spec
+    size_t tag = colon + 1;
+    if (p.compare(tag, 9, "CD Track ") != 0) return false;       // tag right after ':'
+    size_t digits = tag + 9;
+    if (digits >= p.size()) return false;                        // need >= 1 digit
+    for (size_t i = digits; i < p.size(); ++i)
+        if (p[i] < '0' || p[i] > '9') return false;              // digits-only track number
     return true;
 }
 
@@ -64,15 +71,17 @@ inline bool isStreamPath(const std::string& p) {
 // substring (and std::terminate when that happens on a worker thread).
 inline int cdTrackNumber(const std::string& p) {
     if (!isCDTrackPath(p)) return -1;
-    try { return std::stoi(p.substr(11)); }   // digits begin right after "CD Track "
+    auto pos = p.find("CD Track ");
+    try { return std::stoi(p.substr(pos + 9)); }   // digits begin right after "CD Track "
     catch (...) { return -1; }
 }
 
-// Parse drive letter and track number from a CD path
-// Returns false if not a valid CD path
+// Parse drive spec ("D" on Windows, "sr0" on Linux) and track number from a CD
+// path. Returns false if not a valid CD path. (Colon-delimited spec — identical
+// to the old single-char parse for every Windows drive letter.)
 inline bool parseCDPath(const std::string& p, std::string& drive, int& track_num) {
     if (!isCDTrackPath(p)) return false;
-    drive = p.substr(0, 1);
+    drive = p.substr(0, p.find(':'));
     auto pos = p.find("CD Track ");
     try { track_num = std::stoi(p.substr(pos + 9)); }
     catch (...) { return false; }

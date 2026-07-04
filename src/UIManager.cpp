@@ -625,9 +625,9 @@ void UIManager::run() {
             }
         }
 
-#ifdef _WIN32
         // CD media check — only poll when nothing else is playing
         // Skip entirely during file playback: drive may sleep, that's fine
+        // (slice 6: common — the CD path is live on Linux via SG_IO too).
         if (!cd_drive_letter_.empty() && !audio_.cdMode()
             && audio_.state() == PlaybackState::Stopped) {
             ++cd_poll_ticks_;
@@ -685,10 +685,8 @@ void UIManager::run() {
             pl_scroll_ = 0;
             redraw_needed_.store(true);
         }
-#endif
         if (playlist_.drainPending())
             redraw_needed_.store(true);
-#ifdef _WIN32
         // Clear MB error message after ~5 seconds (62 ticks * 80ms)
         static int mb_err_ticks = 0;
         {
@@ -734,7 +732,6 @@ void UIManager::run() {
         } else if (cd_ripper_.isActive()) {
             rip_msg_ticks_ = 0;
         }
-#endif
 #ifndef _WIN32
         // Expire the toast-fallback status line (same cadence as rip_status_).
         if (!status_msg_.empty() && ++status_msg_ticks_ > 60) {
@@ -830,24 +827,21 @@ void UIManager::run() {
             redraw_needed_.store(false);
         } else
         if (redraw_needed_.load()) {
-#ifdef _WIN32
+            // slice 6: overlay dispatch is common — RipConfirm is live on Linux
+            // (^Y rip). MBSearch draw/input handlers are portable too; the overlay
+            // just never opens on Linux because ^F (case 6) stays gated.
             if (ui_overlay_ != UIOverlay::None) {
                 if (ui_overlay_ == UIOverlay::RipConfirm) drawRipConfirm();
                 else if (ui_overlay_ == UIOverlay::MBSearch) drawMBSearch();
                 redraw_needed_.store(false);
             } else {
-#endif
             drawAll();
             redraw_needed_.store(false);
-#ifdef _WIN32
             }
-#endif
         } else {
-#ifdef _WIN32
             if (ui_overlay_ != UIOverlay::None) {
                 // No change — modal stays on screen, do nothing
             } else {
-#endif
             drawTitleBar();
             drawCwd();
             drawProgress();
@@ -859,9 +853,7 @@ void UIManager::run() {
             wnoutrefresh(win_cwd_);
             wnoutrefresh(win_progress_);
             doupdate();
-#ifdef _WIN32
             }
-#endif
         }
 
         if (ch != ERR) {
@@ -987,8 +979,7 @@ void UIManager::drawAll() {
     doupdate();
 }
 
-#ifdef _WIN32
-void UIManager::drawRipConfirm() {
+void UIManager::drawRipConfirm() {   // slice 6: common (ncurses + portable CDSource)
     const int BOX_W = 68;
     const int BOX_H = 15;
     int y0 = (screen_rows_ - BOX_H) / 2;
@@ -1058,7 +1049,6 @@ void UIManager::drawRipConfirm() {
     wrefresh(w);
     delwin(w);
 }
-#endif
 
 
 // Apply MusicBrainz/Discogs track titles to the current CD playlist. UI THREAD
@@ -1178,7 +1168,9 @@ void UIManager::drawTitleBar() {
     wattron(win_title_, COLOR_PAIR(CP_TITLE) | A_BOLD);
     const auto& track = audio_.currentTrack();
     std::string np;
-#ifdef _WIN32
+    // slice 6: the CD now-playing label is live on Linux. The streamMode branch
+    // below stays Windows-gated — Linux streaming top-bar behavior is unchanged
+    // (a separate pre-existing gap, deliberately out of this CD slice).
     if (audio_.cdMode() && audio_.cdCurrentTrack() > 0) {
         int t = audio_.cdCurrentTrack();
         // Check if MB has populated the track name in the playlist
@@ -1193,7 +1185,9 @@ void UIManager::drawTitleBar() {
                + " [" + cd_drive_letter_ + ":]";
         else
             np = cd_title + " [" + cd_drive_letter_ + ":]";
-    } else if (audio_.streamMode()) {
+    } else
+#ifdef _WIN32
+    if (audio_.streamMode()) {
         // Live stream: show the station identity (its RADIO: label) so the top
         // line reflects the playing station, not the stale last-file track held
         // in currentTrack(). The song itself (ICY/HLS now-playing) stays on the
@@ -1216,11 +1210,9 @@ void UIManager::drawTitleBar() {
         if (ci >= 0) np += "  |  " + current_chapters_[(size_t)ci].title;
     }
     std::string badge;
-#ifdef _WIN32
     if (audio_.cdMode()) {
         badge = audio_.cdSource().paused() ? "| " : (audio_.cdCurrentTrack() > 0 ? "> " : "  ");
     } else
-#endif
     switch (audio_.state()) {
         case PlaybackState::Playing: badge = "> "; break;
         case PlaybackState::Paused:  badge = "| "; break;
@@ -1245,7 +1237,6 @@ void UIManager::drawTitleBar() {
         modes += spdbuf;
     }
     if (audio_.muted())      modes += " [MUTE]";
-#ifdef _WIN32
     if (audio_.cdMode())     modes += " [CD]";
     if (mb_fetching_.load())  modes += " [MB...]";
     else {
@@ -1253,7 +1244,6 @@ void UIManager::drawTitleBar() {
         if (!mb_album_.empty() && audio_.cdMode())
             modes += " [" + mb_album_ + "]";
     }
-#endif
     if (sleep_minutes_ > 0) {
         auto elapsed = std::chrono::duration_cast<std::chrono::minutes>(
             std::chrono::steady_clock::now() - sleep_start_).count();
@@ -2669,12 +2659,10 @@ void UIManager::drawProgress() {
     int cols; { int _r; getmaxyx(win_progress_, _r, cols); (void)_r; }
     double pos = audio_.positionSec();
     double dur = audio_.durationSec();
-#ifdef _WIN32
     if (audio_.cdMode()) {
         pos = (double)audio_.cdPositionSec();
         dur = (double)audio_.cdDurationSec();
     }
-#endif
     const auto& track = audio_.currentTrack();
 
     // Time string: elapsed / total  OR  -remaining / total
@@ -2687,7 +2675,6 @@ void UIManager::drawProgress() {
     }
 
     std::string meta;
-#ifdef _WIN32
     if (audio_.cdMode()) {
         meta = "1411 kbps  44.1 kHz  stereo  CD";
         // Live BPM is detected from the playback stream just like file mode; show
@@ -2697,7 +2684,6 @@ void UIManager::drawProgress() {
         else if (audio_.state() == PlaybackState::Playing)
             meta += "  bpm:...";
     } else {
-#endif
     if (track.bitrate_kbps > 0 || audio_.bitrateKbps() > 0) {
         int br = audio_.bitrateKbps();
         if (br <= 0) br = track.bitrate_kbps;
@@ -2719,9 +2705,7 @@ void UIManager::drawProgress() {
         if (!meta.empty()) meta += "  ";
         meta += "bpm:...";
     }
-#ifdef _WIN32
     }
-#endif
     {
         int vp = (int)(audio_.volume() * 100.0f + 0.5f);
         if (!meta.empty()) meta += "  ";
@@ -2830,7 +2814,10 @@ void UIManager::drawCmdLine() {
         return;
     }
 #endif
-#ifdef _WIN32
+    // slice 6: MB/rip status on the cmdline is common — CD lookup (^R) and rip
+    // (^Y) progress now render on Linux too. On Linux this runs AFTER the toast-
+    // fallback above; on Windows there is no toast-fallback block, so this is the
+    // first cmdline path exactly as before (behavior unchanged).
     std::string mb_status_snap, mb_error_snap;
     {
         std::lock_guard<std::mutex> lk(mb_mutex_);   // mb_status_/mb_error_ are written by worker threads
@@ -2868,7 +2855,6 @@ void UIManager::drawCmdLine() {
         wnoutrefresh(win_cmdline_);
         return;
     }
-#endif
 
     // Build a styled command bar: [key] desc pairs, cyan keys on dark bg
     // Only show the most-used commands; rest are in ? help
@@ -3407,7 +3393,8 @@ void UIManager::lastfmBeginAuth() {
 }
 
 void UIManager::handleInput(int ch) {
-#ifdef _WIN32
+    // slice 6: overlay input is common. The RipConfirm modal (^Y) is live on Linux;
+    // the MBSearch line is inert there (^F stays gated, so it never opens).
     if (ui_overlay_ == UIOverlay::MBSearch) { handleMBSearchInput(ch); return; }
     // ── Rip mode selection modal — intercepts all input when active ─────────
     if (ui_overlay_ == UIOverlay::RipConfirm) {
@@ -3445,7 +3432,6 @@ void UIManager::handleInput(int ch) {
             });
         return;
     }
-#endif
 
     // ? toggles help from anywhere
     // Don't let pane-toggle hotkeys fire while editing tags
@@ -3868,9 +3854,9 @@ void UIManager::handleInput(int ch) {
         // scrobbler-login and radio-URL keys from the Linux build (Dos-found:
         // ^U/^G/^B dead while ^N/^T/^L/^Q worked — a key probe proved the tty
         // delivers all of them; the gap was here). Gate each key on WHY:
-        // ^D = common since slice 4 (Unix-socket IIpc); ^F = the MBSearch
-        // overlay's draw/input handlers are still Windows-gated; ^Y/^R = CD
-        // (slice 6, and the RipConfirm modal handler is Windows-gated).
+        // ^D = common since slice 4 (Unix-socket IIpc); ^F = the MBSearch overlay
+        // ENTRY stays deferred (its draw/input handlers are portable, but the
+        // feature is Windows-only for now); ^Y/^R = common since slice 6 (SG_IO CD).
         case 4:  // Ctrl+D — toggle Discord Rich Presence
             config_.discord_presence = !config_.discord_presence;
             config_.save();
@@ -3945,8 +3931,7 @@ void UIManager::handleInput(int ch) {
             if (ui_overlay_ == UIOverlay::None)
                 openInputBar(InputMode::StreamURL, "");
             break;
-#ifdef _WIN32
-        case 25:  // Ctrl+Y — CD rip
+        case 25:  // Ctrl+Y — CD rip  (slice 6: common — CD path live on Linux)
             if (ui_overlay_ != UIOverlay::None) break;  // already showing modal
             if (audio_.cdMode() && !cd_ripper_.isActive()) {
                 const auto& cd = audio_.cdSource();
@@ -4001,7 +3986,6 @@ void UIManager::handleInput(int ch) {
                 // Not in CD mode — silently ignore
             }
             break;
-#endif
         case 'Q':
             // Toggle queue pane
             right_pane_ = (right_pane_ == RightPane::Queue)
@@ -4284,14 +4268,12 @@ void UIManager::handleInput(int ch) {
         case 'n': case 'N': {
             auto play_next = [&](const std::string& path, bool from_queue = false) {
                 if (!from_queue) pl_cursor_ = (int)playlist_.current();
-#ifdef _WIN32
                 std::string drive; int track_num;
                 if (parseCDPath(path, drive, track_num)) {
                     if (!audio_.cdMode()) audio_.openCD(drive);
                     audio_.playCDTrack(track_num);
                     return;
                 }
-#endif
                 if (audio_.cdMode()) audio_.closeCD();
                 audio_.play(path);
                 maybePreloadNext();
@@ -4301,7 +4283,6 @@ void UIManager::handleInput(int ch) {
                 if (auto qe = playlist_.queuePop(); qe.has_value()) {
                     audio_.clearNext();
                     const std::string& qpath = qe->path;
-#ifdef _WIN32
                     std::string drive; int track_num;
                     if (parseCDPath(qpath, drive, track_num)) {
                         if (!audio_.cdMode()) audio_.openCD(drive);
@@ -4309,7 +4290,6 @@ void UIManager::handleInput(int ch) {
                         // pl_cursor_ stays where it is — queue item has no playlist row
                         break;
                     }
-#endif
                     if (audio_.cdMode()) audio_.closeCD();
                     play_next(qpath, true);  // from_queue=true — don't move cursor
                 }
@@ -4322,14 +4302,12 @@ void UIManager::handleInput(int ch) {
         case 'p': case 'P': {
             auto play_prev = [&](const std::string& path) {
                 pl_cursor_ = (int)playlist_.current();
-#ifdef _WIN32
                 std::string drive; int track_num;
                 if (parseCDPath(path, drive, track_num)) {
                     if (!audio_.cdMode()) audio_.openCD(drive);
                     audio_.playCDTrack(track_num);
                     return;
                 }
-#endif
                 if (audio_.cdMode()) audio_.closeCD();
                 audio_.play(path);
             };
@@ -5108,14 +5086,12 @@ void UIManager::activateSelection() {
             playlist_.selectAt((size_t)pl_cursor_);
             if (auto p = playlist_.currentPath(); p.has_value()) {
                 const std::string& path = p.value();
-#ifdef _WIN32
                 std::string drive; int track_num;
                 if (parseCDPath(path, drive, track_num)) {
                     if (!audio_.cdMode()) audio_.openCD(drive);
                     audio_.playCDTrack(track_num);
                     return;
                 }
-#endif
                 // Regular file — exits CD mode automatically inside play()
                 audio_.play(path);
                 config_.addRecentTrack(path);
@@ -5128,6 +5104,24 @@ void UIManager::activateSelection() {
 // ─────────────────────────────────────────────────────────────────────────────
 // Drive helpers
 // ─────────────────────────────────────────────────────────────────────────────
+#ifndef _WIN32
+// /proc/mounts encodes space/tab/newline/backslash in mount paths as octal \NNN
+// escapes; decode them so e.g. "/media/dave/My\040USB" browses as "My USB".
+static std::string decodeMountOctal(const std::string& s) {
+    std::string out; out.reserve(s.size());
+    for (size_t i = 0; i < s.size(); ++i) {
+        if (s[i] == '\\' && i + 3 < s.size() &&
+            s[i+1] >= '0' && s[i+1] <= '7' &&
+            s[i+2] >= '0' && s[i+2] <= '7' &&
+            s[i+3] >= '0' && s[i+3] <= '7') {
+            out += (char)((s[i+1]-'0')*64 + (s[i+2]-'0')*8 + (s[i+3]-'0'));
+            i += 3;
+        } else out += s[i];
+    }
+    return out;
+}
+#endif
+
 std::vector<std::string> UIManager::listDrives() {
     std::vector<std::string> drives;
 #ifdef _WIN32
@@ -5137,6 +5131,42 @@ std::vector<std::string> UIManager::listDrives() {
             std::string d; d += (char)('A'+i); d += ":\\";
             drives.push_back(d);
         }
+#else
+    // Linux (slice 6): CD devices first (/dev/sr*), then browsable roots + the
+    // user's mount points. CD entries route to CD mode in activateDrive; every
+    // other entry is a directory the browser descends into. This is also the fix
+    // for the empty [Drive] menu on Linux — Windows enumerated drive letters here.
+    try {
+        std::vector<std::string> cds;
+        for (const auto& de : fs::directory_iterator("/dev")) {
+            std::string nm = de.path().filename().string();
+            if (nm.size() > 2 && nm.compare(0, 2, "sr") == 0 &&
+                std::all_of(nm.begin() + 2, nm.end(),
+                            [](unsigned char c){ return c >= '0' && c <= '9'; }))
+                cds.push_back(de.path().string());              // "/dev/sr0"
+        }
+        std::sort(cds.begin(), cds.end());
+        drives.insert(drives.end(), cds.begin(), cds.end());
+    } catch (...) {}
+    // Filesystem root + home directory as browse starting points.
+    drives.push_back("/");
+    if (const char* h = std::getenv("HOME"); h && *h) drives.push_back(h);
+    // User / removable mount points from /proc/mounts (under /media, /run/media,
+    // /mnt) — where udisks / desktop environments mount USB sticks, discs, phones.
+    std::ifstream mounts("/proc/mounts");
+    std::string line;
+    while (std::getline(mounts, line)) {
+        // fields: device  mountpoint  fstype ...  (mountpoint is octal-escaped)
+        auto s1 = line.find(' ');
+        if (s1 == std::string::npos) continue;
+        auto s2 = line.find(' ', s1 + 1);
+        if (s2 == std::string::npos) continue;
+        std::string mp = decodeMountOctal(line.substr(s1 + 1, s2 - s1 - 1));
+        if (mp.rfind("/media/", 0) == 0 || mp.rfind("/run/media/", 0) == 0 ||
+            mp.rfind("/mnt/", 0) == 0)
+            if (std::find(drives.begin(), drives.end(), mp) == drives.end())
+                drives.push_back(mp);
+    }
 #endif
     return drives;
 }
@@ -5201,6 +5231,36 @@ void UIManager::activateDrive(const std::string& drive_entry) {
             return;
         }
         // Fall through to normal browse if CD open failed
+    }
+#else
+    // Linux (slice 6): a /dev/sr* entry is a CD drive → enter CD mode; anything
+    // else (root, mount point) is a directory → the fs::exists browse below.
+    if (drive_entry.rfind("/dev/sr", 0) == 0) {
+        // spec = device basename ("sr0"); CdIoSgIo maps it to /dev/sr0, and the
+        // same basename is the CD-path key ("sr0:CD Track NN") parseCDPath reads.
+        std::string spec = drive_entry.substr(5);           // strip "/dev/"
+        if (audio_.cdMode()) audio_.closeCD();
+        if (audio_.openCD(spec)) {
+            std::string prefix = spec + ":CD Track ";
+            playlist_.removeIf([&](const PlaylistEntry& e) {
+                return e.path.substr(0, prefix.size()) == prefix;
+            });
+            cd_drive_letter_ = spec;
+            cd_poll_ticks_   = 0;
+            cd_fail_count_   = 0;
+            playlist_.clear();
+            for (const auto& t : audio_.cdTracks()) {
+                std::string title = std::string("CD Track ") +
+                                    (t.number < 10 ? "0" : "") +
+                                    std::to_string(t.number);
+                playlist_.addCDTrack(spec + ":" + title, title, t.duration_sec);
+            }
+            pl_cursor_ = 0; pl_scroll_ = 0;
+            last_playlist_current_for_sync_ = 0;
+            right_pane_ = RightPane::Playlist;
+            return;
+        }
+        return;   // CD open failed — don't try to browse a device node as a dir
     }
 #endif
     if (fs::exists(drive_entry)) {

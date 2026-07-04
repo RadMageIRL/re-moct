@@ -149,8 +149,29 @@ drives** — so this un-gate also makes the Linux file browser navigable at all.
   Linux the moment `activateDrive` can enter CD mode. Any lingering `#ifdef _WIN32`
   on those cases removed per-case with a reason (the slice-2/4/5 sweep discipline).
 
-Windows path stays byte-identical — verified via the preprocessed-TU diff
-(slice-4 line-layout lesson: delete only directive lines, never re-wrap).
+**Actual scope (found at implementation — larger than the ratified framing):**
+the ENTIRE CD UI was blanket `#ifdef _WIN32`-gated as "CD off on Linux yet"
+scaffolding, not just drive discovery + ^Y/^R. Making the seam reachable meant
+un-gating all of it (the "whole-body gates outlive their era" lesson at scale):
+the CD media/eject poll, MB/rip-status poll, overlay draw dispatch, `drawRipConfirm`,
+the RipConfirm input modal, now-playing CD label + badge + `[CD]`/`[MB]` modes,
+progress CD pos/dur + meta, the **cmdline rip/MB status** (so rip progress renders
+on Linux), ^Y/^R, and the n/p/queue/select CD-playback routing. Every un-gated
+block is portable (ncurses + already-portable CDSource/CDRipper/MBLookup); on
+Windows they emit identical tokens, so **the un-gates alone are a Windows
+preprocessed-TU non-event.** Kept gated: the Ctrl+F/MBSearch *entry* (roadmap
+deferral — its draw/input handlers were already common), the streaming top-bar
+label (a pre-existing Linux gap, out of scope), and the 4 genuine Windows-API
+calls (`GetLogicalDrives`, `GetDriveTypeW`×2, `GetFileAttributesW`).
+
+**CD-path generalization (a Windows-token change, behavior-identical):** CD track
+paths are `"sr0:CD Track NN"` on Linux, but `parseCDPath`/`cdTrackNumber`/
+`isCDTrackPath` (`include/StringUtils.h`) hardcoded a single-char drive
+(`substr(0,1)`, index-11). Generalized to colon-delimited specs — provably
+identical for every Windows single-char drive (`"D:…"` → `drive="D"`), correct for
+`"sr0:…"`. This is the ONE change that alters Windows tokens, so the Windows
+regression bar shifts from "preprocessed-TU non-event" to **16/16 ctest + a real
+Windows CD rip smoke test** (a stronger check for a parseCDPath regression anyway).
 
 ## 6. Wiring
 

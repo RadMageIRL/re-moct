@@ -3824,7 +3824,13 @@ void UIManager::handleInput(int ch) {
     switch (ch) {
         case 17:  // Ctrl+Q — quit
             audio_.stop(); running_ = false; break;
-#ifdef _WIN32
+        // Ctrl+A / Ctrl+K un-gated for Linux (slice-5 follow-up, Dos-found: both
+        // keys dead on Linux — the whole case was compiled out, not the tty).
+        // Both are portable and depend on NO unported subsystem: IHeartDeepLog is
+        // portable since slice 1; the digital(HLS)/raw(ICY) stream paths are both
+        // ported (slices 2/3). Unlike ^F/^Y/^R (overlay/CD still Windows-gated),
+        // these had no reason to stay gated — a missed un-gate, same class as
+        // b2abb12.
         case 1:  // Ctrl+A — toggle deep-analysis iHeart capture log (diagnostic; not persisted)
         {
             bool on = IHeartDeepLog::toggle();
@@ -3832,8 +3838,6 @@ void UIManager::handleInput(int ch) {
             else    showTrackToast("Deep log: OFF", "", "");
         }
             break;
-#endif
-#ifdef _WIN32
         case 11:  // Ctrl+K — toggle iHeart stream mode: digital (web player) vs raw broadcast
             config_.prefer_digital_stream = !config_.prefer_digital_stream;
             config_.save();
@@ -3844,25 +3848,20 @@ void UIManager::handleInput(int ch) {
             if (audio_.streamMode())                 // reconnect now so it takes effect
                 audio_.beginStream(audio_.streamUrl());
             break;
-#endif
         case 20:  // Ctrl+T — toggle Classic / Awesome theme
             config_.awesome_mode = !config_.awesome_mode;
             config_.save();
             resizeWindows();        // rebuild panes with theme-aware geometry +
             redraw_needed_.store(true);   // full shrink-safe screen wipe
-#ifdef _WIN32
             showTrackToast(config_.awesome_mode ? "Theme: Awesome"
                                                : "Theme: Classic", "", "");
-#endif
             break;
         case 14:  // Ctrl+N — toggle Nerd Font title icons (needs a Nerd Font)
             config_.nerd_icons = !config_.nerd_icons;
             config_.save();
             redraw_needed_.store(true);
-#ifdef _WIN32
             showTrackToast(config_.nerd_icons ? "Nerd icons: ON (needs Nerd Font)"
                                               : "Nerd icons: OFF", "", "");
-#endif
             break;
         // Per-case Windows gates below (slice-2 fix): a single #ifdef here
         // used to span ^D/^B/^F/^G/^U/^Y/^R, silently deleting the portable

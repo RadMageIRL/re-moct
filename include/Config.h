@@ -43,6 +43,13 @@ struct DigiConfig {
     // Nerd Font pane-title icons (Ctrl+N). Requires a Nerd Font terminal font.
     bool  nerd_icons = false;
 
+    // Windows PDCursesMod wingui build ONLY: the GDI window owns its font (unlike
+    // a terminal, where the font is the terminal's). This names the face used, so
+    // box-drawing corners + viz blocks + Nerd icons render. Empty => the built-in
+    // default ("JetBrainsMono NFM"). Any .ttf dropped in <exeDir>/fonts/ is loaded
+    // process-privately at startup, so a bundled font need not be installed.
+    std::string wingui_font;
+
     // Bookmarks: list of saved directory paths
     std::vector<std::string> bookmarks;
 

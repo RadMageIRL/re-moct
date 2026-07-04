@@ -9,6 +9,7 @@
 
 #include "UIManager.h"
 #include "CoverArt.h"
+#include "PortUtil.h"   // port::exeDir — locate a bundled wingui font beside the exe
 #ifdef _WIN32
 #include <shellapi.h>   // ShellExecuteA for Last.fm browser auth
 #else
@@ -72,6 +73,41 @@ static void sclog(const char* fmt, ...) {
 
 namespace fs = std::filesystem;
 
+#ifdef PDCURSES
+// wingui global (pdcdisp.c), UNICODE build => wchar_t[128]. Declared at global
+// scope: an extern "C" inside an anonymous namespace is a linkage contradiction.
+extern "C" TCHAR PDC_font_name[];
+
+namespace {
+// PDCursesMod wingui owns its GDI font (unlike a terminal, where the font is the
+// terminal's). Point it at a glyph-complete face so box-drawing corners (rounded
+// ╭╮╰╯), viz blocks ▁▂▇█ and Nerd icons render instead of tofu. MUST run BEFORE
+// initscr() - wingui measures the font while opening the screen. Any .ttf/.otf in
+// <exeDir>/fonts/ is added PROCESS-PRIVATE (FR_PRIVATE), so a bundled font need
+// not be installed system-wide ("runs anywhere"). The face is config-overridable
+// (config_.wingui_font); default is a Mono Nerd Font.
+void initWinguiFont(const std::string& configured_face) {
+    std::error_code ec;
+    fs::path fdir = fs::path(port::exeDir()) / "fonts";
+    if (fs::is_directory(fdir, ec)) {
+        for (const auto& e : fs::directory_iterator(fdir, ec)) {
+            const auto ext = e.path().extension();
+            if (ext == ".ttf" || ext == ".otf" || ext == ".TTF" || ext == ".OTF")
+                AddFontResourceExW(e.path().wstring().c_str(), FR_PRIVATE, nullptr);
+        }
+    }
+    std::wstring face;
+    if (!configured_face.empty()) {
+        int n = MultiByteToWideChar(CP_UTF8, 0, configured_face.c_str(), -1, nullptr, 0);
+        if (n > 1) { face.resize(n - 1);
+            MultiByteToWideChar(CP_UTF8, 0, configured_face.c_str(), -1, face.data(), n); }
+    }
+    if (face.empty()) face = L"JetBrainsMono NFM";   // Mono Nerd Font: single-cell glyphs
+    if (face.size() < 128) wcscpy(PDC_font_name, face.c_str());
+}
+} // namespace
+#endif
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Construction
 // ─────────────────────────────────────────────────────────────────────────────
@@ -81,6 +117,10 @@ UIManager::UIManager(PlaylistManager& playlist, AudioManager& audio,
     : notify_(notify ? notify : &core::notifier()),
       playlist_(playlist), audio_(audio), config_(config)
 {
+#ifdef PDCURSES
+    // wingui measures its font during initscr(), so choose the face FIRST.
+    initWinguiFont(config_.wingui_font);
+#endif
     if (!initscr()) throw std::runtime_error("initscr() failed");
 #ifdef PDCURSES
     // PDCursesMod wingui (Option C): the GDI port opens its own window - give it
@@ -168,7 +208,18 @@ UIManager::~UIManager() {
 }
 
 void UIManager::resizeWindows() {
-#ifdef _WIN32
+#if defined(REMOCT_PDCURSES)
+    // PDCursesMod wingui draws its OWN GDI window - there is NO console, so the
+    // GetConsoleWindow/CONOUT$ measuring used by the ncursesw-on-console build
+    // (below) reports the wrong geometry here and would drive resize_term to a
+    // size that mismatches the actual window: no reflow, plus an intermittent
+    // crash from drawing into a stale-sized cell buffer. wingui has already
+    // stored the new window size (PDC_n_rows/cols) and queued KEY_RESIZE;
+    // resize_term(0, 0) adopts that pending size and refreshes LINES/COLS/stdscr
+    // in one call (the canonical PDCurses idiom - its own getch.c does the same).
+    resize_term(0, 0);
+    getmaxyx(stdscr, screen_rows_, screen_cols_);
+#elif defined(_WIN32)
     {
         int new_cols = screen_cols_, new_rows = screen_rows_;
         // Try GetConsoleWindow pixel method first
@@ -201,11 +252,11 @@ void UIManager::resizeWindows() {
         if (new_cols > 0) screen_cols_ = new_cols;
         if (new_rows > 0) screen_rows_ = new_rows;
     }
+    resize_term(screen_rows_, screen_cols_);
 #else
     getmaxyx(stdscr, screen_rows_, screen_cols_);
-#endif
-
     resize_term(screen_rows_, screen_cols_);
+#endif
     destroyWindows();
 
     // Physically blank every cell on stdscr — critical when shrinking

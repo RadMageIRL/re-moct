@@ -16,6 +16,16 @@ if(WIN32)
     list(APPEND CMAKE_PREFIX_PATH "${MSYS2_PREFIX}")
 endif()
 
+# ── Phase 0 static-link probe (experimental/win-pdcurses) ──────────────────
+# Toggle with -DREMOCT_STATIC_PROBE=ON. Prefers static .a archives over the
+# MSYS2 import stubs (.dll.a) so curses + codecs + GCC runtime fold into the
+# exe. OFF by default -> the normal dynamic build is completely unchanged.
+option(REMOCT_STATIC_PROBE "Prefer static archives + static libgcc/stdc++ (Windows single-exe probe)" OFF)
+if(WIN32 AND REMOCT_STATIC_PROBE)
+    set(CMAKE_FIND_LIBRARY_SUFFIXES ".a;.dll.a")
+    message(STATUS "STATIC PROBE: preferring .a archives over .dll.a import stubs")
+endif()
+
 # ── Sources ────────────────────────────────────────────────────────────────
 set(REMOCT_SOURCES
     src/main.cpp
@@ -198,6 +208,21 @@ target_link_libraries(remoct PRIVATE
 )
 if(UNIX)
     target_link_libraries(remoct PRIVATE CURL::libcurl)
+endif()
+
+# ── Phase 0 static-link probe: static runtime + explicit transitive deps ────
+if(WIN32 AND REMOCT_STATIC_PROBE)
+    target_link_options(remoct PRIVATE -static -static-libgcc -static-libstdc++)
+    # TagLib's headers default TAGLIB_EXPORT to __declspec(dllimport); without
+    # this define the objects reference __imp_ symbols the static libtag.a lacks
+    # (the C++ analog of the NCURSES_STATIC define already set above).
+    target_compile_definitions(remoct PRIVATE TAGLIB_STATIC)
+    # FLAC_API defaults to __declspec(dllimport) on Windows unless FLAC__NO_DLL
+    # is defined -> same __imp_ mismatch against the static libFLAC.a.
+    target_compile_definitions(remoct PRIVATE FLAC__NO_DLL)
+    # Static libFLAC needs libogg explicitly (the dynamic build pulled ogg in
+    # transitively via the FLAC DLL; a static .a exposes the dependency).
+    target_link_libraries(remoct PRIVATE "${MSYS2_PREFIX}/lib/libogg.a")
 endif()
 
 # ── Compiler warnings ──────────────────────────────────────────────────────

@@ -1,12 +1,24 @@
+# Build output
 build/
 cache/
 cache_art.jpg
-lib/miniaudio.h
 .vscode/
+
+# Compiled artifacts (sources are tracked; binaries are built, never committed)
 *.o
 *.a
 *.exe
+*.dll
+*.so
+*.pdb
+*.ilk
+
+# Runtime logs (curated reference rip logs live in docs/samples/, tracked)
 logs/
+
+# Release / dev-build staging (built by the release process, not tracked)
+binary-dev/
+
 # Local runtime config (holds real API keys) — NEVER track. The app writes
 # remoct.conf/theme.conf to cwd when the config dir isn't resolvable, so a
 # test/app run from the repo root can drop one here.

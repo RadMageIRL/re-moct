@@ -1,8 +1,0 @@
-[AccurateRip Metadata Manifest]
-DiscID1      : 00156eab
-DiscID2      : 00bd7aac
-CDDB/DiscID3 : 820dc10b
-Tracks       : 11
-Rip Date     : 2026-06-20
-Bin File     : 00156eab-00bd7aac-820dc10b.bin
-Payload Size : 784 bytes

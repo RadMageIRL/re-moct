@@ -1,12 +1,134 @@
+## 🚧 In Development (dev branch)
+
+Features being tested, not yet in a stable release:
+See current binary/exe in the binary-dev directory (need to install mingw-w64-ucrt-x86_64-fdk-aac in MSYS2, which wasn't part of RC1) source may be ahead of exe in binary-dev dir
+
+# What's New in This Branch (since v1.0.0-RC1)
+
+This dev branch adds a complete **internet-radio subsystem** and **Last.fm scrobbling** on top of the RC1 CD/File player/ripper. Everything below is initially tested against live streams, but is not yet frozen for release.
+
+## Nerd Fonts, Color/Theme and Rounded Borders with GAPS
+<img width="1533" height="766" alt="image" src="https://github.com/user-attachments/assets/0670d8d4-e6e5-40de-9937-d587a6183d3b" />
+
+## [Books] Audiobook and Chapters
+<img width="1530" height="761" alt="image" src="https://github.com/user-attachments/assets/a574f6e9-9653-4780-9cd7-862362d00cdf" />
+
+
+## Internet Radio Streaming
+
+Play HTTP/HTTPS audio streams directly in RE-MOCT, with the same keyboard-driven workflow as local files.
+
+- **MP3 and AAC/HE-AAC** stream decoding. HE-AAC (AAC+ / SBR) is fully supported via FDK-AAC, so low-bitrate stations that other players choke on work correctly.
+- Streams decode into the same lock-free audio path as CD/file playback - volume, balance, EQ, and the visualizer all apply.
+- Resilient producer: prebuffering, automatic reconnect with backoff, and graceful handling of dropped connections.
+- Output is normalized to 44.1 kHz / stereo; off-rate or mono stations are resampled transparently.
+
+## `[Radio]` Station Pane
+
+A dedicated radio view alongside the file browser.
+
+- Saved stations persist across sessions.
+- Add a stream by URL with **Ctrl+U**; remove a saved station with **d** or **Del**.
+- Stations restore with a clean `RADIO:` label after restart.
+
+## Station Discovery (radio-browser.info)
+
+Find stations from inside the app instead of hunting for URLs elsewhere.
+
+- Press **/** in the `[Radio]` pane to search the radio-browser.info directory.
+- Results appear inline, most-popular-first, with bitrate / codec / country shown.
+- Selecting a result plays it, saves it, and counts a courtesy "click" upstream.
+- Plays the resolved stream URL (playlists/redirects pre-resolved); falls through mirror servers if one is down.
+
+## Live Now-Playing (ICY Metadata)
+
+For streams that broadcast Shoutcast/Icecast metadata, the current song is shown live.
+
+- The bottom scrubber area - meaningless for a live stream - is repurposed to display the live `Artist – Title` with a `[LIVE]` indicator.
+- Metadata is de-interleaved out of the byte stream before decoding, shared cleanly by both the MP3 and AAC paths.
+- Stations without metadata fall back to a simple `[LIVE]` marker.
+
+## Last.fm Scrobbling
+
+Scrobble both local files and radio to Last.fm.
+
+- **One-time in-app setup:** press **Ctrl+G**, enter your API key and secret (stored in config), approve in the browser - authentication then **completes automatically** (no second keypress).
+- Scrobbles local files (from tags) and radio tracks (from ICY metadata).
+- Sends "now playing" on track start and scrobbles once the track passes Last.fm's threshold (>30s, played to 50% or 4 minutes).
+- All calls are MD5-signed via the OS crypto API. Scrobbling silently no-ops if you haven't logged in.
+
+## ListenBrainz Scrobbling
+- **One-time in-app setup:** press **Ctrl+B**, enter your API key and secret (stored in config), authentication then **completes automatically** (no second keypress).
+- Scrobbles local files (from tags) and radio tracks (from ICY metadata).
+- Sends "now playing" on track start and scrobbles once the track passes Last.fm's threshold (>30s, played to 50% or 4 minutes).
+
+# Themes (Colors)
+- Basic Theme support via theme.conf file
+  
+## Fixes
+
+- `RADIO:` labels survive a restart instead of reverting to the raw URL.
+- Last.fm auth no longer loops if the app is restarted mid-authorization (the in-flight token is persisted).
+- LogRotate keep 5 days worth of logs, rotate through
+- General Log formatting clean-up
+- Adjust playlist load behavior, account for [Radio]
+- De-dupe in playlist on loads
+- Remove UI freeze on Radio Stream Negotiation
+- Add text to UI indicating Radio Stream Negotiation in progress (and TOAST notification of same)
+- Fix empty .cue .m3u8 files on rip CD
+- Extend scrobbling to CDs (Once metadata is loaded from MB/Discog with Ctrl R or Ctrl F)
+- Logic to visually warn user if files missing from path on saved playlist load - Displays TOAST with mismatch count for same
+- Audibook playback chirp/fail on initial load
+- Improved IHeartRadio stream handling logic and metadata pass to TUI and Discord
+- Cleaned up some additional race issues and crossfade function/logic
+- Improve cover art fetch for iheartradio and extend to ice/shoutcast streams so art shows in Discord RPC (fetch via itunes if not in stream metadata)
+- Put CoverArt logic/routines in CoverArt.h/cpp for easy use/reference/maintainability
+- Cleaned up code so terminal renders real Unicode now instead of hacky workarounds with sanitizeDisplay
+
+## New Runtime Dependency
+
+AAC playback adds one bundled DLL: **`libfdk-aac-2.dll`** (Fraunhofer FDK AAC). Note its license is the Fraunhofer FDK AAC Codec License - it must be documented in `THIRD_PARTY-NOTICES.md` before release.
+
+## New Keys
+
+| Key | Action |
+| --- | --- |
+| `Ctrl+U` | Add / play a stream by URL |
+| `/` | Search radio-browser.info (in `[Radio]`) |
+| `d` / `Del` | Remove saved station (in `[Radio]`) |
+| `Ctrl+G` | Last.fm login |
+| `Ctrl+B` | Listenbrainz login |
+| `Ctrl+D` | Discord Presence |
+| `Ctrl+T` | Rounded borders and Gaps |
+| `Ctrl+N` | Nerd Fonts (if installed and profile in cmd/powershell) |
+| `Ctrl+A` | Deep log analysis mode |
+| `Ctrl+K` | Toggle Webplayer/RAW IHeartRadio mode |
+
+Build dependencies (pacman install)pacman -S \
+  mingw-w64-ucrt-x86_64-gcc \
+  mingw-w64-ucrt-x86_64-cmake \
+  mingw-w64-ucrt-x86_64-ninja \
+  mingw-w64-ucrt-x86_64-pkgconf \
+  mingw-w64-ucrt-x86_64-flac \
+  mingw-w64-ucrt-x86_64-lame \
+  mingw-w64-ucrt-x86_64-libebur128 \
+  mingw-w64-ucrt-x86_64-fdk-aac \
+  mingw-w64-ucrt-x86_64-ncurses \
+  mingw-w64-ucrt-x86_64-taglib
+
+Compile for DEV version or grab latest exe in binary-dev (need the dlls listed in this page)
+
+
+
 # RE-MOCT - Music On Console Terminal
 
 > A homage to MOC - keyboard-driven terminal CD player and ripper for Windows.
 
 ## Download
 
-**[⬇ RE-MOCT v1.0.0-RC1 — Windows x64](https://github.com/RadMageIRL/re-moct/releases/download/v1.0.0-RC1/re-moct-v1.0.0-RC1-win-x64.zip)** · [all releases](https://github.com/RadMageIRL/re-moct/releases)
+**[⬇ RE-MOCT v1.0.0-RC1 - Windows x64](https://github.com/RadMageIRL/re-moct/releases/download/v1.0.0-RC1/re-moct-v1.0.0-RC1-win-x64.zip)** · [all releases](https://github.com/RadMageIRL/re-moct/releases)
 
-> Release candidate. Extract and run `remoct.exe` — all DLLs included. Windows 10+.
+> Release candidate. Extract and run `remoct.exe` - all DLLs included. Windows 10+.
 
 📖 **[Documentation & Feature Guide](https://radmageirl.github.io/re-moct/)**
 
@@ -42,7 +164,7 @@ Real RE-MOCT logs from discs that trip up naïve rippers are in
 true track-1 LBA and still verifies all 12 tracks at AccurateRip v2, conf 200.
 
 ```
-  track[01] lba=182  rel=32        # normal is lba=150 — 32-frame pregap
+  track[01] lba=182  rel=32        # normal is lba=150 - 32-frame pregap
   t1_lba=182  leadout_rel=275790
   === Summary ===
   AR: 12 v2 + 0 v1 matched, 0 not found / 12 total
@@ -113,46 +235,46 @@ graph TD
  
 ### Verification &amp; metadata services
  
-- **[AccurateRip](https://www.accuraterip.com/)** (Spoon / Illustrate) — the AccurateRip
+- **[AccurateRip](https://www.accuraterip.com/)** (Spoon / Illustrate) - the AccurateRip
   verification database, used under non-commercial terms. Drive-offset table sourced
   from [accuraterip.com/driveoffsets.htm](https://www.accuraterip.com/driveoffsets.htm).
-- **[CUETools Database (CTDB)](http://db.cuetools.net/)** — secondary rip verification
+- **[CUETools Database (CTDB)](http://db.cuetools.net/)** - secondary rip verification
   via the CTDB lookup service.
-- **[MusicBrainz](https://musicbrainz.org/)** — open music metadata database; DiscID
+- **[MusicBrainz](https://musicbrainz.org/)** - open music metadata database; DiscID
   lookup and text search.
-- **[Cover Art Archive](https://coverartarchive.org/)** — release cover art, embedded
+- **[Cover Art Archive](https://coverartarchive.org/)** - release cover art, embedded
   into output files via TagLib.
 - AccurateRip CRC and disc-identifier algorithms, and the offset-finding CRC technique, are documented by Spoon (Illustrate / dBpoweramp). RE-MOCT implements them independently.
 ### Algorithm references
  
-- **[HydrogenAudio thread #97603](https://hydrogenaud.io/index.php?topic=97603)** — the
+- **[HydrogenAudio thread #97603](https://hydrogenaud.io/index.php?topic=97603)** - the
   canonical public description of the AccurateRip v1/v2 checksum; the primary source for
   the multiply-accumulate formula used here.
-- **[Leo Bogert — accuraterip-checksum](https://github.com/leo-bogert/accuraterip-checksum)**
-  (`accuraterip-checksum.c`, GPLv3) — a clean reference implementation of the per-track
+- **[Leo Bogert - accuraterip-checksum](https://github.com/leo-bogert/accuraterip-checksum)**
+  (`accuraterip-checksum.c`, GPLv3) - a clean reference implementation of the per-track
   CRC formula and the first/last-track 5-sector skip; consulted to validate the
   accumulation against an independent implementation.
 - **[whipper](https://github.com/whipper-team/whipper)** &amp;
-  **[CUETools](http://cue.tools/wiki/CUETools)** — reference implementations consulted
+  **[CUETools](http://cue.tools/wiki/CUETools)** - reference implementations consulted
   during AccurateRip research.
 - **[Blue Book (CD-Extra / CD Plus)](https://en.wikipedia.org/wiki/Blue_Book_(CD_standard))**
-  — the multi-session Enhanced-CD standard. Understanding the two-session layout
+  - the multi-session Enhanced-CD standard. Understanding the two-session layout
   (audio first, data second) was key to computing correct AccurateRip disc IDs for
-  Enhanced discs such as Goo Goo Dolls — *Gutterflower*.
+  Enhanced discs such as Goo Goo Dolls - *Gutterflower*.
   
 ### Libraries
  
 RE-MOCT links the following third-party libraries. See
 [`THIRD_PARTY-NOTICES.md`](THIRD_PARTY-NOTICES.md) for full license details.
  
-- **[libFLAC](https://xiph.org/flac/)** (Xiph.Org) — FLAC encoding. *BSD-3-Clause.*
-- **[LAME](https://lame.sourceforge.io/)** (`libmp3lame`) — MP3 encoding. *LGPL-2.1.*
-- **[TagLib](https://taglib.org/)** — audio metadata tagging. *LGPL-2.1 / MPL-1.1.*
-- **[libebur128](https://github.com/jiixyj/libebur128)** — EBU R128 / ReplayGain
+- **[libFLAC](https://xiph.org/flac/)** (Xiph.Org) - FLAC encoding. *BSD-3-Clause.*
+- **[LAME](https://lame.sourceforge.io/)** (`libmp3lame`) - MP3 encoding. *LGPL-2.1.*
+- **[TagLib](https://taglib.org/)** - audio metadata tagging. *LGPL-2.1 / MPL-1.1.*
+- **[libebur128](https://github.com/jiixyj/libebur128)** - EBU R128 / ReplayGain
   loudness measurement. *MIT.*
-- **[ncurses](https://invisible-island.net/ncurses/)** — terminal UI. *MIT-style (X11).*
-- **[miniaudio](https://miniaud.io/)** — audio playback. *Public domain (Unlicense) or MIT-0.*
-- **WinINet** (Microsoft Windows) — HTTP transport for database lookups. *Windows system API.*
+- **[ncurses](https://invisible-island.net/ncurses/)** - terminal UI. *MIT-style (X11).*
+- **[miniaudio](https://miniaud.io/)** - audio playback. *Public domain (Unlicense) or MIT-0.*
+- **WinINet** (Microsoft Windows) - HTTP transport for database lookups. *Windows system API.*
 ---
 
 ![License: MIT](https://img.shields.io/badge/license-MIT-green)

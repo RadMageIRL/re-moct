@@ -28,6 +28,8 @@ public:
 
     // Mutation
     std::size_t addTrack(const std::string& path);
+    std::size_t addStream(const std::string& url, const std::string& title);
+    static std::string streamLabel(const std::string& url);  // "RADIO: <name>" from a URL
     std::size_t addCDTrack(const std::string& fake_path,
                            const std::string& title, int duration_sec);
     template<typename Pred>
@@ -128,6 +130,9 @@ public:
     // Unified: detect format from extension (.m3u/.m3u8/.pls/.xspf)
     bool savePlaylist(const std::string& path) const;
     int  loadPlaylist(const std::string& path);
+    // Count of audio entries in the last load whose file was not found on disk
+    // (reset at the start of each loadPlaylist; ignores non-audio entries).
+    int  lastLoadMissing() const { return last_load_missing_; }
 
     // ── Play Queue ───────────────────────────────────────────────────────────
     // FIFO queue that overrides playlist order. Consumed one entry at a time.
@@ -146,6 +151,7 @@ public:
     }
 
     static bool isSupportedAudio(const std::string& path);
+    static bool isAudiobook(const std::string& path);   // .m4b (book container)
 
     // Background loader — non-blocking addDirectory
     void addDirectoryAsync(const std::string& dir_path);
@@ -165,6 +171,7 @@ private:
     std::size_t              shuffle_pos_ = 0;
 
     SortMode sort_mode_ = SortMode::None;
+    int last_load_missing_ = 0;   // see lastLoadMissing()
 
     void rebuildShuffleOrder();
     static void populateMetadata(PlaylistEntry& entry);

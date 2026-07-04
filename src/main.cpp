@@ -39,10 +39,6 @@ static void win32_console_init() {}
 static UIManager*    g_ui    = nullptr;
 static AudioManager* g_audio = nullptr;
 
-#ifndef _WIN32
-static void handle_sigwinch(int) { if (g_ui) g_ui->requestRedraw(); }
-#endif
-
 static void handle_sigsegv(int) {
     // Miniaudio decoder crashed on a corrupt MP3 frame.
     // Signal track end so the UI skips to next track.
@@ -71,6 +67,18 @@ int main(int argc, char* argv[]) {
         // Restore saved playlist
         for (const auto& path : config.playlist_paths)
             playlist.addTrack(path);
+        // Re-label restored radio entries with their persisted friendly names.
+        // addTrack derives a URL-based label ("RADIO: hls.m3u8"); the friendly
+        // name lives in config's name map. This mirrors UIManager::stationLabel's
+        // "RADIO: <name>" format so the playlist matches the [Radio] pane.
+        for (std::size_t i = 0; i < playlist.size(); ++i) {
+            const auto& e = playlist.at(i);
+            if (e.path.rfind("http://", 0) == 0 || e.path.rfind("https://", 0) == 0) {
+                std::string nm = config.radioStationName(e.path);
+                if (!nm.empty())
+                    playlist.setDisplayTitle(i, "RADIO: " + sanitizeForDisplay(nm));
+            }
+        }
         if (!config.playlist_paths.empty())
             playlist.selectAt(config.playlist_current);
 
@@ -81,7 +89,7 @@ int main(int argc, char* argv[]) {
                 playlist.next();
                 if (playlist.repeatMode() == RepeatMode::One) return;
                 if (auto peek = playlist.peekNext(); peek.has_value())
-                    if (!isCDTrackPath(peek.value()))
+                    if (!isCDTrackPath(peek.value()) && !isStreamPath(peek.value()))
                         audio.preloadNext(peek.value());
             }
             // If queue has items, leave playlist index where it is —
@@ -105,7 +113,7 @@ int main(int argc, char* argv[]) {
                 audio.play(p);
                 if (playlist.queueEmpty()) {
                     if (auto peek = playlist.peekNext(); peek.has_value())
-                        if (!isCDTrackPath(peek.value()))
+                        if (!isCDTrackPath(peek.value()) && !isStreamPath(peek.value()))
                             audio.preloadNext(peek.value());
                 }
             };
@@ -175,7 +183,8 @@ int main(int argc, char* argv[]) {
         // ── Preload next track ────────────────────────────────────────────
         if (playlist.repeatMode() != RepeatMode::One)
             if (auto peek = playlist.peekNext(); peek.has_value())
-                audio.preloadNext(peek.value());
+                if (!isCDTrackPath(peek.value()) && !isStreamPath(peek.value()))
+                    audio.preloadNext(peek.value());
 
         // ── Start UI ──────────────────────────────────────────────────────
         UIManager ui(playlist, audio, config,
@@ -184,9 +193,12 @@ int main(int argc, char* argv[]) {
         g_audio = &audio;
         std::signal(SIGSEGV, handle_sigsegv);
 
-#ifndef _WIN32
-        std::signal(SIGWINCH, handle_sigwinch);
-#endif
+        // NOTE deliberately NO custom SIGWINCH handler: ncursesw installs its
+        // own at initscr(), which is what turns a terminal resize into
+        // KEY_RESIZE through getch() — the resize path UIManager already
+        // handles (KEY_RESIZE → relayout). Installing ours DISPLACED that
+        // handler, so ncurses never learned the new size and redraws happened
+        // at the stale geometry (the Dos-found resize bug on the Debian VM).
 
         ui.run();
 

@@ -1,10 +1,13 @@
 #pragma once
-#ifdef _WIN32
 
-#define WIN32_LEAN_AND_MEAN
-#include <windows.h>
-#include <winioctl.h>   // CTL_CODE, DEVICE_TYPE etc — must come before ntddcdrm
-#include <ntddcdrm.h>   // IOCTL_CDROM_RAW_READ, RAW_READ_INFO, CDDA
+// Slice 8: device access goes through the core::ICdIo seam — this header is
+// platform-clean (no <windows.h>/<ntddcdrm.h>; AudioManager/UIManager and friends
+// no longer inherit Windows from this path).
+#include "core/ICdIo.h"
+#include "core/ISource.h"   // Phase 2 slice A: the internal Source interface
+
+#include <cstdint>
+#include <memory>
 #include <string>
 #include <vector>
 #include <thread>
@@ -13,44 +16,51 @@
 
 // ─── CD Track info ────────────────────────────────────────────────────────────
 struct CDTrack {
-    int    number;       // 1-based track number
-    DWORD  start_lba;    // logical block address of track start
-    DWORD  length_lba;   // length in sectors
-    int    duration_sec; // approximate duration
+    int      number;       // 1-based track number
+    uint32_t start_lba;    // logical block address of track start
+    uint32_t length_lba;   // length in sectors
+    int      duration_sec; // approximate duration
 };
 
 // ─── CDSource ─────────────────────────────────────────────────────────────────
-// Reads Red Book audio sectors from an optical drive via Win32 IOCTL,
+// Reads Red Book audio sectors from an optical drive via the core::ICdIo seam,
 // converts to float PCM, and feeds a ring buffer consumed by the audio callback.
 // Completely isolated from the existing ma_decoder path.
+//
+// Implements core::ISource (the playback-feed facet). The CD-specific surface —
+// open(drive)/playTrack (a disc is a CONTAINER of tracks), TOC, drive offset/
+// model, stopReader, media checks — deliberately stays concrete beside the
+// interface: CDRipper and UIManager consume it via AudioManager::cdSource().
 
-class CDSource {
+class CDSource : public core::ISource {
 public:
     static constexpr int    SECTOR_BYTES   = 2352;   // raw Red Book sector
     static constexpr int    SECTOR_SAMPLES = 588;    // 2352 / 4 (16-bit stereo)
     static constexpr int    SECTORS_PER_READ = 20;   // read chunk size
     static constexpr int    RING_SECTORS   = 200;    // ~3.4s buffer
 
-    CDSource() = default;
+    // Ctor injection (slice-6/7 pattern): tests pass a fake; nullptr = production
+    // default core::cdio(), resolved at open() (link-time bridge, no setCdio()).
+    explicit CDSource(core::ICdIo* io = nullptr) : io_(io) {}
     ~CDSource() { close(); }
 
     // Open drive (e.g. "D"). Returns false if no audio CD found.
     bool open(const std::string& drive_letter);
-    void close();
+    void close() override;
 
-    bool isOpen()  const { return hCD_ != INVALID_HANDLE_VALUE; }
+    bool isOpen()  const { return dev_ != nullptr; }
     bool isPlaying() const { return playing_.load(); }
 
     // TOC
     const std::vector<CDTrack>& tracks() const { return tracks_; }
     std::string driveLetter()    const { return drive_letter_; }
-    DWORD       fullLeadoutLba()   const { return full_leadout_lba_; }
-    const std::vector<DWORD>& dataTrackLbas() const { return data_track_lbas_; }
+    uint32_t    fullLeadoutLba()   const { return full_leadout_lba_; }
+    const std::vector<uint32_t>& dataTrackLbas() const { return data_track_lbas_; }
 
     // Returns sector offsets suitable for DiscID computation:
     // [track1_start, track2_start, ..., trackN_start, lead_out]
-    std::vector<DWORD> tocOffsets() const {
-        std::vector<DWORD> offs;
+    std::vector<uint32_t> tocOffsets() const {
+        std::vector<uint32_t> offs;
         offs.reserve(tracks_.size() + 1);
         for (const auto& t : tracks_) offs.push_back(t.start_lba);
         // Lead-out = last track start + length
@@ -63,7 +73,7 @@ public:
     bool playTrack(int track_number);
     void stop();
     void stopReader() {
-        // Stop reader thread only — leaves hCD_ open for ripping
+        // Stop reader thread only — leaves the device open for ripping
         reader_stop_.store(true);
         playing_.store(false);
         if (reader_thread_.joinable()) reader_thread_.join();
@@ -73,22 +83,18 @@ public:
     }
     void pause(bool p) { paused_.store(p); }
     bool paused() const { return paused_.load(); }
-    void seekTo(int seconds);
+    // Seek within the current track (double per core::ISource; the LBA math
+    // truncates to whole 1/75s sectors exactly as the old int form did).
+    // Returns false when nothing is playing.
+    bool seekTo(double seconds) override;
     bool mediaRemoved() const { return media_removed_.load(); }
     void clearMediaRemoved()  { media_removed_.store(false); }
     bool checkMedia() {
         // Non-blocking check — returns false if disc is gone/tray open
-        if (hCD_ == INVALID_HANDLE_VALUE) return false;
-        DWORD dummy = 0;
-        bool ok = DeviceIoControl(hCD_, IOCTL_CDROM_CHECK_VERIFY,
-                                  nullptr, 0, nullptr, 0, &dummy, nullptr) != 0;
+        if (!dev_) return false;
+        bool ok = dev_->mediaPresent();
         if (!ok) media_removed_.store(true);
         return ok;
-    }
-
-    // Called by CDRipper — reads raw sectors using the existing open drive handle
-    bool readSectorsForRip(DWORD lba, int count, uint8_t* buf) {
-        return readSectors(lba, count, buf);
     }
 
     // Drive read offset in samples (from AccurateRip offset database).
@@ -102,19 +108,27 @@ public:
     bool        driveOffsetKnown() const { return offset_known_; }
 
     // Called from audio callback — fills dst with float PCM frames.
-    uint32_t readFrames(float* dst, uint32_t frame_count);
+    uint32_t readFrames(float* dst, uint32_t frame_count) override;
 
-    int  currentTrack()   const { return current_track_.load(); }
-    int  positionSec()    const;
-    int  durationSec()    const;
+    // ── core::ISource (Phase 2 slice A) ─────────────────────────────────────
+    // Seekable, finite, device-backed. Position/duration are per current track,
+    // whole seconds widened to double per the interface.
+    core::SourceCaps caps() const override {
+        return { .seekable = true, .finite = true, .live = false };
+    }
+
+    int    currentTrack()   const { return current_track_.load(); }
+    double positionSec()    const override;
+    double durationSec()    const override;
 
 private:
-    HANDLE                  hCD_            = INVALID_HANDLE_VALUE;
+    core::ICdIo*                     io_  = nullptr;  // injected; nullptr = core::cdio()
+    std::unique_ptr<core::ICdDevice> dev_;
     std::string             drive_letter_;
     std::string             drive_model_;
     int                     drive_offset_samples_ = 0;
-    DWORD                   full_leadout_lba_     = 0;  // includes all sessions
-    std::vector<DWORD>      data_track_lbas_;              // data tracks for CDDB
+    uint32_t                full_leadout_lba_     = 0;  // includes all sessions
+    std::vector<uint32_t>   data_track_lbas_;              // data tracks for CDDB
     bool                    offset_known_         = false;
     std::vector<CDTrack>    tracks_;
 
@@ -124,8 +138,8 @@ private:
     std::atomic<bool>       reader_stop_    { false };
     std::atomic<bool>       media_removed_  { false };
     std::atomic<int>        current_track_  { 0 };
-    std::atomic<DWORD>      track_end_lba_  { 0 };
-    std::atomic<DWORD>      current_lba_    { 0 };
+    std::atomic<uint32_t>   track_end_lba_  { 0 };
+    std::atomic<uint32_t>   current_lba_    { 0 };
 
     // Ring buffer (raw 16-bit stereo samples, interleaved)
     static constexpr int RING_SIZE = SECTOR_SAMPLES * RING_SECTORS * 2;
@@ -137,9 +151,8 @@ private:
     std::thread             reader_thread_;
 
     void readerWorker();
-    bool readSectors(DWORD lba, int count, uint8_t* buf);
+    bool readSectors(uint32_t lba, int count, uint8_t* buf);
 
-    std::string queryDriveModel();
     static int  lookupDriveOffset(const std::string& model);
 
     int  ringAvailable() const;
@@ -147,4 +160,3 @@ private:
     int  ringRead(int16_t* dst, int samples);
 };
 
-#endif // _WIN32

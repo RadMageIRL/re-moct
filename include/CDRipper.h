@@ -1,10 +1,10 @@
 #pragma once
-#ifdef _WIN32
 
 #include "CDSource.h"
 #include "MBLookup.h"
 #include "StringUtils.h"
 #include "AudioManager.h"
+#include "core/ICdIo.h"   // device transport seam (slice 8) — no windows.h here
 
 #include <string>
 #include <vector>
@@ -13,6 +13,7 @@
 #include <functional>
 #include <filesystem>
 #include <cstdint>
+#include <memory>
 
 // libebur128 — needed for the ebur128_state* parameter on ripTrack, which hands
 // each kept track's integrated-loudness state back to the worker for true album-
@@ -67,7 +68,9 @@ class CDRipper {
 public:
     using ProgressCb = std::function<void(const RipProgress&)>;
 
-    CDRipper() = default;
+    // Ctor injection (slice-6/7 pattern): tests pass a fake; nullptr = production
+    // default core::cdio(), resolved in openDrive() (link-time bridge, no setCdio()).
+    explicit CDRipper(core::ICdIo* io = nullptr) : io_(io) {}
     ~CDRipper() { cancel(); }
 
     bool start(AudioManager&               audio,
@@ -84,6 +87,7 @@ public:
     static std::string buildOutputDir(const MBRelease& rel);
 
 private:
+    core::ICdIo*          io_ = nullptr;  // injected; nullptr = core::cdio()
     std::atomic<bool>     active_ { false };
     std::atomic<bool>     cancel_ { false };
     std::atomic<RipState> state_  { RipState::Idle };
@@ -95,13 +99,13 @@ private:
                 MBRelease            rel,
                 RipMode              mode,
                 ProgressCb           cb,
-                HANDLE               hCD,
+                std::unique_ptr<core::ICdDevice> dev,
                 int                  drive_offset,
                 std::string          drive_model,
-                DWORD                full_leadout_lba = 0,
-                std::vector<DWORD>   data_track_lbas = {});
+                uint32_t             full_leadout_lba = 0,
+                std::vector<uint32_t> data_track_lbas = {});
 
-    ARTrackResult ripTrack(HANDLE             hCD,
+    ARTrackResult ripTrack(core::ICdDevice&   dev,
                            const CDTrack&     track,
                            int                track_idx,
                            int                total_tracks,
@@ -132,8 +136,8 @@ private:
 
     // AccurateRip
     static uint32_t computeCDDB(const std::vector<CDTrack>& tracks,
-                                DWORD full_leadout_lba = 0,
-                                const std::vector<DWORD>& data_track_lbas = {});
+                                uint32_t full_leadout_lba = 0,
+                                const std::vector<uint32_t>& data_track_lbas = {});
 
     // Fetch AR binary, save .bin and manifest to ar_cache_dir.
     // Returns true even on 404 (disc not found); returns false on network error.
@@ -142,8 +146,8 @@ private:
                             const std::string&                                  ar_cache_dir,
                             std::vector<std::vector<std::pair<uint32_t,int>>>&  out_v1,
                             std::vector<std::vector<std::pair<uint32_t,int>>>&  out_v2,
-                            DWORD                                               full_leadout_lba = 0,
-                            const std::vector<DWORD>&                           data_track_lbas = {});
+                            uint32_t                                            full_leadout_lba = 0,
+                            const std::vector<uint32_t>&                        data_track_lbas = {});
 
     // CTDB (CUETools Database) — global CRC32 verification
     // Returns CTDB ID string and whether disc is verified
@@ -154,10 +158,10 @@ private:
                               std::string& out_status);
 
     // C2 probe
-    static bool probeC2(HANDLE hCD);
+    static bool probeC2(core::ICdDevice& dev);
 
     static std::string sanitizePath(const std::string& s);
-    static HANDLE      openDrive(const std::string& drive_letter);
+    // Non-static: resolves io_ (injected or core::cdio()) to open the device.
+    std::unique_ptr<core::ICdDevice> openDrive(const std::string& drive_letter);
 };
 
-#endif // _WIN32

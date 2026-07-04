@@ -4,6 +4,7 @@
 #include <fstream>
 #include <algorithm>
 #include <filesystem>
+#include <system_error>
 #include <ctime>
 
 #ifdef _WIN32
@@ -25,6 +26,22 @@ std::string DigiConfig::configPath() {
 #endif
     try { fs::create_directories(base); } catch (...) {}
     return base + "/remoct.conf";
+}
+
+std::string DigiConfig::themePath() {
+    // Same directory as remoct.conf; swap the filename. Mirrors the dir logic
+    // in configPath() rather than refactoring it, to keep this a surgical add.
+    std::string base;
+#ifdef _WIN32
+    char buf[MAX_PATH] = {};
+    DWORD len = GetEnvironmentVariableA("APPDATA", buf, MAX_PATH);
+    base = (len > 0 && len < MAX_PATH) ? std::string(buf) + "\\RE-MOCT" : ".";
+#else
+    const char* home = getenv("HOME");
+    base = home ? std::string(home) + "/.config/RE-MOCT" : ".";
+#endif
+    try { fs::create_directories(base); } catch (...) {}
+    return base + "/theme.conf";
 }
 
 void DigiConfig::addRecentTrack(const std::string& path) {
@@ -60,6 +77,76 @@ bool DigiConfig::isFav(const std::string& path) const {
     return std::find(fav_tracks.begin(), fav_tracks.end(), path) != fav_tracks.end();
 }
 
+void DigiConfig::addRadioStation(const std::string& url, const std::string& name) {
+    // Preserve an existing stored name when re-added without one (e.g. replaying a
+    // saved station), but let a non-empty name overwrite (rename). removeRadioStation
+    // clears the map entry, so capture the name to keep before removing.
+    std::string keep = name;
+    if (keep.empty()) {
+        auto it = radio_station_names.find(url);
+        if (it != radio_station_names.end()) keep = it->second;
+    }
+    removeRadioStation(url);
+    radio_stations.insert(radio_stations.begin(), url);
+    if (!keep.empty()) radio_station_names[url] = keep;
+    if ((int)radio_stations.size() > RADIO_MAX) {
+        // Prune names for any URLs dropped off the FIFO tail.
+        for (size_t i = (size_t)RADIO_MAX; i < radio_stations.size(); ++i)
+            radio_station_names.erase(radio_stations[i]);
+        radio_stations.resize((size_t)RADIO_MAX);
+    }
+}
+
+void DigiConfig::removeRadioStation(const std::string& url) {
+    radio_stations.erase(
+        std::remove(radio_stations.begin(), radio_stations.end(), url),
+        radio_stations.end());
+    radio_station_names.erase(url);
+}
+
+bool DigiConfig::isRadioStation(const std::string& url) const {
+    return std::find(radio_stations.begin(), radio_stations.end(), url) != radio_stations.end();
+}
+
+std::string DigiConfig::radioStationName(const std::string& url) const {
+    auto it = radio_station_names.find(url);
+    return it != radio_station_names.end() ? it->second : std::string();
+}
+
+void DigiConfig::addAudiobook(const std::string& path) {
+    if (path.empty() || isCDTrackPath(path)) return;
+    double keep = bookPos(path);                 // preserve resume across re-add
+    removeAudiobook(path);                        // dedup (also clears pos)
+    audiobooks.insert(audiobooks.begin(), path);
+    if (keep > 0) audiobook_pos[path] = keep;
+    if ((int)audiobooks.size() > BOOKS_MAX) {
+        for (size_t i = (size_t)BOOKS_MAX; i < audiobooks.size(); ++i)
+            audiobook_pos.erase(audiobooks[i]);
+        audiobooks.resize((size_t)BOOKS_MAX);
+    }
+}
+
+void DigiConfig::removeAudiobook(const std::string& path) {
+    audiobooks.erase(std::remove(audiobooks.begin(), audiobooks.end(), path),
+                     audiobooks.end());
+    audiobook_pos.erase(path);
+}
+
+bool DigiConfig::isSavedBook(const std::string& path) const {
+    return std::find(audiobooks.begin(), audiobooks.end(), path) != audiobooks.end();
+}
+
+void DigiConfig::setBookPos(const std::string& path, double sec) {
+    if (path.empty()) return;
+    if (sec < 0) sec = 0;
+    audiobook_pos[path] = sec;
+}
+
+double DigiConfig::bookPos(const std::string& path) const {
+    auto it = audiobook_pos.find(path);
+    return it != audiobook_pos.end() ? it->second : 0.0;
+}
+
 void DigiConfig::recordPlay(const std::string& path) {
     if (path.empty()) return;
     if (isCDTrackPath(path)) return;  // CD tracks are volatile — never record stats
@@ -74,8 +161,12 @@ void DigiConfig::load() {
     playlist_paths.clear();
     bookmarks.clear();
     fav_tracks.clear();
+    radio_stations.clear();
+    radio_station_names.clear();
     recent_tracks.clear();
     track_stats.clear();
+    audiobooks.clear();
+    audiobook_pos.clear();
 
     std::string line;
     while (std::getline(f, line)) {
@@ -93,6 +184,18 @@ void DigiConfig::load() {
         else if (key == "shuffle")          shuffle           = (val == "1");
         else if (key == "toast_enabled")    toast_enabled     = (val == "1");
         else if (key == "eq_enabled")       eq_enabled        = (val == "1");
+        else if (key == "discord_presence") discord_presence  = (val == "1");
+        else if (key == "awesome_mode")      awesome_mode       = (val == "1");
+        else if (key == "prefer_digital_stream") prefer_digital_stream = (val == "1");
+        else if (key == "iheart_probe_minted")   iheart_probe_minted   = (val == "1");
+        else if (key == "nerd_icons")         nerd_icons         = (val == "1");
+        else if (key == "lastfm-key")       lastfm_key        = val;
+        else if (key == "lastfm-secret")    lastfm_secret     = val;
+        else if (key == "lastfm-session")   lastfm_session    = val;
+        else if (key == "lastfm-user")      lastfm_user       = val;
+        else if (key == "lastfm-pending")   lastfm_pending    = val;
+        else if (key == "lb-token")          listenbrainz_token = val;
+        else if (key == "lb-user")           listenbrainz_user  = val;
         else if (key.substr(0,3) == "eq_" && key.size() == 4) {
             int b = key[3] - '0';
             if (b >= 0 && b <= 9) try { eq_gains[b] = std::stof(val); } catch (...) {}
@@ -103,9 +206,38 @@ void DigiConfig::load() {
             if (!isCDTrackPath(val) && !val.empty())
                 fav_tracks.push_back(val);
         }
+        else if (key == "station") {
+            if (!val.empty()) {
+                // Optional friendly name after a tab: "station=<url>\t<name>".
+                // Old name-less lines parse with tab==npos => name stays empty.
+                std::string surl = val, sname;
+                auto tab = val.find('\t');
+                if (tab != std::string::npos) {
+                    surl  = val.substr(0, tab);
+                    sname = val.substr(tab + 1);
+                }
+                if (!surl.empty()) {
+                    radio_stations.push_back(surl);
+                    if (!sname.empty()) radio_station_names[surl] = sname;
+                }
+            }
+        }
         else if (key == "recent") {
             // Silently drop any CD paths that leaked into a pre-fix config
             if (!isCDTrackPath(val)) recent_tracks.push_back(val);
+        }
+        else if (key == "book") {
+            // Format: book=path|resume_seconds  (| is illegal in Windows paths)
+            std::string bpath = val; double bpos = 0.0;
+            auto bar = val.rfind('|');
+            if (bar != std::string::npos) {
+                bpath = val.substr(0, bar);
+                try { bpos = std::stod(val.substr(bar + 1)); } catch (...) { bpos = 0.0; }
+            }
+            if (!bpath.empty() && !isCDTrackPath(bpath)) {
+                audiobooks.push_back(bpath);
+                if (bpos > 0) audiobook_pos[bpath] = bpos;
+            }
         }
         else if (key == "stat") {
             // Format: stat=path|count|timestamp
@@ -133,32 +265,106 @@ void DigiConfig::load() {
 }
 
 void DigiConfig::save() const {
-    std::ofstream f(configPath(), std::ios::trunc);
-    if (!f) return;
-    f << "# RE-MOCT configuration - auto-generated\n";
-    f << "last_dir="         << last_dir         << "\n";
-    f << "playlist_current=" << playlist_current << "\n";
-    f << "volume="           << volume           << "\n";
-    f << "repeat_mode="      << repeat_mode      << "\n";
-    f << "shuffle="          << (shuffle ? "1" : "0") << "\n";
-    f << "toast_enabled="    << (toast_enabled ? "1" : "0") << "\n";
-    f << "eq_enabled="       << (eq_enabled ? "1" : "0") << "\n";
-    for (int b = 0; b < 10; ++b)
-        f << "eq_" << b << "=" << eq_gains[b] << "\n";
-    for (const auto& p : playlist_paths)  f << "track="    << p << "\n";
-    for (const auto& b : bookmarks)       f << "bookmark=" << b << "\n";
-    for (const auto& fv : fav_tracks)
-        if (!isCDTrackPath(fv))            f << "fav="     << fv << "\n";
-    for (const auto& r : recent_tracks)
-        if (!isCDTrackPath(r))
-            f << "recent=" << r << "\n";
-    // Write stats — cap at STATS_MAX, skip any CD paths
-    int written = 0;
-    for (const auto& kv : track_stats) {
-        if (written >= STATS_MAX) break;
-        if (isCDTrackPath(kv.first)) continue;  // should not exist but guard anyway
-        f << "stat=" << kv.first << "|" << kv.second.play_count
-          << "|" << (long long)kv.second.last_played << "\n";
-        ++written;
+    const std::string dest = configPath();
+    const std::string tmp  = dest + ".tmp";
+
+    // Strip line-structure-breaking control chars from a persisted value. CR/LF
+    // would split one logical value across config lines on reload. Tabs are left
+    // intact here (they are legal in paths and only dangerous in the station
+    // name, which is handled at that call site below).
+    auto nl = [](std::string s) {
+        for (char& c : s) if (c == '\r' || c == '\n') c = ' ';
+        return s;
+    };
+
+    // Write the full config to a sibling temp file first, then atomically swap it
+    // over the real file. A crash, full disk, or power loss mid-write can only
+    // damage the temp; the live config is replaced in one step or not at all.
+    {
+        std::ofstream f(tmp, std::ios::trunc);
+        if (!f) return;
+        f << "# RE-MOCT configuration - auto-generated\n";
+        f << "last_dir="         << nl(last_dir)     << "\n";
+        f << "playlist_current=" << playlist_current << "\n";
+        f << "volume="           << volume           << "\n";
+        f << "repeat_mode="      << repeat_mode      << "\n";
+        f << "shuffle="          << (shuffle ? "1" : "0") << "\n";
+        f << "toast_enabled="    << (toast_enabled ? "1" : "0") << "\n";
+        f << "eq_enabled="       << (eq_enabled ? "1" : "0") << "\n";
+        f << "discord_presence=" << (discord_presence ? "1" : "0") << "\n";
+        f << "awesome_mode="      << (awesome_mode ? "1" : "0") << "\n";
+        f << "prefer_digital_stream=" << (prefer_digital_stream ? "1" : "0") << "\n";
+        f << "iheart_probe_minted="   << (iheart_probe_minted ? "1" : "0") << "\n";
+        f << "nerd_icons="        << (nerd_icons ? "1" : "0") << "\n";
+        if (!lastfm_key.empty())     f << "lastfm-key="     << nl(lastfm_key)     << "\n";
+        if (!lastfm_secret.empty())  f << "lastfm-secret="  << nl(lastfm_secret)  << "\n";
+        if (!lastfm_session.empty()) f << "lastfm-session=" << nl(lastfm_session) << "\n";
+        if (!lastfm_user.empty())    f << "lastfm-user="    << nl(lastfm_user)    << "\n";
+        if (!lastfm_pending.empty()) f << "lastfm-pending=" << nl(lastfm_pending) << "\n";
+        if (!listenbrainz_token.empty()) f << "lb-token=" << nl(listenbrainz_token) << "\n";
+        if (!listenbrainz_user.empty())  f << "lb-user="  << nl(listenbrainz_user)  << "\n";
+        for (int b = 0; b < 10; ++b)
+            f << "eq_" << b << "=" << eq_gains[b] << "\n";
+        for (const auto& p : playlist_paths)  f << "track="    << nl(p) << "\n";
+        for (const auto& b : bookmarks)       f << "bookmark=" << nl(b) << "\n";
+        for (const auto& fv : fav_tracks)
+            if (!isCDTrackPath(fv))            f << "fav="     << nl(fv) << "\n";
+        for (const auto& st : radio_stations) {
+            std::string url = nl(st);
+            auto it = radio_station_names.find(st);
+            if (it != radio_station_names.end() && !it->second.empty()) {
+                // The url\tname delimiter means a tab in the *name* would mis-split
+                // on reload, so fold tabs (and CR/LF) in the name to spaces.
+                std::string name = nl(it->second);
+                for (char& c : name) if (c == '\t') c = ' ';
+                f << "station="  << url << "\t" << name << "\n";
+            } else {
+                f << "station="  << url << "\n";
+            }
+        }
+        for (const auto& r : recent_tracks)
+            if (!isCDTrackPath(r))
+                f << "recent=" << nl(r) << "\n";
+        for (const auto& bk : audiobooks)
+            if (!isCDTrackPath(bk)) {
+                auto it = audiobook_pos.find(bk);
+                double pos = (it != audiobook_pos.end()) ? it->second : 0.0;
+                f << "book=" << nl(bk) << "|" << pos << "\n";
+            }
+        // Write stats — cap at STATS_MAX, skip any CD paths
+        int written = 0;
+        for (const auto& kv : track_stats) {
+            if (written >= STATS_MAX) break;
+            if (isCDTrackPath(kv.first)) continue;  // should not exist but guard anyway
+            f << "stat=" << nl(kv.first) << "|" << kv.second.play_count
+              << "|" << (long long)kv.second.last_played << "\n";
+            ++written;
+        }
+        f.flush();
+        if (!f.good()) {                 // write failed — leave the live config untouched
+            f.close();
+            std::error_code rm; fs::remove(tmp, rm);
+            return;
+        }
+    } // ofstream closed/flushed here, before the swap
+
+    // Atomic replace. On Windows std::filesystem / _wrename won't overwrite an
+    // existing target, so use MoveFileEx with REPLACE_EXISTING; WRITE_THROUGH
+    // flushes the metadata to disk before returning. POSIX rename() already
+    // replaces atomically.
+#ifdef _WIN32
+    bool ok = MoveFileExA(tmp.c_str(), dest.c_str(),
+                          MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != 0;
+#else
+    std::error_code ec;
+    fs::rename(tmp, dest, ec);
+    bool ok = !ec;
+#endif
+    if (!ok) {
+        // Swap failed (locked target, cross-volume temp, ...). Fall back to a
+        // best-effort non-atomic overwrite so settings still persist this run.
+        std::error_code ec2;
+        fs::copy_file(tmp, dest, fs::copy_options::overwrite_existing, ec2);
+        std::error_code ec3; fs::remove(tmp, ec3);
     }
 }

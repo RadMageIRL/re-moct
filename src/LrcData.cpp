@@ -46,7 +46,8 @@ bool LrcData::loadFile(const std::string& lrc_path) {
         // Check for [offset:N] metadata tag first
         std::smatch om;
         if (std::regex_search(line, om, offset_re)) {
-            offset_sec = std::stod(om[1].str()) / 1000.0;
+            try { offset_sec = std::stod(om[1].str()) / 1000.0; }
+            catch (...) { offset_sec = 0.0; }   // absurd [offset:N] -> out_of_range
             continue;
         }
 

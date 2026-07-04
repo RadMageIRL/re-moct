@@ -11,29 +11,20 @@
 #include <chrono>
 
 #include "miniaudio.h"
-#ifdef _WIN32
+#include "TrackInfo.h"        // hoisted from this header (slice B) — same struct, zero call-site changes
+#include "LocalFileSource.h"  // the file path as a source object (slice B)
+#include <memory>
 #include "CDSource.h"
-#endif
+// Phase 4: the streaming source is driven through the plugin C ABI. The host holds
+// a PluginSource (the driver) over the plugin descriptor, plus the HTTP service
+// table it hands the plugin at create. Since slice (c) the descriptor comes from a
+// LOADED .so/.dll (core::loadPlugin) instead of the compiled-in adapter — the
+// host no longer references any streaming-source symbol.
+#include "PluginSource.h"
+#include "PluginHostServices.h"
+#include "PluginHost.h"        // core::loadPlugin / LoadedPlugin / PluginLoad (slice c)
 
 enum class PlaybackState { Stopped, Playing, Paused };
-
-struct TrackInfo {
-    std::string path;
-    std::string title;
-    std::string artist;
-    std::string album;
-    int  duration_sec = 0;
-    int  bitrate_kbps = 0;
-    int  sample_rate  = 0;
-    int  channels     = 0;
-    std::string genre;
-    std::string comment;
-    int  year         = 0;
-    int  track_num    = 0;
-    int  bpm          = 0;   // 0 = not yet detected
-    float replaygain_db = 0.0f;
-    std::uintmax_t file_size_bytes = 0;
-};
 
 class AudioManager {
 public:
@@ -61,6 +52,11 @@ public:
     void seekBy(double delta_seconds);
     void setRepeatOne(bool on) { repeat_one_.store(on); }
     void clearNext();  // discard preloaded next track
+
+    // True only while a crossfade is mixing (decoder_ is still the outgoing track,
+    // advancing to its end). UI reads this to let the progress head complete instead
+    // of snapping to the incoming track's 0% mid-overlap. Read-only; no side effects.
+    bool isCrossfading() const { return crossfading_.load(std::memory_order_acquire); }
 
     // Volume
     void  setVolume(float v);
@@ -93,7 +89,7 @@ public:
     PlaybackState    state()        const { return state_.load(); }
     double           positionSec()  const;
     double           durationSec()  const;
-    int              liveBitrateKbps() const;
+    int              bitrateKbps() const;   // TagLib nominal/average (static — see .cpp)
     const TrackInfo& currentTrack() const { return current_track_; }
     int              currentBpm()   const { return live_bpm_.load(); }
 
@@ -107,7 +103,6 @@ public:
     void clearTrackEnd()  { track_ended_flag_.store(false); }
     bool pollPreloadNext() { return preload_next_flag_.exchange(false); }
 
-#ifdef _WIN32
     // ── CD Audio mode ────────────────────────────────────────────────────────
     bool     openCD(const std::string& drive_letter);  // detect & load TOC
     void     closeCD();
@@ -119,7 +114,36 @@ public:
     int      cdCurrentTrack() const;
     const CDSource& cdSource() const { return cd_source_; }
           CDSource& cdSource()       { return cd_source_; }
-#endif
+
+    // ── Streaming (internet radio) mode ───────────────────────────────────────
+    bool     streamMode()        const { return stream_mode_.load(); }
+    // Prefer the iHeart digital (web-player) rendition on the next stream connect.
+    void     setPreferDigital(bool b) { stream_plugin_.setPreferDigital(b); }
+    // Deep-log toggle across the ABI (slice c): the host tracks the on/off state
+    // (UIManager, Ctrl+A) and pushes it here; IHeartDeepLog now lives in the .so.
+    void     setDeepLog(bool on) { stream_plugin_.setConfig("deeplog", on ? "1" : "0"); }
+    // Identity A/B arm (probe): use a minted anonymous profileId on the digital
+    // handshake (deep-log only). Same config-passthrough shape as setDeepLog.
+    void     setProbeMinted(bool on) { stream_plugin_.setConfig("iheart_probe_minted", on ? "1" : "0"); }
+    // Whether the streaming plugin loaded (slice c). false => streaming disabled
+    // (missing/incompatible .so/.dll). beginStream() guards on this and surfaces a
+    // failure toast; the UI may also preflight streamPluginError() for the specific
+    // reason. Host stays alive either way.
+    bool     streamPluginReady() const { return stream_plugin_.valid(); }
+    std::string streamPluginError() const;   // "" when ready, else a human reason
+    // True while a stream connect is being negotiated off the UI thread.
+    bool     streamConnecting()  const { return stream_connecting_.load(); }
+    // Non-blocking radio start: stops current playback, negotiates the stream on
+    // a worker thread, and brings up the device on a later pollEvents() tick.
+    void     beginStream(const std::string& url);
+    // UI consumes these once to toast the outcome of a backgrounded connect.
+    bool     takeStreamConnected() { return stream_just_connected_.exchange(false); }
+    bool     takeStreamFailed()    { return stream_just_failed_.exchange(false); }
+    bool     streamBuffering()   const { return stream_plugin_.buffering(); }
+    std::string streamNowPlaying() const { return stream_plugin_.nowPlaying(); }
+    std::string streamArtUrl()     const { return stream_plugin_.currentArtUrl(); } // iHeart digital cover ("" -> use logo)
+    std::string streamUrl()      const { return stream_plugin_.url(); }   // URL actually streaming
+    int      streamPositionSec() const { return (int)stream_plugin_.positionSec(); }
 
     // Called by track-end callback to pre-load next track for crossfade/gapless
     // Returns false if next track can't be opened
@@ -133,18 +157,28 @@ public:
     void setSelectedDeviceIndex(int i) { selected_device_idx_ = i; }
 
 private:
-    // ── Primary decoder + device ──────────────────────────────────────────
-    ma_decoder  decoder_ {};
+    // ── Primary source + device ───────────────────────────────────────────
+    // file_src_ is the current local-file source (slice B: replaces the inline
+    // ma_decoder decoder_ + decoder_initialised_; "initialised" == non-null).
+    // Mutated on the main thread only in device-stopped windows — the same
+    // synchronization the plain bool relied on — EXCEPT the one audio-thread
+    // mutation: the initCrossfade swap.
+    std::unique_ptr<LocalFileSource> file_src_;
     ma_device   device_  {};
-    bool decoder_initialised_ = false;
     bool device_initialised_  = false;
 
-    // ── Crossfade / gapless second decoder ───────────────────────────────
-    // next_decoder_ is loaded while current track is still playing.
+    // ── Crossfade / gapless second source ─────────────────────────────────
+    // next_src_ is loaded while current track is still playing.
     // When crossfade begins (or track ends for gapless), we swap them.
-    ma_decoder  next_decoder_  {};
+    std::unique_ptr<LocalFileSource> next_src_;
     std::atomic<bool> next_decoder_initialised_ { false };  // release on write, acquire on read
     std::string next_path_;
+    // The outgoing source after an audio-thread swap. The audio thread RETIRES
+    // the old current here instead of freeing it; pollEvents reaps it on the
+    // main thread under the existing track_swap_flag_ synchronizes-with edge,
+    // so a UI-thread positionSec() racing the swap can only ever dereference a
+    // live decoder (and the audio callback no longer frees heap).
+    std::unique_ptr<LocalFileSource> retired_src_;
 
     // Crossfade state (written on UI thread, read on audio thread)
     std::atomic<bool>  crossfading_  { false };
@@ -172,14 +206,59 @@ private:
     // across callbacks so there are no per-buffer discontinuities.
     std::vector<float>         speed_res_;             // residual decoded source frames
     int                        speed_res_frames_ = 0;  // valid frames in speed_res_
+    std::vector<float>         xfade_buf_;             // crossfade next-track scratch (cb-owned, lazy-grown)
     double                     speed_pos_        = 0.0; // fractional source read position
     void      resetSpeedResampler() { speed_res_frames_ = 0; speed_pos_ = 0.0; }
     ma_result readVarispeed(float* out, ma_uint32 frame_count, ma_uint32 channels,
                             float speed, ma_uint64& produced);
-#ifdef _WIN32
     std::atomic<bool>          cd_mode_  { false };
     CDSource                   cd_source_;
-#endif
+    std::atomic<bool>          stream_mode_  { false };
+    // Absolute path of the streaming plugin next to the binary:
+    // <exeDir>/plugins/remoct_stream.{dll,so} (slice c). Static — used by the
+    // loaded_plugin_ default member initializer below.
+    static std::string streamPluginPath();
+
+    // The HTTP service table handed to the streaming plugin at create, backed by
+    // core::http(). Declared BEFORE stream_plugin_ so it is constructed first
+    // (the plugin instance is created with its table()). All three live as long as
+    // AudioManager — the ABI service-lifetime contract.
+    core::HostServices         host_services_{};
+    // Acquisition flip (slice c): the streaming source is a LOADED .so/.dll now.
+    // loaded_plugin_ owns the module + borrows the descriptor (RAII: module unloads
+    // after the descriptor). A load failure (missing / ABI-mismatch / too-small —
+    // slice-(a) reject paths, now in production) leaves loaded_plugin_ null and
+    // plugin_load_result_ set; PluginSource(nullptr,...) is valid()==false, so every
+    // op no-ops and the host stays alive. Declaration order = init order:
+    // plugin_load_result_ (out-param) then loaded_plugin_ (the load) then
+    // stream_plugin_ (built from the descriptor).
+    core::PluginLoad                    plugin_load_result_ = core::PluginLoad::Ok;
+    std::unique_ptr<core::LoadedPlugin> loaded_plugin_ =
+        core::loadPlugin(streamPluginPath(), &plugin_load_result_);
+    core::PluginSource         stream_plugin_{
+        loaded_plugin_ ? loaded_plugin_->plugin() : nullptr,
+        host_services_.table() };
+
+    // ── Async stream connect (StreamSource::open runs off the UI thread) ──
+    // beginStream() stops current playback and spawns a worker that runs the slow
+    // open() (connect + producer spawn); pollStreamConnect() (called each tick from
+    // pollEvents) brings up the device on success. A single worker ever touches
+    // stream_plugin_; a depth-1 "latest-wins" slot honors a station picked mid-connect;
+    // a generation counter lets a file/CD start interrupt and supersede a connect.
+    std::atomic<bool>          stream_connecting_   { false }; // worker in flight
+    std::atomic<bool>          stream_connect_done_ { false }; // worker finished; result pending
+    std::atomic<uint64_t>      stream_connect_gen_  { 0 };     // bumped by every playback start
+    std::atomic<bool>          stream_just_connected_{ false };// UI toast latch
+    std::atomic<bool>          stream_just_failed_   { false };// UI toast latch
+    std::mutex                 stream_connect_mtx_;            // guards the strings + flags below
+    std::string                stream_connect_url_;            // url the worker is opening
+    bool                       stream_connect_ok_ = false;     // worker result
+    uint64_t                   stream_connect_worker_gen_ = 0; // gen captured when the worker spawned
+    std::string                stream_pending_url_;            // latest-wins depth-1 slot
+    bool                       stream_pending_has_ = false;
+    std::thread                stream_connect_thread_;
+    void startStreamConnectLocked(const std::string& url);     // state_mutex_ must be held
+    void pollStreamConnect();                                  // main thread; from pollEvents
     std::atomic<bool>          replaygain_enabled_ { false };
     std::atomic<float>         replaygain_gain_    { 1.0f };
     // The audio callback must never read current_track_ (a struct of std::strings
@@ -190,13 +269,6 @@ private:
     // Set by initCrossfade() on the audio thread when it swaps decoders; consumed
     // by pollEvents() on the main thread, which is the ONLY writer of current_track_.
     std::atomic<bool>          track_swap_flag_ { false };
-
-    // liveBitrateKbps() rolling VBR estimate — per-instance, reset each play().
-    // Previously function-local statics: shared across instances and never reset
-    // on track change, so the first reading after a switch was stale.
-    mutable double  lbr_prev_file_pos_ = 0.0;
-    mutable std::chrono::steady_clock::time_point lbr_prev_time_ {};
-    mutable int     lbr_cached_kbps_   = 0;
 
     // EQ biquad state (one per band per channel, max 2 ch)
     std::atomic<bool>  eq_enabled_ { false };
@@ -243,6 +315,7 @@ private:
     static constexpr int CD_BPM_WINDOW_SECS = 20;   // match detectBpm's file window
     static constexpr int CD_BPM_FRAMES      = 44100 * CD_BPM_WINDOW_SECS;
     std::vector<float>   cd_bpm_buf_;               // mono accumulation window
+    std::vector<float>   cd_bpm_snapshot_;          // UI-owned copy taken before clearing ready
     std::atomic<int>     cd_bpm_fill_   { 0 };      // frames filled (audio thread)
     std::atomic<bool>    cd_bpm_ready_  { false };  // window full → detect on UI thread
     std::atomic<bool>    cd_bpm_reset_  { false };  // seek requested → restart window

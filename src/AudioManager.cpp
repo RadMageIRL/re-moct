@@ -1,98 +1,52 @@
 #define MINIAUDIO_IMPLEMENTATION
 #include "AudioManager.h"
 #include "StringUtils.h"
+#include "AacDecoder.h"   // FDK-AAC custom miniaudio backend (used by detectBpm's analysis decoder)
+#include "PortUtil.h"     // port::exeDir — resolve the streaming plugin beside the binary (slice c)
+#include "Log.h"          // stream-plugin load diagnostics
 
-#include <taglib/fileref.h>
-#include <taglib/tag.h>
-#include <taglib/audioproperties.h>
-#include <taglib/tpropertymap.h>
+// Slice B: the file-path helpers (populate_track_info / open_decoder /
+// prime_decoder) and the TagLib metadata read moved verbatim into
+// LocalFileSource.cpp; decoder ownership lives in LocalFileSource objects.
 
 #include <cstring>
 #include <cmath>
 #include <algorithm>
 #include <chrono>
 #include <thread>
-#include <filesystem>
 #include <vector>
 
 #ifdef _WIN32
 #  include <windows.h>
 #endif
 
-namespace fs = std::filesystem;
-
-// ─── helpers ────────────────────────────────────────────────────────────────
-static void populate_track_info(TrackInfo& info, const std::string& path) {
-    info = {};
-    info.path  = path;
-    info.title = fs::path(path).stem().string();
-#ifdef _WIN32
-    auto wpath = utf8_to_wide(path);
-    TagLib::FileRef ref(wpath.c_str(), true, TagLib::AudioProperties::Fast);
-#else
-    TagLib::FileRef ref(path.c_str(), true, TagLib::AudioProperties::Fast);
-#endif
-    if (ref.isNull()) return;
-
-    // Helper: TagLib string -> UTF-8. Use to8Bit(true) which is correct for UTF-8 tags.
-    // For Latin-1 encoded ID3v2.3 tags, strip non-ASCII garbage gracefully.
-    if (auto* tag = ref.tag(); tag) {
-        std::string title  = sanitizeForDisplay(tag->title().to8Bit(true));
-        std::string artist = sanitizeForDisplay(tag->artist().to8Bit(true));
-        if (!title.empty())  info.title  = title;
-        if (!artist.empty()) info.artist = artist;
-        if (!tag->album().isEmpty())   info.album   = sanitizeForDisplay(tag->album().to8Bit(true));
-        if (!tag->genre().isEmpty())   info.genre   = sanitizeForDisplay(tag->genre().to8Bit(true));
-        if (!tag->comment().isEmpty()) {
-            std::string c = sanitizeForDisplay(tag->comment().to8Bit(true));
-            if (c.size() > 80) c = c.substr(0, 77) + "...";
-            info.comment = c;
-        }
-        info.year      = (int)tag->year();
-        info.track_num = (int)tag->track();
-
-        // Read ReplayGain track gain tag (try common tag names)
-        // Returns dB value, e.g. "-6.5 dB" or "+1.2 dB"
-        auto tryRG = [&](const char* key) -> float {
-            auto s = tag->properties()[key].toString().to8Bit(true);
-            if (s.empty()) return 0.0f;
-            try { return std::stof(s); } catch (...) { return 0.0f; }
-        };
-        float rg_db = tryRG("REPLAYGAIN_TRACK_GAIN");
-        if (rg_db == 0.0f) rg_db = tryRG("replaygain_track_gain");
-        if (rg_db == 0.0f) rg_db = tryRG("R128_TRACK_GAIN");
-        // Convert dB to linear: gain = 10^(dB/20)
-        info.replaygain_db = rg_db;
-    }
-    if (auto* ap = ref.audioProperties(); ap) {
-        info.duration_sec = ap->lengthInSeconds();
-        info.bitrate_kbps = ap->bitrate();
-        info.sample_rate  = ap->sampleRate();
-        info.channels     = ap->channels();
-    }
-    // File size for live VBR bitrate calculation
-    try { info.file_size_bytes = fs::file_size(path); } catch (...) {}
-}
-
-static bool open_decoder(const std::string& path, ma_decoder& dec,
-                         ma_uint32 hint_channels = 0, ma_uint32 hint_rate = 0) {
-    // Use TagLib-provided hints when available to bypass miniaudio's format sniffer
-    // which crashes on files with bad/dual ID3 tags
-    ma_decoder_config cfg = ma_decoder_config_init(ma_format_f32,
-                                hint_channels, hint_rate);
-#ifdef _WIN32
-    auto wpath = utf8_to_wide(path);
-    return ma_decoder_init_file_w(wpath.c_str(), &cfg, &dec) == MA_SUCCESS;
-#else
-    return ma_decoder_init_file(path.c_str(), &cfg, &dec) == MA_SUCCESS;
-#endif
-}
-
 // ─── construction ────────────────────────────────────────────────────────────
 AudioManager::AudioManager()  = default;
+
+// Streaming plugin (slice c): resolve <exeDir>/plugins/remoct_stream.{dll,so} —
+// the module beside the binary. Static (used by loaded_plugin_'s default member
+// initializer). exeDir() falls back to "." if the OS query fails.
+std::string AudioManager::streamPluginPath() {
+    std::string dir = port::exeDir();
+    if (dir.empty()) dir = ".";
+#ifdef _WIN32
+    return dir + "/plugins/remoct_stream.dll";
+#else
+    return dir + "/plugins/remoct_stream.so";
+#endif
+}
+
+// "" when the streaming plugin loaded; else a human-readable reason (the slice-a
+// reject-path names, now a production diagnostic).
+std::string AudioManager::streamPluginError() const {
+    if (stream_plugin_.valid()) return {};
+    return std::string("streaming plugin unavailable: ") +
+           core::pluginLoadName(plugin_load_result_);
+}
 AudioManager::~AudioManager() {
     bpm_cancel_.store(true);
     if (bpm_thread_.joinable()) bpm_thread_.join();
+    if (stream_connect_thread_.joinable()) stream_connect_thread_.join();
     teardown();
     teardownNext();
 }
@@ -112,10 +66,8 @@ void AudioManager::teardown() {
         ma_device_uninit(&device_);
         device_initialised_ = false;
     }
-    if (decoder_initialised_) {
-        ma_decoder_uninit(&decoder_);
-        decoder_initialised_ = false;
-    }
+    file_src_.reset();      // device is stopped above — no callback can be mid-read
+    retired_src_.reset();   // reap any un-reaped retired source while quiesced
     viz_buf_.fill(0.0f);
     viz_write_pos_.store(0);
     resetSpeedResampler();  // device is stopped above, so this is race-free
@@ -127,9 +79,28 @@ void AudioManager::clearNext() {
 }
 
 void AudioManager::teardownNext() {
-    if (next_decoder_initialised_.load()) {
-        ma_decoder_uninit(&next_decoder_);
-        next_decoder_initialised_.store(false);
+    if (next_decoder_initialised_.load(std::memory_order_acquire)) {
+        // Clear the published flag FIRST so the audio thread starts no new
+        // crossfade or gapless read of next_decoder_ (every such read is gated on
+        // this flag). Ordering matters: the free must never precede the un-publish.
+        next_decoder_initialised_.store(false, std::memory_order_release);
+
+        // If a crossfade is actively mixing next_decoder_ across callbacks, the
+        // un-publish alone can't protect an already-in-flight read. ma_device_stop()
+        // blocks until the current callback returns and guarantees it won't be
+        // re-entered, so after it the decoder is safe to free. Scope the stop to the
+        // crossfade window only — the common mid-track clearNext (no crossfade) frees
+        // directly with no audio glitch. (device_initialised_ + is_started also guards
+        // the paused-mid-crossfade case, where the device is already stopped.)
+        if (crossfading_.load(std::memory_order_acquire) &&
+            device_initialised_ && ma_device_is_started(&device_)) {
+            ma_device_stop(&device_);
+            crossfading_.store(false);
+            next_src_.reset();
+            ma_device_start(&device_);
+        } else {
+            next_src_.reset();
+        }
     }
     next_path_.clear();
     // Cancel any pending deferred swap: the preload it referred to is gone, so
@@ -137,21 +108,23 @@ void AudioManager::teardownNext() {
     track_swap_flag_.store(false);
 }
 
-// Prime the decoder — attempt a small read to flush any bad initial frame.
-// Some dual-tag MP3s (ID3v2.3+ID3v1.1) have a zero-byte first frame that
-// causes the decoder to stall. A seek back to 0 after the probe resets it.
-static void prime_decoder(ma_decoder& dec) {
-    // Read a small chunk to warm up the decoder's bit reservoir
-    float tmp[256 * 2];
-    ma_uint64 frames_read = 0;
-    ma_decoder_read_pcm_frames(&dec, tmp, 256, &frames_read);
-    ma_decoder_seek_to_pcm_frame(&dec, 0);
-}
-
 // ─── play ────────────────────────────────────────────────────────────────────
 bool AudioManager::play(const std::string& path) {
+    // Scheme-branch: HTTP(S) URLs route to the (non-blocking) streaming path.
+    if (path.rfind("http://", 0) == 0 || path.rfind("https://", 0) == 0) {
+        beginStream(path);
+        return true;
+    }
     std::lock_guard<std::mutex> lock(state_mutex_);
-#ifdef _WIN32
+    // Starting a file supersedes any in-flight stream connect (its result will be
+    // discarded rather than clobbering this playback).
+    stream_connect_gen_.fetch_add(1);
+    // Exit stream mode if switching to file playback (clear the flag first so the
+    // audio callback stops entering the stream branch, then join the producer).
+    if (stream_mode_.load()) {
+        stream_mode_.store(false);
+        stream_plugin_.close();
+    }
     // Exit CD mode if switching to file playback
     if (cd_mode_.load()) {
         cd_source_.stop();
@@ -163,35 +136,19 @@ bool AudioManager::play(const std::string& path) {
             device_initialised_ = false;
         }
     }
-#endif
     teardown();
     teardownNext();
     track_ended_flag_.store(false);
 
-    // Pre-read audio properties via TagLib — use as hints to bypass
-    // miniaudio's format sniffer which crashes on problematic tag combinations
-    ma_uint32 hint_ch = 0, hint_rate = 0;
-    {
-#ifdef _WIN32
-        auto wpath = utf8_to_wide(path);
-        TagLib::FileRef ref(wpath.c_str(), true, TagLib::AudioProperties::Fast);
-#else
-        TagLib::FileRef ref(path.c_str(), true, TagLib::AudioProperties::Fast);
-#endif
-        if (!ref.isNull() && ref.audioProperties()) {
-            hint_ch   = (ma_uint32)ref.audioProperties()->channels();
-            hint_rate = (ma_uint32)ref.audioProperties()->sampleRate();
-        }
-    }
-
-    if (!open_decoder(path, decoder_, hint_ch, hint_rate)) return false;
-    if (decoder_.outputChannels == 0 || decoder_.outputSampleRate == 0) {
-        ma_decoder_uninit(&decoder_);
-        return false;
-    }
-    prime_decoder(decoder_);
-    decoder_initialised_ = true;
-    populate_track_info(current_track_, path);
+    // Open the file as a source object (slice B). LocalFileSource::open =
+    // open_decoder + zero-format guard + prime_decoder + populate_track_info,
+    // the baseline sequence verbatim. (The old TagLib hint pre-read is gone:
+    // open_decoder provably discarded its hints — `(void)hint_channels` — since
+    // the forced 44100/2 config replaced hint-based sniffing.)
+    auto src = std::make_unique<LocalFileSource>();
+    if (!src->open(path)) return false;
+    file_src_ = std::move(src);
+    current_track_ = file_src_->info();
     current_rg_db_.store(current_track_.replaygain_db);  // mirror for the audio thread
 
     if (!initDevice()) { teardown(); return false; }
@@ -200,26 +157,56 @@ bool AudioManager::play(const std::string& path) {
     state_.store(PlaybackState::Playing);
     track_ended_flag_.store(false);
 
-    // Reset the per-track live-bitrate estimator (was leaking across tracks via statics).
-    lbr_prev_file_pos_ = 0.0;
-    lbr_cached_kbps_   = 0;
-    lbr_prev_time_     = std::chrono::steady_clock::now();
-
     // Seed duration from TagLib (already available in current_track_)
     // This avoids calling ma_decoder_get_length_in_pcm_frames from UI thread
     // which races with the audio callback on files without Xing/Info headers
     cached_duration_.store((double)current_track_.duration_sec);
 
     // Start background BPM detection
-    startBpmDetection(path, (int)decoder_.outputSampleRate);
+    startBpmDetection(path, (int)file_src_->sampleRate());
     return true;
 }
 
 bool AudioManager::initDevice() {
+    // ── One-time audio-backend warm-up ──────────────────────────────────────
+    // The very first ma_device_init in the process brings up the shared playback
+    // backend (WASAPI/COM on Windows). When that first bring-up coincides with the
+    // custom FDK-AAC ma_decoder as the active decoder, the device ends up producing
+    // silence for the rest of the session — a chirp then nothing, on every file and
+    // stream after it. Playing a native-backend file (FLAC/MP3) or the radio path
+    // first avoids it, which is the tell: it's the *first* backend init that's
+    // fragile, not the AAC file. So prime the backend once here with a throwaway
+    // fixed-format device, before any real init — now the first bring-up never
+    // coincides with AAC, regardless of which file the user opens first. init/uninit
+    // (no start) is enough to do the COM/WASAPI bring-up; the callback never fires.
+    static bool audio_backend_warmed = false;
+    if (!audio_backend_warmed) {
+        audio_backend_warmed = true;
+        ma_device_config wc = ma_device_config_init(ma_device_type_playback);
+        wc.playback.format   = ma_format_f32;
+        wc.playback.channels = 2;
+        wc.sampleRate         = 44100;
+        wc.dataCallback      = &AudioManager::maDataCallback;
+        wc.pUserData         = this;
+        if (has_selected_device_)
+            wc.playback.pDeviceID = &selected_device_id_;
+        ma_device warm{};
+        if (ma_device_init(nullptr, &wc, &warm) == MA_SUCCESS) {
+            // Fully activate the WASAPI render client once (start/stop), not just
+            // init/uninit — init alone primes the backend enough for ordinary AAC
+            // files but not for the first-start path some files take, so do the
+            // complete bring-up here. The callback fires but file_src_ is null,
+            // so it only writes a few ms of (inaudible) silence.
+            ma_device_start(&warm);
+            ma_device_stop(&warm);
+            ma_device_uninit(&warm);
+        }
+    }
+
     ma_device_config cfg = ma_device_config_init(ma_device_type_playback);
     cfg.playback.format   = ma_format_f32;
-    cfg.playback.channels = decoder_.outputChannels;
-    cfg.sampleRate        = decoder_.outputSampleRate;
+    cfg.playback.channels = file_src_->channels();     // always 2 (forced in open_decoder)
+    cfg.sampleRate        = file_src_->sampleRate();   // always 44100 (forced)
     cfg.dataCallback      = &AudioManager::maDataCallback;
     cfg.stopCallback      = &AudioManager::maStopCallback;
     cfg.pUserData         = this;
@@ -256,17 +243,40 @@ void AudioManager::setDevice(const ma_device_id* id) {
         has_selected_device_ = false;
         selected_device_idx_ = -1;
     }
+    // Live sources (radio stream / CD) keep their source alive and own ma_device_
+    // directly — hot-swap just the device endpoint without tearing down the source.
+    if ((stream_mode_.load() || cd_mode_.load()) && device_initialised_) {
+        ma_device_stop(&device_);
+        ma_device_uninit(&device_);
+        device_initialised_ = false;
+
+        ma_device_config cfg = ma_device_config_init(ma_device_type_playback);
+        cfg.playback.format   = ma_format_f32;
+        cfg.playback.channels = 2;
+        cfg.sampleRate        = 44100;
+        cfg.dataCallback      = &AudioManager::maDataCallback;
+        cfg.stopCallback      = &AudioManager::maStopCallback;
+        cfg.pUserData         = this;
+        if (has_selected_device_) cfg.playback.pDeviceID = &selected_device_id_;
+        if (ma_device_init(nullptr, &cfg, &device_) == MA_SUCCESS) {
+            device_initialised_ = true;
+            ma_device_set_master_volume(&device_, volume_.load());
+            ma_device_start(&device_);
+        }
+        return;
+    }
     // If currently playing, restart on new device
-    if (state_.load() != PlaybackState::Stopped && decoder_initialised_) {
+    if (state_.load() != PlaybackState::Stopped && file_src_) {
         std::string path = current_track_.path;
         double pos       = positionSec();
         teardown();
-        if (open_decoder(path, decoder_)) {
-            decoder_initialised_ = true;
+        auto src = std::make_unique<LocalFileSource>();
+        if (src->open(path)) {
+            file_src_ = std::move(src);
             if (initDevice()) {
                 ma_device_set_master_volume(&device_, volume_.load());
-                ma_uint64 frame = (ma_uint64)(pos * decoder_.outputSampleRate);
-                ma_decoder_seek_to_pcm_frame(&decoder_, frame);
+                // Raw (unprimed) frame seek — the baseline restart shape.
+                file_src_->seekToFrame((uint64_t)(pos * file_src_->sampleRate()));
                 state_.store(PlaybackState::Playing);
                 ma_device_start(&device_);
             }
@@ -276,28 +286,17 @@ void AudioManager::setDevice(const ma_device_id* id) {
 bool AudioManager::preloadNext(const std::string& path) {
     std::lock_guard<std::mutex> lock(state_mutex_);
     teardownNext();
-    ma_uint32 hint_ch = 0, hint_rate = 0;
-    {
-#ifdef _WIN32
-        auto wpath = utf8_to_wide(path);
-        TagLib::FileRef ref(wpath.c_str(), true, TagLib::AudioProperties::Fast);
-#else
-        TagLib::FileRef ref(path.c_str(), true, TagLib::AudioProperties::Fast);
-#endif
-        if (!ref.isNull() && ref.audioProperties()) {
-            hint_ch   = (ma_uint32)ref.audioProperties()->channels();
-            hint_rate = (ma_uint32)ref.audioProperties()->sampleRate();
-        }
-    }
-    if (!open_decoder(path, next_decoder_, hint_ch, hint_rate)) return false;
-    if (next_decoder_.outputChannels == 0 || next_decoder_.outputSampleRate == 0) {
-        ma_decoder_uninit(&next_decoder_);
-        return false;
-    }
-    prime_decoder(next_decoder_);
+    // Open the next source fully BEFORE publishing it (open = decoder +
+    // zero-format guard + prime + TagLib info, the baseline sequence; the old
+    // TagLib hint pre-read is gone — its outputs were provably discarded).
+    auto src = std::make_unique<LocalFileSource>();
+    if (!src->open(path)) return false;
     next_path_ = path;
-    populate_track_info(next_track_info_, path);
+    next_track_info_ = src->info();
+    next_src_ = std::move(src);
     // Store with release ordering so audio thread sees fully-written next_track_info_
+    // (and, slice B, the fully-constructed next_src_ object through the pointer —
+    // the same happens-before edge, now covering pointer + pointee).
     next_decoder_initialised_.store(true, std::memory_order_release);
     return true;
 }
@@ -308,18 +307,22 @@ void AudioManager::initCrossfade() {
     if (!next_decoder_initialised_.load(std::memory_order_acquire)) return;
     // If repeat-one is active, don't swap — just loop the current track
     if (repeat_one_.load()) {
-        // Seek current decoder back to start instead
-        ma_uint64 zero = 0;
-        ma_decoder_seek_to_pcm_frame(&decoder_, zero);
+        // Seek current decoder back to start instead (raw, unprimed — baseline)
+        if (file_src_) file_src_->seekToFrame(0);
         return;
     }
 
-    // Swap decoders: next becomes current
-    if (decoder_initialised_) ma_decoder_uninit(&decoder_);
-    decoder_             = next_decoder_;
-    decoder_initialised_ = true;
+    // Swap sources: next becomes current. The outgoing source is RETIRED, not
+    // freed — pollEvents reaps retired_src_ on the main thread under the
+    // track_swap_flag_ synchronizes-with edge below, so a UI-thread
+    // positionSec() racing this swap can only ever dereference a live decoder,
+    // and the audio callback no longer frees heap here. The publication
+    // protocol is unchanged: next_src_ was made visible by preloadNext's
+    // release store (guarded by the acquire above); the flag clear keeps its
+    // exact position after the payload transfer.
+    retired_src_ = std::move(file_src_);
+    file_src_    = std::move(next_src_);
     next_decoder_initialised_.store(false);
-    std::memset(&next_decoder_, 0, sizeof(next_decoder_));
 
     // Do NOT write current_track_ here — that struct (with its std::strings) is
     // owned by the main thread. Publish what the audio thread needs via atomics and
@@ -347,21 +350,24 @@ void AudioManager::resume() {
 }
 
 void AudioManager::togglePause() {
-#ifdef _WIN32
     if (cd_mode_.load()) {
         cd_source_.pause(!cd_source_.paused());
         state_.store(cd_source_.paused() ? PlaybackState::Paused
                                          : PlaybackState::Playing);
         return;
     }
-#endif
+    if (stream_mode_.load()) {
+        stream_plugin_.pause(!stream_plugin_.paused());
+        state_.store(stream_plugin_.paused() ? PlaybackState::Paused
+                                             : PlaybackState::Playing);
+        return;
+    }
     if      (state_.load() == PlaybackState::Playing) pause();
     else if (state_.load() == PlaybackState::Paused)  resume();
 }
 
 void AudioManager::stop() {
     std::lock_guard<std::mutex> lock(state_mutex_);
-#ifdef _WIN32
     if (cd_mode_.load()) {
         cd_source_.stop();
         cd_source_.close();
@@ -375,7 +381,18 @@ void AudioManager::stop() {
         track_ended_flag_.store(false);  // don't advance playlist on manual stop
         return;
     }
-#endif
+    if (stream_mode_.load()) {
+        stream_plugin_.close();
+        stream_mode_.store(false);
+        state_.store(PlaybackState::Stopped);
+        if (device_initialised_) {
+            ma_device_stop(&device_);
+            ma_device_uninit(&device_);
+            device_initialised_ = false;
+        }
+        track_ended_flag_.store(false);
+        return;
+    }
     teardown();
     teardownNext();
     track_ended_flag_.store(false);  // don't advance playlist on manual stop
@@ -384,30 +401,35 @@ void AudioManager::stop() {
 
 // ─── seek ────────────────────────────────────────────────────────────────────
 void AudioManager::seekTo(double seconds) {
-    if (!decoder_initialised_ || decoder_.outputSampleRate == 0) return;
+    if (!file_src_) return;
     if (state_.load() == PlaybackState::Stopped) return;
     double dur = durationSec();
     if (seconds < 0.0) seconds = 0.0;
     if (dur > 0.0 && seconds > dur) seconds = dur;
-    ma_uint64 frame = (ma_uint64)(seconds * (double)decoder_.outputSampleRate);
+
+    // Device/effect policy stays here; the decoder work — seek to ~180ms before
+    // the target and decode-discard up to it (the MP3 bit-reservoir prime) —
+    // moved verbatim into LocalFileSource::seekTo. Runs while the device is
+    // stopped, so the few-ms extra decode is inaudible, exactly as before.
     bool was_playing = (state_.load() == PlaybackState::Playing);
     seeking_.store(true);
     if (was_playing && device_initialised_) ma_device_stop(&device_);
-    ma_decoder_seek_to_pcm_frame(&decoder_, frame);
+    file_src_->seekTo(seconds);
     resetSpeedResampler();  // drop residual from the pre-seek position
     if (was_playing && device_initialised_) ma_device_start(&device_);
     seeking_.store(false);
 }
 
 void AudioManager::seekBy(double delta) {
-#ifdef _WIN32
     if (cd_mode_.load()) {
-        int new_pos = std::clamp(cd_source_.positionSec() + (int)delta, 0, cd_source_.durationSec());
+        // (int casts: CDSource position/duration are whole seconds widened to
+        // double per core::ISource — slice A signature harmonization only.)
+        int new_pos = std::clamp((int)cd_source_.positionSec() + (int)delta, 0,
+                                 (int)cd_source_.durationSec());
         cd_source_.seekTo(new_pos);
         cd_bpm_reset_.store(true);   // discontinuity — restart the BPM window
         return;
     }
-#endif
     seekTo(positionSec() + delta);
 }
 
@@ -422,61 +444,34 @@ void AudioManager::adjustVolume(float delta) { setVolume(volume_.load() + delta)
 
 // ─── query ───────────────────────────────────────────────────────────────────
 double AudioManager::positionSec() const {
-    if (!decoder_initialised_ || decoder_.outputSampleRate == 0) return 0.0;
-    ma_uint64 cursor = 0;
-    ma_decoder_get_cursor_in_pcm_frames(const_cast<ma_decoder*>(&decoder_), &cursor);
-    return (double)cursor / (double)decoder_.outputSampleRate;
+    // Cursor math moved verbatim into LocalFileSource::positionSec. Called from
+    // the UI thread and the audio callback, as before; the retirement scheme in
+    // initCrossfade guarantees a UI-thread call racing the swap dereferences a
+    // live object.
+    return file_src_ ? file_src_->positionSec() : 0.0;
 }
 
 double AudioManager::durationSec() const {
     return cached_duration_.load();
 }
 
-int AudioManager::liveBitrateKbps() const {
-    if (!decoder_initialised_ || decoder_.outputSampleRate == 0)
+// Displayed bitrate: TagLib's nominal/average — for VBR exactly as for CBR and
+// lossless. The "live VBR estimate" this replaces was a linear position model
+// ((pos/dur)·file_size, differentiated) whose steady-state derivative is
+// constant BY CONSTRUCTION: the file average dressed as a live reading, made
+// less accurate by tag/album-art bytes in file_size and spiking across seeks
+// (the position jump landed in one 0.5 s delta window — probe evidence in
+// roadmap's resolved entry, 2026-07-03). TagLib's number is both simpler and
+// more accurate.
+int AudioManager::bitrateKbps() const {
+    if (current_track_.bitrate_kbps > 0)
         return current_track_.bitrate_kbps;
-    if (current_track_.file_size_bytes == 0 || current_track_.duration_sec <= 0)
-        return current_track_.bitrate_kbps;
-
-    // Detect CBR: standard bitrates are exact round numbers
-    // If TagLib reports a standard CBR value, trust it — don't estimate
-    static const int cbr_rates[] = {
-        32,40,48,56,64,80,96,112,128,160,192,224,256,320, 0
-    };
-    int taglib_br = current_track_.bitrate_kbps;
-    for (int i = 0; cbr_rates[i]; ++i) {
-        if (taglib_br == cbr_rates[i]) return taglib_br;  // CBR — use static value
-    }
-
-    // Lossless formats (FLAC, WAV, AIFF, ALAC) have naturally variable frame sizes
-    // but aren't VBR in a meaningful sense — use TagLib static value
-    auto& p = current_track_.path;
-    auto dot = p.rfind('.');
-    auto ext = dot != std::string::npos ? p.substr(dot) : std::string{};
-    for (char& c : ext) c = (char)std::tolower((unsigned char)c);
-    if (ext == ".flac" || ext == ".wav" || ext == ".aiff"
-        || ext == ".aif" || ext == ".alac" || ext == ".ape"
-        || ext == ".wv")
-        return taglib_br;
-
-    auto now     = std::chrono::steady_clock::now();
-    double elapsed = std::chrono::duration<double>(now - lbr_prev_time_).count();
-
-    if (elapsed >= 0.5) {
-        double pos_sec  = positionSec();
-        double dur      = current_track_.duration_sec;
-        double file_pos = (dur > 0) ? (pos_sec / dur) * (double)current_track_.file_size_bytes : 0.0;
-
-        if (lbr_prev_file_pos_ > 0 && elapsed > 0) {
-            double bytes_per_sec = (file_pos - lbr_prev_file_pos_) / elapsed;
-            if (bytes_per_sec > 0)
-                lbr_cached_kbps_ = (int)(bytes_per_sec * 8.0 / 1000.0);
-        }
-        lbr_prev_file_pos_ = file_pos;
-        lbr_prev_time_     = now;
-    }
-
-    return (lbr_cached_kbps_ > 0) ? lbr_cached_kbps_ : taglib_br;
+    // Tagless fallback: a one-shot static average from size/duration — no
+    // rolling state, derived from immutable per-track fields.
+    if (file_src_ && current_track_.file_size_bytes > 0 && current_track_.duration_sec > 0)
+        return (int)((double)current_track_.file_size_bytes * 8.0
+                     / ((double)current_track_.duration_sec * 1000.0));
+    return current_track_.bitrate_kbps;   // 0 — the UI hides the field
 }
 
 // ─── visualizer ──────────────────────────────────────────────────────────────
@@ -502,16 +497,31 @@ void AudioManager::pollEvents() {
     // overwrites next_track_info_). next_track_info_ is stable here: the audio
     // thread finished reading it before setting the flag, and next_decoder_
     // initialised_ is false post-swap so no preload can overwrite it until below.
-    if (track_swap_flag_.exchange(false))
+    if (track_swap_flag_.exchange(false)) {
         current_track_ = next_track_info_;
+        // Reap the source the audio thread retired at the swap (slice B): the
+        // seq_cst exchange above synchronizes-with the flag store that followed
+        // the swap, so retired_src_ is fully written and quiescent here — the
+        // free happens on the main thread, never in the audio callback.
+        retired_src_.reset();
+    }
     if (bpm_needed_flag_.exchange(false))
-        startBpmDetection(current_track_.path, (int)decoder_.outputSampleRate);
-    if (cd_bpm_ready_.exchange(false))
-        startBpmDetectionFromSamples(cd_bpm_buf_, CD_BPM_FRAMES, 44100);
+        startBpmDetection(current_track_.path,
+                          file_src_ ? (int)file_src_->sampleRate() : 44100);
+    if (cd_bpm_ready_.load(std::memory_order_acquire)) {
+        // Snapshot the window before releasing the flag. While ready is set the
+        // audio thread is frozen (see fill site), so this copy is clean; clearing
+        // ready afterwards lets accumulation resume into cd_bpm_buf_ without racing
+        // the detector, which now reads the UI-owned snapshot instead.
+        cd_bpm_snapshot_.assign(cd_bpm_buf_.begin(), cd_bpm_buf_.begin() + CD_BPM_FRAMES);
+        cd_bpm_ready_.store(false, std::memory_order_release);
+        startBpmDetectionFromSamples(cd_bpm_snapshot_, CD_BPM_FRAMES, 44100);
+    }
     if (preload_next_flag_.exchange(false))
         if (on_preload_next_) on_preload_next_();
     if (track_ended_flag_.exchange(false))
         if (on_track_end_) on_track_end_();
+    pollStreamConnect();   // pick up a finished background stream connect
 }
 
 // ─── audio callback ──────────────────────────────────────────────────────────
@@ -529,7 +539,7 @@ void AudioManager::maDataCallback(ma_device* device, void* output,
 ma_result AudioManager::readVarispeed(float* out, ma_uint32 n_out, ma_uint32 ch,
                                       float spd, ma_uint64& produced) {
     produced = 0;
-    if (!decoder_initialised_ || ch == 0) return MA_AT_END;
+    if (!file_src_ || ch == 0) return MA_AT_END;
 
     // Source frames needed to cover all outputs (+1 frame of interpolation
     // lookahead, +1 slack so an integer-aligned position never under-reads).
@@ -542,12 +552,14 @@ ma_result AudioManager::readVarispeed(float* out, ma_uint32 n_out, ma_uint32 ch,
     // or the decoder runs dry.
     bool eof = false;
     while (speed_res_frames_ < need) {
-        ma_uint64 got = 0;
-        ma_result r = ma_decoder_read_pcm_frames(
-            &decoder_, &speed_res_[(size_t)speed_res_frames_ * ch],
-            (ma_uint64)(need - speed_res_frames_), &got);
+        // (slice B: the read goes through the source; got==0 is the EOF signal.
+        // A final got>0 read that also hit EOF now takes one extra 0-frame call
+        // to detect — same frames delivered, same final state.)
+        uint32_t got = file_src_->readFrames(
+            &speed_res_[(size_t)speed_res_frames_ * ch],
+            (uint32_t)(need - speed_res_frames_));
         speed_res_frames_ += (int)got;
-        if (got == 0 || r == MA_AT_END) { eof = true; break; }
+        if (got == 0) { eof = true; break; }
     }
 
     // Resample residual -> out by linear interpolation at fractional positions.
@@ -581,12 +593,39 @@ ma_result AudioManager::readVarispeed(float* out, ma_uint32 n_out, ma_uint32 ch,
 
 void AudioManager::onDataCallback(void* output, ma_uint32 frame_count) {
     const ma_uint32 ch = device_.playback.channels;
-    if (!decoder_initialised_ && !cd_mode_.load()) {
+    if (!file_src_ && !cd_mode_.load() && !stream_mode_.load()) {
         if (ch > 0) std::memset(output, 0, frame_count * ch * sizeof(float));
         return;
     }
 
-#ifdef _WIN32
+    // ── Stream mode: read from StreamSource ring buffer ──────────────────
+    if (stream_mode_.load()) {
+        float* out = static_cast<float*>(output);
+        stream_plugin_.readFrames(out, frame_count);  // 44100/stereo; silence while buffering
+
+        float vol = volume_.load();
+        if (vol != 1.0f)
+            for (ma_uint32 i = 0; i < frame_count * 2; ++i) out[i] *= vol;
+        float bal = balance_.load();
+        if (bal != 0.0f) {
+            float lg = (bal <= 0.0f) ? 1.0f : 1.0f - bal;
+            float rg = (bal >= 0.0f) ? 1.0f : 1.0f + bal;
+            for (ma_uint32 f = 0; f < frame_count; ++f) {
+                out[f*2]   *= lg;
+                out[f*2+1] *= rg;
+            }
+        }
+        if (eq_enabled_.load()) {
+            if (eq_dirty_) rebuildEqCoeffs();
+            applyEq(out, frame_count, 2, 44100.0f);
+        }
+        for (ma_uint32 f = 0; f < frame_count; ++f)
+            pushVizSample((out[f*2] + out[f*2+1]) * 0.5f);
+        if (muted_.load())
+            std::memset(out, 0, frame_count * 2 * sizeof(float));
+        return;
+    }
+
     // ── CD mode: read directly from CDSource ring buffer ─────────────────
     if (cd_mode_.load()) {
         float* out = static_cast<float*>(output);
@@ -606,7 +645,11 @@ void AudioManager::onDataCallback(void* output, ma_uint32 frame_count) {
                 cd_bpm_ready_.store(false, std::memory_order_relaxed);
                 live_bpm_.store(0);
             }
-            if (cur > 0 && !cd_source_.paused()) {
+            // Freeze accumulation while a full window is awaiting UI consumption
+            // (cd_bpm_ready_): the UI thread copies cd_bpm_buf_ out before clearing
+            // the flag, so not writing here keeps that copy from tearing.
+            if (cur > 0 && !cd_source_.paused() &&
+                !cd_bpm_ready_.load(std::memory_order_acquire)) {
                 int bf = cd_bpm_fill_.load(std::memory_order_relaxed);
                 for (ma_uint32 f = 0; f < frame_count && bf < CD_BPM_FRAMES; ++f)
                     cd_bpm_buf_[(size_t)bf++] = (out[f*2] + out[f*2+1]) * 0.5f;
@@ -659,12 +702,11 @@ void AudioManager::onDataCallback(void* output, ma_uint32 frame_count) {
             track_ended_flag_.store(true);
         return;
     }
-#endif
 
     float* out    = static_cast<float*>(output);
     const ma_uint32 sr = device_.sampleRate;
 
-    if (!decoder_initialised_ || ch == 0 || sr == 0) {
+    if (!file_src_ || ch == 0 || sr == 0) {
         std::memset(output, 0, frame_count * std::max(ch, 2u) * sizeof(float));
         return;
     }
@@ -698,7 +740,7 @@ void AudioManager::onDataCallback(void* output, ma_uint32 frame_count) {
             // Normal 1:1 read. If we just left varispeed, drop any half-consumed
             // residual so we neither replay nor skip a few source frames.
             if (speed_res_frames_ != 0 || speed_pos_ != 0.0) resetSpeedResampler();
-            result = ma_decoder_read_pcm_frames(&decoder_, out, frame_count, &frames_read_a);
+            frames_read_a = file_src_->readFrames(out, frame_count);
         }
     } catch (...) {
         std::memset(out, 0, frame_count * ch * sizeof(float));
@@ -709,12 +751,16 @@ void AudioManager::onDataCallback(void* output, ma_uint32 frame_count) {
     bool track_done = (result == MA_AT_END || frames_read_a < frame_count);
 
     if (crossfading_.load() && next_decoder_initialised_.load()) {
-        // Mix next track in, ramping up while current ramps down
-        std::vector<float> tmp((size_t)frame_count * ch, 0.0f);
+        // Mix next track in, ramping up while current ramps down. Use a member
+        // buffer grown on demand (steady-state frame_count is constant, so this is
+        // a no-op after the first crossfade) instead of a per-callback heap alloc.
+        const size_t need = (size_t)frame_count * ch;
+        if (xfade_buf_.size() < need) xfade_buf_.resize(need);
+        float* tmp = xfade_buf_.data();
 
         ma_uint64 frames_read_b = 0;
         try {
-            ma_decoder_read_pcm_frames(&next_decoder_, tmp.data(), frame_count, &frames_read_b);
+            frames_read_b = next_src_->readFrames(tmp, frame_count);
         } catch (...) { frames_read_b = 0; }
 
         float xp = xfade_pos_.load();
@@ -746,8 +792,7 @@ void AudioManager::onDataCallback(void* output, ma_uint32 frame_count) {
             ma_uint32 remaining = frame_count - (ma_uint32)frames_read_a;
             if (remaining > 0) {
                 ma_uint64 fr = 0;
-                ma_decoder_read_pcm_frames(&next_decoder_,
-                    out + frames_read_a * ch, remaining, &fr);
+                fr = next_src_->readFrames(out + frames_read_a * ch, remaining);
                 if (fr < remaining)
                     std::memset(out + (frames_read_a + fr) * ch, 0,
                         (remaining - fr) * ch * sizeof(float));
@@ -863,6 +908,10 @@ int AudioManager::detectBpm(const std::string& path, int sample_rate,
     // Open a fresh decoder just for analysis — don't touch the playback decoder
     ma_decoder dec {};
     ma_decoder_config cfg = ma_decoder_config_init(ma_format_f32, 1, 0); // mono f32
+    static ma_decoding_backend_vtable* k_aac_backends2[] = { ma_aac_backend_vtable() };
+    cfg.ppCustomBackendVTables = k_aac_backends2;
+    cfg.customBackendCount     = 1;
+    cfg.pCustomBackendUserData = nullptr;
 #ifdef _WIN32
     {
         auto wp = utf8_to_wide(path);
@@ -999,7 +1048,7 @@ AudioManager::BiquadCoeff AudioManager::makePeakingEq(
 void AudioManager::rebuildEqCoeffs() {
     // Audio-thread only (called from onDataCallback when eq_dirty_). Reads the
     // atomic gains; no lock needed since coeffs/state are audio-thread-private.
-    float sr = decoder_initialised_ ? (float)decoder_.outputSampleRate : 44100.0f;
+    float sr = file_src_ ? (float)file_src_->sampleRate() : 44100.0f;
     for (int b = 0; b < EQ_BANDS; ++b)
         eq_coeffs_[b] = makePeakingEq(EQ_FREQS[b], eq_gains_db_[b].load(std::memory_order_relaxed), EQ_Q, sr);
     // Reset state to avoid pops when coefficients change
@@ -1050,9 +1099,13 @@ void AudioManager::resetEq() {
 
 
 // ─── CD Audio mode ────────────────────────────────────────────────────────────
-#ifdef _WIN32
 bool AudioManager::openCD(const std::string& drive_letter) {
     std::lock_guard<std::mutex> lock(state_mutex_);
+    // Exit stream mode if active before entering CD mode.
+    if (stream_mode_.load()) {
+        stream_mode_.store(false);
+        stream_plugin_.close();
+    }
     // teardown handles already-stopped device safely
     teardown();
     teardownNext();
@@ -1098,8 +1151,138 @@ void AudioManager::closeCD() {
     }
 }
 
+// Non-blocking radio start. If a connect is already running, remember the latest
+// request (depth-1, latest-wins) instead of racing a second worker.
+void AudioManager::beginStream(const std::string& url) {
+    // Graceful failure (slice c): a missing/incompatible plugin means no streaming.
+    // PluginSource::open() would no-op to false anyway, but guard early so we never
+    // spawn a connect worker, and surface a failure the UI can toast. (UIManager
+    // also preflights streamPluginReady() for the specific reason.)
+    if (!stream_plugin_.valid()) {
+        Log::write("stream", streamPluginError() + " — ignoring beginStream");
+        stream_just_failed_.store(true);
+        return;
+    }
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    if (stream_connecting_.load()) {
+        std::lock_guard<std::mutex> lk(stream_connect_mtx_);
+        stream_pending_url_ = url;
+        stream_pending_has_ = true;
+        return;
+    }
+    startStreamConnectLocked(url);
+}
+
+// Stop current playback and spawn the connect worker. Caller holds state_mutex_.
+void AudioManager::startStreamConnectLocked(const std::string& url) {
+    // Stop whatever is playing so its callback releases the device before the
+    // worker touches stream_plugin_. (stream_mode_ is cleared first, so a prior
+    // stream's callback stops entering the stream branch.)
+    if (cd_mode_.load()) { cd_source_.stop(); cd_source_.close(); cd_mode_.store(false); }
+    stream_mode_.store(false);
+    teardown();        // stops + uninits device_ and file decoder_
+    teardownNext();
+    track_ended_flag_.store(false);
+    state_.store(PlaybackState::Stopped);
+    // Starting a stream means no file is the current track. Clear it so a stale
+    // file identity (e.g. a just-drained override-queue song) can't drive the
+    // file toast or the playlist play-indicator across a queue-drain -> radio
+    // advance. Safe: startStreamConnectLocked only runs on the main thread
+    // (pollEvents auto-advance, or UIManager radio-select / Ctrl+K).
+    current_track_ = {};
+
+    uint64_t gen = stream_connect_gen_.fetch_add(1) + 1;
+    {
+        std::lock_guard<std::mutex> lk(stream_connect_mtx_);
+        stream_connect_url_        = url;
+        stream_connect_worker_gen_ = gen;
+    }
+    stream_connect_done_.store(false);
+    stream_connecting_.store(true);
+
+    // The prior worker (if any) has already finished by the time we get here
+    // (stream_connecting_ was false), so this join is instant.
+    if (stream_connect_thread_.joinable()) stream_connect_thread_.join();
+    stream_connect_thread_ = std::thread([this, url]() {
+        // The slow part — connect + producer spawn — entirely off the UI thread.
+        // The worker touches only stream_plugin_; the device is brought up later
+        // on the main thread once this succeeds.
+        bool ok = stream_plugin_.open(url);
+        {
+            std::lock_guard<std::mutex> lk(stream_connect_mtx_);
+            stream_connect_ok_ = ok;
+        }
+        stream_connect_done_.store(true);
+    });
+}
+
+// Called every tick from pollEvents (main thread). Picks up a finished connect
+// and brings the device up, discarding the result if a newer playback superseded it.
+void AudioManager::pollStreamConnect() {
+    if (!stream_connect_done_.exchange(false)) return;
+
+    std::lock_guard<std::mutex> lock(state_mutex_);
+
+    bool ok; uint64_t wgen;
+    {
+        std::lock_guard<std::mutex> lk(stream_connect_mtx_);
+        ok = stream_connect_ok_;
+        wgen = stream_connect_worker_gen_;
+    }
+    if (stream_connect_thread_.joinable()) stream_connect_thread_.join();  // reap finished worker
+
+    const bool superseded = (wgen != stream_connect_gen_.load());
+
+    if (superseded) {
+        // A file/CD/newer stream started while we were connecting — discard this
+        // stream without touching the device or state the new playback now owns.
+        stream_plugin_.close();
+    } else if (!ok) {
+        stream_plugin_.close();
+        stream_mode_.store(false);
+        state_.store(PlaybackState::Stopped);
+        stream_just_failed_.store(true);
+    } else {
+        // Publish: bring up the device on the main thread now that the stream is open.
+        ma_device_config cfg = ma_device_config_init(ma_device_type_playback);
+        cfg.playback.format   = ma_format_f32;
+        cfg.playback.channels = 2;
+        cfg.sampleRate        = 44100;
+        cfg.dataCallback      = &AudioManager::maDataCallback;
+        cfg.stopCallback      = &AudioManager::maStopCallback;
+        cfg.pUserData         = this;
+        if (has_selected_device_) cfg.playback.pDeviceID = &selected_device_id_;
+        if (ma_device_init(nullptr, &cfg, &device_) == MA_SUCCESS) {
+            device_initialised_ = true;
+            stream_mode_.store(true);
+            ma_device_set_master_volume(&device_, volume_.load());
+            ma_device_start(&device_);
+            state_.store(PlaybackState::Playing);
+            stream_just_connected_.store(true);
+        } else {
+            stream_plugin_.close();
+            stream_mode_.store(false);
+            state_.store(PlaybackState::Stopped);
+            stream_just_failed_.store(true);
+        }
+    }
+
+    stream_connecting_.store(false);
+
+    // Latest-wins: honor a station selected during the connect.
+    bool has_pending = false; std::string pending;
+    {
+        std::lock_guard<std::mutex> lk(stream_connect_mtx_);
+        has_pending = stream_pending_has_;
+        pending = stream_pending_url_;
+        stream_pending_has_ = false;
+    }
+    if (has_pending) startStreamConnectLocked(pending);
+}
+
 bool AudioManager::playCDTrack(int track_number) {
     if (!cd_mode_.load() || !cd_source_.isOpen()) return false;
+    stream_connect_gen_.fetch_add(1);   // supersede any in-flight stream connect
     bool ok = cd_source_.playTrack(track_number);
     if (ok) state_.store(PlaybackState::Playing);   // viz / BPM / UI gate on state_
     return ok;
@@ -1108,7 +1291,6 @@ const std::vector<CDTrack>& AudioManager::cdTracks() const {
     return cd_source_.tracks();
 }
 
-int AudioManager::cdPositionSec()  const { return cd_source_.positionSec(); }
-int AudioManager::cdDurationSec()  const { return cd_source_.durationSec(); }
+int AudioManager::cdPositionSec()  const { return (int)cd_source_.positionSec(); }
+int AudioManager::cdDurationSec()  const { return (int)cd_source_.durationSec(); }
 int AudioManager::cdCurrentTrack() const { return cd_source_.currentTrack(); }
-#endif

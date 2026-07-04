@@ -6,6 +6,13 @@
 #  endif
 #  include <windows.h>
 #endif
+// Enable the wide-character ncurses API (cchar_t / setcchar / mvwadd_wch). This
+// MUST be defined before <ncurses.h> is included. Without it, this build's
+// narrow string functions pass UTF-8 bytes through undecoded, so box-drawing
+// glyphs (╭ ╮ ╰ ╯) render as Latin-1 mojibake. Wide chars render as one cell.
+#ifndef NCURSES_WIDECHAR
+#  define NCURSES_WIDECHAR 1
+#endif
 // Use the wide-char ncurses header for mvwaddwstr support
 #ifdef __has_include
 #  if __has_include(<ncursesw/ncurses.h>)
@@ -18,17 +25,28 @@
 #endif
 
 #include "UIManager.h"
+#include "CoverArt.h"
+#ifdef _WIN32
+#include <shellapi.h>   // ShellExecuteA for Last.fm browser auth
+#else
+#include <termios.h>    // IXON off so ^Q/^S reach curses (ctor block below)
+#include <unistd.h>
+#endif
 #include "StringUtils.h"
 #include "AudioManager.h"
 #include "PlaylistManager.h"
+#include "Mp4Chapters.h"
 #include "Config.h"
 #include "LrcData.h"
 #include "Toast.h"
+// IHeartDeepLog moved into the streaming plugin (slice c) — the host no longer
+// includes it. Ctrl+A toggles it across the ABI via audio_.setDeepLog().
 
 #include <filesystem>
 #include <algorithm>
 #include <sstream>
 #include <iomanip>
+#include <fstream>
 #include <stdexcept>
 #include <vector>
 #include <string>
@@ -39,6 +57,29 @@
 #include <clocale>
 #include <cstdint>
 #include <ctime>
+#include <thread>
+#include <cstdarg>
+#include <cstdio>
+#include <cstring>
+#include <cstdlib>
+#include "Log.h"
+#include "Version.h"
+// Version tag shown in the status line and About panel. The version is
+// single-sourced in Version.h (REMOCT_VERSION); only the honest per-platform
+// suffix differs here.
+#ifdef _WIN32
+static const char* const kVersionTag = "v" REMOCT_VERSION "-win";
+#else
+static const char* const kVersionTag = "v" REMOCT_VERSION "-linux";
+#endif
+
+static void sclog(const char* fmt, ...) {
+    char buf[2048];
+    va_list ap; va_start(ap, fmt);
+    std::vsnprintf(buf, sizeof(buf), fmt, ap);
+    va_end(ap);
+    Log::write("scrob", buf);
+}
 #include <cstdio>
 #include <chrono>
 
@@ -52,13 +93,34 @@ namespace fs = std::filesystem;
 // Construction
 // ─────────────────────────────────────────────────────────────────────────────
 UIManager::UIManager(PlaylistManager& playlist, AudioManager& audio,
-                     DigiConfig& config, const std::string& initial_dir)
-    : playlist_(playlist), audio_(audio), config_(config)
+                     DigiConfig& config, const std::string& initial_dir,
+                     core::INotify* notify)
+    : notify_(notify ? notify : &core::notifier()),
+      playlist_(playlist), audio_(audio), config_(config)
 {
     if (!initscr()) throw std::runtime_error("initscr() failed");
     setlocale(LC_ALL, "");
     cbreak();
     noecho();
+#ifndef _WIN32
+    // Linux ttys ship with XON/XOFF flow control (IXON): the driver consumes
+    // ^Q (XON) and ^S (XOFF) before curses ever sees them — so Ctrl+Q (quit,
+    // key 17) never arrived and ^S would freeze output. cbreak() doesn't turn
+    // this off (raw() would, but it also takes ISIG — too big a hammer).
+    // Windows consoles have no tty flow control, which is why the baseline
+    // never needed this. (Slice-1 follow-up, Dos-found on the Debian VM.)
+    // NOTE: this is the ONLY control char the Linux tty steals in cbreak
+    // mode — a minimal-curses key probe confirmed ^B/^G/^U/^N/^T (2/7/21/
+    // 14/20) all reach getch() with just this. The slice-2 "dead keys" were
+    // an #ifdef _WIN32 span in handleInput's key switch, not the terminal.
+    {
+        struct termios tio{};
+        if (tcgetattr(STDIN_FILENO, &tio) == 0) {
+            tio.c_iflag &= ~static_cast<tcflag_t>(IXON);
+            tcsetattr(STDIN_FILENO, TCSANOW, &tio);
+        }
+    }
+#endif
     keypad(stdscr, TRUE);
     curs_set(0);
     timeout(80);
@@ -74,13 +136,41 @@ UIManager::UIManager(PlaylistManager& playlist, AudioManager& audio,
         current_dir_ = fs::current_path().string();
 
     refreshDir();
+    audio_.setPreferDigital(config_.prefer_digital_stream);   // apply saved stream-mode pref
+    audio_.setProbeMinted(config_.iheart_probe_minted);       // apply saved identity A/B arm (probe)
     running_ = true;
 }
 
+// All toast call sites land here (member hides the 4-arg Toast.h adapter);
+// content mapping stays in Toast.h, delivery behind the injected notifier.
+void UIManager::showTrackToast(const std::string& title, const std::string& artist,
+                               const std::string& album) {
+    ::showTrackToast(title, artist, album, *notify_);
+#ifndef _WIN32
+    // Cmdline echo (KEPT past slice 5 — see UIManager.h): a real notify-send
+    // toast now lands on a Linux desktop with a daemon, but headless/no-daemon
+    // Linux (WSL2, CI, SSH) renders nothing — so mirror the adapter's title
+    // mapping (artist prepends) into the cmdline bar as the always-visible
+    // graceful-degradation surface. Sanitized: the bar draws via the narrow API
+    // and metadata can carry non-ASCII.
+    status_msg_ = sanitizeForDisplay(artist.empty() ? title
+                                                    : artist + " - " + title);
+    status_msg_ticks_ = 0;
+    redraw_needed_.store(true);
+#endif
+}
+
 UIManager::~UIManager() {
+    flushBookProgress();       // persist resume position if quitting mid-book
     running_ = false;
+    lf_poll_active_.store(false);
+    if (lf_poll_thread_.joinable()) lf_poll_thread_.join();
+    lb_validate_active_.store(false);
+    if (lb_validate_thread_.joinable()) lb_validate_thread_.join();
+    if (discord_art_thread_.joinable()) discord_art_thread_.join();
     if (mb_search_win_) { delwin(mb_search_win_); mb_search_win_ = nullptr; }
 #ifdef _WIN32
+    // MBLookup/CDRipper cancel stay gated: CD is slice 6.
     mb_lookup_.cancel();
     cd_ripper_.cancel();
 #endif
@@ -154,31 +244,139 @@ void UIManager::initColours() {
     if (!has_colors()) return;
     start_color();
     use_default_colors();
-    init_pair(CP_TITLE,      COLOR_CYAN,    -1);
-    init_pair(CP_FOCUSED,    COLOR_WHITE,   COLOR_BLUE);   // white on blue — readable
-    init_pair(CP_SELECTED,   COLOR_WHITE,   COLOR_BLUE);   // white on blue — readable
-    init_pair(CP_PROGRESS,   COLOR_WHITE,   COLOR_BLUE);   // progress bar
-    init_pair(CP_STATUS_OK,  COLOR_GREEN,   -1);
-    init_pair(CP_STATUS_ERR, COLOR_RED,     -1);
-    init_pair(CP_BORDER,     COLOR_CYAN,    -1);
-    init_pair(CP_DIM,        COLOR_WHITE,   -1);
-    // Make inactive playlist text brighter — A_BOLD is applied at render time
-    // Visualizer: foreground = colour, background = same colour → solid filled cell
-    init_pair(CP_VIZ_LOW,    COLOR_GREEN,   COLOR_GREEN);
-    init_pair(CP_VIZ_MID,    COLOR_YELLOW,  COLOR_YELLOW);
-    init_pair(CP_VIZ_HIGH,   COLOR_CYAN,    COLOR_CYAN);
-    init_pair(CP_VIZ_PEAK,   COLOR_WHITE,   COLOR_WHITE);
+
+    // Built-in defaults (index 0 unused; slots 1..13 map to CP_*). These reproduce
+    // the previous hard-coded pairs exactly, so a missing theme.conf changes nothing.
+    short fg[14] = { 0,
+        COLOR_CYAN,   COLOR_WHITE,  COLOR_WHITE,  COLOR_WHITE,   // title focused selected progress
+        COLOR_GREEN,  COLOR_RED,    COLOR_CYAN,   COLOR_WHITE,   // status_ok status_err border dim
+        COLOR_GREEN,  COLOR_YELLOW, COLOR_CYAN,   COLOR_WHITE,   // viz_low viz_mid viz_high viz_peak
+        COLOR_BLACK };                                           // selected_unfocused
+    short bg[14] = { 0,
+        -1,           COLOR_BLUE,   COLOR_BLUE,   COLOR_BLUE,
+        -1,           -1,           -1,           -1,
+        COLOR_GREEN,  COLOR_YELLOW, COLOR_CYAN,   COLOR_WHITE,
+        COLOR_WHITE };
+
+    loadTheme(fg, bg);   // override in place from theme.conf (emits default on first run)
+
+    for (short s = 1; s <= 13; ++s)
+        init_pair(s, fg[s], bg[s]);
+
+    // Visualizer fractional-tip pair: peak colour on the DEFAULT background. The
+    // themed viz pairs are fg==bg solid fills (a partial block would be invisible),
+    // so the sub-cell lower-block glyphs (▁..▇) need a real bg to show their height.
+    init_pair(CP_VIZ_TIP, fg[CP_VIZ_PEAK], -1);
+}
+
+void UIManager::loadTheme(short* fg, short* bg) {
+    const std::string path = DigiConfig::themePath();
+
+    // element name -> colour-pair slot
+    struct Row { const char* name; short slot; };
+    static const Row rows[] = {
+        { "title",      CP_TITLE      }, { "focused",    CP_FOCUSED    },
+        { "selected",   CP_SELECTED   }, { "progress",   CP_PROGRESS   },
+        { "status_ok",  CP_STATUS_OK  }, { "status_err", CP_STATUS_ERR },
+        { "border",     CP_BORDER     }, { "dim",        CP_DIM        },
+        { "viz_low",    CP_VIZ_LOW    }, { "viz_mid",    CP_VIZ_MID    },
+        { "viz_high",   CP_VIZ_HIGH   }, { "viz_peak",   CP_VIZ_PEAK   },
+        { "selected_unfocused", CP_SELECTED_UNFOCUSED },
+    };
+
+    auto colourFromName = [](std::string s, short fallback) -> short {
+        for (auto& c : s) c = (char)std::tolower((unsigned char)c);
+        if (s == "default") return -1;
+        if (s == "black")   return COLOR_BLACK;
+        if (s == "red")     return COLOR_RED;
+        if (s == "green")   return COLOR_GREEN;
+        if (s == "yellow")  return COLOR_YELLOW;
+        if (s == "blue")    return COLOR_BLUE;
+        if (s == "magenta") return COLOR_MAGENTA;
+        if (s == "cyan")    return COLOR_CYAN;
+        if (s == "white")   return COLOR_WHITE;
+        return fallback;    // unknown token -> keep current value
+    };
+
+    std::ifstream f(path);
+    if (!f) {
+        // First run (or user deleted it): emit a commented default built from the
+        // defaults already in fg[]/bg[], so the file always matches the program.
+        auto nameOf = [](short c) -> const char* {
+            switch (c) {
+                case COLOR_BLACK:   return "black";
+                case COLOR_RED:     return "red";
+                case COLOR_GREEN:   return "green";
+                case COLOR_YELLOW:  return "yellow";
+                case COLOR_BLUE:    return "blue";
+                case COLOR_MAGENTA: return "magenta";
+                case COLOR_CYAN:    return "cyan";
+                case COLOR_WHITE:   return "white";
+                default:            return "default";   // -1 and anything else
+            }
+        };
+        std::ofstream o(path, std::ios::trunc);
+        if (o) {
+            o << "# RE-MOCT theme - colour-pair assignments (auto-generated default)\n"
+                 "#\n"
+                 "# Format:  element   fg   bg\n"
+                 "# Colours: black red green yellow blue magenta cyan white default\n"
+                 "#          'default' = the terminal's own foreground/background.\n"
+                 "#\n"
+                 "# NOTE: ncursesw on this build exposes only the 8 ANSI colours through\n"
+                 "#       the API - no hex / RGB / 256-colour. Bold/dim/reverse are applied\n"
+                 "#       by the program per-context and are not configurable here.\n"
+                 "#\n"
+                 "# NOTE: the viz_* rows intentionally use fg == bg. That paints a solid\n"
+                 "#       filled cell for the visualizer bars - it is not a mistake.\n"
+                 "#\n"
+                 "# Reload live with '~' after editing.\n\n";
+            for (const auto& r : rows)
+                o << std::left << std::setw(20) << r.name
+                  << std::setw(9) << nameOf(fg[r.slot])
+                  << nameOf(bg[r.slot]) << '\n';
+        }
+        return;   // defaults already populated in fg[]/bg[]
+    }
+
+    auto slotFor = [&](const std::string& n) -> short {
+        for (const auto& r : rows) if (n == r.name) return r.slot;
+        return -1;
+    };
+
+    std::string line;
+    while (std::getline(f, line)) {
+        if (auto h = line.find('#'); h != std::string::npos) line.erase(h);
+        std::istringstream iss(line);
+        std::string elem, fgs, bgs;
+        if (!(iss >> elem >> fgs >> bgs)) continue;   // need all three tokens
+        short slot = slotFor(elem);
+        if (slot < 0) {
+            Log::write("theme", "unknown element '" + elem + "' ignored");
+            continue;
+        }
+        fg[slot] = colourFromName(fgs, fg[slot]);
+        bg[slot] = colourFromName(bgs, bg[slot]);
+    }
 }
 
 void UIManager::createWindows() {
-    const int pane_rows  = screen_rows_ - 4;
-    const int left_cols  = screen_cols_ / 2;
-    const int right_cols = screen_cols_ - left_cols;
+    // Awesome theme insets the two panes: a 1-col gutter on each outer edge and
+    // a 1-col gap between them, giving the padded "floating panel" look. Classic
+    // keeps the panes flush (gut = 0), so its geometry is byte-identical to before.
+    const bool aw  = config_.awesome_mode;
+    const int  gut = aw ? 1 : 0;
+    const int  pane_rows  = screen_rows_ - 4;
+    const int  avail_cols = screen_cols_ - (aw ? 3 : 0);   // left + mid + right gutters
+    const int  left_cols  = avail_cols / 2;
+    const int  right_cols = avail_cols - left_cols;
+    const int  dir_x      = gut;                    // 0 classic, 1 awesome
+    const int  right_x    = gut + left_cols + gut;  // == left_cols when gut == 0
     win_title_    = newwin(1,         screen_cols_, 0,              0);
     win_cwd_      = newwin(1,         screen_cols_, 1,              0);
-    win_dir_      = newwin(pane_rows, left_cols,    2,              0);
-    win_playlist_ = newwin(pane_rows, right_cols,   2,              left_cols);
-    win_viz_      = newwin(pane_rows, right_cols,   2,              left_cols);
+    win_dir_      = newwin(pane_rows, left_cols,    2,              dir_x);
+    win_playlist_ = newwin(pane_rows, right_cols,   2,              right_x);
+    win_viz_      = newwin(pane_rows, right_cols,   2,              right_x);
     win_progress_ = newwin(1,         screen_cols_, screen_rows_-2, 0);
     win_cmdline_  = newwin(1,         screen_cols_, screen_rows_-1, 0);
     // Set black background on all windows so colors render correctly
@@ -194,6 +392,80 @@ void UIManager::destroyWindows() {
     del(win_viz_);   del(win_progress_); del(win_cmdline_);
 }
 
+// Theme-aware panel border.
+//  • Classic theme: behaves exactly like the previous box(w,0,0) call — the
+//    caller's current attributes apply, so no migrated pane changes look.
+//  • Awesome theme: draws the straight edges, then rounds the four corners with
+//    ╭ ╮ ╰ ╯ in an accent colour (bright cyan when focused, dim when not). The
+//    corners are drawn with the wide-char API (setcchar/add_wch) so they render
+//    as single cells; the bottom-right uses ins_wch so writing the last cell can
+//    never advance the cursor off-window (which would scroll/ERR). An optional
+//    title is laid into the top edge, inset two cells.
+void UIManager::panelFrame(WINDOW* w, const std::string& title, bool focused,
+                           wchar_t icon) {
+    if (!w) return;
+    int rows, cols;
+    getmaxyx(w, rows, cols);
+    if (rows < 2 || cols < 2) return;
+
+    if (!config_.awesome_mode) {
+        box(w, 0, 0);                 // classic — identical to prior behaviour
+        return;
+    }
+
+    const short  pair = focused ? CP_TITLE : CP_BORDER;  // both cyan
+    const attr_t at   = focused ? A_BOLD  : A_NORMAL;     // bold vs plain (no grey dim)
+
+    wattron(w, COLOR_PAIR(pair) | at);
+    box(w, 0, 0);                                          // straight edges (ACS)
+    // Corners as true wide chars — single cells, no UTF-8 byte mojibake. The
+    // bottom-right uses ins_wch (insert, not add) so writing the final cell can
+    // never advance the cursor off-window (which would scroll/ERR, dropping it).
+    auto corner = [&](int y, int x, wchar_t glyph, bool insert) {
+        cchar_t cc;
+        wchar_t s[2] = { glyph, 0 };
+        setcchar(&cc, s, at, pair, nullptr);
+        if (insert) mvwins_wch(w, y, x, &cc);
+        else        mvwadd_wch(w, y, x, &cc);
+    };
+    corner(0,        0,        L'\u256d', false);          // ╭ top-left
+    corner(0,        cols - 1, L'\u256e', false);          // ╮ top-right
+    corner(rows - 1, 0,        L'\u2570', false);          // ╰ bottom-left
+    corner(rows - 1, cols - 1, L'\u256f', true);           // ╯ bottom-right
+    wattroff(w, COLOR_PAIR(pair) | at);
+
+    // Title sits in the top edge. Trim surrounding padding so callers may pass an
+    // already space-padded header string and still get a clean inset label.
+    if (cols > 6) {
+        int tx = 2;
+        // Optional Nerd Font icon — drawn via the wide API (the narrow path on
+        // this build doesn't decode UTF-8, so a glyph in a char string mojibakes).
+        if (config_.nerd_icons && icon) {
+            cchar_t cc;
+            wchar_t s[2] = { icon, 0 };
+            setcchar(&cc, s, A_BOLD, pair, nullptr);
+            mvwadd_wch(w, 0, 2, &cc);
+            tx = 4;   // glyph + one space
+        }
+        size_t b = title.find_first_not_of(' ');
+        size_t e = title.find_last_not_of(' ');
+        if (b != std::string::npos && tx < cols - 2) {
+            std::string t = " " + title.substr(b, e - b + 1) + " ";
+            if ((int)t.size() > cols - tx - 2) t = t.substr(0, (size_t)(cols - tx - 2));
+            wattron(w, COLOR_PAIR(pair) | A_BOLD);
+            mvwaddnstr(w, 0, tx, t.c_str(), (int)t.size());
+            wattroff(w, COLOR_PAIR(pair) | A_BOLD);
+        }
+    }
+}
+
+int UIManager::paneVisibleRows(WINDOW* w) const {
+    int r, c;
+    getmaxyx(w, r, c);
+    (void)c;
+    return config_.awesome_mode ? r - 2 : r - 1;
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Main loop
 // ─────────────────────────────────────────────────────────────────────────────
@@ -201,8 +473,33 @@ void UIManager::maybePreloadNext() {
     if (playlist_.repeatMode() == RepeatMode::One) return;
     if (!playlist_.queueEmpty()) return;  // queue handles next
     if (auto peek = playlist_.peekNext(); peek.has_value())
-        if (!isCDTrackPath(peek.value()))
+        if (!isCDTrackPath(peek.value()) && !isStreamPath(peek.value()))
             audio_.preloadNext(peek.value());
+}
+
+void UIManager::flushPendingSeek() {
+    if (!seek_dirty_) return;
+    double d = pending_seek_;
+    pending_seek_ = 0.0;
+    seek_dirty_   = false;
+    // Drop the buffered seek if the track changed since it was requested (e.g. n/p or
+    // auto-advance landed within the coalescing window) so it can't leak onto the new
+    // track and start it mid-way.
+    if ((int)playlist_.current() != seek_stamp_) return;
+    last_seek_apply_ = std::chrono::steady_clock::now();
+    audio_.seekBy(d);
+    redraw_needed_.store(true);
+}
+
+void UIManager::requestSeek(double delta) {
+    if (!seek_dirty_) seek_stamp_ = (int)playlist_.current();  // tie this seek to the current track
+    pending_seek_ += delta;
+    seek_dirty_    = true;
+    // Apply immediately when outside the cooldown (so a single tap is instant);
+    // otherwise accumulate and let the run loop flush once the window elapses.
+    using namespace std::chrono;
+    if (steady_clock::now() - last_seek_apply_ >= milliseconds(100))
+        flushPendingSeek();
 }
 
 void UIManager::run() {
@@ -213,6 +510,32 @@ void UIManager::run() {
 
     while (running_) {
         audio_.pollEvents();
+        // Flush a coalesced seek once the user stops hammering [/] (the cooldown
+        // makes single taps instant and turns held repeats into a few seeks, not many).
+        if (seek_dirty_ &&
+            std::chrono::steady_clock::now() - last_seek_apply_ >= std::chrono::milliseconds(100))
+            flushPendingSeek();
+        updateScrobbler();
+        updateBookProgress();
+        // Async stream connect/fail confirmation toasts. Un-gated at slice 5:
+        // this was #ifdef _WIN32 slice-1 scaffolding from when notify was a
+        // Linux no-op. Streams are ported (slices 2/3) and every dep here is
+        // portable — takeStreamConnected/Failed are plain atomics, stationLabel/
+        // streamUrl already run on Linux via drawProgress. Windows is a
+        // preprocessed non-event (the block already compiled under _WIN32); this
+        // only ADDS the toasts to the Linux build. The file-track toast below
+        // deliberately skips streams (curIsStream), so these own stream toasts —
+        // no double toast. (Dos-found closing slice 5: "Streaming"/"FAILED"
+        // toasts were dead on Linux — same class as 4f0b240 / 91caf7a.)
+        if (audio_.takeStreamConnected()) {
+            // Label from the URL actually streaming, not playlist_.current(): a
+            // station launched from the override queue has no playlist row, so
+            // current() is stale (the prior file) and would mislabel the toast.
+            std::string t = stationLabel(audio_.streamUrl());
+            showTrackToast("Streaming", t, "");
+        }
+        if (audio_.takeStreamFailed())
+            showTrackToast("Radio stream connect FAILED", "", "");
 
         // Force periodic resize check and redraw every ~80ms
         static int resize_poll = 0;
@@ -276,7 +599,7 @@ void UIManager::run() {
         {
             const auto& track = audio_.currentTrack();
             std::string np = track.artist.empty() ? track.title : track.artist + " - " + track.title;
-            std::string right_approx = "  RE-MOCT v1.0.0-rc1 ";
+            std::string right_approx = "  RE-MOCT v" REMOCT_VERSION " ";
             int max_np = screen_cols_ - (int)right_approx.size() - 4;
             if (!np.empty() && max_np > 0 && (int)np.size() > max_np)
                 redraw_needed_.store(true);
@@ -306,9 +629,9 @@ void UIManager::run() {
             }
         }
 
-#ifdef _WIN32
         // CD media check — only poll when nothing else is playing
         // Skip entirely during file playback: drive may sleep, that's fine
+        // (slice 6: common — the CD path is live on Linux via SG_IO too).
         if (!cd_drive_letter_.empty() && !audio_.cdMode()
             && audio_.state() == PlaybackState::Stopped) {
             ++cd_poll_ticks_;
@@ -366,10 +689,8 @@ void UIManager::run() {
             pl_scroll_ = 0;
             redraw_needed_.store(true);
         }
-#endif
         if (playlist_.drainPending())
             redraw_needed_.store(true);
-#ifdef _WIN32
         // Clear MB error message after ~5 seconds (62 ticks * 80ms)
         static int mb_err_ticks = 0;
         {
@@ -415,23 +736,34 @@ void UIManager::run() {
         } else if (cd_ripper_.isActive()) {
             rip_msg_ticks_ = 0;
         }
+#ifndef _WIN32
+        // Expire the toast-fallback status line (same cadence as rip_status_).
+        if (!status_msg_.empty() && ++status_msg_ticks_ > 60) {
+            status_msg_.clear();
+            status_msg_ticks_ = 0;
+            redraw_needed_.store(true);
+        }
 #endif
         {
             int cur = (int)playlist_.current();
             if (cur != last_playlist_current_for_sync_) {
                 last_playlist_current_for_sync_ = cur;
-                // Toast notification for new track
+                // Toast for a new FILE track. Skip when the newly current entry is a
+                // radio stream: streams aren't reflected in audio_.currentTrack()
+                // (it still holds the last file), so toasting here re-announces the
+                // stale file — the double toast on file->radio. The radio path
+                // (beginStream -> "Negotiating/Streaming") owns stream toasts.
+                bool curIsStream = (cur >= 0 && (size_t)cur < playlist_.size()
+                                    && isStreamPath(playlist_.at((size_t)cur).path));
                 const auto& track = audio_.currentTrack();
-                if (!track.path.empty()) {
+                if (!curIsStream && !track.path.empty()) {
                     config_.recordPlay(track.path);
                     if (config_.toast_enabled)
                         showTrackToast(track.title, track.artist, track.album);
                 }
                 if (pl_cursor_ != cur) {
                     pl_cursor_ = cur;
-                    int rows, cols2;
-                    getmaxyx(win_playlist_, rows, cols2);
-                    int visible = rows - 1;
+                    int visible = paneVisibleRows(win_playlist_);
                     if (pl_cursor_ < pl_scroll_)
                         pl_scroll_ = pl_cursor_;
                     else if (pl_cursor_ >= pl_scroll_ + visible)
@@ -472,25 +804,48 @@ void UIManager::run() {
         if (right_pane_ == RightPane::Visualizer)
             computeVizBins();
 
+        // Animate the breathing progress head — only in Awesome mode while playing,
+        // so Classic mode keeps its repaint-on-change cadence (no extra cost).
+        if (config_.awesome_mode && audio_.state() == PlaybackState::Playing)
+            redraw_needed_.store(true);
+
+        // Terminal too small: resizeWindows() destroyed the pane windows and
+        // returned without recreating them (see its size guard). Both draw paths
+        // below dereference those windows (getmaxyx / wnoutrefresh), which crashes
+        // on a null WINDOW*. Paint a safe notice straight onto stdscr and skip all
+        // pane drawing until the terminal grows back to a usable size.
+        if (!win_dir_ || !win_title_ || !win_playlist_ ||
+            !win_progress_ || !win_cmdline_) {
+            werase(stdscr);
+            if (screen_rows_ > 0 && screen_cols_ > 0) {
+                const char* m1 = "Terminal too small";
+                const char* m2 = "(min 40 x 9)";
+                int y  = screen_rows_ / 2;
+                int x1 = (screen_cols_ - (int)strlen(m1)) / 2; if (x1 < 0) x1 = 0;
+                int x2 = (screen_cols_ - (int)strlen(m2)) / 2; if (x2 < 0) x2 = 0;
+                mvaddnstr(y, x1, m1, screen_cols_);
+                if (y + 1 < screen_rows_) mvaddnstr(y + 1, x2, m2, screen_cols_);
+            }
+            wnoutrefresh(stdscr);
+            doupdate();
+            redraw_needed_.store(false);
+        } else
         if (redraw_needed_.load()) {
-#ifdef _WIN32
+            // slice 6: overlay dispatch is common — RipConfirm is live on Linux
+            // (^Y rip). MBSearch draw/input handlers are portable too; the overlay
+            // just never opens on Linux because ^F (case 6) stays gated.
             if (ui_overlay_ != UIOverlay::None) {
                 if (ui_overlay_ == UIOverlay::RipConfirm) drawRipConfirm();
                 else if (ui_overlay_ == UIOverlay::MBSearch) drawMBSearch();
                 redraw_needed_.store(false);
             } else {
-#endif
             drawAll();
             redraw_needed_.store(false);
-#ifdef _WIN32
             }
-#endif
         } else {
-#ifdef _WIN32
             if (ui_overlay_ != UIOverlay::None) {
                 // No change — modal stays on screen, do nothing
             } else {
-#endif
             drawTitleBar();
             drawCwd();
             drawProgress();
@@ -502,9 +857,7 @@ void UIManager::run() {
             wnoutrefresh(win_cwd_);
             wnoutrefresh(win_progress_);
             doupdate();
-#ifdef _WIN32
             }
-#endif
         }
 
         if (ch != ERR) {
@@ -614,6 +967,7 @@ void UIManager::drawAll() {
     else if (right_pane_ == RightPane::Devices)     drawDevices();
     else if (right_pane_ == RightPane::EQ)          drawEq();
     else if (right_pane_ == RightPane::Queue)        drawQueue();
+    else if (right_pane_ == RightPane::Chapters)     drawChapters();
     else                                             drawHelp();
     drawProgress();
     drawCmdLine();
@@ -629,8 +983,7 @@ void UIManager::drawAll() {
     doupdate();
 }
 
-#ifdef _WIN32
-void UIManager::drawRipConfirm() {
+void UIManager::drawRipConfirm() {   // slice 6: common (ncurses + portable CDSource)
     const int BOX_W = 68;
     const int BOX_H = 15;
     int y0 = (screen_rows_ - BOX_H) / 2;
@@ -643,7 +996,7 @@ void UIManager::drawRipConfirm() {
     werase(w);
 
     // Plain border + title — no wbkgd so no background color bleed
-    box(w, 0, 0);
+    panelFrame(w, "", true);
     const char* title = " SECURE AUDIO EXTRACTION ";
     mvwaddstr(w, 0, (BOX_W - (int)strlen(title)) / 2, title);
 
@@ -700,7 +1053,6 @@ void UIManager::drawRipConfirm() {
     wrefresh(w);
     delwin(w);
 }
-#endif
 
 
 // Apply MusicBrainz/Discogs track titles to the current CD playlist. UI THREAD
@@ -729,12 +1081,100 @@ void UIManager::applyReleaseTitles(const MBRelease& rel) {
 }
 
 
+void UIManager::refreshChaptersIfNeeded(const std::string& path) {
+    if (path == chapters_for_path_) return;        // already reflects this path
+    chapters_for_path_ = path;
+    current_chapters_.clear();
+    if (path.empty()) return;
+    // Any MP4-family container can carry chapters: .m4b books and chaptered
+    // .m4a/.mp4 podcasts. parseMp4Chapters returns empty for everything else,
+    // so non-chaptered files simply show no chapter.
+    std::string ext = fs::path(path).extension().string();
+    std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
+    if (ext == ".m4b" || ext == ".m4a" || ext == ".mp4" || ext == ".m4v")
+        current_chapters_ = parseMp4Chapters(path);
+}
+
+int UIManager::currentChapterIndex() const {
+    if (current_chapters_.empty()) return -1;
+    double pos = audio_.positionSec();
+    int idx = 0;
+    for (size_t i = 0; i < current_chapters_.size(); ++i) {
+        if (current_chapters_[i].start_sec <= pos + 0.05) idx = (int)i;
+        else break;
+    }
+    return idx;
+}
+
+void UIManager::jumpChapter(int dir) {
+    if (current_chapters_.empty()) {               // not chaptered -> plain +/-5s seek
+        audio_.seekBy(dir < 0 ? -5.0 : 5.0);
+        redraw_needed_.store(true);
+        return;
+    }
+    int ci = currentChapterIndex();
+    if (ci < 0) ci = 0;
+    if (dir > 0) {
+        if (ci + 1 < (int)current_chapters_.size())
+            audio_.seekTo(current_chapters_[(size_t)ci + 1].start_sec);
+        // else already in the last chapter -> stay put
+    } else {
+        double curStart = current_chapters_[(size_t)ci].start_sec;
+        double pos      = audio_.positionSec();
+        if (ci == 0 || pos - curStart > 3.0)
+            audio_.seekTo(curStart);                                       // restart current
+        else
+            audio_.seekTo(current_chapters_[(size_t)ci - 1].start_sec);    // previous
+    }
+    redraw_needed_.store(true);
+}
+
+void UIManager::flushBookProgress() {
+    if (book_progress_path_.empty()) return;
+    double pos = book_progress_pos_;
+    // Near the start -> treat as not-started; within 15s of the end -> finished,
+    // so a replay begins fresh. Otherwise store the resume point.
+    if (pos < 5.0 || (book_progress_dur_ > 0.0 && pos > book_progress_dur_ - 15.0))
+        config_.setBookPos(book_progress_path_, 0.0);
+    else
+        config_.setBookPos(book_progress_path_, pos);
+    config_.save();
+}
+
+void UIManager::updateBookProgress() {
+    const auto& tr = audio_.currentTrack();
+    bool playing = (audio_.state() != PlaybackState::Stopped);
+    bool isBook  = playing && !tr.path.empty() && PlaylistManager::isAudiobook(tr.path);
+    std::string active = isBook ? tr.path : std::string();
+
+    if (active != book_progress_path_) {           // transition: flush old, latch new
+        flushBookProgress();
+        book_progress_path_  = active;
+        book_progress_dur_   = isBook ? (double)tr.duration_sec : 0.0;
+        book_resume_pending_ = isBook;             // one-shot resume on the new book
+    }
+    if (isBook) {
+        if (book_resume_pending_) {
+            double saved = config_.bookPos(tr.path);
+            double pos   = audio_.positionSec();
+            if (saved <= 1.0)      book_resume_pending_ = false;            // nothing saved
+            else if (pos < 2.0)  { audio_.seekTo(saved); book_resume_pending_ = false; }
+            else if (pos > 3.0)    book_resume_pending_ = false;            // already moved on
+            // else 2..3s: wait a tick for the decoder to settle
+        }
+        book_progress_pos_ = audio_.positionSec();
+        if (tr.duration_sec > 0) book_progress_dur_ = (double)tr.duration_sec;
+    }
+}
+
 void UIManager::drawTitleBar() {
     werase(win_title_);
     wattron(win_title_, COLOR_PAIR(CP_TITLE) | A_BOLD);
     const auto& track = audio_.currentTrack();
     std::string np;
-#ifdef _WIN32
+    // slice 6: the CD now-playing label is live on Linux. The streamMode branch
+    // below stays Windows-gated — Linux streaming top-bar behavior is unchanged
+    // (a separate pre-existing gap, deliberately out of this CD slice).
     if (audio_.cdMode() && audio_.cdCurrentTrack() > 0) {
         int t = audio_.cdCurrentTrack();
         // Check if MB has populated the track name in the playlist
@@ -750,17 +1190,33 @@ void UIManager::drawTitleBar() {
         else
             np = cd_title + " [" + cd_drive_letter_ + ":]";
     } else
+#ifdef _WIN32
+    if (audio_.streamMode()) {
+        // Live stream: show the station identity (its RADIO: label) so the top
+        // line reflects the playing station, not the stale last-file track held
+        // in currentTrack(). The song itself (ICY/HLS now-playing) stays on the
+        // bottom progress row. Derive the label from the URL actually streaming
+        // (stationLabel -> config name or derived), NOT playlist_.current(): a
+        // station launched from the play queue never moves the playlist cursor
+        // (queue items have no playlist row), so current() still points at the
+        // previous song and would paint its stale title here. URL-based labeling
+        // is cursor-independent and still upgrades when a user-supplied station
+        // name lands in config.
+        std::string label = stationLabel(audio_.streamUrl());
+        np = label.empty() ? "(live stream)" : label;
+    } else
 #endif
     if (audio_.state() != PlaybackState::Stopped && !track.path.empty()) {
         np = track.artist.empty() ? track.title : track.artist + " - " + track.title;
         if (np.empty()) np = fs::path(track.path).filename().string();
+        refreshChaptersIfNeeded(track.path);
+        int ci = currentChapterIndex();
+        if (ci >= 0) np += "  |  " + current_chapters_[(size_t)ci].title;
     }
     std::string badge;
-#ifdef _WIN32
     if (audio_.cdMode()) {
         badge = audio_.cdSource().paused() ? "| " : (audio_.cdCurrentTrack() > 0 ? "> " : "  ");
     } else
-#endif
     switch (audio_.state()) {
         case PlaybackState::Playing: badge = "> "; break;
         case PlaybackState::Paused:  badge = "| "; break;
@@ -785,7 +1241,6 @@ void UIManager::drawTitleBar() {
         modes += spdbuf;
     }
     if (audio_.muted())      modes += " [MUTE]";
-#ifdef _WIN32
     if (audio_.cdMode())     modes += " [CD]";
     if (mb_fetching_.load())  modes += " [MB...]";
     else {
@@ -793,7 +1248,6 @@ void UIManager::drawTitleBar() {
         if (!mb_album_.empty() && audio_.cdMode())
             modes += " [" + mb_album_ + "]";
     }
-#endif
     if (sleep_minutes_ > 0) {
         auto elapsed = std::chrono::duration_cast<std::chrono::minutes>(
             std::chrono::steady_clock::now() - sleep_start_).count();
@@ -818,13 +1272,13 @@ void UIManager::drawTitleBar() {
         std::strftime(clk, sizeof(clk), " %H:%M:%S", tm);
         modes += clk;
     }
-    std::string right = modes + " RE-MOCT v1.0.0-rc1-win ";
+    std::string right = modes + " RE-MOCT " + kVersionTag + " ";
 
     int max_np = screen_cols_ - (int)right.size() - (int)badge.size() - 2;
     std::string line = " " + badge;
 
     if (!np.empty() && max_np > 0) {
-        if ((int)np.size() <= max_np) {
+        if (dispWidth(np) <= max_np) {
             // Fits — no scroll needed, reset state
             if (marquee_last_path_ != track.path) {
                 marquee_offset_ = 0;
@@ -842,20 +1296,14 @@ void UIManager::drawTitleBar() {
             }
 
             // Build scrollable string with padding at each end
-            const std::string pad = "   ";
-            std::string scroll_str = np + pad;
-            int slen = (int)scroll_str.size();
+            // Column-aware: marquee_offset_ counts codepoints, the visible window is
+            // measured in display columns (scrollToWidth uses the same np + 3-space
+            // gap), and the line is drawn via the wide API below. The pause/speed
+            // timing state machine is unchanged.
+            const int cyc = cpCount(np) + 3;   // np + 3-space gap, in codepoints
+            if (marquee_offset_ > cyc) marquee_offset_ = 0;
 
-            // Clamp offset
-            if (marquee_offset_ > slen) marquee_offset_ = 0;
-
-            // Extract visible window
-            std::string visible;
-            visible.reserve((size_t)max_np);
-            for (int i = 0; i < max_np; ++i)
-                visible += scroll_str[(size_t)(marquee_offset_ + i) % (size_t)slen];
-
-            line += visible;
+            line += scrollToWidth(np, max_np, marquee_offset_);
 
             // Advance scroll offset on timer
             ++marquee_ticks_;
@@ -863,7 +1311,7 @@ void UIManager::drawTitleBar() {
             if (marquee_ticks_ >= pause + MARQUEE_SPEED) {
                 marquee_ticks_ = MARQUEE_PAUSE;
                 ++marquee_offset_;
-                if (marquee_offset_ >= slen) marquee_offset_ = 0;
+                if (marquee_offset_ >= cyc) marquee_offset_ = 0;
             }
         }
     } else {
@@ -873,9 +1321,16 @@ void UIManager::drawTitleBar() {
         }
         line += "RE-MOCT - Music On Console Terminal";
     }
-    while ((int)line.size() < screen_cols_ - (int)right.size()) line += ' ';
+    // Pad in display columns so the right-aligned status sits at the true edge
+    // regardless of any multibyte glyphs in the title.
+    {
+        int target = screen_cols_ - dispWidth(right);
+        int cur    = dispWidth(line);
+        if (cur < target) line.append((size_t)(target - cur), ' ');
+    }
     line += right;
-    mvwaddnstr(win_title_, 0, 0, line.c_str(), screen_cols_);
+    std::wstring wtitle = utf8_to_wide(padToWidth(line, screen_cols_));
+    mvwaddnwstr(win_title_, 0, 0, wtitle.c_str(), (int)wtitle.size());
     wattroff(win_title_, COLOR_PAIR(CP_TITLE) | A_BOLD);
 }
 
@@ -891,16 +1346,17 @@ void UIManager::drawCwd() {
     const int maxw = screen_cols_ - 4;  // 4 = " >> " prefix
     std::string display = path;
     std::string prefix  = " >> ";
-    if ((int)display.size() > maxw) {
-        display = display.substr(display.size() - (size_t)maxw);
+    if (dispWidth(display) > maxw) {
+        display = truncateToWidthRight(display, maxw);   // column-aware tail
         prefix  = " << ";  // indicate left side is cut
     }
 
     std::string line = prefix + display;
-    line.resize((size_t)screen_cols_, ' ');
+    int cwx = config_.awesome_mode ? 1 : 0;   // align with inset pane frames
+    std::wstring wcwd = utf8_to_wide(padToWidth(line, screen_cols_ - cwx));
 
     wattron(win_cwd_, COLOR_PAIR(CP_DIM));
-    mvwaddnstr(win_cwd_, 0, 0, line.c_str(), screen_cols_);
+    mvwaddnwstr(win_cwd_, 0, cwx, wcwd.c_str(), (int)wcwd.size());
     wattroff(win_cwd_, COLOR_PAIR(CP_DIM));
 }
 
@@ -908,12 +1364,17 @@ void UIManager::drawDirBrowser() {
     werase(win_dir_);
     int rows, cols;
     getmaxyx(win_dir_, rows, cols);
+    (void)rows;
     bool focused = (focus_ == Pane::DirBrowser);
-    wattron(win_dir_, focused ? (COLOR_PAIR(CP_FOCUSED)|A_BOLD) : (COLOR_PAIR(CP_BORDER)|A_BOLD));
+    const bool aw = config_.awesome_mode;
+    const int  cx = aw ? 1 : 0;             // content left column (inside frame)
+    const int  cw = aw ? cols - 2 : cols;   // content width
     std::string hdr;
     if (in_drive_list_)   hdr = " [Drives] ";
     else if (in_recent_)  hdr = " [Recently Played] ";
     else if (in_favs_)    hdr = " [FAVs] (f:fav/unfav  Enter:play  Del:remove) ";
+    else if (in_radio_)   hdr = " [Radio] (Enter:play  d/Del:remove) ";
+    else if (in_books_)   hdr = " [Books] (Enter:play  Del:remove) ";
     else {
         std::string leaf = fs::path(current_dir_).filename().string();
         if (leaf.empty()) leaf = current_dir_;
@@ -922,10 +1383,14 @@ void UIManager::drawDirBrowser() {
                              : "";
         hdr = " Dir: " + leaf + sortname + (show_hidden_ ? " [.hidden]" : "") + " ";
     }
-    hdr.resize((size_t)cols, ' ');
-    mvwaddnstr(win_dir_, 0, 0, hdr.c_str(), cols);
-    wattroff(win_dir_, A_BOLD|COLOR_PAIR(CP_FOCUSED)|COLOR_PAIR(CP_BORDER));
-    int visible = rows - 1;
+    if (!aw) {   // Classic: full-width coloured header bar on row 0
+        wattron(win_dir_, focused ? (COLOR_PAIR(CP_FOCUSED)|A_BOLD)
+                                  : (COLOR_PAIR(CP_BORDER)|A_BOLD));
+        std::string bar = hdr; bar.resize((size_t)cols, ' ');
+        mvwaddnstr(win_dir_, 0, 0, bar.c_str(), cols);
+        wattroff(win_dir_, A_BOLD|COLOR_PAIR(CP_FOCUSED)|COLOR_PAIR(CP_BORDER));
+    }
+    int visible = paneVisibleRows(win_dir_);
     for (int i = 0; i < visible; ++i) {
         int idx = dir_scroll_ + i;
         if (idx >= (int)dir_entries_.size()) break;
@@ -936,31 +1401,53 @@ void UIManager::drawDirBrowser() {
         bool is_dir = in_drive_list_
                     || name == ".." || name == "[Drives]" || name == "[Recent]"
                     || name == "[FAVs]" || name == "[Bookmarks]" || name == "[Back]"
-                    || (!in_recent_ && !in_favs_ && fs::is_directory(fs::path(current_dir_) / name));
+                    || name == "[Radio]" || name == "[Books]"
+                    || (!in_recent_ && !in_favs_ && !in_radio_ && !in_books_ && fs::is_directory(fs::path(current_dir_) / name));
 
         // Dead path check for FAVs — grey out missing files
         bool dead_path = false;
-        if (in_favs_ && name != "[Back]" && !name.empty()) {
+        if ((in_favs_ || in_books_) && name != "[Back]" && !name.empty()) {
             dead_path = !fs::exists(name);
         }
 
-        if      (cursor && focused) wattron(win_dir_, COLOR_PAIR(CP_SELECTED)|A_BOLD);
-        else if (cursor)            wattron(win_dir_, A_REVERSE|A_BOLD);
-        else if (dead_path)         wattron(win_dir_, COLOR_PAIR(CP_DIM));  // greyed — missing file
-        else if (is_dir)            wattron(win_dir_, COLOR_PAIR(CP_TITLE)|A_BOLD);
-        else                        wattron(win_dir_, COLOR_PAIR(CP_DIM)|A_BOLD);
+        short  rpair = CP_DIM; attr_t rattr = A_BOLD;
+        if      (cursor && focused) { rpair = CP_SELECTED; rattr = A_BOLD; }
+        else if (cursor)            { rpair = CP_SELECTED_UNFOCUSED; rattr = A_BOLD; }
+        else if (dead_path)         { rpair = CP_DIM;      rattr = 0; }
+        else if (is_dir)            { rpair = CP_TITLE;    rattr = A_BOLD; }
+        else                        { rpair = CP_DIM;      rattr = A_BOLD; }
+        wattron(win_dir_, COLOR_PAIR(rpair) | rattr);
 
-        std::string prefix = (is_dir ? "+ " : "  ");
-        std::string full   = prefix + display;
-        int avail = cols - 1;
-        std::string d = scrolledText(full, avail);
-        d.resize((size_t)cols, ' ');
-        mvwaddnstr(win_dir_, i+1, 0, d.c_str(), cols);
+        const bool ico = config_.nerd_icons;
+        // With icons on, reserve the prefix cell (the glyph replaces the "+"/space).
+        std::string prefix = ico ? "  " : (is_dir ? "+ " : "  ");
+        int avail = cw - 1;
+        std::string d;
+        if (ico) {
+            // Keep the icon cell fixed: marquee only the name, not the prefix, so
+            // a long scrolling filename never slides under the overlaid glyph.
+            int name_w = avail - (int)prefix.size();
+            std::string nm = (name_w > 0) ? scrollToWidth(display, name_w, text_scroll_offset_) : "";
+            d = prefix + nm;
+        } else {
+            d = scrollToWidth(prefix + display, avail, text_scroll_offset_);
+        }
+        std::wstring wd = utf8_to_wide(padToWidth(d, cw));
+        mvwaddnwstr(win_dir_, i+1, cx, wd.c_str(), (int)wd.size());
+        if (ico) {   // overlay glyph on the reserved cell (wide API → real glyph)
+            cchar_t cc;
+            wchar_t s[2] = { is_dir ? L'\uf07b' : L'\uf001', 0 };  // folder / music
+            setcchar(&cc, s, rattr, rpair, nullptr);
+            mvwadd_wch(win_dir_, i+1, cx, &cc);
+        }
 
         wattroff(win_dir_, A_BOLD|A_REVERSE|COLOR_PAIR(CP_SELECTED)
+                         |COLOR_PAIR(CP_SELECTED_UNFOCUSED)
                          |COLOR_PAIR(CP_TITLE)|COLOR_PAIR(CP_DIM));
     }
-    if (!focused) {
+    if (aw) {
+        panelFrame(win_dir_, hdr, focused, L'\uf07b');
+    } else if (!focused) {
         wattron(win_dir_, COLOR_PAIR(CP_BORDER));
         box(win_dir_, 0, 0);
         wattroff(win_dir_, COLOR_PAIR(CP_BORDER));
@@ -971,6 +1458,7 @@ void UIManager::drawPlaylist() {
     werase(win_playlist_);
     int rows, cols;
     getmaxyx(win_playlist_, rows, cols);
+    (void)rows;
     bool focused = (focus_ == Pane::Playlist);
     // Total playlist duration
     int total_secs = 0;
@@ -987,7 +1475,9 @@ void UIManager::drawPlaylist() {
             total_str = std::to_string(tm) + "m " + std::to_string(ts) + "s";
     }
 
-    wattron(win_playlist_, focused ? (COLOR_PAIR(CP_FOCUSED)|A_BOLD) : (COLOR_PAIR(CP_BORDER)|A_BOLD));
+    const bool aw = config_.awesome_mode;
+    const int  cx = aw ? 1 : 0;
+    const int  cw = aw ? cols - 2 : cols;
     std::string hdr = " Playlist [" + std::to_string(playlist_.size()) + "]";
     if (playlist_.isLoading()) {
         hdr += "  [loading " + std::to_string(playlist_.pendingCount()) + "...]";
@@ -997,32 +1487,63 @@ void UIManager::drawPlaylist() {
     const char* slbl = playlist_.sortLabel();
     if (slbl && slbl[0]) hdr += std::string("  sort:") + slbl;
     hdr += " ";
-    hdr.resize((size_t)cols, ' ');
-    mvwaddnstr(win_playlist_, 0, 0, hdr.c_str(), cols);
-    wattroff(win_playlist_, A_BOLD|COLOR_PAIR(CP_FOCUSED)|COLOR_PAIR(CP_BORDER));
-    int visible = rows - 1;
+    if (!aw) {
+        wattron(win_playlist_, focused ? (COLOR_PAIR(CP_FOCUSED)|A_BOLD)
+                                       : (COLOR_PAIR(CP_BORDER)|A_BOLD));
+        std::string bar = hdr; bar.resize((size_t)cols, ' ');
+        mvwaddnstr(win_playlist_, 0, 0, bar.c_str(), cols);
+        wattroff(win_playlist_, A_BOLD|COLOR_PAIR(CP_FOCUSED)|COLOR_PAIR(CP_BORDER));
+    }
+    int visible = paneVisibleRows(win_playlist_);
+    // Guard against a stale scroll offset left past the end of the list (e.g.
+    // a load where every track was a duplicate) — otherwise the bounds check
+    // below fires on the first row and the pane draws blank.
+    if (pl_scroll_ >= (int)playlist_.size())
+        pl_scroll_ = std::max(0, (int)playlist_.size() - 1);
+    if (pl_scroll_ < 0) pl_scroll_ = 0;
     for (int i = 0; i < visible; ++i) {
         size_t idx = (size_t)(pl_scroll_ + i);
         if (idx >= playlist_.size()) break;
         const auto& e  = playlist_.at(idx);
         bool cursor  = ((int)idx == pl_cursor_);
-        bool playing = (e.path == audio_.currentTrack().path
-                        && audio_.state() != PlaybackState::Stopped);
-        if      (cursor && focused) wattron(win_playlist_, COLOR_PAIR(CP_SELECTED)|A_BOLD);
-        else if (cursor)            wattron(win_playlist_, A_REVERSE|A_BOLD);
-        else if (playing)           wattron(win_playlist_, COLOR_PAIR(CP_STATUS_OK)|A_BOLD);
-        else                        wattron(win_playlist_, COLOR_PAIR(CP_DIM)|A_BOLD);
-        std::string mark = playing ? "> " : "  ";
+        // The lit ("playing") row. In radio mode audio_.currentTrack() still holds
+        // the last file, so a stale file row would stay lit after switching to
+        // radio. Key off the URL actually streaming, NOT playlist_.current(): a
+        // station launched from the override queue has no playlist row, so
+        // current() is stale. A playlist-launched station's row path == streamUrl
+        // and lights; a queue-launched station matches no row and lights nothing
+        // (it shows on the now-playing line instead). In file mode, match the file.
+        bool playing = (audio_.state() != PlaybackState::Stopped) &&
+                       (audio_.streamMode()
+                          ? (e.path == audio_.streamUrl())
+                          : (e.path == audio_.currentTrack().path));
+        short rpair = CP_DIM; attr_t rattr = A_BOLD;
+        if      (cursor && focused) { rpair = CP_SELECTED;  rattr = A_BOLD; }
+        else if (cursor)            { rpair = CP_SELECTED_UNFOCUSED; rattr = A_BOLD; }
+        else if (playing)           { rpair = CP_STATUS_OK; rattr = A_BOLD; }
+        else                        { rpair = CP_DIM;       rattr = A_BOLD; }
+        wattron(win_playlist_, COLOR_PAIR(rpair) | rattr);
+        const bool ico = config_.nerd_icons;
+        std::string mark = (playing && !ico) ? "> " : "  ";
         std::string dur  = formatTime(e.duration_sec);
-        int nw = cols - (int)mark.size() - (int)dur.size() - 3;
-        std::string name = (nw > 0) ? scrolledText(e.display_title, nw) : "";
+        int nw = cw - (int)mark.size() - (int)dur.size() - 3;
+        std::string name = (nw > 0) ? scrollToWidth(e.display_title, nw, text_scroll_offset_) : "";
         std::string line = " " + mark + name + " " + dur + " ";
-        line.resize((size_t)cols, ' ');
-        mvwaddnstr(win_playlist_, i+1, 0, line.c_str(), cols);
+        std::wstring wline = utf8_to_wide(padToWidth(line, cw));
+        mvwaddnwstr(win_playlist_, i+1, cx, wline.c_str(), (int)wline.size());
+        if (ico && playing) {   // play glyph on the reserved mark cell
+            cchar_t cc;
+            wchar_t s[2] = { L'\uf04b', 0 };  // play
+            setcchar(&cc, s, rattr, rpair, nullptr);
+            mvwadd_wch(win_playlist_, i+1, cx + 1, &cc);
+        }
         wattroff(win_playlist_, A_BOLD|A_REVERSE|COLOR_PAIR(CP_SELECTED)
+                              |COLOR_PAIR(CP_SELECTED_UNFOCUSED)
                               |COLOR_PAIR(CP_STATUS_OK)|COLOR_PAIR(CP_DIM));
     }
-    if (!focused) {
+    if (aw) {
+        panelFrame(win_playlist_, hdr, focused, L'\uf03a');
+    } else if (!focused) {
         wattron(win_playlist_, COLOR_PAIR(CP_BORDER));
         box(win_playlist_, 0, 0);
         wattroff(win_playlist_, COLOR_PAIR(CP_BORDER));
@@ -1035,12 +1556,15 @@ void UIManager::drawVisualizer() {
     int rows, cols;
     getmaxyx(win_viz_, rows, cols);
 
-    // Header
-    wattron(win_viz_, COLOR_PAIR(CP_FOCUSED) | A_BOLD);
-    std::string hdr = " Visualizer ";
-    hdr.resize((size_t)cols, ' ');
-    mvwaddnstr(win_viz_, 0, 0, hdr.c_str(), cols);
-    wattroff(win_viz_, COLOR_PAIR(CP_FOCUSED) | A_BOLD);
+    const bool aw = config_.awesome_mode;
+    // Header (Classic: full-width bar on row 0; Awesome: title lives in the frame)
+    if (!aw) {
+        wattron(win_viz_, COLOR_PAIR(CP_FOCUSED) | A_BOLD);
+        std::string hdr = " Visualizer ";
+        hdr.resize((size_t)cols, ' ');
+        mvwaddnstr(win_viz_, 0, 0, hdr.c_str(), cols);
+        wattroff(win_viz_, COLOR_PAIR(CP_FOCUSED) | A_BOLD);
+    }
 
     if (audio_.state() == PlaybackState::Stopped) {
         wattron(win_viz_, COLOR_PAIR(CP_DIM) | A_DIM);
@@ -1049,6 +1573,8 @@ void UIManager::drawVisualizer() {
         int my = rows / 2;
         if (mx > 0) mvwaddstr(win_viz_, my, mx, msg);
         wattroff(win_viz_, COLOR_PAIR(CP_DIM) | A_DIM);
+        if (aw) panelFrame(win_viz_, " Visualizer [v:back] ",
+                           focus_ == Pane::Playlist, L'\uf001');
         return;
     }
 
@@ -1066,8 +1592,13 @@ void UIManager::drawVisualizer() {
 
     for (int b = 0; b < n_bars; ++b) {
         float val = viz_smoothed_[b * VIZ_BINS / n_bars];
-        int bar_h = (int)(val * bar_area_rows);
-        bar_h = std::clamp(bar_h, 0, bar_area_rows);
+        // Fractional bar height: full cells + a sub-cell remainder in eighths, for
+        // smooth motion instead of whole-row jumps.
+        float exact   = std::clamp(val, 0.0f, 1.0f) * bar_area_rows;
+        int   full    = (int)exact;
+        int   eighths = (int)((exact - full) * 8.0f + 0.5f);
+        if (eighths >= 8) { ++full; eighths = 0; }
+        full = std::clamp(full, 0, bar_area_rows);
 
         int col = 1 + b * bar_slot;
 
@@ -1081,27 +1612,40 @@ void UIManager::drawVisualizer() {
         // Draw bar from bottom up — 2 cols wide
         for (int r = 0; r < bar_area_rows; ++r) {
             int screen_row = rows - 1 - r;
-            if (r < bar_h) {
-                short draw_pair = (r == bar_h - 1) ? CP_VIZ_PEAK : pair;
+            if (r < full) {
+                // Solid cell (space + background colour). Topmost full cell takes the
+                // peak colour only when no fractional cell rides above it.
+                short draw_pair = (r == full - 1 && eighths == 0) ? CP_VIZ_PEAK : pair;
                 wattron(win_viz_, COLOR_PAIR(draw_pair));
-                // Draw both columns of the bar
                 for (int w = 0; w < bar_w && col + w < cols - 1; ++w)
                     mvwaddch(win_viz_, screen_row, col + w, ' ');
                 wattroff(win_viz_, COLOR_PAIR(draw_pair));
+            } else if (r == full && eighths > 0) {
+                // Fractional top: a lower-block glyph (▁..▇) in the tip colour on the
+                // default background, giving 8× sub-cell vertical resolution.
+                cchar_t cc;
+                wchar_t s[2] = { (wchar_t)(0x2580 + eighths), 0 };  // U+2581..U+2587
+                setcchar(&cc, s, A_NORMAL, CP_VIZ_TIP, nullptr);
+                for (int w = 0; w < bar_w && col + w < cols - 1; ++w)
+                    mvwadd_wch(win_viz_, screen_row, col + w, &cc);
             }
         }
     }
 
-    // Border
-    wattron(win_viz_, COLOR_PAIR(CP_BORDER));
-    box(win_viz_, 0, 0);
-    wattroff(win_viz_, COLOR_PAIR(CP_BORDER));
+    if (aw) {
+        panelFrame(win_viz_, " Visualizer [v:back] ", focus_ == Pane::Playlist, L'\uf001');
+    } else {
+        // Border
+        wattron(win_viz_, COLOR_PAIR(CP_BORDER));
+        box(win_viz_, 0, 0);
+        wattroff(win_viz_, COLOR_PAIR(CP_BORDER));
 
-    // Redraw header over border top
-    wattron(win_viz_, COLOR_PAIR(CP_FOCUSED) | A_BOLD);
-    std::string hdr2 = " Visualizer [v:back] ";
-    mvwaddnstr(win_viz_, 0, 0, hdr2.c_str(), cols);
-    wattroff(win_viz_, COLOR_PAIR(CP_FOCUSED) | A_BOLD);
+        // Redraw header over border top
+        wattron(win_viz_, COLOR_PAIR(CP_FOCUSED) | A_BOLD);
+        std::string hdr2 = " Visualizer [v:back] ";
+        mvwaddnstr(win_viz_, 0, 0, hdr2.c_str(), cols);
+        wattroff(win_viz_, COLOR_PAIR(CP_FOCUSED) | A_BOLD);
+    }
 }
 
 // ── Help screen ───────────────────────────────────────────────────────────────
@@ -1163,6 +1707,12 @@ void UIManager::drawHelp() {
         { "Q  (Shift+Q)",   "Show / hide queue pane"              },
         { "Ctrl+R",         "Fetch CD metadata from MusicBrainz" },
         { "Ctrl+Y",         "Rip CD  (A=AccurateRip  C=CUETools  Y=Local  B=Local 2-pass)" },
+        { "Ctrl+D",         "Toggle Discord Rich Presence" },
+        { "Ctrl+T",         "Toggle Classic / Awesome theme" },
+        { "~",              "Reload theme.conf colours (live)" },
+        { "Ctrl+N",         "Toggle Nerd Font icons (needs Nerd Font)" },
+        { "Ctrl+A",         "Toggle deep-analysis iHeart log (diagnostic)" },
+        { "Ctrl+K",         "Stream mode: Web Player (fewer ads) / Raw broadcast" },
     };
 
     const int n    = (int)(sizeof(entries) / sizeof(entries[0]));
@@ -1233,15 +1783,18 @@ void UIManager::drawHelp() {
         wattroff(w, COLOR_PAIR(CP_DIM));
     }
 
-    // Border
-    wattron(w, COLOR_PAIR(CP_BORDER));
-    box(w, 0, 0);
-    wattroff(w, COLOR_PAIR(CP_BORDER));
-
-    // Redraw header over border top
-    wattron(w, COLOR_PAIR(CP_FOCUSED) | A_BOLD);
-    mvwaddnstr(w, 0, 0, hdr.c_str(), cols);
-    wattroff(w, COLOR_PAIR(CP_FOCUSED) | A_BOLD);
+    if (config_.awesome_mode) {
+        panelFrame(w, hdr, focus_ == Pane::Playlist, L'\uf059');
+    } else {
+        // Border
+        wattron(w, COLOR_PAIR(CP_BORDER));
+        box(w, 0, 0);
+        wattroff(w, COLOR_PAIR(CP_BORDER));
+        // Redraw header over border top
+        wattron(w, COLOR_PAIR(CP_FOCUSED) | A_BOLD);
+        mvwaddnstr(w, 0, 0, hdr.c_str(), cols);
+        wattroff(w, COLOR_PAIR(CP_FOCUSED) | A_BOLD);
+    }
 }
 
 // ── Bookmarks popup ───────────────────────────────────────────────────────────
@@ -1276,24 +1829,89 @@ void UIManager::drawBookmarks() {
             if (cursor) wattron(w, COLOR_PAIR(CP_SELECTED)|A_BOLD);
             else        wattron(w, COLOR_PAIR(CP_DIM)|A_BOLD);
 
-            std::string line = " " + scrolledText(bm[(size_t)bi], cols - 2);
-            line.resize((size_t)cols, ' ');
-            mvwaddnstr(w, i+1, 0, line.c_str(), cols);
+            // Column-aware UTF-8: marquee + pad in DISPLAY columns (not bytes), then
+            // draw via the wide API so multibyte titles render and align correctly.
+            std::string body = " " + scrollToWidth(bm[(size_t)bi], cols - 2, text_scroll_offset_);
+            std::wstring wline = utf8_to_wide(padToWidth(body, cols));
+            mvwaddnwstr(w, i+1, 0, wline.c_str(), (int)wline.size());
 
             if (cursor) wattroff(w, COLOR_PAIR(CP_SELECTED)|A_BOLD);
             else        wattroff(w, COLOR_PAIR(CP_DIM)|A_BOLD);
         }
     }
 
-    wattron(w, COLOR_PAIR(CP_BORDER));
-    box(w, 0, 0);
-    wattroff(w, COLOR_PAIR(CP_BORDER));
-    wattron(w, COLOR_PAIR(CP_FOCUSED) | A_BOLD);
-    mvwaddnstr(w, 0, 0, hdr.c_str(), cols);
-    wattroff(w, COLOR_PAIR(CP_FOCUSED) | A_BOLD);
+    if (config_.awesome_mode) {
+        panelFrame(w, hdr, focus_ == Pane::Playlist, L'\uf02e');
+    } else {
+        wattron(w, COLOR_PAIR(CP_BORDER));
+        box(w, 0, 0);
+        wattroff(w, COLOR_PAIR(CP_BORDER));
+        wattron(w, COLOR_PAIR(CP_FOCUSED) | A_BOLD);
+        mvwaddnstr(w, 0, 0, hdr.c_str(), cols);
+        wattroff(w, COLOR_PAIR(CP_FOCUSED) | A_BOLD);
+    }
 }
 
 // ── Lyrics pane ───────────────────────────────────────────────────────────────
+void UIManager::drawChapters() {
+    WINDOW* w = win_playlist_;
+    werase(w);
+    int rows, cols;
+    getmaxyx(w, rows, cols);
+
+    std::string hdr = " Chapters  [Enter:jump  ,/.:prev/next  ;:close] ";
+    hdr.resize((size_t)cols, ' ');
+    wattron(w, COLOR_PAIR(CP_FOCUSED) | A_BOLD);
+    mvwaddnstr(w, 0, 0, hdr.c_str(), cols);
+    wattroff(w, COLOR_PAIR(CP_FOCUSED) | A_BOLD);
+
+    if (current_chapters_.empty()) {
+        wattron(w, COLOR_PAIR(CP_DIM));
+        mvwaddstr(w, rows/2, 2, "No chapters in this track.");
+        wattroff(w, COLOR_PAIR(CP_DIM));
+    } else {
+        int playing = currentChapterIndex();
+        chapter_cursor_ = std::clamp(chapter_cursor_, 0, (int)current_chapters_.size()-1);
+        int visible = rows - 2;
+        int scroll  = std::max(0, chapter_cursor_ - visible/2);
+        scroll      = std::min(scroll, std::max(0, (int)current_chapters_.size() - visible));
+
+        for (int i = 0; i < visible; ++i) {
+            int ci = scroll + i;
+            if (ci >= (int)current_chapters_.size()) break;
+            bool cursor = (ci == chapter_cursor_);
+            bool nowpl  = (ci == playing);
+            if (cursor) wattron(w, COLOR_PAIR(CP_SELECTED)|A_BOLD);
+            else        wattron(w, COLOR_PAIR(CP_DIM)|A_BOLD);
+
+            double s = current_chapters_[(size_t)ci].start_sec;
+            int hh = (int)(s/3600), mm = ((int)s%3600)/60, ss = (int)s%60;
+            char ts[16];
+            std::snprintf(ts, sizeof(ts), "%02d:%02d:%02d", hh, mm, ss);
+            std::string mark  = nowpl ? ">" : " ";
+            std::string title = scrollToWidth(current_chapters_[(size_t)ci].title, cols - 14, text_scroll_offset_);
+            std::string line  = " " + mark + " " + ts + "  " + title;
+            // Column-aware pad + wide-API draw (ts/mark are ASCII; title may be UTF-8).
+            std::wstring wline = utf8_to_wide(padToWidth(line, cols));
+            mvwaddnwstr(w, i+1, 0, wline.c_str(), (int)wline.size());
+
+            if (cursor) wattroff(w, COLOR_PAIR(CP_SELECTED)|A_BOLD);
+            else        wattroff(w, COLOR_PAIR(CP_DIM)|A_BOLD);
+        }
+    }
+
+    if (config_.awesome_mode) {
+        panelFrame(w, hdr, focus_ == Pane::Playlist, L'\uf0ca');
+    } else {
+        wattron(w, COLOR_PAIR(CP_BORDER));
+        box(w, 0, 0);
+        wattroff(w, COLOR_PAIR(CP_BORDER));
+        wattron(w, COLOR_PAIR(CP_FOCUSED) | A_BOLD);
+        mvwaddnstr(w, 0, 0, hdr.c_str(), cols);
+        wattroff(w, COLOR_PAIR(CP_FOCUSED) | A_BOLD);
+    }
+}
+
 void UIManager::drawLyrics() {
     WINDOW* w = win_playlist_;
     werase(w);
@@ -1410,12 +2028,16 @@ void UIManager::drawLyrics() {
         }
     }
 
-    wattron(w, COLOR_PAIR(CP_BORDER));
-    box(w, 0, 0);
-    wattroff(w, COLOR_PAIR(CP_BORDER));
-    wattron(w, COLOR_PAIR(CP_FOCUSED) | A_BOLD);
-    mvwaddnstr(w, 0, 0, hdr.c_str(), cols);
-    wattroff(w, COLOR_PAIR(CP_FOCUSED) | A_BOLD);
+    if (config_.awesome_mode) {
+        panelFrame(w, hdr, focus_ == Pane::Playlist, L'\uf001');
+    } else {
+        wattron(w, COLOR_PAIR(CP_BORDER));
+        box(w, 0, 0);
+        wattroff(w, COLOR_PAIR(CP_BORDER));
+        wattron(w, COLOR_PAIR(CP_FOCUSED) | A_BOLD);
+        mvwaddnstr(w, 0, 0, hdr.c_str(), cols);
+        wattroff(w, COLOR_PAIR(CP_FOCUSED) | A_BOLD);
+    }
 }
 
 // ── About pane ────────────────────────────────────────────────────────────────
@@ -1461,19 +2083,26 @@ void UIManager::drawQueue() {
     werase(w);
     int rows, cols;
     getmaxyx(w, rows, cols);
+    (void)rows;
 
+    const bool aw = config_.awesome_mode;
+    const int  cx = aw ? 1 : 0;
+    const int  cw = aw ? cols - 2 : cols;
     int qsize = playlist_.queueSize();
     std::string hdr = " Queue [" + std::to_string(qsize) + "]  d:remove  Q:close  Ctrl+Q:quit ";
-    hdr.resize((size_t)cols, ' ');
-    wattron(w, COLOR_PAIR(CP_FOCUSED) | A_BOLD);
-    mvwaddnstr(w, 0, 0, hdr.c_str(), cols);
-    wattroff(w, COLOR_PAIR(CP_FOCUSED) | A_BOLD);
+    if (!aw) {
+        std::string bar = hdr; bar.resize((size_t)cols, ' ');
+        wattron(w, COLOR_PAIR(CP_FOCUSED) | A_BOLD);
+        mvwaddnstr(w, 0, 0, bar.c_str(), cols);
+        wattroff(w, COLOR_PAIR(CP_FOCUSED) | A_BOLD);
+    }
 
     if (qsize == 0) {
         wattron(w, COLOR_PAIR(CP_DIM) | A_BOLD);
-        mvwaddnstr(w, 2, 2, "Queue is empty.", cols - 2);
-        mvwaddnstr(w, 3, 2, "Press q on a track to add it.", cols - 2);
+        mvwaddnstr(w, 2, cx + 1, "Queue is empty.", cw - 1);
+        mvwaddnstr(w, 3, cx + 1, "Press q on a track to add it.", cw - 1);
         wattroff(w, COLOR_PAIR(CP_DIM) | A_BOLD);
+        if (aw) panelFrame(w, hdr, focus_ == Pane::Playlist, L'\uf03a');
         return;
     }
 
@@ -1481,7 +2110,7 @@ void UIManager::drawQueue() {
     if (q_cursor_ >= qsize) q_cursor_ = qsize - 1;
     if (q_cursor_ < 0)      q_cursor_ = 0;
 
-    int visible = rows - 1;
+    int visible = paneVisibleRows(w);
     int scroll  = 0;
     if (q_cursor_ >= scroll + visible) scroll = q_cursor_ - visible + 1;
 
@@ -1496,16 +2125,20 @@ void UIManager::drawQueue() {
         else           wattron(w, COLOR_PAIR(CP_DIM) | A_BOLD);
 
         std::string time_str = e.duration_sec > 0 ? formatTime(e.duration_sec) : "--:--";
-        int title_width = cols - (int)time_str.size() - 4;
-        std::string line = " " + scrolledText(e.display_title, title_width);
-        line.resize((size_t)(cols - (int)time_str.size() - 1), ' ');
-        line += time_str + " ";
-        line.resize((size_t)cols, ' ');
-        mvwaddnstr(w, i + 1, 0, line.c_str(), cols);
+        const int time_w = (int)time_str.size();          // ASCII → bytes == columns
+        int title_width = cw - time_w - 4;
+        // Left part (" " + title) padded in COLUMNS, then time + trailing space.
+        // padToWidth guards width<=0, so a very narrow pane no longer overflows the
+        // old byte resize (which cast a negative length to a huge size_t).
+        std::string left = " " + scrollToWidth(e.display_title, title_width, text_scroll_offset_);
+        left = padToWidth(left, cw - time_w - 1);
+        std::wstring wline = utf8_to_wide(padToWidth(left + time_str + " ", cw));
+        mvwaddnwstr(w, i + 1, cx, wline.c_str(), (int)wline.size());
 
         if (is_cursor) wattroff(w, COLOR_PAIR(CP_SELECTED) | A_BOLD);
         else           wattroff(w, COLOR_PAIR(CP_DIM) | A_BOLD);
     }
+    if (aw) panelFrame(w, hdr, focus_ == Pane::Playlist, L'\uf03a');
 }
 
 void UIManager::drawAbout() {
@@ -1533,9 +2166,26 @@ void UIManager::drawAbout() {
     const int logo_rows = 5;
     int logo_x = std::max(1, (cols - logo_w) / 2);
 
+    // Render the logo as solid shade-block letters with a soft drop-shadow for
+    // depth. '#' in the art becomes █ (or ▒ for the offset shadow); spaces blank.
+    auto blockRow = [](const char* s, wchar_t fill) {
+        std::wstring o;
+        for (const char* p = s; *p; ++p) o += (*p == '#') ? fill : L' ';
+        return o;
+    };
+    // Shadow pass first (offset +1,+1, dim) so the solid letters overlay it.
+    wattron(w, COLOR_PAIR(CP_DIM));
+    for (int i = 0; i < logo_rows && i + 3 < rows; ++i) {
+        std::wstring sh = blockRow(logo[i], L'\u2592');   // ▒ soft shadow
+        mvwaddnwstr(w, i + 3, logo_x + 1, sh.c_str(), (int)sh.size());
+    }
+    wattroff(w, COLOR_PAIR(CP_DIM));
+    // Solid block letters on top.
     wattron(w, COLOR_PAIR(CP_TITLE) | A_BOLD);
-    for (int i = 0; i < logo_rows && i + 2 < rows; ++i)
-        mvwaddstr(w, i + 2, logo_x, logo[i]);
+    for (int i = 0; i < logo_rows && i + 2 < rows; ++i) {
+        std::wstring ln = blockRow(logo[i], L'\u2588');   // █ solid
+        mvwaddnwstr(w, i + 2, logo_x, ln.c_str(), (int)ln.size());
+    }
     wattroff(w, COLOR_PAIR(CP_TITLE) | A_BOLD);
 
     // Info lines
@@ -1543,7 +2193,11 @@ void UIManager::drawAbout() {
     static const Line info[] = {
         { "Music On Console Terminal",      true  },
         { "",                               false },
-        { "Version v1.0.0-rc1-win  |  C++20  |  ncurses  |  miniaudio  |  TagLib", false },
+#ifdef _WIN32
+        { "Version v" REMOCT_VERSION "-win  |  C++20  |  ncurses  |  miniaudio  |  TagLib", false },
+#else
+        { "Version v" REMOCT_VERSION "-linux  |  C++20  |  ncurses  |  miniaudio  |  TagLib", false },
+#endif
         { "",                               false },
         { "A terminal music player inspired by MOC (Music On Console).", false },
         { "Plays MP3, FLAC, OGG, WAV and more.  Gapless playback,",     false },
@@ -1569,12 +2223,16 @@ void UIManager::drawAbout() {
         ++row;
     }
 
-    wattron(w, COLOR_PAIR(CP_BORDER));
-    box(w, 0, 0);
-    wattroff(w, COLOR_PAIR(CP_BORDER));
-    wattron(w, COLOR_PAIR(CP_FOCUSED) | A_BOLD);
-    mvwaddnstr(w, 0, 0, hdr.c_str(), cols);
-    wattroff(w, COLOR_PAIR(CP_FOCUSED) | A_BOLD);
+    if (config_.awesome_mode) {
+        panelFrame(w, hdr, focus_ == Pane::Playlist, L'\uf05a');
+    } else {
+        wattron(w, COLOR_PAIR(CP_BORDER));
+        box(w, 0, 0);
+        wattroff(w, COLOR_PAIR(CP_BORDER));
+        wattron(w, COLOR_PAIR(CP_FOCUSED) | A_BOLD);
+        mvwaddnstr(w, 0, 0, hdr.c_str(), cols);
+        wattroff(w, COLOR_PAIR(CP_FOCUSED) | A_BOLD);
+    }
 }
 // ── EQ pane ───────────────────────────────────────────────────────────────────
 void UIManager::drawEq() {
@@ -1671,12 +2329,16 @@ void UIManager::drawEq() {
         }
     }
 
-    wattron(w, COLOR_PAIR(CP_BORDER));
-    box(w, 0, 0);
-    wattroff(w, COLOR_PAIR(CP_BORDER));
-    wattron(w, COLOR_PAIR(CP_FOCUSED) | A_BOLD);
-    mvwaddnstr(w, 0, 0, hdr.c_str(), cols);
-    wattroff(w, COLOR_PAIR(CP_FOCUSED) | A_BOLD);
+    if (config_.awesome_mode) {
+        panelFrame(w, hdr, focus_ == Pane::Playlist, L'\uf1de');
+    } else {
+        wattron(w, COLOR_PAIR(CP_BORDER));
+        box(w, 0, 0);
+        wattroff(w, COLOR_PAIR(CP_BORDER));
+        wattron(w, COLOR_PAIR(CP_FOCUSED) | A_BOLD);
+        mvwaddnstr(w, 0, 0, hdr.c_str(), cols);
+        wattroff(w, COLOR_PAIR(CP_FOCUSED) | A_BOLD);
+    }
 }
 
 // ── Device picker pane ────────────────────────────────────────────────────────
@@ -1712,10 +2374,18 @@ void UIManager::drawDevices() {
             else if (is_current) wattron(w, COLOR_PAIR(CP_STATUS_OK) | A_BOLD);
             else                 wattron(w, COLOR_PAIR(CP_DIM) | A_BOLD);
 
-            std::string mark = is_current ? "> " : "  ";
-            std::string line = " " + mark + scrolledText(device_list_[(size_t)di].name, cols - 4);
-            line.resize((size_t)cols, ' ');
-            mvwaddnstr(w, i + 1, 0, line.c_str(), cols);
+            const bool ico = config_.nerd_icons;
+            std::string mark = (is_current && !ico) ? "> " : "  ";
+            std::string body = " " + mark + scrollToWidth(device_list_[(size_t)di].name, cols - 4, text_scroll_offset_);
+            std::wstring wline = utf8_to_wide(padToWidth(body, cols));
+            mvwaddnwstr(w, i + 1, 0, wline.c_str(), (int)wline.size());
+            if (ico && is_current) {   // active-device glyph on the reserved mark cell
+                cchar_t cc;
+                wchar_t s[2] = { L'\uf028', 0 };  // speaker (volume-up)
+                short pair = is_cursor ? CP_SELECTED : CP_STATUS_OK;
+                setcchar(&cc, s, A_BOLD, pair, nullptr);
+                mvwadd_wch(w, i + 1, 1, &cc);
+            }
 
             if      (is_cursor)  wattroff(w, COLOR_PAIR(CP_SELECTED) | A_BOLD);
             else if (is_current) wattroff(w, COLOR_PAIR(CP_STATUS_OK) | A_BOLD);
@@ -1730,12 +2400,16 @@ void UIManager::drawDevices() {
         wattroff(w, COLOR_PAIR(CP_DIM));
     }
 
-    wattron(w, COLOR_PAIR(CP_BORDER));
-    box(w, 0, 0);
-    wattroff(w, COLOR_PAIR(CP_BORDER));
-    wattron(w, COLOR_PAIR(CP_FOCUSED) | A_BOLD);
-    mvwaddnstr(w, 0, 0, hdr.c_str(), cols);
-    wattroff(w, COLOR_PAIR(CP_FOCUSED) | A_BOLD);
+    if (config_.awesome_mode) {
+        panelFrame(w, hdr, focus_ == Pane::Playlist, L'\uf025');
+    } else {
+        wattron(w, COLOR_PAIR(CP_BORDER));
+        box(w, 0, 0);
+        wattroff(w, COLOR_PAIR(CP_BORDER));
+        wattron(w, COLOR_PAIR(CP_FOCUSED) | A_BOLD);
+        mvwaddnstr(w, 0, 0, hdr.c_str(), cols);
+        wattroff(w, COLOR_PAIR(CP_FOCUSED) | A_BOLD);
+    }
 }
 
 void UIManager::drawTrackInfo() {
@@ -1806,6 +2480,10 @@ void UIManager::drawTrackInfo() {
                                 info_cached_track_.sample_rate  = ap->sampleRate();
                                 info_cached_track_.channels     = ap->channels();
                             }
+                            // TagLib reports the legacy stsd channelcount for AAC (often
+                            // hardcoded to 2 even for mono); prefer the true ASC count.
+                            if (int real = mp4AacChannelCount(path); real > 0)
+                                info_cached_track_.channels = real;
                         }
                     } catch (...) {}
                 }
@@ -1932,18 +2610,21 @@ void UIManager::drawTrackInfo() {
                 if (is_selected) {
                     // Show edit cursor at end
                     wattron(w, COLOR_PAIR(CP_SELECTED) | A_BOLD);
+                    // Tail + cursor measured in DISPLAY columns (reserve 1 col for the
+                    // cursor) so a multibyte value scrolls/positions correctly.
                     std::string disp = val;
-                    if ((int)disp.size() > val_w - 1) disp = disp.substr(disp.size() - (val_w-1));
-                    disp.resize((size_t)val_w, ' ');
-                    mvwaddnstr(w, row, label_w + 2, disp.c_str(), val_w);
+                    if (dispWidth(disp) > val_w - 1) disp = truncateToWidthRight(disp, val_w - 1);
+                    std::wstring wdisp = utf8_to_wide(padToWidth(disp, val_w));
+                    mvwaddnwstr(w, row, label_w + 2, wdisp.c_str(), (int)wdisp.size());
                     // Blink cursor position
-                    mvwaddch(w, row, label_w + 2 + (int)std::min(val.size(), (size_t)(val_w-1)), '_');
+                    int cur_col = std::min(dispWidth(val), val_w - 1);
+                    mvwaddch(w, row, label_w + 2 + cur_col, '_');
                     wattroff(w, COLOR_PAIR(CP_SELECTED) | A_BOLD);
                 } else {
                     wattron(w, edit_idx >= 0 && !tag_edit_mode_
                               ? (COLOR_PAIR(CP_DIM)|A_BOLD) : COLOR_PAIR(CP_DIM));
-                    std::string disp = scrolledText(val, val_w);
-                    mvwaddnstr(w, row, label_w + 2, disp.c_str(), val_w);
+                    std::wstring wval = utf8_to_wide(scrollToWidth(val, val_w, text_scroll_offset_));
+                    mvwaddnwstr(w, row, label_w + 2, wval.c_str(), (int)wval.size());
                     wattroff(w, edit_idx >= 0 && !tag_edit_mode_
                                ? (COLOR_PAIR(CP_DIM)|A_BOLD) : COLOR_PAIR(CP_DIM));
                 }
@@ -1963,15 +2644,18 @@ void UIManager::drawTrackInfo() {
         // (already integrated above)
     }
 
-    // Border
-    wattron(w, COLOR_PAIR(CP_BORDER));
-    box(w, 0, 0);
-    wattroff(w, COLOR_PAIR(CP_BORDER));
-
-    // Redraw header over border
-    wattron(w, COLOR_PAIR(CP_FOCUSED) | A_BOLD);
-    mvwaddnstr(w, 0, 0, hdr.c_str(), cols);
-    wattroff(w, COLOR_PAIR(CP_FOCUSED) | A_BOLD);
+    if (config_.awesome_mode) {
+        panelFrame(w, hdr, focus_ == Pane::Playlist, L'\uf129');
+    } else {
+        // Border
+        wattron(w, COLOR_PAIR(CP_BORDER));
+        box(w, 0, 0);
+        wattroff(w, COLOR_PAIR(CP_BORDER));
+        // Redraw header over border
+        wattron(w, COLOR_PAIR(CP_FOCUSED) | A_BOLD);
+        mvwaddnstr(w, 0, 0, hdr.c_str(), cols);
+        wattroff(w, COLOR_PAIR(CP_FOCUSED) | A_BOLD);
+    }
 }
 
 void UIManager::drawProgress() {
@@ -1979,12 +2663,10 @@ void UIManager::drawProgress() {
     int cols; { int _r; getmaxyx(win_progress_, _r, cols); (void)_r; }
     double pos = audio_.positionSec();
     double dur = audio_.durationSec();
-#ifdef _WIN32
     if (audio_.cdMode()) {
         pos = (double)audio_.cdPositionSec();
         dur = (double)audio_.cdDurationSec();
     }
-#endif
     const auto& track = audio_.currentTrack();
 
     // Time string: elapsed / total  OR  -remaining / total
@@ -1997,7 +2679,6 @@ void UIManager::drawProgress() {
     }
 
     std::string meta;
-#ifdef _WIN32
     if (audio_.cdMode()) {
         meta = "1411 kbps  44.1 kHz  stereo  CD";
         // Live BPM is detected from the playback stream just like file mode; show
@@ -2007,9 +2688,8 @@ void UIManager::drawProgress() {
         else if (audio_.state() == PlaybackState::Playing)
             meta += "  bpm:...";
     } else {
-#endif
-    if (track.bitrate_kbps > 0 || audio_.liveBitrateKbps() > 0) {
-        int br = audio_.liveBitrateKbps();
+    if (track.bitrate_kbps > 0 || audio_.bitrateKbps() > 0) {
+        int br = audio_.bitrateKbps();
         if (br <= 0) br = track.bitrate_kbps;
         meta += std::to_string(br) + " kbps";
     }
@@ -2029,9 +2709,7 @@ void UIManager::drawProgress() {
         if (!meta.empty()) meta += "  ";
         meta += "bpm:...";
     }
-#ifdef _WIN32
     }
-#endif
     {
         int vp = (int)(audio_.volume() * 100.0f + 0.5f);
         if (!meta.empty()) meta += "  ";
@@ -2041,10 +2719,86 @@ void UIManager::drawProgress() {
     if (bw < 4) bw = 4;
     int filled = (dur > 0) ? (int)((pos/dur)*bw) : 0;
     filled = std::clamp(filled, 0, bw);
+    // Stream status readouts — portable since slice 2 (the whole radio path
+    // runs on Linux); the _WIN32 gate here was slice-1 scaffolding and left
+    // Linux drawing the file-mode bar (blank 0:00 + bpm) over a live stream.
+    if (audio_.streamConnecting()) {
+        // Backgrounded connect in progress — make the current operation obvious.
+        std::string left  = "Negotiating Radio Stream...";
+        std::string right = "vol:" + std::to_string((int)(audio_.volume()*100.0f+0.5f)) + "%";
+        int avail = cols - (int)right.size() - 3;
+        if (avail < 1) avail = 1;
+        if ((int)left.size() > avail) left = left.substr(0, (size_t)avail);
+        wattron(win_progress_, COLOR_PAIR(CP_TITLE) | A_BOLD);
+        mvwaddstr(win_progress_, 0, 1, left.c_str());
+        wattroff(win_progress_, A_BOLD);
+        mvwaddstr(win_progress_, 0, cols - (int)right.size() - 1, right.c_str());
+        wattroff(win_progress_, COLOR_PAIR(CP_TITLE));
+        return;
+    }
+    if (audio_.streamMode()) {
+        // Live stream: no position/duration. Repurpose this row for the ICY
+        // now-playing title, with a [LIVE]/[BUFFERING] marker and volume.
+        std::string title = audio_.streamNowPlaying();
+        std::string right = audio_.streamBuffering() ? "[BUFFERING]" : "[LIVE]";
+        right += "  vol:" + std::to_string((int)(audio_.volume()*100.0f+0.5f)) + "%";
+        std::string left = title.empty() ? "(live stream)" : title;
+        int avail = cols - (int)right.size() - 3;
+        if (avail < 1) avail = 1;
+        if ((int)left.size() > avail) left = left.substr(0, (size_t)avail);
+        wattron(win_progress_, COLOR_PAIR(CP_TITLE));
+        mvwaddstr(win_progress_, 0, 1, left.c_str());
+        mvwaddstr(win_progress_, 0, cols - (int)right.size() - 1, right.c_str());
+        wattroff(win_progress_, COLOR_PAIR(CP_TITLE));
+        return;
+    }
     wattron(win_progress_, COLOR_PAIR(CP_PROGRESS));
-    std::string bar = "[" + std::string((size_t)filled,'#')
-                          + std::string((size_t)(bw-filled),'-') + "]";
-    mvwaddstr(win_progress_, 0, 0, bar.c_str());
+    if (config_.awesome_mode) {
+        // Comet-style progress with a proportional gradient tail: a bright █ head at
+        // the playhead, fading back through ▓▒░ over a span sized to how much has
+        // PLAYED — so the gradient stretches across the whole track. The 2-cell head
+        // stays visible even when a crossfade hands off before 100%; ahead is blank.
+        // While playing it gently "breathes" 1↔2↔3 cells on a ~1.2s sine (the run loop
+        // forces per-tick redraws only in Awesome mode while playing).
+        int head_cells = 2;
+        if (audio_.state() == PlaybackState::Playing) {
+            using namespace std::chrono;
+            double t = duration<double>(steady_clock::now().time_since_epoch()).count();
+            double a = 0.5 * (std::sin(t * (2.0 * 3.14159265358979 / 1.2)) + 1.0);  // 0..1
+            if      (a > 0.70) head_cells = 3;   // gentle breathe out
+            else if (a < 0.30) head_cells = 1;   // gentle breathe in
+        }
+        // During a crossfade decoder_ is still the outgoing track but the swap to the
+        // next track snaps position to ~0% a beat before the head visually completes.
+        // Let the head ride to the end while crossfading; it releases the instant the
+        // next track takes over (crossfading_ clears in the same step as the swap).
+        int hfilled = audio_.isCrossfading() ? bw : filled;
+        std::wstring wbar;
+        wbar.reserve((size_t)bw + 2);
+        wbar += L'[';
+        const double played_len = (hfilled > 0) ? (double)hfilled : 1.0;
+        for (int i = 0; i < bw; ++i) {
+            wchar_t ch;
+            if (i >= hfilled) {
+                ch = L' ';                          // unplayed track (blank)
+            } else {
+                int    d = (hfilled - 1) - i;       // cells behind the head
+                double f = (double)d / played_len;  // 0 at head → ~1 at the start
+                if      (d < head_cells) ch = L'\u2588';  // █ bright (breathing) head
+                else if (f < 0.18)       ch = L'\u2593';  // ▓ near trail
+                else if (f < 0.48)       ch = L'\u2592';  // ▒ mid trail
+                else                     ch = L'\u2591';  // ░ long faint trail
+            }
+            wbar += ch;
+        }
+        wbar += L']';
+        mvwaddnwstr(win_progress_, 0, 0, wbar.c_str(), (int)wbar.size());
+    } else {
+        // Classic mode: the original plain ASCII bar.
+        std::string bar = "[" + std::string((size_t)filled, '#')
+                              + std::string((size_t)(bw - filled), '-') + "]";
+        mvwaddstr(win_progress_, 0, 0, bar.c_str());
+    }
     wattroff(win_progress_, COLOR_PAIR(CP_PROGRESS));
     wattron(win_progress_, COLOR_PAIR(CP_TITLE));
     waddstr(win_progress_, ("  "+ts+"   "+meta).c_str());
@@ -2054,7 +2808,20 @@ void UIManager::drawProgress() {
 void UIManager::drawCmdLine() {
     if (goto_active_) { drawGotoBar(); return; }
     werase(win_cmdline_);
-#ifdef _WIN32
+#ifndef _WIN32
+    // Toast fallback (see UIManager.h) — drawn exactly like rip_status_.
+    if (!status_msg_.empty()) {
+        wattron(win_cmdline_, COLOR_PAIR(CP_STATUS_OK) | A_BOLD);
+        mvwaddnstr(win_cmdline_, 0, 1, status_msg_.c_str(), screen_cols_ - 2);
+        wattroff(win_cmdline_, COLOR_PAIR(CP_STATUS_OK) | A_BOLD);
+        wnoutrefresh(win_cmdline_);
+        return;
+    }
+#endif
+    // slice 6: MB/rip status on the cmdline is common — CD lookup (^R) and rip
+    // (^Y) progress now render on Linux too. On Linux this runs AFTER the toast-
+    // fallback above; on Windows there is no toast-fallback block, so this is the
+    // first cmdline path exactly as before (behavior unchanged).
     std::string mb_status_snap, mb_error_snap;
     {
         std::lock_guard<std::mutex> lk(mb_mutex_);   // mb_status_/mb_error_ are written by worker threads
@@ -2092,7 +2859,6 @@ void UIManager::drawCmdLine() {
         wnoutrefresh(win_cmdline_);
         return;
     }
-#endif
 
     // Build a styled command bar: [key] desc pairs, cyan keys on dark bg
     // Only show the most-used commands; rest are in ? help
@@ -2149,6 +2915,12 @@ void UIManager::drawGotoBar() {
         case InputMode::Goto:    prompt = " goto: ";      break;
         case InputMode::SaveM3U: prompt = " save playlist (.m3u/.m3u8/.pls/.xspf): "; break;
         case InputMode::LoadM3U: prompt = " load m3u: ";  break;
+        case InputMode::StreamURL: prompt = " radio url: "; break;
+        case InputMode::StreamName: prompt = " station name (optional, Enter to skip): "; break;
+        case InputMode::RadioSearch: prompt = " search radio: "; break;
+        case InputMode::LastfmKey:    prompt = " last.fm API key: "; break;
+        case InputMode::LastfmSecret: prompt = " last.fm secret: ";  break;
+        case InputMode::ListenBrainzToken: prompt = " listenbrainz token: "; break;
     }
     wattron(win_cmdline_, COLOR_PAIR(CP_TITLE) | A_BOLD);
     mvwaddstr(win_cmdline_, 0, 0, prompt.c_str());
@@ -2176,8 +2948,457 @@ void UIManager::drawGotoBar() {
 // ─────────────────────────────────────────────────────────────────────────────
 // Input
 
-void UIManager::handleInput(int ch) {
+static std::string radioLabel(const std::string& url) {
+    return PlaylistManager::streamLabel(url);   // single source of truth
+}
+
+std::string UIManager::stationLabel(const std::string& url) const {
+    std::string nm = config_.radioStationName(url);
+    if (!nm.empty()) return "RADIO: " + sanitizeForDisplay(nm);
+    return radioLabel(url);
+}
+
+// Shared junk-metadata gate for scrobbling. Real radio tracks (e.g. "Sia -
+// Unstoppable") pass; ad/station-break markers and empty/Unknown fields are
+// dropped so neither Last.fm nor ListenBrainz gets polluted. Heuristic by
+// nature — extend the marker list as new junk patterns turn up in the log.
+// De-invert "Surname, The" -> "The Surname" for cleaner scrobble metadata.
+// Strict: only fires when the entire tail after the comma is a bare article, so
+// real comma-containing names ("Tyler, The Creator", "Earth, Wind & Fire") are
+// left untouched. Verified against an isolated test of both forms.
+static std::string deinvertArtist(const std::string& a) {
+    auto pos = a.rfind(',');
+    if (pos == std::string::npos || pos == 0) return a;
+    std::string head = a.substr(0, pos);
+    std::string tail = a.substr(pos + 1);
+    size_t ts = tail.find_first_not_of(" \t");
+    if (ts == std::string::npos) return a;             // nothing after the comma
+    tail = tail.substr(ts);
+    while (!head.empty() && (head.back() == ' ' || head.back() == '\t')) head.pop_back();
+    if (head.empty()) return a;
+    std::string low = tail;
+    for (auto& c : low) c = (char)std::tolower((unsigned char)c);
+    if (low == "the" || low == "a" || low == "an")
+        return tail + " " + head;                      // preserve article casing
+    return a;
+}
+
+static bool looksLikeRealTrack(const std::string& artist, const std::string& track) {
+    auto lower = [](std::string s) {
+        for (auto& c : s) c = (char)std::tolower((unsigned char)c);
+        return s;
+    };
+    std::string a = lower(artist), t = lower(track);
+    if (a.empty() || t.empty()) return false;
+    if (a == "unknown" || t == "unknown" ||
+        a == "unknown artist" || a == "unknown_artist") return false;
+    if (t == "live") return false;   // "<station> - LIVE" floor (exact match; spares songs like "Live and Let Die")
+    static const char* junk[] = {
+        "ad|", "ad |", "commercial break", "commercial-break",
+        "advertisement", "station id", "station-id", "spot block", "spotblock"
+    };
+    for (const char* j : junk)
+        if (a.find(j) != std::string::npos || t.find(j) != std::string::npos)
+            return false;
+    return true;
+}
+
+// Canonical track identity for scrobble dedup. iHeart sometimes relabels the SAME
+// song mid-play with a different EXTINF string — moving the featured artist between
+// the artist and title fields and/or changing spacing, e.g.:
+//     "Pink Pantheress / Zara Larsson - Stateside"
+//     "PinkPantheress - Stateside + Zara Larsson"
+// Raw-string comparison reads those as two tracks and re-arms now-playing/scrobble.
+// We collapse both to the same identity by: lowercasing the combined artist+title,
+// splitting on featuring/separator markers into name-chunks, stripping every chunk
+// to bare alphanumerics (so "pink pantheress" == "pinkpantheress"), then sorting the
+// chunks (so field position doesn't matter) and joining. Identical sets -> same id.
+static std::string normTrackId(const std::string& artist, const std::string& track) {
+    std::string blob = artist + " - " + track;
+    for (auto& c : blob) c = (char)std::tolower((unsigned char)c);
+
+    // Replace separator/featuring markers with a sentinel newline. Longest first so
+    // multi-char markers win over their substrings.
+    static const char* seps[] = {
+        " featuring ", " feat. ", " feat ", " ft. ", " ft ", " with ",
+        "(featuring ", "(feat. ", "(feat ", "(ft. ", "(ft ",
+        " vs. ", " vs ", " x ", " - ", " / ", " + ", " & ",
+        "/", "+", "&", ",", "(", ")", "[", "]"
+    };
+    for (const char* s : seps) {
+        std::string from = s;
+        size_t pos = 0;
+        while ((pos = blob.find(from, pos)) != std::string::npos) {
+            blob.replace(pos, from.size(), "\n");
+            pos += 1;
+        }
+    }
+
+    // Split on the sentinel; reduce each chunk to bare [a-z0-9].
+    std::vector<std::string> chunks;
+    size_t i = 0;
+    while (i <= blob.size()) {
+        size_t e = blob.find('\n', i);
+        if (e == std::string::npos) e = blob.size();
+        std::string c;
+        for (size_t k = i; k < e; ++k)
+            if (std::isalnum((unsigned char)blob[k])) c += blob[k];
+        if (!c.empty()) chunks.push_back(c);
+        i = e + 1;
+    }
+    std::sort(chunks.begin(), chunks.end());
+
+    std::string id;
+    for (const auto& c : chunks) { id += c; id += '|'; }
+    return id;
+}
+
+// Spawn a one-shot worker to resolve an album-cover URL (iTunes/Deezer) off the
+// UI thread. Single in-flight at a time; the result is picked up by the deferred
+// art-commit in updateScrobbler. No-op if a lookup is already running.
+// Portable since slice 4 (CoverArt has been WinINet-free since group (c)).
+void UIManager::startDiscordArtLookup(const std::string& artist,
+                                      const std::string& album,
+                                      const std::string& key,
+                                      bool song) {
+    if (discord_art_active_.load()) return;
+    discord_art_active_.store(true);
+    discord_art_done_.store(false);
+    { std::lock_guard<std::mutex> lk(discord_art_mtx_);
+      discord_art_key_ = key; discord_art_url_.clear(); }
+    if (discord_art_thread_.joinable()) discord_art_thread_.join();  // prior worker already done
+    std::string a = artist, al = album;
+    discord_art_thread_ = std::thread([this, a, al, song]() {
+        std::string u = song ? CoverArt::urlBySong(a, al)
+                             : CoverArt::urlByText(a, al);
+        { std::lock_guard<std::mutex> lk(discord_art_mtx_); discord_art_url_ = u; }
+        discord_art_done_.store(true);
+    });
+}
+
+void UIManager::updateScrobbler() {
+    // Portable since slice 2 (the scrobble clients + MD5 signing run on both
+    // platforms) — the whole-body _WIN32 gate came off with the ^B/^G key fix:
+    // it was slice-1 scaffolding from the MD5-placeholder era, and it silently
+    // no-op'd every scrobble/auth-commit on Linux while the login PROMPTS
+    // worked (Dos-found). Discord RP's inner gates came off at slice 4
+    // (Unix-socket IIpc) — the whole tick is common code now.
+    static bool announced = false;
+    if (!announced) {
+        sclog("updateScrobbler active (session=%s)",
+              config_.lastfm_session.empty() ? "EMPTY" : "set");
+        announced = true;
+    }
+
+    // Commit a completed auto-poll authorization (worker filled the slots).
+    if (lf_poll_done_.exchange(false)) {
+        std::string sk, user;
+        { std::lock_guard<std::mutex> lk(lf_poll_mtx_); sk = lf_poll_session_; user = lf_poll_user_; }
+        config_.lastfm_session = sk;
+        config_.lastfm_user    = user;
+        config_.lastfm_pending.clear();
+        config_.save();
+        lf_poll_active_.store(false);
+        if (lf_poll_thread_.joinable()) lf_poll_thread_.join();
+        sclog("auto-poll: committed session for %s", user.c_str());
+        showTrackToast("Last.fm: logged in as " + user, "", "");
+    }
+
+    // Commit a completed ListenBrainz token validation (worker filled the slots).
+    // Placed before the Last.fm early-return so it runs even with no Last.fm login.
+    if (lb_validate_done_.exchange(false)) {
+        std::string tok, user; bool ok;
+        { std::lock_guard<std::mutex> lk(lb_validate_mtx_);
+          tok = lb_validate_token_; user = lb_validate_user_; ok = lb_validate_ok_; }
+        if (lb_validate_thread_.joinable()) lb_validate_thread_.join();
+        if (ok) {
+            config_.listenbrainz_token = tok;
+            config_.listenbrainz_user  = user;
+            config_.save();
+            sclog("listenbrainz: token validated for %s", user.c_str());
+            showTrackToast("ListenBrainz: logged in as " + user, "", "");
+        } else {
+            sclog("listenbrainz: token validation failed");
+            showTrackToast("ListenBrainz: token invalid - press Ctrl+B to retry", "", "");
+        }
+    }
+
+    if (config_.lastfm_session.empty() && config_.listenbrainz_token.empty()
+        && !config_.discord_presence
+        )
+        return;   // nothing to drive (no scrobbler, no Discord) -> no-op
+
+    auto st = audio_.state();
+    if (st != PlaybackState::Playing && st != PlaybackState::Paused) {
+        scrob_artist_.clear(); scrob_track_.clear();   // stopped -> reset
+        if (discord_active_) { discord_.clearActivity(); discord_active_ = false; }
+        discord_artist_.clear(); discord_track_.clear();
+        return;
+    }
+
+    std::string artist, track, album;
+    bool is_radio = false;
+    int  pos = 0, dur = 0;
+
+    if (audio_.streamMode()) {
+        is_radio = true;
+        std::string np = audio_.streamNowPlaying();    // "Artist - Title"
+        auto dash = np.find(" - ");
+        if (dash == std::string::npos) return;         // no parseable now-playing yet
+        artist = np.substr(0, dash);
+        track  = np.substr(dash + 3);
+    } else if (audio_.cdMode() && audio_.cdCurrentTrack() > 0) {
+        // CD: pull raw UTF-8 artist/title from the cached MusicBrainz release.
+        // (The playlist's display_title is combined "Artist - Title" AND
+        //  ASCII-sanitized for the terminal, so it's unsuitable for scrobbling.)
+        // No MB metadata for this track -> leave artist/track empty so the guard
+        // below skips: CD scrobbling requires a MusicBrainz lookup (Ctrl+R).
+        int tnum = audio_.cdCurrentTrack();
+        MBRelease rel;
+        { std::lock_guard<std::mutex> lk(mb_mutex_); rel = mb_release_; }
+        int n_phys = 0;
+        for (std::size_t k2 = 0; k2 < playlist_.size(); ++k2)
+            if (isCDTrackPath(playlist_.at(k2).path)) ++n_phys;
+        const int cur_disc = pickDiscForTrackCount(rel, n_phys);
+        const MBTrack* mt = nullptr;
+        for (const auto& m : rel.tracks)
+            if (m.number == tnum && m.disc == cur_disc) { mt = &m; break; }
+        if (mt && !mt->title.empty()) {
+            artist = mt->artist.empty() ? rel.artist : mt->artist;
+            track  = mt->title;
+            album  = rel.title;
+            pos = (int)audio_.cdPositionSec();
+            dur = (int)audio_.cdDurationSec();
+        }
+    } else {
+        const auto& t = audio_.currentTrack();
+        artist = t.artist; track = t.title; album = t.album;
+        pos = (int)audio_.positionSec();
+        dur = (int)audio_.durationSec();
+    }
+    // Trim whitespace on radio-derived fields.
+    auto trim = [](std::string& x){
+        while (!x.empty() && (x.front()==' '||x.front()=='\t')) x.erase(x.begin());
+        while (!x.empty() && (x.back()==' '||x.back()=='\t')) x.pop_back();
+    };
+    trim(artist); trim(track);
+    if (artist.empty() || track.empty()) {
+        static bool warned = false;
+        if (!warned) { sclog("skip: empty artist/track (radio=%d) np=\"%s\"",
+                             (int)is_radio, audio_.streamMode() ? audio_.streamNowPlaying().c_str() : "(file)"); warned = true; }
+        return;
+    }
+    artist = deinvertArtist(artist);   // "Shins, The" -> "The Shins" for both services
+    // Discord Rich Presence — same resolved metadata, independent of scrobbling.
+    // Portable since slice 4 (Unix-socket IIpc twin).
+    if (config_.discord_presence) {
+        // iHeart digital cover (empty in raw mode / on ad breaks -> logo). Tracked so a
+        // cover that lands a tick after the track commits still refreshes the presence.
+        std::string radio_art = audio_.streamMode() ? audio_.streamArtUrl() : std::string();
+        if (artist != discord_artist_ || track != discord_track_ || discord_force_update_
+            || radio_art != discord_radio_art_) {
+            discord_radio_art_ = radio_art;
+            discord_artist_ = artist; discord_track_ = track; discord_album_ = album;
+            long nowt = (long)std::time(nullptr);
+            discord_start_ = (pos > 0) ? (nowt - pos) : nowt;   // anchor the elapsed bar
+            std::string det = track;
+            std::string sta = album.empty() ? artist : (artist + " - " + album);
+
+            // Cover image: file OR cd -> async iTunes/Deezer lookup by artist+album
+            // (the cd scrobble branch already set album = rel.title). The Cover Art
+            // Archive is unreliable here (often no front cover, esp. Discogs-sourced
+            // releases) -> a bad CAA URL shows Discord's broken-image dice, so we use
+            // the same proven lookup files use. radio / no album -> the logo.
+            std::string image = "remoct_logo";
+            const std::string key = artist + "\t" + track;
+            if (!radio_art.empty()) {
+                image = radio_art;                            // iHeart digital cover for the live song
+            } else if (!audio_.streamMode() && !album.empty()) {
+                if (key == discord_art_cache_key_ && !discord_art_cache_url_.empty())
+                    image = discord_art_cache_url_;            // resolved earlier
+                else
+                    startDiscordArtLookup(artist, album, key); // logo now, cover when it lands
+            } else if (audio_.streamMode()) {
+                // Radio with no station-supplied cover (ICY always; iHeart raw mode;
+                // iHeart digital during ad/boundary skew). Fall back to a song-entity
+                // lookup keyed on artist+title. Logo stays until/unless one lands; a
+                // confirmed miss is remembered so rotation repeats don't re-query.
+                if (key == discord_art_cache_key_ && !discord_art_cache_url_.empty())
+                    image = discord_art_cache_url_;            // resolved earlier this session
+                else if (discord_art_neg_.find(key) == discord_art_neg_.end())
+                    startDiscordArtLookup(artist, track, key, /*song=*/true);
+            }
+
+            discord_.setActivity(det, sta, discord_start_, image, "RE-MOCT");
+            discord_active_       = true;
+            discord_force_update_ = false;
+        }
+
+        // Deferred art commit: when an async file lookup finishes, swap the logo
+        // for the real cover on the still-current track.
+        if (discord_art_done_.exchange(false)) {
+            std::string url, forkey;
+            { std::lock_guard<std::mutex> lk(discord_art_mtx_);
+              url = discord_art_url_; forkey = discord_art_key_; }
+            if (discord_art_thread_.joinable()) discord_art_thread_.join();
+            discord_art_active_.store(false);
+            const std::string curkey = discord_artist_ + "\t" + discord_track_;
+            if (forkey == curkey) {
+                if (!url.empty()) {
+                    discord_art_cache_key_ = forkey;
+                    discord_art_cache_url_ = url;
+                    std::string sta = discord_album_.empty() ? discord_artist_
+                                    : (discord_artist_ + " - " + discord_album_);
+                    discord_.setActivity(discord_track_, sta, discord_start_, url, "RE-MOCT");
+                } else if (audio_.streamMode()) {
+                    // Radio lookup came back empty for the still-current track: remember
+                    // the miss so the same song returning in rotation keeps the logo
+                    // without re-hitting iTunes/Deezer. Logo is already on screen.
+                    discord_art_neg_.insert(forkey);
+                }
+            } else if (!audio_.streamMode() && !discord_album_.empty()) {
+                // The finished lookup was for a since-skipped track — retry for the
+                // one we actually landed on (unless already cached). Covers file+cd.
+                if (!(curkey == discord_art_cache_key_ && !discord_art_cache_url_.empty()))
+                    startDiscordArtLookup(discord_artist_, discord_album_, curkey);
+            }
+        }
+    }
+
+    const std::string& k  = config_.lastfm_key;
+    const std::string& s  = config_.lastfm_secret;
+    const std::string& sk = config_.lastfm_session;
+
+    // New track? -> reset state + send now-playing in the background.
+    // Compare on canonical identity, not the raw string: iHeart relabels the same
+    // song mid-play (featured artist hops fields / spacing changes), which would
+    // otherwise reset the timer, re-send now-playing, and risk a duplicate scrobble.
+    // A relabel keeps the FIRST-seen (usually cleaner) strings and the original timer.
+    std::string normid = normTrackId(artist, track);
+    bool same_track = !scrob_normid_.empty() && normid == scrob_normid_;
+    if (!same_track && (artist != scrob_artist_ || track != scrob_track_)) {
+        scrob_artist_ = artist; scrob_track_ = track; scrob_album_ = album;
+        scrob_normid_ = normid;
+        scrob_start_  = (long)std::time(nullptr);
+        scrob_done_   = false;
+        if (!looksLikeRealTrack(artist, track)) {   // ad/station junk -> skip both services
+            sclog("skip now-playing (junk): %s - %s", artist.c_str(), track.c_str());
+            return;
+        }
+        sclog("now-playing: %s - %s (radio=%d dur=%d)", artist.c_str(), track.c_str(), (int)is_radio, dur);
+        if (!sk.empty())
+            std::thread([=]{ LastFm::updateNowPlaying(k, s, sk, artist, track, album); }).detach();
+        if (!config_.listenbrainz_token.empty()) {
+            std::string lbtok = config_.listenbrainz_token;
+            std::thread([=]{ ListenBrainz::playingNow(lbtok, artist, track, album); }).detach();
+        }
+        return;
+    }
+
+    if (scrob_done_) return;
+
+    // Scrobble threshold: >30s track, played >=50% or 4min (files);
+    // radio has no known duration, so use a conservative 90s of listening.
+    long elapsed = (long)std::time(nullptr) - scrob_start_;
+    bool ready = false;
+    if (is_radio) {
+        ready = (elapsed >= 90);
+    } else if (dur > 30) {
+        int threshold = dur / 2;
+        if (threshold > 240) threshold = 240;
+        ready = (pos >= threshold);
+    }
+    if (ready) {
+        scrob_done_ = true;
+        if (!looksLikeRealTrack(artist, track)) {   // ad/station junk -> skip both services
+            sclog("skip scrobble (junk): %s - %s", artist.c_str(), track.c_str());
+            return;
+        }
+        sclog("scrobble: %s - %s (elapsed=%ld pos=%d dur=%d)", artist.c_str(), track.c_str(), elapsed, pos, dur);
+        long ts = scrob_start_;
+        bool chosen = !is_radio;          // radio: chosenByUser=0
+        std::string a = artist, t = track, al = album;
+        if (!sk.empty())
+            std::thread([=]{ LastFm::scrobble(k, s, sk, a, t, ts, chosen, al); }).detach();
+        if (!config_.listenbrainz_token.empty()) {
+            std::string lbtok = config_.listenbrainz_token;
+            std::thread([=]{ ListenBrainz::submitSingle(lbtok, a, t, ts, al); }).detach();
+        }
+    }
+}
+
+void UIManager::startLastfmPoll(const std::string& token) {
+    // Portable since slice 2 (getSession = seam HTTP + vendored MD5).
+    if (lf_poll_active_.exchange(true)) return;        // already polling
+    lf_poll_done_.store(false);
+    if (lf_poll_thread_.joinable()) lf_poll_thread_.join();
+    std::string key = config_.lastfm_key, secret = config_.lastfm_secret, tok = token;
+    lf_poll_thread_ = std::thread([this, key, secret, tok]() {
+        // Retry getSession for ~60s; the worker NEVER touches config_ — it only
+        // drops the result into guarded slots for the UI thread to commit.
+        for (int attempt = 0; attempt < 20 && lf_poll_active_.load(); ++attempt) {
+            for (int w = 0; w < 30 && lf_poll_active_.load(); ++w)   // ~3s, responsive
+                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            if (!lf_poll_active_.load()) break;
+            std::string sk, user;
+            if (LastFm::getSession(key, secret, tok, sk, user) && !sk.empty()) {
+                std::lock_guard<std::mutex> lk(lf_poll_mtx_);
+                lf_poll_session_ = sk;
+                lf_poll_user_    = user;
+                lf_poll_done_.store(true);
+                break;
+            }
+        }
+        lf_poll_active_.store(false);
+    });
+}
+
+void UIManager::startListenBrainzValidate(const std::string& token) {
+    // Portable since slice 2 (validate-token = seam HTTP, no signing).
+    if (lb_validate_active_.exchange(true)) return;     // one validation already in flight
+    lb_validate_done_.store(false);
+    if (lb_validate_thread_.joinable()) lb_validate_thread_.join();
+    std::string tok = token;
+    lb_validate_thread_ = std::thread([this, tok]() {
+        // Network call lives entirely off the UI thread; the worker NEVER touches
+        // config_ — it drops the result into guarded slots for the UI thread to commit.
+        std::string user;
+        bool ok = ListenBrainz::validateToken(tok, user);
+        {
+            std::lock_guard<std::mutex> lk(lb_validate_mtx_);
+            lb_validate_token_ = tok;
+            lb_validate_user_  = ok ? user : std::string();
+            lb_validate_ok_    = ok;
+        }
+        lb_validate_done_.store(true);
+        lb_validate_active_.store(false);
+    });
+}
+
+void UIManager::lastfmBeginAuth() {
+    std::string token, url;
+    if (LastFm::requestToken(config_.lastfm_key, config_.lastfm_secret, token, url)) {
+        config_.lastfm_pending = token;   // persisted so it survives an app restart
+        config_.save();
+        sclog("beginAuth: token acquired, browser opened, auto-poll started");
 #ifdef _WIN32
+        ShellExecuteA(nullptr, "open", url.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+#else
+        // xdg-open twin — same fire-and-forget contract as ShellExecuteA "open".
+        // (Last.fm auth URLs are https + query params; no shell-hostile chars.)
+        (void)std::system(("xdg-open '" + url + "' >/dev/null 2>&1 &").c_str());
+#endif
+        startLastfmPoll(token);           // auto-complete after you click allow
+        showTrackToast("Last.fm: approve in browser - finishes automatically", "", "");
+    } else {
+        sclog("beginAuth: requestToken FAILED");
+        showTrackToast("Last.fm: token request failed", "", "");
+    }
+}
+
+void UIManager::handleInput(int ch) {
+    // slice 6: overlay input is common. The RipConfirm modal (^Y) is live on Linux;
+    // the MBSearch line is inert there (^F stays gated, so it never opens).
     if (ui_overlay_ == UIOverlay::MBSearch) { handleMBSearchInput(ch); return; }
     // ── Rip mode selection modal — intercepts all input when active ─────────
     if (ui_overlay_ == UIOverlay::RipConfirm) {
@@ -2215,7 +3436,6 @@ void UIManager::handleInput(int ch) {
             });
         return;
     }
-#endif
 
     // ? toggles help from anywhere
     // Don't let pane-toggle hotkeys fire while editing tags
@@ -2386,6 +3606,30 @@ void UIManager::handleInput(int ch) {
     }
 
     // Bookmarks popup — j/k navigate, Enter jump, x delete, B close
+    if (right_pane_ == RightPane::Chapters) {
+        switch (ch) {
+            case 17: audio_.stop(); running_ = false; return;
+            case ';': case 27: right_pane_ = RightPane::Playlist; return;
+            case 'j': case 'J': case KEY_DOWN:
+                ++chapter_cursor_; redraw_needed_.store(true); return;
+            case 'k': case 'K': case KEY_UP:
+                --chapter_cursor_; redraw_needed_.store(true); return;
+            case '\n': case KEY_ENTER: case '\r':
+                if (!current_chapters_.empty()) {
+                    chapter_cursor_ = std::clamp(chapter_cursor_, 0,
+                                       (int)current_chapters_.size()-1);
+                    audio_.seekTo(current_chapters_[(size_t)chapter_cursor_].start_sec);
+                    redraw_needed_.store(true);
+                }
+                return;
+            case ',': jumpChapter(-1); return;
+            case '.': jumpChapter(+1); return;
+            case ' ': audio_.togglePause(); return;
+            case 's': audio_.stop(); return;
+            default: return;
+        }
+    }
+
     if (right_pane_ == RightPane::Bookmarks) {
         switch (ch) {
             case 17: audio_.stop(); running_ = false; return;
@@ -2556,8 +3800,10 @@ void UIManager::handleInput(int ch) {
                     maybePreloadNext();
                 }
                 break;
-            case ',': case '[': audio_.seekBy(-5.0); break;
-            case '.': case ']': audio_.seekBy(+5.0); break;
+            case '[': requestSeek(-5.0); break;
+            case ']': requestSeek(+5.0); break;
+            case ',': jumpChapter(-1); break;
+            case '.': jumpChapter(+1); break;
             case 't': case 'T': show_remaining_ = !show_remaining_; break;
             case 'w': case 'W': show_clock_ = !show_clock_; break;
             default: break;
@@ -2568,6 +3814,90 @@ void UIManager::handleInput(int ch) {
     switch (ch) {
         case 17:  // Ctrl+Q — quit
             audio_.stop(); running_ = false; break;
+        // Ctrl+A / Ctrl+K un-gated for Linux (slice-5 follow-up, Dos-found: both
+        // keys dead on Linux — the whole case was compiled out, not the tty).
+        // Both are portable and depend on NO unported subsystem: IHeartDeepLog is
+        // portable since slice 1; the digital(HLS)/raw(ICY) stream paths are both
+        // ported (slices 2/3). Unlike ^F/^Y/^R (overlay/CD still Windows-gated),
+        // these had no reason to stay gated — a missed un-gate, same class as
+        // b2abb12.
+        case 1:  // Ctrl+A — toggle deep-analysis iHeart capture log (diagnostic; not persisted)
+        {
+            // Deep log lives in the streaming plugin now (slice c): toggle it across
+            // the ABI (audio_.setDeepLog -> set_config("deeplog",...)). The host
+            // tracks the on/off state; the plugin-side capture path is no longer
+            // surfaced in the toast (it was lazily created on the producer thread
+            // anyway — path() right after enable was already racy/empty).
+            deeplog_on_ = !deeplog_on_;
+            audio_.setDeepLog(deeplog_on_);
+            showTrackToast(deeplog_on_ ? "Deep log: ON" : "Deep log: OFF", "", "");
+        }
+            break;
+        case 11:  // Ctrl+K — toggle iHeart stream mode: digital (web player) vs raw broadcast
+            config_.prefer_digital_stream = !config_.prefer_digital_stream;
+            config_.save();
+            audio_.setPreferDigital(config_.prefer_digital_stream);
+            showTrackToast(config_.prefer_digital_stream
+                               ? "Stream: Web Player mode (fewer ads)"
+                               : "Stream: Raw broadcast (direct)", "", "");
+            if (audio_.streamMode())                 // reconnect now so it takes effect
+                audio_.beginStream(audio_.streamUrl());
+            break;
+        case 16:  // Ctrl+P — PROBE: toggle iHeart digital-handshake identity arm
+                  // (anon vs minted anonymous profileId). Hidden A/B control; only has
+                  // an effect while the deep log (Ctrl+A) is ON — the mint is probe-gated
+                  // in hlsConnect. Read at reconnect, so reconnect now to switch arms.
+            config_.iheart_probe_minted = !config_.iheart_probe_minted;
+            config_.save();
+            audio_.setProbeMinted(config_.iheart_probe_minted);
+            showTrackToast(config_.iheart_probe_minted
+                               ? "Probe: minted profileId arm (deep log only)"
+                               : "Probe: anon handshake arm", "", "");
+            if (audio_.streamMode())                 // reconnect now so the arm takes effect
+                audio_.beginStream(audio_.streamUrl());
+            break;
+        case 20:  // Ctrl+T — toggle Classic / Awesome theme
+            config_.awesome_mode = !config_.awesome_mode;
+            config_.save();
+            resizeWindows();        // rebuild panes with theme-aware geometry +
+            redraw_needed_.store(true);   // full shrink-safe screen wipe
+            showTrackToast(config_.awesome_mode ? "Theme: Awesome"
+                                               : "Theme: Classic", "", "");
+            break;
+        case 14:  // Ctrl+N — toggle Nerd Font title icons (needs a Nerd Font)
+            config_.nerd_icons = !config_.nerd_icons;
+            config_.save();
+            redraw_needed_.store(true);
+            showTrackToast(config_.nerd_icons ? "Nerd icons: ON (needs Nerd Font)"
+                                              : "Nerd icons: OFF", "", "");
+            break;
+        // Per-case Windows gates below (slice-2 fix): a single #ifdef here
+        // used to span ^D/^B/^F/^G/^U/^Y/^R, silently deleting the portable
+        // scrobbler-login and radio-URL keys from the Linux build (Dos-found:
+        // ^U/^G/^B dead while ^N/^T/^L/^Q worked — a key probe proved the tty
+        // delivers all of them; the gap was here). Gate each key on WHY:
+        // ^D = common since slice 4 (Unix-socket IIpc); ^F = the MBSearch overlay
+        // ENTRY stays deferred (its draw/input handlers are portable, but the
+        // feature is Windows-only for now); ^Y/^R = common since slice 6 (SG_IO CD).
+        case 4:  // Ctrl+D — toggle Discord Rich Presence
+            config_.discord_presence = !config_.discord_presence;
+            config_.save();
+            if (config_.discord_presence) {
+                discord_force_update_ = true;   // push the current track on the next tick
+                showTrackToast("Discord presence: ON", "", "");
+            } else {
+                discord_.clearActivity();
+                discord_active_ = false;
+                discord_artist_.clear(); discord_track_.clear();
+                showTrackToast("Discord presence: OFF", "", "");
+            }
+            break;
+        case 2:  // Ctrl+B — ListenBrainz login (paste user token; no browser/handshake)
+            if (config_.listenbrainz_token.empty())
+                openInputBar(InputMode::ListenBrainzToken, "");
+            else
+                showTrackToast("ListenBrainz: logged in as " + config_.listenbrainz_user, "", "");
+            break;
 #ifdef _WIN32
         case 6:  // Ctrl+F — MusicBrainz / Discogs manual search
             if (ui_overlay_ == UIOverlay::None && !mb_lookup_.isActive()) {
@@ -2576,7 +3906,54 @@ void UIManager::handleInput(int ch) {
                 redraw_needed_.store(true);
             }
             break;
-        case 25:  // Ctrl+Y — CD rip
+#endif
+        case 7:  // Ctrl+G — Last.fm login (stateful: request token, then exchange)
+            if (!config_.lastfm_session.empty()) {
+                // Already logged in — report it, mirroring ^B. (Re-auth = clear
+                // lastfm-session in the conf, same convention as ListenBrainz.)
+                showTrackToast("Last.fm: logged in as " + config_.lastfm_user, "", "");
+            } else if (config_.lastfm_key.empty() || config_.lastfm_secret.empty()) {
+                openInputBar(InputMode::LastfmKey, "");   // first-time: prompt in-app
+            } else if (config_.lastfm_pending.empty()) {
+                sclog("ctrl+G: begin auth");
+                lastfmBeginAuth();
+            } else {
+                std::string sk, user;
+                int err = 0;
+                bool ok = LastFm::getSession(config_.lastfm_key, config_.lastfm_secret,
+                                             config_.lastfm_pending, sk, user, &err);
+                sclog("ctrl+G: getSession ok=%d err=%d user=%s", (int)ok, err, user.c_str());
+                if (ok) {
+                    config_.lastfm_session = sk;
+                    config_.lastfm_user    = user;
+                    config_.lastfm_pending.clear();
+                    config_.save();
+                    lf_poll_active_.store(false);   // stop any background poll
+                    showTrackToast("Last.fm: logged in as " + user, "", "");
+                } else if (err == 14) {
+                    // Token valid but not authorized yet — keep it; re-arm the
+                    // auto-poll so clicking Allow still completes hands-free.
+                    startLastfmPoll(config_.lastfm_pending);
+                    showTrackToast("Last.fm: approve in browser - finishes automatically", "", "");
+                } else if (err != 0) {
+                    // Definitive API rejection (15 expired / 4 invalid / other):
+                    // the pending token can never succeed — drop it and start a
+                    // fresh auth right away instead of looping on a dead token.
+                    config_.lastfm_pending.clear();
+                    config_.save();
+                    sclog("ctrl+G: pending token dead (err=%d), restarting auth", err);
+                    lastfmBeginAuth();
+                } else {
+                    // Transport failure — token may still be good, keep it.
+                    showTrackToast("Last.fm: network error - press Ctrl+G to retry", "", "");
+                }
+            }
+            break;
+        case 21:  // Ctrl+U — input an internet-radio stream URL
+            if (ui_overlay_ == UIOverlay::None)
+                openInputBar(InputMode::StreamURL, "");
+            break;
+        case 25:  // Ctrl+Y — CD rip  (slice 6: common — CD path live on Linux)
             if (ui_overlay_ != UIOverlay::None) break;  // already showing modal
             if (audio_.cdMode() && !cd_ripper_.isActive()) {
                 const auto& cd = audio_.cdSource();
@@ -2631,7 +4008,6 @@ void UIManager::handleInput(int ch) {
                 // Not in CD mode — silently ignore
             }
             break;
-#endif
         case 'Q':
             // Toggle queue pane
             right_pane_ = (right_pane_ == RightPane::Queue)
@@ -2648,7 +4024,7 @@ void UIManager::handleInput(int ch) {
                 const std::string& nm = dir_entries_[(size_t)dir_cursor_];
                 // Build full path — dir_entries_ stores names, not full paths
                 std::string p;
-                if (in_recent_ || in_favs_ || fs::path(nm).is_absolute()) {
+                if (in_recent_ || in_favs_ || in_radio_ || fs::path(nm).is_absolute()) {
                     p = nm;  // recent/fav entries are already full paths
                 } else {
                     p = (fs::path(current_dir_) / nm).string();
@@ -2689,6 +4065,14 @@ void UIManager::handleInput(int ch) {
         }
         case '\t':
             toggleFocus(); break;
+        case '~':
+            // Live-reload theme.conf: re-init the colour pairs and force a full
+            // repaint. Pairs are global state, so re-running init_pair() updates
+            // every COLOR_PAIR() reference in place — no need to rebuild windows.
+            initColours();
+            clearok(stdscr, TRUE);
+            showTrackToast("Theme reloaded", DigiConfig::themePath(), "");
+            break;
         case ' ':
             audio_.togglePause(); break;
         case 't': case 'T':
@@ -2749,7 +4133,7 @@ void UIManager::handleInput(int ch) {
                 fav_path = dir_entries_[(size_t)dir_cursor_];
             } else if (focus_ == Pane::DirBrowser
                        && dir_cursor_ < (int)dir_entries_.size()
-                       && !in_drive_list_ && !in_recent_ && !in_favs_) {
+                       && !in_drive_list_ && !in_recent_ && !in_favs_ && !in_radio_ && !in_books_) {
                 const std::string& nm = dir_entries_[(size_t)dir_cursor_];
                 std::string full = (fs::path(nm).is_absolute()) ? nm
                                  : (fs::path(current_dir_) / nm).string();
@@ -2785,6 +4169,38 @@ void UIManager::handleInput(int ch) {
                         dir_cursor_ = std::max(0, (int)dir_entries_.size() - 1);
                 }
             }
+            if (focus_ == Pane::DirBrowser && in_radio_
+                && dir_cursor_ < (int)dir_entries_.size()) {
+                const std::string& nm = dir_entries_[(size_t)dir_cursor_];
+                if (nm != "[Back]" && !nm.empty()) {
+                    config_.removeRadioStation(nm);
+                    dir_entries_.clear(); dir_display_.clear();
+                    dir_entries_.push_back("[Back]"); dir_display_.push_back("[Back]");
+                    for (const auto& st : config_.radio_stations) {
+                        dir_entries_.push_back(st);
+                        dir_display_.push_back(sanitizeForDisplay(stationLabel(st)));
+                    }
+                    if (dir_cursor_ >= (int)dir_entries_.size())
+                        dir_cursor_ = std::max(0, (int)dir_entries_.size() - 1);
+                }
+            }
+            if (focus_ == Pane::DirBrowser && in_books_
+                && dir_cursor_ < (int)dir_entries_.size()) {
+                const std::string& nm = dir_entries_[(size_t)dir_cursor_];
+                if (nm != "[Back]" && !nm.empty()) {
+                    config_.removeAudiobook(nm);
+                    config_.save();
+                    dir_entries_.clear(); dir_display_.clear();
+                    dir_entries_.push_back("[Back]"); dir_display_.push_back("[Back]");
+                    for (const auto& bk : config_.audiobooks) {
+                        dir_entries_.push_back(bk);
+                        std::string disp = fs::path(bk).filename().string();
+                        dir_display_.push_back(sanitizeForDisplay(disp.empty() ? bk : disp));
+                    }
+                    if (dir_cursor_ >= (int)dir_entries_.size())
+                        dir_cursor_ = std::max(0, (int)dir_entries_.size() - 1);
+                }
+            }
             break;
         case 'o':
             // Cycle playlist sort mode
@@ -2798,8 +4214,27 @@ void UIManager::handleInput(int ch) {
             refreshDir();
             break;
         case 'b':
+            // Cursor on an audiobook file in the normal browser -> toggle in [Books].
+            if (focus_ == Pane::DirBrowser
+                && !in_drive_list_ && !in_recent_ && !in_favs_ && !in_radio_ && !in_books_
+                && dir_cursor_ < (int)dir_entries_.size()) {
+                const std::string& nm = dir_entries_[(size_t)dir_cursor_];
+                std::string full = fs::path(nm).is_absolute() ? nm
+                                 : (fs::path(current_dir_) / nm).string();
+                if (PlaylistManager::isAudiobook(full) && fs::exists(full)) {
+                    if (config_.isSavedBook(full)) {
+                        config_.removeAudiobook(full);
+                        showTrackToast("Removed from Books", "", "");
+                    } else {
+                        config_.addAudiobook(full);
+                        showTrackToast("Added to Books", fs::path(full).filename().string(), "");
+                    }
+                    config_.save();
+                    break;                       // handled; don't also bookmark the dir
+                }
+            }
             // Add current directory to bookmarks (not available from [Drives] list)
-            if (!in_drive_list_ && !in_recent_ && !current_dir_.empty()) {
+            if (!in_drive_list_ && !in_recent_ && !in_radio_ && !current_dir_.empty()) {
                 // Don't bookmark CD drive roots — physical drives are volatile
 #ifdef _WIN32
                 std::string dp = current_dir_;
@@ -2855,14 +4290,12 @@ void UIManager::handleInput(int ch) {
         case 'n': case 'N': {
             auto play_next = [&](const std::string& path, bool from_queue = false) {
                 if (!from_queue) pl_cursor_ = (int)playlist_.current();
-#ifdef _WIN32
                 std::string drive; int track_num;
                 if (parseCDPath(path, drive, track_num)) {
                     if (!audio_.cdMode()) audio_.openCD(drive);
                     audio_.playCDTrack(track_num);
                     return;
                 }
-#endif
                 if (audio_.cdMode()) audio_.closeCD();
                 audio_.play(path);
                 maybePreloadNext();
@@ -2872,7 +4305,6 @@ void UIManager::handleInput(int ch) {
                 if (auto qe = playlist_.queuePop(); qe.has_value()) {
                     audio_.clearNext();
                     const std::string& qpath = qe->path;
-#ifdef _WIN32
                     std::string drive; int track_num;
                     if (parseCDPath(qpath, drive, track_num)) {
                         if (!audio_.cdMode()) audio_.openCD(drive);
@@ -2880,7 +4312,6 @@ void UIManager::handleInput(int ch) {
                         // pl_cursor_ stays where it is — queue item has no playlist row
                         break;
                     }
-#endif
                     if (audio_.cdMode()) audio_.closeCD();
                     play_next(qpath, true);  // from_queue=true — don't move cursor
                 }
@@ -2893,14 +4324,12 @@ void UIManager::handleInput(int ch) {
         case 'p': case 'P': {
             auto play_prev = [&](const std::string& path) {
                 pl_cursor_ = (int)playlist_.current();
-#ifdef _WIN32
                 std::string drive; int track_num;
                 if (parseCDPath(path, drive, track_num)) {
                     if (!audio_.cdMode()) audio_.openCD(drive);
                     audio_.playCDTrack(track_num);
                     return;
                 }
-#endif
                 if (audio_.cdMode()) audio_.closeCD();
                 audio_.play(path);
             };
@@ -2908,8 +4337,21 @@ void UIManager::handleInput(int ch) {
                 play_prev(p.value());
             break;
         }
-        case ',': case '[': audio_.seekBy(-5.0); break;
-        case '.': case ']': audio_.seekBy(+5.0); break;
+        case '[': requestSeek(-5.0); break;
+        case ']': requestSeek(+5.0); break;
+        case ',': jumpChapter(-1); break;
+        case '.': jumpChapter(+1); break;
+        case ';':
+            // Toggle the chapter list (only opens if the file has chapters)
+            if (right_pane_ == RightPane::Chapters) {
+                right_pane_ = RightPane::Playlist;
+            } else if (!current_chapters_.empty()) {
+                chapter_cursor_ = std::max(0, currentChapterIndex());
+                right_pane_ = RightPane::Chapters;
+            } else {
+                showTrackToast("No chapters in this track", "", "");
+            }
+            break;
         case '-': case '_':
             audio_.adjustVolume(-0.05f); break;
         case '=': case '+':
@@ -2936,8 +4378,7 @@ void UIManager::handleInput(int ch) {
                 playlist_.moveDown((std::size_t)pl_cursor_);
                 if (pl_cursor_ + 1 < (int)playlist_.size()) {
                     ++pl_cursor_;
-                    int rows, cols2; getmaxyx(win_playlist_, rows, cols2);
-                    if (pl_cursor_ >= pl_scroll_ + rows - 1) ++pl_scroll_;
+                    if (pl_cursor_ >= pl_scroll_ + paneVisibleRows(win_playlist_)) ++pl_scroll_;
                 }
                 last_playlist_current_for_sync_ = (int)playlist_.current();
             }
@@ -2952,14 +4393,35 @@ void UIManager::handleInput(int ch) {
                 if (pl_cursor_ >= (int)playlist_.size() && pl_cursor_ > 0)
                     --pl_cursor_;
                 // Keep scroll in bounds so cursor doesn't appear to jump
-                int visible = 0;
-                if (win_playlist_) {
-                    int r, c; getmaxyx(win_playlist_, r, c); visible = r - 1;
-                }
+                int visible = win_playlist_ ? paneVisibleRows(win_playlist_) : 0;
                 int max_scroll = std::max(0, (int)playlist_.size() - visible);
                 if (pl_scroll_ > max_scroll) pl_scroll_ = max_scroll;
                 if (pl_scroll_ > pl_cursor_) pl_scroll_ = pl_cursor_;
+                // Deleting an entry above the playing track shifts current()'s
+                // index; resync the marker so the follow logic doesn't read it as
+                // a track change and snap the cursor to the playing row.
+                last_playlist_current_for_sync_ = (int)playlist_.current();
             }
+            else if (focus_ == Pane::DirBrowser && in_radio_
+                     && dir_cursor_ < (int)dir_entries_.size()) {
+                // 'd' also removes a saved station from the [Radio] list (like Del)
+                const std::string& nm = dir_entries_[(size_t)dir_cursor_];
+                if (nm != "[Back]" && !nm.empty()) {
+                    config_.removeRadioStation(nm);
+                    dir_entries_.clear(); dir_display_.clear();
+                    dir_entries_.push_back("[Back]"); dir_display_.push_back("[Back]");
+                    for (const auto& st : config_.radio_stations) {
+                        dir_entries_.push_back(st);
+                        dir_display_.push_back(sanitizeForDisplay(stationLabel(st)));
+                    }
+                    if (dir_cursor_ >= (int)dir_entries_.size())
+                        dir_cursor_ = std::max(0, (int)dir_entries_.size() - 1);
+                }
+            }
+            break;
+        case '/':
+            if (focus_ == Pane::DirBrowser && in_radio_)
+                openInputBar(InputMode::RadioSearch, "");
             break;
         case 'a': case 'A':
             if (focus_ == Pane::DirBrowser && dir_cursor_ < (int)dir_entries_.size()) {
@@ -3037,8 +4499,13 @@ void UIManager::gotoClose(bool commit) {
 
                 if (is_playlist && fs::exists(target)) {
                     std::size_t before = playlist_.size();
-                    int added = playlist_.loadPlaylist(target);
-                    if (added > 0) {
+                    playlist_.loadPlaylist(target);
+                    std::size_t after  = playlist_.size();
+                    if (int miss = playlist_.lastLoadMissing(); miss > 0)
+                        showTrackToast("Playlist loaded", std::to_string(miss) + " file(s) not found", "");
+                    if (after > before) {
+                        // Jump to the first genuinely-new entry (trust the size
+                        // delta, not the line count — dedup may drop duplicates).
                         pl_cursor_ = (int)before;
                         pl_scroll_ = (int)before;
                         if (audio_.state() == PlaybackState::Stopped) {
@@ -3048,6 +4515,10 @@ void UIManager::gotoClose(bool commit) {
                                 maybePreloadNext();
                             }
                         }
+                    } else {
+                        // All duplicates / none on disk — keep the view valid.
+                        if (pl_cursor_ >= (int)after) pl_cursor_ = std::max(0, (int)after - 1);
+                        if (pl_scroll_ >= (int)after) pl_scroll_ = 0;
                     }
                 } else if (fs::exists(target) && fs::is_directory(target)) {
                     current_dir_   = target;
@@ -3069,8 +4540,14 @@ void UIManager::gotoClose(bool commit) {
             }
             case InputMode::LoadM3U: {
                 std::size_t before = playlist_.size();
-                int added = playlist_.loadPlaylist(target);
-                if (added > 0) {
+                playlist_.loadPlaylist(target);
+                std::size_t after  = playlist_.size();
+                if (int miss = playlist_.lastLoadMissing(); miss > 0)
+                    showTrackToast("Playlist loaded", std::to_string(miss) + " file(s) not found", "");
+                if (after > before) {
+                    // Jump to the first genuinely-new entry. Dedup may have
+                    // dropped some lines, so trust the size delta rather than
+                    // the raw line count returned by loadPlaylist().
                     pl_cursor_ = (int)before;
                     pl_scroll_ = (int)before;
                     if (audio_.state() == PlaybackState::Stopped) {
@@ -3080,6 +4557,120 @@ void UIManager::gotoClose(bool commit) {
                             maybePreloadNext();
                         }
                     }
+                } else {
+                    // Nothing new was appended (every track was already present,
+                    // or none existed on disk). Keep the view on-screen instead
+                    // of scrolling past the end and blanking the pane.
+                    if (pl_cursor_ >= (int)after) pl_cursor_ = std::max(0, (int)after - 1);
+                    if (pl_scroll_ >= (int)after) pl_scroll_ = 0;
+                }
+                break;
+            }
+            case InputMode::StreamURL: {
+                std::string url = goto_input_;
+                // Trim whitespace (paste artifacts)
+                while (!url.empty() && (url.front() == ' ' || url.front() == '\t'))
+                    url.erase(url.begin());
+                while (!url.empty() && (url.back() == ' ' || url.back() == '\t' ||
+                                        url.back() == '\r' || url.back() == '\n'))
+                    url.pop_back();
+                // Collapse an accidental doubled scheme (e.g. prefilled + pasted)
+                if (url.rfind("https://https://", 0) == 0)     url.erase(0, 8);
+                else if (url.rfind("http://http://", 0) == 0)  url.erase(0, 7);
+                if (!url.empty()) {
+                    // Stash the cleaned URL and chain to an optional name prompt.
+                    // The actual add/persist/play happens on StreamName submit so a
+                    // user-supplied name can label the station (blank = derived label).
+                    pending_stream_url_ = url;
+                    openInputBar(InputMode::StreamName, "");
+                }
+                break;
+            }
+            case InputMode::StreamName: {
+                std::string name = goto_input_;
+                while (!name.empty() && (name.front() == ' ' || name.front() == '\t'))
+                    name.erase(name.begin());
+                while (!name.empty() && (name.back() == ' ' || name.back() == '\t' ||
+                                         name.back() == '\r' || name.back() == '\n'))
+                    name.pop_back();
+                std::string url = pending_stream_url_;
+                pending_stream_url_.clear();
+                if (!url.empty()) {
+                    // Supplied name -> "RADIO: <name>" (keeps the station-signalling
+                    // prefix); blank -> today's URL-derived label. Name is in-session
+                    // only for now — persistence needs the Config schema change.
+                    std::string label = name.empty() ? radioLabel(url)
+                                                      : ("RADIO: " + sanitizeForDisplay(name));
+                    config_.addRadioStation(url, name);   // persist URL + name, show in [Radio]
+                    config_.save();                       // flush now so the name survives restart
+
+                    // Append as a playlist entry (visible, removable, re-selectable),
+                    // jump to it, reveal the playlist pane, then play. Coexists with
+                    // existing file/CD entries; addStream dedups by URL.
+                    std::size_t idx = playlist_.addStream(url, label);
+                    pl_cursor_  = (int)idx;
+                    pl_scroll_  = 0;
+                    right_pane_ = RightPane::Playlist;
+                    playlist_.selectAt(idx);
+                    audio_.beginStream(url);   // non-blocking; connects on a worker thread
+                    showTrackToast("Negotiating Radio Stream...", label, "");
+                }
+                break;
+            }
+            case InputMode::RadioSearch: {
+                std::string q = goto_input_;
+                while (!q.empty() && (q.front() == ' ' || q.front() == '\t')) q.erase(q.begin());
+                while (!q.empty() && (q.back() == ' ' || q.back() == '\t' ||
+                                      q.back() == '\r' || q.back() == '\n')) q.pop_back();
+                if (!q.empty()) {
+                    radio_results_   = RadioBrowser::search(q, 30);   // synchronous, bounded
+                    in_radio_        = true;
+                    in_radio_search_ = true;
+                    dir_entries_.clear(); dir_display_.clear();
+                    dir_entries_.push_back("[Back]"); dir_display_.push_back("[Back]");
+                    for (const auto& r : radio_results_) {
+                        dir_entries_.push_back(r.url);
+                        std::string meta;
+                        if (r.bitrate > 0)          meta  = std::to_string(r.bitrate) + "k";
+                        if (!r.codec.empty())       meta += (meta.empty() ? "" : " ") + r.codec;
+                        if (!r.country.empty())     meta += (meta.empty() ? "" : ", ") + r.country;
+                        std::string info = r.name + (meta.empty() ? "" : "  (" + meta + ")");
+                        dir_display_.push_back(sanitizeForDisplay(info));
+                    }
+                    dir_cursor_ = 0; dir_scroll_ = 0;
+                    if (radio_results_.empty())
+                        showTrackToast("No stations found", q, "");
+                }
+                break;
+            }
+            case InputMode::LastfmKey: {
+                std::string k = goto_input_;
+                while (!k.empty() && (k.front()==' '||k.front()=='\t')) k.erase(k.begin());
+                while (!k.empty() && (k.back()==' '||k.back()=='\t'||k.back()=='\r'||k.back()=='\n')) k.pop_back();
+                if (!k.empty()) {
+                    config_.lastfm_key = k;
+                    openInputBar(InputMode::LastfmSecret, "");   // chain to secret prompt
+                }
+                break;
+            }
+            case InputMode::LastfmSecret: {
+                std::string sec = goto_input_;
+                while (!sec.empty() && (sec.front()==' '||sec.front()=='\t')) sec.erase(sec.begin());
+                while (!sec.empty() && (sec.back()==' '||sec.back()=='\t'||sec.back()=='\r'||sec.back()=='\n')) sec.pop_back();
+                if (!sec.empty()) {
+                    config_.lastfm_secret = sec;
+                    config_.save();           // creds persisted
+                    lastfmBeginAuth();        // start browser authorization
+                }
+                break;
+            }
+            case InputMode::ListenBrainzToken: {
+                std::string tok = goto_input_;
+                while (!tok.empty() && (tok.front()==' '||tok.front()=='\t')) tok.erase(tok.begin());
+                while (!tok.empty() && (tok.back()==' '||tok.back()=='\t'||tok.back()=='\r'||tok.back()=='\n')) tok.pop_back();
+                if (!tok.empty()) {
+                    showTrackToast("ListenBrainz: validating token...", "", "");
+                    startListenBrainzValidate(tok);   // async; result applied on next tick (never blocks UI)
                 }
                 break;
             }
@@ -3220,17 +4811,14 @@ void UIManager::toggleFocus() {
 }
 
 void UIManager::navigateDown() {
-    int rows, cols;
     if (focus_ == Pane::DirBrowser) {
-        getmaxyx(win_dir_, rows, cols);
-        int v = rows-1;
+        int v = paneVisibleRows(win_dir_);
         if (dir_cursor_+1 < (int)dir_entries_.size()) {
             ++dir_cursor_;
             if (dir_cursor_ >= dir_scroll_+v) ++dir_scroll_;
         }
     } else {
-        getmaxyx(win_playlist_, rows, cols);
-        int v = rows-1;
+        int v = paneVisibleRows(win_playlist_);
         if (pl_cursor_+1 < (int)playlist_.size()) {
             ++pl_cursor_;
             if (pl_cursor_ >= pl_scroll_+v) ++pl_scroll_;
@@ -3280,6 +4868,31 @@ void UIManager::activateSelection() {
                 dir_cursor_ = 0; dir_scroll_ = 0;
                 return;
             }
+            if (name == "[Radio]") {
+                in_drive_list_ = false;
+                in_radio_      = true;
+                dir_entries_.clear(); dir_display_.clear();
+                dir_entries_.push_back("[Back]"); dir_display_.push_back("[Back]");
+                for (const auto& st : config_.radio_stations) {
+                    dir_entries_.push_back(st);
+                    dir_display_.push_back(sanitizeForDisplay(stationLabel(st)));
+                }
+                dir_cursor_ = 0; dir_scroll_ = 0;
+                return;
+            }
+            if (name == "[Books]") {
+                in_drive_list_ = false;
+                in_books_      = true;
+                dir_entries_.clear(); dir_display_.clear();
+                dir_entries_.push_back("[Back]"); dir_display_.push_back("[Back]");
+                for (const auto& bk : config_.audiobooks) {
+                    dir_entries_.push_back(bk);
+                    std::string disp = fs::path(bk).filename().string();
+                    dir_display_.push_back(sanitizeForDisplay(disp.empty() ? bk : disp));
+                }
+                dir_cursor_ = 0; dir_scroll_ = 0;
+                return;
+            }
             if (name == "[Bookmarks]") {
                 right_pane_      = RightPane::Bookmarks;
                 bookmark_cursor_ = 0;
@@ -3304,6 +4917,54 @@ void UIManager::activateSelection() {
                     maybePreloadNext();
                 }
             }
+            return;
+        }
+        if (in_radio_) {
+            if (name == "[Back]") {
+                if (in_radio_search_) {
+                    // Return from search results to the saved-station list.
+                    in_radio_search_ = false;
+                    dir_entries_.clear(); dir_display_.clear();
+                    dir_entries_.push_back("[Back]"); dir_display_.push_back("[Back]");
+                    for (const auto& st : config_.radio_stations) {
+                        dir_entries_.push_back(st);
+                        dir_display_.push_back(sanitizeForDisplay(stationLabel(st)));
+                    }
+                    dir_cursor_ = 0; dir_scroll_ = 0;
+                    return;
+                }
+                in_radio_ = false;
+                refreshDir();
+                return;
+            }
+            // Resolve the station. Search results carry the real station name +
+            // uuid (persist the name); saved stations keep their stored name.
+            std::string url, uuid;
+            if (in_radio_search_) {
+                int ri = dir_cursor_ - 1;            // [Back] occupies index 0
+                if (ri < 0 || ri >= (int)radio_results_.size()) return;
+                url   = radio_results_[(size_t)ri].url;
+                uuid  = radio_results_[(size_t)ri].uuid;
+                config_.addRadioStation(url, radio_results_[(size_t)ri].name);  // persist real name
+            } else {
+                url   = name;
+                config_.addRadioStation(url);        // preserve any stored name
+            }
+            config_.save();                          // flush so persisted names survive restart
+            // Unified label so search-played and saved stations read the same,
+            // now and after restart: "RADIO: <name>" if known, else derived.
+            std::string label = stationLabel(url);
+            if (!uuid.empty()) RadioBrowser::countClick(uuid);  // popularity courtesy
+            // Append the station and jump to it — coexists with existing file/CD
+            // entries (delete from the playlist to remove). addStream dedups by
+            // URL, so re-selecting a station just jumps to its existing row.
+            std::size_t idx = playlist_.addStream(url, label);
+            pl_cursor_ = (int)idx; pl_scroll_ = 0;
+            playlist_.selectAt(idx);
+            right_pane_ = RightPane::Playlist;
+            in_radio_search_ = false;
+            audio_.beginStream(url);   // non-blocking; connects on a worker thread
+            showTrackToast("Negotiating Radio Stream...", label, "");
             return;
         }
         if (in_favs_) {
@@ -3332,7 +4993,40 @@ void UIManager::activateSelection() {
             }
             return;
         }
+        if (in_books_) {
+            if (name == "[Back]") {
+                in_books_ = false;
+                refreshDir();
+                return;
+            }
+            if (!fs::exists(name)) return;            // dead path — ignore
+            if (PlaylistManager::isSupportedAudio(name)) {
+                size_t idx = playlist_.addTrack(name);
+                playlist_.selectAt(idx);
+                if (auto p = playlist_.currentPath(); p.has_value()) {
+                    audio_.play(p.value());
+                    config_.addAudiobook(p.value());   // keep/refresh in [Books]
+                    config_.addRecentTrack(p.value());
+                    maybePreloadNext();
+                }
+            }
+            return;
+        }
         if (name == "[Drives]") { enterDriveList(); return; }
+        if (name == "[Radio]") {
+            in_radio_  = true;
+            in_recent_ = false;
+            in_favs_   = false;
+            in_drive_list_ = false;
+            dir_entries_.clear(); dir_display_.clear();
+            dir_entries_.push_back("[Back]"); dir_display_.push_back("[Back]");
+            for (const auto& st : config_.radio_stations) {
+                dir_entries_.push_back(st);
+                dir_display_.push_back(sanitizeForDisplay(stationLabel(st)));
+            }
+            dir_cursor_ = 0; dir_scroll_ = 0;
+            return;
+        }
         if (name == "[Recent]") {
             in_recent_ = true;
             in_favs_   = false;
@@ -3357,6 +5051,21 @@ void UIManager::activateSelection() {
                 dir_entries_.push_back(fp);
                 std::string disp = fs::path(fp).filename().string();
                 dir_display_.push_back(sanitizeForDisplay(disp.empty() ? fp : disp));
+            }
+            dir_cursor_ = 0; dir_scroll_ = 0;
+            return;
+        }
+        if (name == "[Books]") {
+            in_books_  = true;
+            in_favs_   = false;
+            in_recent_ = false;
+            in_drive_list_ = false;
+            dir_entries_.clear(); dir_display_.clear();
+            dir_entries_.push_back("[Back]"); dir_display_.push_back("[Back]");
+            for (const auto& bk : config_.audiobooks) {
+                dir_entries_.push_back(bk);
+                std::string disp = fs::path(bk).filename().string();
+                dir_display_.push_back(sanitizeForDisplay(disp.empty() ? bk : disp));
             }
             dir_cursor_ = 0; dir_scroll_ = 0;
             return;
@@ -3389,6 +5098,8 @@ void UIManager::activateSelection() {
             std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
             if (ext == ".m3u" || ext == ".m3u8" || ext == ".pls" || ext == ".xspf") {
                 playlist_.loadPlaylist(full.string());
+                if (int miss = playlist_.lastLoadMissing(); miss > 0)
+                    showTrackToast("Playlist loaded", std::to_string(miss) + " file(s) not found", "");
                 pl_cursor_ = 0; pl_scroll_ = 0;
             }
         }
@@ -3397,14 +5108,12 @@ void UIManager::activateSelection() {
             playlist_.selectAt((size_t)pl_cursor_);
             if (auto p = playlist_.currentPath(); p.has_value()) {
                 const std::string& path = p.value();
-#ifdef _WIN32
                 std::string drive; int track_num;
                 if (parseCDPath(path, drive, track_num)) {
                     if (!audio_.cdMode()) audio_.openCD(drive);
                     audio_.playCDTrack(track_num);
                     return;
                 }
-#endif
                 // Regular file — exits CD mode automatically inside play()
                 audio_.play(path);
                 config_.addRecentTrack(path);
@@ -3417,6 +5126,24 @@ void UIManager::activateSelection() {
 // ─────────────────────────────────────────────────────────────────────────────
 // Drive helpers
 // ─────────────────────────────────────────────────────────────────────────────
+#ifndef _WIN32
+// /proc/mounts encodes space/tab/newline/backslash in mount paths as octal \NNN
+// escapes; decode them so e.g. "/media/dave/My\040USB" browses as "My USB".
+static std::string decodeMountOctal(const std::string& s) {
+    std::string out; out.reserve(s.size());
+    for (size_t i = 0; i < s.size(); ++i) {
+        if (s[i] == '\\' && i + 3 < s.size() &&
+            s[i+1] >= '0' && s[i+1] <= '7' &&
+            s[i+2] >= '0' && s[i+2] <= '7' &&
+            s[i+3] >= '0' && s[i+3] <= '7') {
+            out += (char)((s[i+1]-'0')*64 + (s[i+2]-'0')*8 + (s[i+3]-'0'));
+            i += 3;
+        } else out += s[i];
+    }
+    return out;
+}
+#endif
+
 std::vector<std::string> UIManager::listDrives() {
     std::vector<std::string> drives;
 #ifdef _WIN32
@@ -3426,6 +5153,42 @@ std::vector<std::string> UIManager::listDrives() {
             std::string d; d += (char)('A'+i); d += ":\\";
             drives.push_back(d);
         }
+#else
+    // Linux (slice 6): CD devices first (/dev/sr*), then browsable roots + the
+    // user's mount points. CD entries route to CD mode in activateDrive; every
+    // other entry is a directory the browser descends into. This is also the fix
+    // for the empty [Drive] menu on Linux — Windows enumerated drive letters here.
+    try {
+        std::vector<std::string> cds;
+        for (const auto& de : fs::directory_iterator("/dev")) {
+            std::string nm = de.path().filename().string();
+            if (nm.size() > 2 && nm.compare(0, 2, "sr") == 0 &&
+                std::all_of(nm.begin() + 2, nm.end(),
+                            [](unsigned char c){ return c >= '0' && c <= '9'; }))
+                cds.push_back(de.path().string());              // "/dev/sr0"
+        }
+        std::sort(cds.begin(), cds.end());
+        drives.insert(drives.end(), cds.begin(), cds.end());
+    } catch (...) {}
+    // Filesystem root + home directory as browse starting points.
+    drives.push_back("/");
+    if (const char* h = std::getenv("HOME"); h && *h) drives.push_back(h);
+    // User / removable mount points from /proc/mounts (under /media, /run/media,
+    // /mnt) — where udisks / desktop environments mount USB sticks, discs, phones.
+    std::ifstream mounts("/proc/mounts");
+    std::string line;
+    while (std::getline(mounts, line)) {
+        // fields: device  mountpoint  fstype ...  (mountpoint is octal-escaped)
+        auto s1 = line.find(' ');
+        if (s1 == std::string::npos) continue;
+        auto s2 = line.find(' ', s1 + 1);
+        if (s2 == std::string::npos) continue;
+        std::string mp = decodeMountOctal(line.substr(s1 + 1, s2 - s1 - 1));
+        if (mp.rfind("/media/", 0) == 0 || mp.rfind("/run/media/", 0) == 0 ||
+            mp.rfind("/mnt/", 0) == 0)
+            if (std::find(drives.begin(), drives.end(), mp) == drives.end())
+                drives.push_back(mp);
+    }
 #endif
     return drives;
 }
@@ -3434,11 +5197,17 @@ void UIManager::enterDriveList() {
     in_drive_list_ = true;
     in_recent_     = false;
     in_favs_       = false;
+    in_radio_      = false;
+    in_books_      = false;
     dir_entries_   = listDrives();
     dir_display_   = dir_entries_;
     // Prepend virtual entries at top
     dir_entries_.insert(dir_entries_.begin(), "[Bookmarks]");
     dir_display_.insert(dir_display_.begin(), "[Bookmarks]");
+    dir_entries_.insert(dir_entries_.begin(), "[Books]");
+    dir_display_.insert(dir_display_.begin(), "[Books]");
+    dir_entries_.insert(dir_entries_.begin(), "[Radio]");
+    dir_display_.insert(dir_display_.begin(), "[Radio]");
     dir_entries_.insert(dir_entries_.begin(), "[FAVs]");
     dir_display_.insert(dir_display_.begin(), "[FAVs]");
     dir_entries_.insert(dir_entries_.begin(), "[Recent]");
@@ -3485,6 +5254,36 @@ void UIManager::activateDrive(const std::string& drive_entry) {
         }
         // Fall through to normal browse if CD open failed
     }
+#else
+    // Linux (slice 6): a /dev/sr* entry is a CD drive → enter CD mode; anything
+    // else (root, mount point) is a directory → the fs::exists browse below.
+    if (drive_entry.rfind("/dev/sr", 0) == 0) {
+        // spec = device basename ("sr0"); CdIoSgIo maps it to /dev/sr0, and the
+        // same basename is the CD-path key ("sr0:CD Track NN") parseCDPath reads.
+        std::string spec = drive_entry.substr(5);           // strip "/dev/"
+        if (audio_.cdMode()) audio_.closeCD();
+        if (audio_.openCD(spec)) {
+            std::string prefix = spec + ":CD Track ";
+            playlist_.removeIf([&](const PlaylistEntry& e) {
+                return e.path.substr(0, prefix.size()) == prefix;
+            });
+            cd_drive_letter_ = spec;
+            cd_poll_ticks_   = 0;
+            cd_fail_count_   = 0;
+            playlist_.clear();
+            for (const auto& t : audio_.cdTracks()) {
+                std::string title = std::string("CD Track ") +
+                                    (t.number < 10 ? "0" : "") +
+                                    std::to_string(t.number);
+                playlist_.addCDTrack(spec + ":" + title, title, t.duration_sec);
+            }
+            pl_cursor_ = 0; pl_scroll_ = 0;
+            last_playlist_current_for_sync_ = 0;
+            right_pane_ = RightPane::Playlist;
+            return;
+        }
+        return;   // CD open failed — don't try to browse a device node as a dir
+    }
 #endif
     if (fs::exists(drive_entry)) {
         current_dir_   = drive_entry;
@@ -3499,6 +5298,8 @@ void UIManager::refreshDir() {
     in_drive_list_ = false;
     in_recent_     = false;
     in_favs_       = false;
+    in_radio_      = false;
+    in_books_      = false;
     dir_entries_.clear();
     dir_display_.clear();
     dir_poll_ticks_ = 0;
@@ -3515,6 +5316,10 @@ void UIManager::refreshDir() {
         dir_display_.push_back("[Recent]");
         dir_entries_.push_back("[FAVs]");
         dir_display_.push_back("[FAVs]");
+        dir_entries_.push_back("[Radio]");
+        dir_display_.push_back("[Radio]");
+        dir_entries_.push_back("[Books]");
+        dir_display_.push_back("[Books]");
         if (!at_root) {
             dir_entries_.push_back("..");
             dir_display_.push_back("..");
@@ -3555,6 +5360,10 @@ void UIManager::refreshDir() {
                 if (eb == "[Recent]")               return false;
                 if (ea == "[FAVs]")                 return true;
                 if (eb == "[FAVs]")                 return false;
+                if (ea == "[Radio]")                return true;
+                if (eb == "[Radio]")                return false;
+                if (ea == "[Books]")                return true;
+                if (eb == "[Books]")                return false;
                 if (ea == "..")                     return true;
                 if (eb == "..")                     return false;
 
@@ -3609,23 +5418,7 @@ std::string UIManager::formatTime(double s) const {
 // ── Scrolled text helper ──────────────────────────────────────────────────────
 // Returns a substring of `text` of length `width` using the shared scroll
 // offset. If text fits within width, returns it padded. If not, scrolls.
-std::string UIManager::scrolledText(const std::string& text, int width) const {
-    if (width <= 0) return "";
-    if ((int)text.size() <= width) {
-        std::string s = text;
-        s.resize((size_t)width, ' ');
-        return s;
-    }
-    const std::string pad = "   ";
-    std::string scroll_str = text + pad;
-    int slen = (int)scroll_str.size();
-    int off  = text_scroll_offset_ % slen;
-    std::string result;
-    result.reserve((size_t)width);
-    for (int i = 0; i < width; ++i)
-        result += scroll_str[(size_t)(off + i) % (size_t)slen];
-    return result;
-}
+// (Removed: all consumers now use the column-aware scrollToWidth in StringUtils.h.)
 
 void UIManager::drawMBSearch() {
     const int BOX_W = std::min(screen_cols_ - 4, 72);
@@ -3665,8 +5458,8 @@ void UIManager::drawMBSearch() {
     if (!w) return;
     werase(w);
 
-    // Plain border + title
-    box(w, 0, 0);
+    // Plain border + title (rounded in Awesome mode)
+    panelFrame(w, "", true);
     const char* title = " MUSICBRAINZ SEARCH ";
     mvwaddstr(w, 0, (BOX_W - (int)strlen(title)) / 2, title);
 
@@ -3751,9 +5544,11 @@ void UIManager::drawMBSearch() {
                 year.c_str(), r.country.substr(0, 2).c_str(), src.c_str());
 
             if (hi) {
-                wattron(w, A_REVERSE);
+                // Selected result row — use the themeable 'selected' pair so the
+                // modal matches the playlist/dir selection instead of raw reverse.
+                wattron(w, COLOR_PAIR(CP_SELECTED) | A_BOLD);
                 mvwprintw(w, LIST_START + i, 2, "%-*s", BOX_W - 4, line);
-                wattroff(w, A_REVERSE);
+                wattroff(w, COLOR_PAIR(CP_SELECTED) | A_BOLD);
             } else {
                 mvwaddnstr(w, LIST_START + i, 2, line, BOX_W - 4);
             }

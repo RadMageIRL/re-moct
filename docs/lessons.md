@@ -528,3 +528,30 @@
   the sink goes silent (RMS 0.0) while the same drive sequence runs. The host binary carries
   no StreamSource symbol (removed from its sources), so streaming is impossible without the
   module — the negative control makes that visible.
+- **Byte-identity-testing a live source across a binary boundary (Phase 4 slice d).** To prove
+  a loaded plugin is *identical* to compiled-in — not just "sounds right" — assert byte-exact
+  PCM between two runs of the SAME deterministic input, one via the compiled-in descriptor
+  (keep an in-process `*_query()` accessor for exactly this) and one via `loadPlugin()`. Four
+  disciplines make it trustworthy instead of flaky:
+  1. **Feed the input through the REAL crossing, both runs.** Inject the fake transport AS THE
+     HOST SERVICE (`core::HostServices(fake).table()`), not into the plugin — the plugin reaches
+     HTTP only through the injected table (audit: `grep core::http() plugins/stream/ = 0`), so
+     there's no bypass to accidentally take, and byte-identical PCM then proves the ABI
+     marshalling (request/response translate + host-malloc/free) is transparent. Both runs cross
+     the same table → the only variable is compiled-in symbol vs `dlopen` (a controlled
+     experiment). A `segment_gets>0` counter makes the crossing observable.
+  2. **Make determinism a TESTED assertion, not a hope.** Run the compiled-in descriptor TWICE
+     and assert `refA==refB` *before* comparing to the loaded run. If the drain protocol ever
+     flakes, that assert fails FIRST — a flake can never masquerade as a `.so` fidelity bug.
+  3. **Keep the capture path flag-independent.** Two separately-compiled targets (test vs `.so`)
+     can differ in float optimization. Pick a fixture that stays in fixed-point/integer math:
+     a 44100 source bypasses the resampler (the one float-sensitive stage), the decoder is
+     fixed-point (FDK-AAC), the ring is `int16`, and `int16→float` is `x/32768` (exact). Then
+     `-O`/`-ffast-math` can't move the bytes. **Name what you thereby DON'T test** — here the
+     resample path's byte-identity (a 48k fixture would be flag-sensitive) — and cover it
+     behaviorally instead; a scoped honest proof beats a broad flaky one.
+  4. **Remove thread-timing from the capture.** A live source silence-pads on underrun, so a
+     naive drain captures timing-dependent silence. Capture a FIXED head window after prebuffer
+     with `DRAIN < PREBUFFER`: the ring can't empty during the drain → no silence-fill → the
+     head is fixed decoded audio whatever the producer thread does (the slice-0 "static buffer,
+     drain flat out" lesson, applied to byte-identity).

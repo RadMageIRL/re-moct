@@ -136,10 +136,13 @@ carve the ABI first.
     CdIoSgIo.cpp` (`platform::lnx::SgIoCdIo`) + pure CDBs in `CdbSgIo.h`. Gate
     PROVEN on the real GHD3N via usbipd→WSL2 (VMware is NOT a valid CD venue — it
     exposes a virtual `NECVMWar` drive → +0 offset → wrong bytes). See Done section.
-- **Phase 4 — plugin-ize. IN PROGRESS.** Harden the Source interface into a loadable
-  C-ABI `.dll`/`.so` boundary, and **extract iHeart (the streaming source) as the first
-  real plugin** — the test of the whole plugin system. ("Fix iHeart and ship without
-  rebuilding the host.") Readiness + ABI design ratified: `docs/phase4-readiness.md`
+- **Phase 4 — plugin-ize. ✅ COMPLETE (2026-07-04).** The Source interface is now a
+  loadable C-ABI `.dll`/`.so` boundary and **iHeart (the streaming source) is the first
+  real plugin** — the whole plugin system is proven. **"Fix iHeart and ship without
+  rebuilding the host" is literally true**, and identical-to-compiled-in is a deterministic
+  byte-identity ctest on both matrix legs (slice d). All four slices DONE & PUSHED; the
+  **restructure branch is feature-complete** (merge to `dev`/`main` is Dos's call). Readiness
+  + ABI design ratified: `docs/phase4-readiness.md`
   (§2 = the frozen C boundary; Boundary A = the first plugin is the STREAMING SOURCE
   entire — StreamSource + iHeart metadata + ICY — iHeart as its headline capability).
   - **slice (a) — freeze the C ABI against a disposable plugin: ✅ DONE.** `include/core/
@@ -164,10 +167,50 @@ carve the ABI first.
     rewired `core::http()` → the injected host services (the shim inverted plugin-side as
     `HostServiceHttp`); FDK-AAC + own miniaudio impl (`MA_NO_DEVICE_IO`) + the sacred raw
     ICY transport moved into the plugin. See Done section.
-  - **slice (d) — the identical-to-compiled-in gate:** `hls_pipeline_test` THROUGH the
-    plugin boundary (byte-identical PCM) + the live parity battery, both platforms.
+  - **slice (d) — the identical-to-compiled-in gate: ✅ DONE — PHASE 4 COMPLETE** (2026-07-04;
+    design ratified pre-code in the session log). `plugin_hls_parity_test` runs identical
+    synthetic HLS/ADTS through the REAL host HTTP crossing (FakeHttp → `core::HostServices`
+    table → plugin `HostServiceHttp` → StreamSource) three times — twice compiled-in
+    (`remoct_stream_plugin_query`, kept per D4) and once through the LOADED `remoct_stream.
+    {so,dll}` (`core::loadPlugin`) — asserting **byte-identical PCM**. Gate (both platforms):
+    `refA==refB` (determinism proven in-test), `refA==loaded` (the thesis), `rms>0.15`
+    (real audio), `segment_gets>0` (crossed the shim). See Done section.
 
 ## Done (restructure branch)
+- **Phase 4 slice (d) — the identical-to-compiled-in gate: DONE — PHASE 4 COMPLETE**
+  (2026-07-04, code `c581f70`). New `tests/plugin_hls_parity_test.cpp`: a deterministic
+  headless proof that the LOADED `remoct_stream.{so,dll}` produces **byte-identical PCM** to
+  the compiled-in reference, on every ctest, both matrix legs. **The crossing (the crux):**
+  a `FakeHls` (`core::IHttp`) is injected AS THE HOST HTTP SERVICE — `core::HostServices(fake).
+  table()` — and BOTH the compiled-in reference (`remoct_stream_plugin_query`, kept per slice-c
+  D4) and the loaded module cross that SAME table (`FakeHls` → `HostServices` → `svc_fetch` →
+  plugin `HostServiceHttp` → `StreamSource.fetch`, full request/response marshal + host-malloc/
+  free round-trip). NOT `core::setHttp` — and the plugin *can't* bypass the shim (`grep
+  core::http() plugins/stream/ = 0` since slice c), so byte-identical PCM proves the ABI
+  marshalling is transparent, not merely that "HTTP happened". The only variable between
+  reference and loaded is compiled-in symbol vs `dlopen`/`dlsym` — a one-variable controlled
+  experiment; `segment_gets>0` makes the crossing observable. **Three runs, four asserts:**
+  `refA`, `refB` (SAME compiled-in descriptor) → `refA==refB` is a DETERMINISM self-check that
+  fails FIRST if the protocol flakes (so a flake can never masquerade as a `.so` fidelity bug);
+  `loaded` → `refA==loaded` is the thesis; `rms(refA)>0.15` (=0.343) proves it's real decoded
+  audio not two identical silences; `segment_gets>0` (=2) the crossing. **Determinism is
+  engineered, not assumed:** the 44100 fixture keeps the whole capture path in fixed-point/
+  integer math (FDK-AAC fixed-point decode → `int16` ring → exact `int16→float` `x/32768`), so
+  it is independent of the two separately-compiled targets' float flags; and the drain is a
+  fixed head window captured after prebuffer with `DRAIN(1.5s) < PREBUFFER(3s)`, so the ring
+  can never underrun during it → no silence-fill → fixed decoded audio regardless of producer
+  thread timing. **Named limit (honest):** the RESAMPLE path's byte-identity is deliberately
+  NOT asserted (a 48 kHz fixture would be float-flag-sensitive across the two targets); it stays
+  covered behaviorally by the live gates. The HLS fixture (FDK-ADTS sine + `FakeHls`) was
+  factored into `tests/hls_fixture.h` so `hls_pipeline_test` (behavioral: underrun/self-heal/
+  cancel — unchanged) and the parity test share one copy. **Live-parity layer banked in slice
+  (c):** ICY + iHeart audible from the loaded `.so` (WSL RMS) + the negative control (remove the
+  `.so` → silent) both platforms + Dos's Windows scrobble/Discord/re-pin run; re-pin is
+  byte-verbatim (sacred audit = 0), identical by construction. **Two non-audio residuals**
+  (outside `read_frames`, accepted): the Ctrl+A deep-log toast dropped the plugin-side path;
+  the plugin's `Log` has its own `g_enabled`. Verified: Windows ctest 20/20, Linux 21/21;
+  `refA==refB==loaded` byte-identical both platforms (rms 0.343, `segment_gets` 2). **Phase 4
+  is complete — the plugin is real, and provably identical to compiled-in.**
 - **Phase 4 slice (c) — extract the streaming source as the first real `.so/.dll`: DONE**
   (2026-07-04; design `docs/phase4-slice-c-design.md` ratified pre-code). The streaming
   stack (StreamSource + IHeartRadio + IHeartNowPlayingSM + IHeartDeepLog + StreamPluginAdapter)
@@ -901,6 +944,9 @@ carve the ABI first.
     cross-check item — the synthetic suite proves the logic, not on-drive behavior.
 
 ## Parked / deferred (not disturbed)
+- **Config/state dir casing unification (Linux):** the config dir is `~/.config/RE-MOCT`
+  (uppercase, existing Config branch) while logs/state land under `$XDG_STATE_HOME/re-moct`
+  (lowercase). Harmless but inconsistent; unify the casing as its own tiny change.
 - **`port::logDir()` doesn't create the grandparent** (slice-1 residual, found
   at the slice-2 gates): it mkdirs `$HOME/.local/state` and `re-moct` but not
   `~/.local` — on a fresh account the operational log silently no-ops. Windows

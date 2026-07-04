@@ -140,10 +140,19 @@ plugins/…)` (graceful on load failure); the two `core::http()` sites rewired t
 `RemoctHostServices` table); the plugin links its own FDK-AAC + miniaudio (`MA_NO_DEVICE_IO`)
 + the sacred raw ICY transport (`-lwininet`/`libcurl` — NOT the seam). Gates: Win ctest
 19/19, Linux 20/20, loaded-module round-trip both platforms, WSL live RMS (ICY 2111 + iHeart
-4412, nowPlaying + [LIVE]) + negative control, Windows live confirmed by Dos. **"Fix iHeart
-and ship without rebuilding the host" is now literally true. NEXT = slice (d):**
-`hls_pipeline_test` THROUGH the boundary (byte-identical PCM) + the live parity battery. See
-`docs/roadmap.md` + `docs/phase4-slice-c-design.md`.
+4412, nowPlaying + [LIVE]) + negative control, Windows live confirmed by Dos. **Slice (d) DONE
+— PHASE 4 COMPLETE (2026-07-04):** `tests/plugin_hls_parity_test.cpp` proves the LOADED
+`remoct_stream.{so,dll}` is **byte-identical PCM to compiled-in** — identical synthetic HLS/
+ADTS crosses the REAL host HTTP service (`FakeHls` → `HostServices` table → plugin
+`HostServiceHttp`) for both the compiled-in reference (`remoct_stream_plugin_query`, D4) and
+the `loadPlugin()` module; asserts `refA==refB` (determinism, in-test), `refA==loaded` (thesis),
+`rms>0.15`, `segment_gets>0`, both platforms (Win ctest 20/20, Linux 21/21). Determinism from
+fixed-point FDK decode + int16 ring + exact int16→float + head-drain-under-prebuffer; resample
+byte-identity deliberately not asserted (float-flag-sensitive), covered behaviorally.
+
+**"Fix iHeart and ship without rebuilding the host" is literally true.** The restructure
+branch is **feature-complete** (Phases 0–4 done); merge to `dev`/`main` is Dos's call. See
+`docs/roadmap.md` (Done + Parked) + `docs/session-handoff-2026-07-04-phase4-complete.md`.
 
 ## Deep knowledge — read the matching file when a task touches it
 - Roadmap, phases, parked items, decisions → `docs/roadmap.md`

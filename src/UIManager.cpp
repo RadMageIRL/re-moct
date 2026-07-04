@@ -1,28 +1,11 @@
 // UIManager.cpp
 
+// windows.h must precede the curses seam (PDCurses/windows.h symbol-order rule);
+// it is also used directly by the Windows-only code below (ShellExecute etc.).
 #ifdef _WIN32
-#  ifndef NCURSES_STATIC
-#    define NCURSES_STATIC
-#  endif
 #  include <windows.h>
 #endif
-// Enable the wide-character ncurses API (cchar_t / setcchar / mvwadd_wch). This
-// MUST be defined before <ncurses.h> is included. Without it, this build's
-// narrow string functions pass UTF-8 bytes through undecoded, so box-drawing
-// glyphs (╭ ╮ ╰ ╯) render as Latin-1 mojibake. Wide chars render as one cell.
-#ifndef NCURSES_WIDECHAR
-#  define NCURSES_WIDECHAR 1
-#endif
-// Use the wide-char ncurses header for mvwaddwstr support
-#ifdef __has_include
-#  if __has_include(<ncursesw/ncurses.h>)
-#    include <ncursesw/ncurses.h>
-#  else
-#    include <ncurses.h>
-#  endif
-#else
-#  include <ncurses.h>
-#endif
+#include "CursesSeam.h"
 
 #include "UIManager.h"
 #include "CoverArt.h"
@@ -99,6 +82,12 @@ UIManager::UIManager(PlaylistManager& playlist, AudioManager& audio,
       playlist_(playlist), audio_(audio), config_(config)
 {
     if (!initscr()) throw std::runtime_error("initscr() failed");
+#ifdef PDCURSES
+    // PDCursesMod wingui (Option C): the GDI port opens its own window - give it
+    // the RE-MOCT caption. Colour / transparent-bg parity (PDC_ORIGINAL_COLORS
+    // vs use_default_colors) is tuned on the Task-4 visual re-probe, not here.
+    PDC_set_title("RE-MOCT");
+#endif
     setlocale(LC_ALL, "");
     cbreak();
     noecho();

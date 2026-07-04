@@ -1,10 +1,5 @@
 #pragma once
-#ifdef _WIN32
-#  ifndef NCURSES_STATIC
-#    define NCURSES_STATIC
-#  endif
-#endif
-#include <ncurses.h>
+#include "CursesSeam.h"
 #include <string>
 #include <vector>
 #include <array>

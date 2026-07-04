@@ -11,6 +11,7 @@
 //  refactor; this module keeps its own httpGet, matching the current per-module pattern.)
 
 #include "CoverArt.h"
+#include "Version.h"            // REMOCT_VERSION (single source) for the cover-art UA
 #include "core/IHttp.h"         // core::IHttp seam (transport); no windows.h/wininet here
 #include "json.hpp"             // nlohmann single-header (vendored)
 #include <string>
@@ -140,7 +141,7 @@ std::vector<uint8_t> bytesByText(const std::string& artist,
         std::string url = "https://itunes.apple.com/search?term=" + term
                         + "&entity=album&limit=10";
         std::vector<uint8_t> body;
-        if (httpGet(url, body, "RE-MOCT/1.0.0-rc1")) {
+        if (httpGet(url, body, "RE-MOCT/" REMOCT_VERSION)) {
             try {
                 auto j = nlohmann::json::parse(
                              std::string((char*)body.data(), body.size()));
@@ -156,7 +157,7 @@ std::vector<uint8_t> bytesByText(const std::string& artist,
                 if (!best_url.empty()) {
                     auto pos = best_url.rfind("100x100");   // bump to 600x600
                     if (pos != std::string::npos) best_url.replace(pos, 7, "600x600");
-                    if (httpGet(best_url, img, "RE-MOCT/1.0.0-rc1") && looksLikeImage(img))
+                    if (httpGet(best_url, img, "RE-MOCT/" REMOCT_VERSION) && looksLikeImage(img))
                         return img;
                     img.clear();
                 }
@@ -169,7 +170,7 @@ std::vector<uint8_t> bytesByText(const std::string& artist,
         std::string url = "https://api.deezer.com/search/album?q=" + term
                         + "&limit=10";
         std::vector<uint8_t> body;
-        if (httpGet(url, body, "RE-MOCT/1.0.0-rc1")) {
+        if (httpGet(url, body, "RE-MOCT/" REMOCT_VERSION)) {
             try {
                 auto j = nlohmann::json::parse(
                              std::string((char*)body.data(), body.size()));
@@ -187,7 +188,7 @@ std::vector<uint8_t> bytesByText(const std::string& artist,
                     if (score > best_score) { best_score = score; best_url = aurl; }
                 }
                 if (!best_url.empty()) {
-                    if (httpGet(best_url, img, "RE-MOCT/1.0.0-rc1") && looksLikeImage(img))
+                    if (httpGet(best_url, img, "RE-MOCT/" REMOCT_VERSION) && looksLikeImage(img))
                         return img;
                     img.clear();
                 }
@@ -254,7 +255,7 @@ std::string urlByText(const std::string& artist,
         std::string url = "https://itunes.apple.com/search?term=" + term
                         + "&entity=album&limit=10";
         std::vector<uint8_t> body;
-        if (httpGet(url, body, "RE-MOCT/1.0.0-rc1")) {
+        if (httpGet(url, body, "RE-MOCT/" REMOCT_VERSION)) {
             try {
                 auto j = nlohmann::json::parse(
                              std::string((char*)body.data(), body.size()));
@@ -281,7 +282,7 @@ std::string urlByText(const std::string& artist,
         std::string url = "https://api.deezer.com/search/album?q=" + term
                         + "&limit=10";
         std::vector<uint8_t> body;
-        if (httpGet(url, body, "RE-MOCT/1.0.0-rc1")) {
+        if (httpGet(url, body, "RE-MOCT/" REMOCT_VERSION)) {
             try {
                 auto j = nlohmann::json::parse(
                              std::string((char*)body.data(), body.size()));
@@ -354,7 +355,7 @@ std::string urlBySong(const std::string& artist,
         std::string url = "https://itunes.apple.com/search?term=" + term
                         + "&entity=song&limit=10";
         std::vector<uint8_t> body;
-        if (httpGet(url, body, "RE-MOCT/1.0.0-rc1")) {
+        if (httpGet(url, body, "RE-MOCT/" REMOCT_VERSION)) {
             try {
                 auto j = nlohmann::json::parse(
                              std::string((char*)body.data(), body.size()));
@@ -377,7 +378,7 @@ std::string urlBySong(const std::string& artist,
         std::string url = "https://api.deezer.com/search/track?q=" + term
                         + "&limit=10";
         std::vector<uint8_t> body;
-        if (httpGet(url, body, "RE-MOCT/1.0.0-rc1")) {
+        if (httpGet(url, body, "RE-MOCT/" REMOCT_VERSION)) {
             try {
                 auto j = nlohmann::json::parse(
                              std::string((char*)body.data(), body.size()));

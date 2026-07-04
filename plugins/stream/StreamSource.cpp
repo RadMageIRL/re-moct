@@ -1,5 +1,6 @@
 #include "StreamSource.h"
 #include "Log.h"
+#include "Version.h"     // REMOCT_VERSION (single source) for the raw ICY/HLS User-Agent
 #include "StringUtils.h"
 #include "IHeartDeepLog.h"
 #include "PortUtil.h"   // sleepMs/tickMs — expand to the baseline ::Sleep/::GetTickCount on Windows
@@ -189,7 +190,7 @@ bool icyHop(const std::string& url, const std::atomic<bool>& stop, IcyHop& out) 
             + (query ? (std::string("?") + query) : std::string())
             + " HTTP/1.0\r\nHost: " + (host ? host : "")
             + (port_s ? (std::string(":") + port_s) : std::string())
-            + "\r\nUser-Agent: RE-MOCT/1.0.0-rc1 (https://github.com/RadMageIRL/re-moct)\r\n"
+            + "\r\nUser-Agent: RE-MOCT/" REMOCT_VERSION " (https://github.com/RadMageIRL/re-moct)\r\n"
               "Icy-MetaData: 1\r\n\r\n";
         if (host)   curl_free(host);
         if (port_s) curl_free(port_s);
@@ -283,7 +284,7 @@ bool StreamSource::connect() {
 #ifdef _WIN32
     // ── ICY/continuous transport: raw WinINet, permanently outside the IHttp
     //    seam by design. The block below is the baseline, verbatim. ──────────
-    hInet_ = InternetOpenA("RE-MOCT/1.0.0-rc1 (https://github.com/RadMageIRL/re-moct)",
+    hInet_ = InternetOpenA("RE-MOCT/" REMOCT_VERSION " (https://github.com/RadMageIRL/re-moct)",
                            INTERNET_OPEN_TYPE_PRECONFIG, nullptr, nullptr, 0);
     if (!hInet_) return false;
 

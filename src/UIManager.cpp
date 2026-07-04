@@ -63,12 +63,14 @@
 #include <cstring>
 #include <cstdlib>
 #include "Log.h"
-// Version tag shown in the status line and About panel. Per-platform suffix —
-// on Windows this is the baseline string byte-identical; Linux tells the truth.
+#include "Version.h"
+// Version tag shown in the status line and About panel. The version is
+// single-sourced in Version.h (REMOCT_VERSION); only the honest per-platform
+// suffix differs here.
 #ifdef _WIN32
-static const char* const kVersionTag = "v1.0.0-rc1-win";
+static const char* const kVersionTag = "v" REMOCT_VERSION "-win";
 #else
-static const char* const kVersionTag = "v1.0.0-rc1-linux";
+static const char* const kVersionTag = "v" REMOCT_VERSION "-linux";
 #endif
 
 static void sclog(const char* fmt, ...) {
@@ -597,7 +599,7 @@ void UIManager::run() {
         {
             const auto& track = audio_.currentTrack();
             std::string np = track.artist.empty() ? track.title : track.artist + " - " + track.title;
-            std::string right_approx = "  RE-MOCT v1.0.0-rc1 ";
+            std::string right_approx = "  RE-MOCT v" REMOCT_VERSION " ";
             int max_np = screen_cols_ - (int)right_approx.size() - 4;
             if (!np.empty() && max_np > 0 && (int)np.size() > max_np)
                 redraw_needed_.store(true);
@@ -2192,9 +2194,9 @@ void UIManager::drawAbout() {
         { "Music On Console Terminal",      true  },
         { "",                               false },
 #ifdef _WIN32
-        { "Version v1.0.0-rc1-win  |  C++20  |  ncurses  |  miniaudio  |  TagLib", false },
+        { "Version v" REMOCT_VERSION "-win  |  C++20  |  ncurses  |  miniaudio  |  TagLib", false },
 #else
-        { "Version v1.0.0-rc1-linux  |  C++20  |  ncurses  |  miniaudio  |  TagLib", false },
+        { "Version v" REMOCT_VERSION "-linux  |  C++20  |  ncurses  |  miniaudio  |  TagLib", false },
 #endif
         { "",                               false },
         { "A terminal music player inspired by MOC (Music On Console).", false },

@@ -9,6 +9,7 @@
 // urlIsSecureScheme in http_seam_test, and AR end-to-end by the Joan Osborne rip gate.)
 #include "core/IHttp.h"
 #include "CoverArt.h"
+#include "Version.h"
 #include "json.hpp"
 #include <cstdio>
 #include <string>
@@ -57,7 +58,7 @@ int main() {
     CHECK(has(url, "600x600"));                                // 100x100 bumped -> a real hit
     CHECK(fake.last.method == "GET");
     CHECK(has(fake.last.url, "itunes.apple.com/search"));
-    CHECK(fake.last.user_agent == "RE-MOCT/1.0.0-rc1");       // short UA (non-default)
+    CHECK(fake.last.user_agent == "RE-MOCT/" REMOCT_VERSION); // short UA (non-default)
     CHECK(fake.last.max_body == 10u * 1024 * 1024);
     CHECK(fake.last.reject_truncated == true);
     CHECK(fake.last.redirect == core::RedirectPolicy::FollowAll);

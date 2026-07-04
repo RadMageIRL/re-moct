@@ -1,5 +1,6 @@
 #include "CDRipper.h"
 #include "ar_crc.h"
+#include "Version.h"        // REMOCT_VERSION (single source) for the CTDB UA + rip tags
 #include "core/IHttp.h"     // core::IHttp seam (AR/CTDB fetch); WinINet lives behind it
 #include "core/ICdIo.h"     // core::ICdIo seam (slice 8); the CD IOCTLs live behind it
 
@@ -596,7 +597,7 @@ bool CDRipper::fetchCTDBData(const std::string& ctdb_id,
 
     core::HttpRequest req;
     req.url        = url;                 // http:// -> no SECURE (urlIsSecureScheme)
-    req.user_agent = "RE-MOCT/1.0.0-rc1"; // CTDB's short UA (not the seam default)
+    req.user_agent = "RE-MOCT/" REMOCT_VERSION; // CTDB's short UA (not the seam default)
     core::HttpResponse r = core::http().fetch(req);
     uint32_t status = (uint32_t)r.status;
     std::string body = (status == 200) ? r.body : std::string();
@@ -695,7 +696,7 @@ void CDRipper::tagFile(const std::string&         path,
                 f2->setText(TagLib::String(val, TagLib::String::UTF8));
                 tag->addFrame(f2);
             };
-            addTxt("TENC", "RE-MOCT v1.0.0-rc1");
+            addTxt("TENC", "RE-MOCT v" REMOCT_VERSION);
             if (!ar_str.empty()) {
                 addTxt("TXXX", "AccurateRip="      + ar_str);
                 addTxt("TXXX", "ACCURATERIPCRC="   + std::string(ar_crc_str));
@@ -725,7 +726,7 @@ void CDRipper::tagFile(const std::string&         path,
             tag->setAlbum (TagLib::String(rel.title,  TagLib::String::UTF8));
             tag->setTrack ((unsigned int)track_num);
             if (rel.date.size()>=4) try { tag->setYear((unsigned)std::stoi(rel.date.substr(0,4))); } catch(...){}
-            tag->addField("ENCODER",TagLib::String("RE-MOCT v1.0.0-rc1",TagLib::String::UTF8),true);
+            tag->addField("ENCODER",TagLib::String("RE-MOCT v" REMOCT_VERSION,TagLib::String::UTF8),true);
             if (!ar_str.empty()) {
                 tag->addField("ACCURATERIP",    TagLib::String(ar_str,       TagLib::String::UTF8),true);
                 tag->addField("ACCURATERIPCRC", TagLib::String(ar_crc_str,   TagLib::String::UTF8),true);
@@ -1970,7 +1971,7 @@ void CDRipper::worker(std::string          drive_letter,
             if (!rel.title.empty())  fprintf(cf, "TITLE \"%s\"\r\n",     rel.title.c_str());
             if (rel.date.size() >= 4) fprintf(cf, "REM DATE %s\r\n", rel.date.substr(0,4).c_str());
             fprintf(cf, "REM DISCID %08x\r\n", computeCDDB(tracks, full_leadout_lba, data_track_lbas));
-            fprintf(cf, "REM COMMENT \"RE-MOCT v1.0.0-rc1\"\r\n");
+            fprintf(cf, "REM COMMENT \"RE-MOCT v" REMOCT_VERSION "\"\r\n");
 
             for (int i = 0; i < total; ++i) {
                 const CDTrack& trk = tracks[i];

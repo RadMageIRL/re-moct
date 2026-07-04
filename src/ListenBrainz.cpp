@@ -1,6 +1,7 @@
 
 #include "ListenBrainz.h"
 #include "Log.h"
+#include "Version.h"
 #include "core/IHttp.h"
 
 #include <cstdarg>
@@ -33,7 +34,7 @@ std::string ListenBrainz::buildSubmitBody(const std::string& listen_type,
 
     nlohmann::json addl;
     addl["submission_client"]         = "RE-MOCT";
-    addl["submission_client_version"] = "1.0.0-rc1";
+    addl["submission_client_version"] = REMOCT_VERSION;
     track_meta["additional_info"]     = addl;
 
     nlohmann::json listen;

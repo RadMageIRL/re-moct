@@ -24,6 +24,7 @@
 #ifdef _WIN32
 
 #include "core/IHttp.h"
+#include "Version.h"        // REMOCT_VERSION_W (single source) for the canonical UA
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -122,7 +123,7 @@ DWORD requestFlags(const core::HttpRequest& req, bool keep_alive) {
 
 // The app's canonical UA, matching the string every migrated helper used.
 constexpr const wchar_t* kDefaultUA =
-    L"RE-MOCT/1.0.0-rc1 (https://github.com/RadMageIRL/re-moct)";
+    L"RE-MOCT/" REMOCT_VERSION_W L" (https://github.com/RadMageIRL/re-moct)";
 
 // Execute one request on an already-open InternetOpen handle. Shared by the
 // one-shot fetch() (fresh handle, keep_alive=false) and session fetches (held

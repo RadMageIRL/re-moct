@@ -41,6 +41,7 @@
 #ifdef __linux__
 
 #include "core/IHttp.h"
+#include "Version.h"        // REMOCT_VERSION (single source) for the canonical UA
 
 #include <curl/curl.h>
 
@@ -53,7 +54,7 @@ namespace {
 
 // The app's canonical UA — byte-identical to HttpWinInet's kDefaultUA.
 constexpr const char* kDefaultUA =
-    "RE-MOCT/1.0.0-rc1 (https://github.com/RadMageIRL/re-moct)";
+    "RE-MOCT/" REMOCT_VERSION " (https://github.com/RadMageIRL/re-moct)";
 
 std::once_flag g_curl_init_once;
 void ensureGlobalInit() {

@@ -31,7 +31,7 @@ namespace {
 constexpr unsigned long long kMaxBytes   = 5ull * 1024 * 1024;  // size roll at ~5 MB
 constexpr uint32_t           kHeartbeatMs = 30000;               // forced record cadence
 constexpr int               kKeepDays    = 5;                    // retention (days)
-constexpr int               kSchema      = 1;
+constexpr int               kSchema      = 2;   // v2: + identity probe fields (idVariant/idProfileTail/idMintOk)
 const char* const           kPrefix      = "remoct-deep-analysis-";
 const char* const           kSuffix      = ".log";
 
@@ -169,6 +169,7 @@ std::string sigOf(const IHeartDeepLog::Record& r) {
     s += r.ctmArtist; s += US;
     s += r.ctmTitle;  s += US;
     s += r.streamMode; s += US;
+    s += r.idVariant;  s += US;   // arm flip (anon<->minted) is a semantic input -> write immediately
     s += (r.spotPaid ? '1' : '0'); s += US;
     s += r.cartcutId; s += US;   // distinct ads -> per-ad writes; a stuck loop holds one id -> heartbeat only
     s += std::to_string(r.streak);
@@ -313,6 +314,10 @@ void emit(const Record& r) {
     j["digitalRequested"] = r.digitalRequested;
     j["digitalActive"]    = r.digitalActive;
     j["connectSeq"]       = r.connectSeq;
+
+    j["idVariant"]        = r.idVariant;
+    j["idProfileTail"]    = r.idProfileTail;
+    j["idMintOk"]         = r.idMintOk;
 
     std::string line = j.dump();
     line += '\n';

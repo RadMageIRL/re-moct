@@ -18,6 +18,7 @@ add_library(remoct_stream MODULE
     HostServiceHttp.cpp            # core::IHttp over the injected host services (inverse of the slice-b shim)
     StreamSource.cpp               # the engine — moved byte-verbatim (only the core::http() rewire + ctor threading changed)
     IHeartRadio.cpp
+    IHeartIdentity.cpp             # probe-only minted anonymous profileId (deep-log A/B handshake identity)
     IHeartNowPlayingSM.cpp
     IHeartDeepLog.cpp
     miniaudio_impl.cpp             # MINIAUDIO_IMPLEMENTATION + MA_NO_DEVICE_IO (decode/convert only)

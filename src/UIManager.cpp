@@ -135,6 +135,7 @@ UIManager::UIManager(PlaylistManager& playlist, AudioManager& audio,
 
     refreshDir();
     audio_.setPreferDigital(config_.prefer_digital_stream);   // apply saved stream-mode pref
+    audio_.setProbeMinted(config_.iheart_probe_minted);       // apply saved identity A/B arm (probe)
     running_ = true;
 }
 
@@ -3838,6 +3839,19 @@ void UIManager::handleInput(int ch) {
                                ? "Stream: Web Player mode (fewer ads)"
                                : "Stream: Raw broadcast (direct)", "", "");
             if (audio_.streamMode())                 // reconnect now so it takes effect
+                audio_.beginStream(audio_.streamUrl());
+            break;
+        case 16:  // Ctrl+P — PROBE: toggle iHeart digital-handshake identity arm
+                  // (anon vs minted anonymous profileId). Hidden A/B control; only has
+                  // an effect while the deep log (Ctrl+A) is ON — the mint is probe-gated
+                  // in hlsConnect. Read at reconnect, so reconnect now to switch arms.
+            config_.iheart_probe_minted = !config_.iheart_probe_minted;
+            config_.save();
+            audio_.setProbeMinted(config_.iheart_probe_minted);
+            showTrackToast(config_.iheart_probe_minted
+                               ? "Probe: minted profileId arm (deep log only)"
+                               : "Probe: anon handshake arm", "", "");
+            if (audio_.streamMode())                 // reconnect now so the arm takes effect
                 audio_.beginStream(audio_.streamUrl());
             break;
         case 20:  // Ctrl+T — toggle Classic / Awesome theme

@@ -611,7 +611,7 @@ bool StreamSource::hlsFetchSegment(const std::string& url, std::vector<uint8_t>&
 // anonymous param set (no profileId/skey — proven sufficient by StreamHandshakeProbe)
 // with a fresh random listenerId per connect. Returns base unchanged if it isn't a
 // bare iHeart URL we can parameterize.
-std::string StreamSource::hlsBuildDigitalUrl(const std::string& base) {
+std::string StreamSource::hlsBuildDigitalUrl(const std::string& base, const std::string& minted_profile) {
     if (base.find('?') != std::string::npos) return base;     // already parameterized
     std::string id;
     size_t p = base.find("/zc");
@@ -621,17 +621,27 @@ std::string StreamSource::hlsBuildDigitalUrl(const std::string& base) {
     }
     if (id.empty()) return base;
 
-    static bool seeded = false;
-    if (!seeded) { std::srand(port::tickMs()); seeded = true; }
-    static const char* H = "0123456789abcdef";
-    std::string lid; lid.reserve(32);
-    for (int i = 0; i < 32; ++i) lid += H[std::rand() & 15];
+    // Identity arm (probe, gated in hlsConnect). ANON (minted_profile empty, the default
+    // and shipped behavior): fresh random listenerId, no profileId/skey. MINTED: a real
+    // anonymous profileId (== skey), empty listenerId — mirroring the web player. Every
+    // other param is identical between the two arms; the anon path stays byte-identical.
+    std::string lid;
+    if (minted_profile.empty()) {
+        static bool seeded = false;
+        if (!seeded) { std::srand(port::tickMs()); seeded = true; }
+        static const char* H = "0123456789abcdef";
+        lid.reserve(32);
+        for (int i = 0; i < 32; ++i) lid += H[std::rand() & 15];
+    }   // minted arm: lid stays empty (real profile, empty listenerId)
 
-    return base + "?streamid=" + id +
+    std::string url = base + "?streamid=" + id +
         "&zip=&aw_0_1st.playerid=iHeartRadioWebPlayer&clientType=web&companionAds=false"
         "&deviceName=web-mobile&dist=iheart&host=webapp.US&listenerId=" + lid +
         "&playedFrom=157&pname=live_profile&stationid=" + id +
         "&terminalId=159&territory=US&us_privacy=1-N-";
+    if (!minted_profile.empty())
+        url += "&profileId=" + minted_profile + "&aw_0_1st.skey=" + minted_profile;
+    return url;
 }
 
 bool StreamSource::hlsConnect() {
@@ -644,7 +654,28 @@ bool StreamSource::hlsConnect() {
     ++connect_seq_;
     digital_active_.store(false);
     bool want_digital = prefer_digital_.load() && IHeartRadio::isIHeartUrl(master);
-    hls_.master_url = want_digital ? hlsBuildDigitalUrl(master) : master;
+    // Identity A/B arm (probe): use a minted anonymous profileId ONLY when the arm is
+    // selected AND the deep log is enabled (probe context) — otherwise force anon, so
+    // the shipped binary and every non-probe session are unchanged. Mint is lazy and
+    // fail-closed: on any mint failure we keep id_variant_="anon" and build the anon URL.
+    id_variant_ = "anon";
+    id_profile_tail_.clear();
+    id_mint_ok_ = false;
+    std::string minted_profile;   // empty -> hlsBuildDigitalUrl takes the anon branch
+    if (want_digital && probe_minted_.load() && IHeartDeepLog::enabled()) {
+        iheart_identity_ = IHeartIdentity::mintOrLoad(*http_,
+            [](const std::string& s){ slog("%s", s.c_str()); });
+        if (iheart_identity_.ok) {
+            id_variant_      = "minted";
+            id_profile_tail_ = iheart_identity_.profileTail();
+            id_mint_ok_      = true;
+            minted_profile   = iheart_identity_.profileId;
+            slog("hlsConnect: minted identity arm (profile ...%s)", id_profile_tail_.c_str());
+        } else {
+            slog("hlsConnect: mint FAILED -> anon handshake fallback");   // fail closed
+        }
+    }
+    hls_.master_url = want_digital ? hlsBuildDigitalUrl(master, minted_profile) : master;
     // iHeart now-playing: primary source is the variant manifest's EXTINF tags
     // (freeze-proof), trackHistory module as fallback. Set this up BEFORE the initial
     // poll so hlsPollMedia parses the manifest on connect — otherwise the producer's
@@ -938,6 +969,12 @@ void StreamSource::updateIHeartNowPlaying(const std::string& body) {
         dr.digitalRequested = prefer_digital_.load();
         dr.digitalActive   = digital_active_.load();
         dr.connectSeq      = connect_seq_.load();
+        // identity A/B probe: which digital-handshake identity this connect used, so the
+        // ad-fill outcome (spotPaid/cartcutId/thEnded/streamMode) and the identity input
+        // are self-correlated in one NDJSON stream. idProfileTail is TAIL-ONLY by design.
+        dr.idVariant       = id_variant_;
+        dr.idProfileTail   = id_profile_tail_;
+        dr.idMintOk        = id_mint_ok_;
         if (!is_lane_) IHeartDeepLog::emit(dr);
     }
 

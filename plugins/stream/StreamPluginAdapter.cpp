@@ -104,6 +104,11 @@ void sp_set_config(void* self, const char* key, const char* value) noexcept {
         // toggle() directly; IHeartDeepLog now lives in this .so). Host tracks the
         // on/off state and pushes it; this is the in-plugin call. (slice c, row 8)
         IHeartDeepLog::setEnabled(on);
+    else if (std::strcmp(key, "iheart_probe_minted") == 0)
+        // Identity A/B arm (probe): minted anonymous profileId vs today's anon handshake.
+        // Read at hlsConnect time + forced anon unless the deep log is on, so this is inert
+        // outside a probe session (see StreamSource::hlsConnect).
+        inst(self)->src.setProbeMinted(on);
 }
 
 const RemoctPlugin STREAM_PLUGIN = {

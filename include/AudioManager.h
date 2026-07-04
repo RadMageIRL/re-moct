@@ -122,6 +122,9 @@ public:
     // Deep-log toggle across the ABI (slice c): the host tracks the on/off state
     // (UIManager, Ctrl+A) and pushes it here; IHeartDeepLog now lives in the .so.
     void     setDeepLog(bool on) { stream_plugin_.setConfig("deeplog", on ? "1" : "0"); }
+    // Identity A/B arm (probe): use a minted anonymous profileId on the digital
+    // handshake (deep-log only). Same config-passthrough shape as setDeepLog.
+    void     setProbeMinted(bool on) { stream_plugin_.setConfig("iheart_probe_minted", on ? "1" : "0"); }
     // Whether the streaming plugin loaded (slice c). false => streaming disabled
     // (missing/incompatible .so/.dll). beginStream() guards on this and surfaces a
     // failure toast; the UI may also preflight streamPluginError() for the specific

@@ -85,6 +85,11 @@ struct Record {
     bool        digitalRequested = false;
     bool        digitalActive    = false;
     int         connectSeq       = 0;
+
+    // identity probe (Part A/B) — which digital-handshake identity this connect used
+    std::string idVariant;      // "anon" | "minted"
+    std::string idProfileTail;  // last 4-6 chars of minted profileId ("" for anon) — TAIL ONLY
+    bool        idMintOk = false; // a minted session was available for this connect
 };
 
 // Flip on/off. Returns the new state. On a 0->1 transition the next emit() starts

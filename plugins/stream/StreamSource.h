@@ -32,6 +32,7 @@
 #include "miniaudio.h"   // declarations only — MINIAUDIO_IMPLEMENTATION lives in AudioManager.cpp
 #include <fdk-aac/aacdecoder_lib.h>
 #include "IHeartRadio.h"  // isolated iHeart now-playing service (HLS streams only)
+#include "IHeartIdentity.h"  // probe-only minted anonymous profileId (A/B handshake identity)
 #include "IHeartNowPlayingSM.h"  // pure now-playing reconciliation state machine
 #include "core/IHttp.h"   // HLS manifest/segment one-shots go through the seam (slice 4)
 #include "core/ISource.h" // Phase 2 slice A: the internal Source interface
@@ -84,6 +85,11 @@ public:
     // connect; falls back to the raw broadcast if the handshake fails. Set before
     // open()/reconnect. Thread-safe.
     void setPreferDigital(bool b) { prefer_digital_.store(b); }
+    // A/B probe (deep-log only): use a minted anonymous profileId on the digital
+    // handshake instead of today's minimal-anonymous param set. Read at hlsConnect
+    // time so it can be flipped between reconnects; forced OFF unless the deep log is
+    // enabled (probe context). Default false == shipped behavior. Thread-safe.
+    void setProbeMinted(bool b) { probe_minted_.store(b); }
     void close() override;
 
     bool isOpen()     const { return producer_thread_.joinable(); }
@@ -145,7 +151,7 @@ private:
     bool hlsHttpGet(const std::string& url, std::string* out_text,
                     std::vector<uint8_t>* out_bytes, std::string* out_final_url);
     bool hlsResolveMaster();                  // GET master -> variant_url
-    std::string hlsBuildDigitalUrl(const std::string& base);  // append web-player params -> digital rendition URL
+    std::string hlsBuildDigitalUrl(const std::string& base, const std::string& minted_profile = "");  // append web-player params -> digital rendition URL (minted_profile "" == anon arm, byte-identical to shipped)
     bool hlsPollMedia();                      // GET variant -> append new segments to pending
     bool hlsFetchSegment(const std::string& url, std::vector<uint8_t>& out);
     bool hlsConnect();                        // HLS branch of connect(): resolve + prime near live edge
@@ -167,6 +173,14 @@ private:
     std::atomic<bool> prefer_digital_{ false };  // user pref: try web-player (digital) rendition
     std::atomic<bool> digital_active_{ false };  // current connection is the digital rendition (vs raw)
     std::atomic<int>  connect_seq_{ 0 };         // bumped per (re)connect; delimits modes in the deep log
+    // ── Identity A/B probe (deep-log only; see IHeartIdentity.h) ──────────────
+    std::atomic<bool> probe_minted_{ false };    // A/B arm: use a minted anonymous profileId (probe toggle, Part D)
+    IHeartIdentity::Identity iheart_identity_;   // cached minted identity (empty until first minted connect)
+    // Identity the CURRENT connection was opened with, set in hlsConnect, copied into
+    // the deep-log record each tick. Producer-thread-owned (like hls_), no lock needed.
+    std::string id_variant_ = "anon";            // "anon" | "minted"
+    std::string id_profile_tail_;                // minted profileId tail ("" for anon) — TAIL ONLY
+    bool        id_mint_ok_ = false;             // a minted session was available for this connect
     // Live-edge re-pin (digital only): on an ad-onset discontinuity, request a
     // re-handshake so we rejoin the live program in step with the web player
     // instead of drifting behind across our (independent, longer) SSAI ad pod.

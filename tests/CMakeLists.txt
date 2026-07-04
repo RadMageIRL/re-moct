@@ -183,6 +183,7 @@ add_executable(hls_pipeline_test
     hls_pipeline_test.cpp
     ${CMAKE_SOURCE_DIR}/plugins/stream/StreamSource.cpp        # moved in slice c
     ${CMAKE_SOURCE_DIR}/plugins/stream/IHeartRadio.cpp
+    ${CMAKE_SOURCE_DIR}/plugins/stream/IHeartIdentity.cpp
     ${CMAKE_SOURCE_DIR}/plugins/stream/IHeartNowPlayingSM.cpp
     ${CMAKE_SOURCE_DIR}/plugins/stream/IHeartDeepLog.cpp
     ${CMAKE_SOURCE_DIR}/src/Log.cpp
@@ -206,6 +207,7 @@ add_executable(icy_pipeline_test
     icy_pipeline_test.cpp
     ${CMAKE_SOURCE_DIR}/plugins/stream/StreamSource.cpp        # moved in slice c
     ${CMAKE_SOURCE_DIR}/plugins/stream/IHeartRadio.cpp
+    ${CMAKE_SOURCE_DIR}/plugins/stream/IHeartIdentity.cpp
     ${CMAKE_SOURCE_DIR}/plugins/stream/IHeartNowPlayingSM.cpp
     ${CMAKE_SOURCE_DIR}/plugins/stream/IHeartDeepLog.cpp
     ${CMAKE_SOURCE_DIR}/src/Log.cpp
@@ -386,6 +388,7 @@ add_executable(plugin_stream_test
     ${CMAKE_SOURCE_DIR}/src/PluginHostServices.cpp
     ${CMAKE_SOURCE_DIR}/plugins/stream/StreamSource.cpp
     ${CMAKE_SOURCE_DIR}/plugins/stream/IHeartRadio.cpp
+    ${CMAKE_SOURCE_DIR}/plugins/stream/IHeartIdentity.cpp
     ${CMAKE_SOURCE_DIR}/plugins/stream/IHeartNowPlayingSM.cpp
     ${CMAKE_SOURCE_DIR}/plugins/stream/IHeartDeepLog.cpp
     ${CMAKE_SOURCE_DIR}/src/Log.cpp
@@ -412,6 +415,7 @@ add_executable(plugin_hls_parity_test
     ${CMAKE_SOURCE_DIR}/plugins/stream/HostServiceHttp.cpp
     ${CMAKE_SOURCE_DIR}/plugins/stream/StreamSource.cpp
     ${CMAKE_SOURCE_DIR}/plugins/stream/IHeartRadio.cpp
+    ${CMAKE_SOURCE_DIR}/plugins/stream/IHeartIdentity.cpp
     ${CMAKE_SOURCE_DIR}/plugins/stream/IHeartNowPlayingSM.cpp
     ${CMAKE_SOURCE_DIR}/plugins/stream/IHeartDeepLog.cpp
     ${CMAKE_SOURCE_DIR}/src/PluginSource.cpp

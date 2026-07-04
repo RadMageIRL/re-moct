@@ -148,6 +148,38 @@
   driving the app blind — capture the pane after EVERY keystroke batch when
   building the script, not just at the end.
 
+## IPC transport (Phase 3 slice 4)
+- **`MSG_NOSIGNAL` on every Unix-socket send is load-bearing parity, not an
+  option flag.** WriteFile to a broken pipe returns FALSE; plain send() to a
+  dead peer raises SIGPIPE and KILLS the process. The flag turns peer-death
+  into EPIPE → `false` — the contract's failure mode. ipc_echo_test S6 pins
+  it: a miss is a test-process death, not an assert failure. Same class:
+  EINTR must be retried in send/recv (ncurses' SIGWINCH interrupts a blocked
+  read on a resize) — signals are a failure mode the Windows twin cannot
+  have, so surfacing them as "broken channel" would be a behavior invention.
+- **"Byte-verbatim" includes LINE LAYOUT once a preprocessed-TU diff is the
+  standard.** Un-gating `&& !config_.discord_presence` and re-flowing the
+  3-line if-condition onto 2 lines produced a 1-line TU delta with an
+  identical token stream — cmp caught it, the fix was keeping the baseline's
+  own line breaks. When removing `#ifdef`s around live code, delete ONLY the
+  directive lines; never re-wrap the surviving code.
+- **A `nohup`'d background process does NOT survive its `wsl.exe` invocation
+  ending; a tmux session does.** The first bridge attempt (nohup socat) was
+  dead before the next command ran — silently, with an empty log. Any fixture
+  that must outlive one `wsl -e bash` call (socat bridges, servers, the TUI
+  under test) goes in `tmux new-session -d`; the tmux server keeps the WSL VM
+  and the process alive across invocations.
+- **The npiperelay + socat bridge is a REAL live-Discord venue for WSL2** —
+  Windows Discord's \\.\pipe\discord-ipc-0 exposed as a genuine Unix socket:
+  `tmux new-session -d -s bridge "socat -v 'UNIX-LISTEN:/tmp/discord-ipc-0,
+  fork' EXEC:'npiperelay.exe -ep -s //./pipe/discord-ipc-0' 2>log"`. Bonus:
+  `socat -v`'s wire capture IS the gate evidence — Discord's READY carries
+  the logged-in user, and its SET_ACTIVITY responses echo the ACCEPTED
+  activity (asset keys resolved to CDN ids, external art proxied to
+  `mp:external/...`), so "RP shows title/artist + art" is provable at the
+  byte level without eyes on the Discord window. Honest limit: socat creates
+  the socket, so the flatpak/snap discovery candidates stay fixture-proven.
+
 ## WSL build/test discipline — one run, one read, the log is the only truth
 - Run every build/test FOREGROUND, redirected to a log, with an exit marker:
   `<cmd> > /root/out.log 2>&1; echo EXIT=$?`. Then read the log ONCE:

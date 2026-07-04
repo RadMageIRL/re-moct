@@ -90,9 +90,16 @@ curl_easy_recv, pull-read shape verbatim, ALPN off, offset-0 invariant;
 Windows preprocessed TU bit-identical; new both-platform icy_pipeline_test;
 live gates: Dance Wave audible on Linux RMS 6393, titles ×2+, prompt switch).
 **The raw-transport work is complete — the Windows live read loop stays raw
-WinINet permanently, byte-verbatim.**
-**Next: slice 4 (IPC: Unix-socket IIpc twin — gate: discord_ipc_test on Linux
-+ live socat echo probe).** See `docs/roadmap.md` for the plan + gates.
+WinINet permanently, byte-verbatim.** **Slice 4 DONE: Unix-socket IIpc twin**
+(`IpcUnixSocket.cpp`; MSG_NOSIGNAL send, poll/FIONREAD waitReadable, EINTR
+retries; discovery XDG→TMPDIR→/tmp + flatpak/snap; DiscordRP zero-diff, ^D
+common; discord_ipc_test portable + new both-platform ipc_echo_test; Windows
+16/16 / Linux 13/13; live socat echo probe + REAL Discord RP from the Linux
+TUI via npiperelay bridge — title/artist + iTunes art accepted, track change,
+lazy reconnect. 100% close = Dos's native Debian 13 + live Discord check).
+**Next: slice 5 (notify: libnotify — gate: real notification via dunst;
+headless = documented best-effort no-op). Then slice 6 (SG_IO CD — LAST).**
+See `docs/roadmap.md` for the plan + gates.
 
 ## Deep knowledge — read the matching file when a task touches it
 - Roadmap, phases, parked items, decisions → `docs/roadmap.md`

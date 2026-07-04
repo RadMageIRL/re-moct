@@ -1,4 +1,52 @@
-# Session handoff — 2026-07-03 (rev 7: slice 3 (ICY Linux twin) LANDED, all gates passed; next = slice 4 (IPC Unix-socket))
+# Session handoff — 2026-07-03 (rev 8: slice 4 (Unix-socket IIpc) LANDED, all gates passed incl. LIVE Discord RP from Linux; next = Dos's Debian-13 close-out, then slice 5 (libnotify))
+
+## Rev-8 delta: slice 4 — the Unix-domain-socket IIpc twin (Discord RP transport)
+- **Landed:** code `671d2b3` + this docs commit. Design
+  `docs/phase3-slice4-design.md` (`581c2ce`) ratified by Dos BEFORE code,
+  with both open calls decided: (a) flatpak/snap subdir probing lives in the
+  IMPL (named knowledge leak, buys DiscordRP zero-diff); (b) npiperelay
+  bridge attempted as the live gate — it WORKED.
+- **Shape:** `IpcUnixSocket.cpp` (`platform::lnx::UnixSocketIpc`) — send =
+  one `::send()` + `MSG_NOSIGNAL` (dead peer → false, not SIGPIPE — the
+  load-bearing flag); waitReadable = the Windows 10 ms peek-poll loop
+  verbatim with poll()+FIONREAD (queued bytes count after peer close, pinned
+  Windows-baseline-first; the wait slice wakes early on data — named
+  accepted-better); recvSome = one blocking recv, EOF→false; EINTR retried
+  everywhere (SIGWINCH ≠ broken channel). Discovery: XDG_RUNTIME_DIR →
+  TMPDIR/TMP/TEMP → /tmp, plain → flatpak → snap. DiscordRP/IpcWinPipe zero
+  diff; UIManager Discord gates swept (^D live on Linux); **UIManager
+  Windows preprocessed TU bit-identical** (cmp caught a 1-line if-condition
+  re-flow — keep the baseline's line breaks when un-gating; lessons.md).
+- **Tests:** discord_ipc_test now portable (IPC_IMPL pattern); NEW
+  both-platform ipc_echo_test (real local server through the real impl —
+  transport semantics incl. the MSG_NOSIGNAL dead-peer case + Linux
+  discovery order), green on the untouched Windows impl FIRST. Windows
+  ctest 15/15 baseline → **16/16**; Linux **13/13** first run.
+- **Live gates, all passed in WSL2:** (1) socat echo probe — handshake +
+  SET_ACTIVITY observed on the wire through a real external Unix socket,
+  ONE write per frame. (2) **REAL Discord RP from the Linux TUI** via the
+  npiperelay+socat bridge (`\\.\pipe\discord-ipc-0` as a genuine Unix
+  socket, bridge in tmux — nohup does NOT survive a wsl.exe invocation;
+  lessons.md): production READY for Dos's account, ^D → KKJO stream
+  (`stream.abacast.net/.../eagleradio-kkjofmaac-ibc4`, real artist/song
+  titles — Dos's pick after Dance Wave sat titleless) → "Doja Cat - Say So"
+  ACCEPTED, async iTunes art refresh ACCEPTED (mp:external proxy), natural
+  on-air track change (Ariana Grande) pushed through, bridge kill+restart →
+  next track (JoJo) drove the lazy reconnect (failed send → disconnect →
+  fresh handshake + RP restored with art). socat -v wire captures = the
+  evidence (Discord's SET_ACTIVITY responses echo the accepted activity).
+- **Honest limits, documented:** the bridge socket is socat's, so the
+  flatpak/snap discovery candidates are fixture-proven only (ipc_echo_test
+  S7); Windows live ^D spot-check treated as a formality (TU bit-identical,
+  and the same Discord client displayed the Linux-driven RP all gate long).
+- **NEXT: Dos closes slice 4 at 100% on the native Debian 13 box with a
+  live Discord account** (native socket discovery + RP end-to-end, no
+  bridge), reports back. Then **slice 5 (notify: libnotify/notify-send** —
+  gate: real notification via dunst; headless = documented best-effort
+  no-op; REVISIT the slice-2 cmdline toast fallback: keep or drop). Then
+  slice 6 (SG_IO CD — LAST).
+
+(Rev-7 and earlier below — still current history.)
 
 ## Rev-7 delta: slice 3 — the ICY continuous twin; raw-transport work COMPLETE
 - **Landed & PUSHED:** code `5c823f8` + this docs commit. Design doc

@@ -117,8 +117,14 @@ carve the ABI first.
     both-platform `icy_pipeline_test` closes the slice-0 "ICY live-gate-only"
     limit. See Done section. **The platform boundary's raw-transport work is
     complete** — slices 4/5/6 are seam impls.
-  - **slice 4 — IPC: Unix-socket IIpc.** Gate: discord_ipc_test on Linux + live
-    socat echo probe (full Discord RP stays Windows-verified, documented).
+  - **slice 4 — IPC: Unix-socket IIpc: ✅ DONE** (design doc
+    `docs/phase3-slice4-design.md` ratified pre-code): `IpcUnixSocket.cpp`
+    (`platform::lnx::UnixSocketIpc`), the WinPipeIpc sibling. Gates PASSED —
+    Windows 16/16 (UIManager preprocessed TU bit-identical), Linux 13/13,
+    live socat echo probe, AND live Discord RP from Linux via the
+    npiperelay bridge (real Discord accepted title/artist + iTunes art,
+    survived an on-air track change). See Done section. Final 100% close:
+    Dos verifies on a native Debian 13 desktop with live Discord.
   - **slice 5 — notify: libnotify.** Gate: real notification via dunst;
     headless = documented best-effort no-op (the contract).
   - **slice 6 — CD: SG_IO ICdIo — LAST.** Gate: Relish rip via usbipd/WSL2 on
@@ -129,7 +135,53 @@ carve the ABI first.
   of the whole plugin system. ("Fix iHeart and ship without rebuilding the host.")
 
 ## Done (restructure branch)
-- **Phase 3 slice 3 — ICY continuous-stream Linux twin: DONE** (code `5c823f8`;
+- **Phase 3 slice 4 — IPC: Unix-domain-socket core::IIpc twin: DONE** (code
+  `671d2b3`; design `docs/phase3-slice4-design.md`, ratified before code).
+  `src/platform/linux/IpcUnixSocket.cpp` (`platform::lnx::UnixSocketIpc` /
+  `UnixSocketChannel`) — the WinPipeIpc sibling, mapping the three primitives
+  onto what they were shaped for at slice 6: **send** = one `::send()` with
+  `MSG_NOSIGNAL` (LOAD-BEARING: dead peer → `false` like WriteFile, not a
+  SIGPIPE death); **waitReadable** = the Windows 10 ms peek-poll loop shape
+  verbatim, `poll()`+`FIONREAD` in PeekNamedPipe's slot (queued bytes count
+  toward min_bytes even after peer close — pinned on the Windows baseline
+  first; the wait slice wakes early on arriving data, latency-only named
+  accepted-better); **recvSome** = one blocking `::recv()`, EOF → false;
+  EINTR retried throughout (ncurses' SIGWINCH must not read as a broken
+  channel). Endpoint discovery in the impl: base = `$XDG_RUNTIME_DIR` →
+  `$TMPDIR`/`$TMP`/`$TEMP` → `/tmp` (canonical discord-rpc order), plain
+  first then flatpak/snap subdirs — the Discord-install knowledge leak NAMED
+  and accepted at design review (DiscordRP stays zero-diff; Windows identical
+  by construction). SeamStubs shed StubIpc + the ipc() bridge. DiscordRP.cpp/
+  .h and IpcWinPipe.cpp: **zero diff**; IIpc.h doc-comments only. UIManager
+  Discord gate sweep (the slice-2 "^D comes alive at slice 4" promise): dtor
+  art-join, startDiscordArtLookup, the RP block, stopped-state clear, the
+  early-return term, the ^D case — all common now; **Windows UIManager
+  preprocessed TU bit-identical to baseline** (the cmp caught a 1-line
+  re-flow of the un-gated if-condition — fixed by keeping the baseline's own
+  line breaks; lessons.md). Tests: discord_ipc_test portable (IPC_IMPL
+  pattern, pure protocol — 12th Linux target); NEW both-platform
+  **ipc_echo_test** (13th) — a REAL local server through the REAL impl
+  (CreateNamedPipe fixture / Unix-socket listener in a sandboxed
+  XDG_RUNTIME_DIR): whole-buffer send, waitReadable min_bytes/timeout/
+  broken-peer semantics, recvSome byte-accounting drain + EOF, dead-peer send
+  false-with-process-alive (the MSG_NOSIGNAL regression case), buffered-then-
+  close, and the Linux flatpak/snap/env discovery order — run green on the
+  UNTOUCHED Windows impl FIRST (slice-3 baseline-first pattern). Verified:
+  Windows ctest 15/15 baseline → 16/16 after; Linux 13/13 first run. **Live
+  gates:** socat echo probe — the real DiscordRP + real impl against a real
+  external Unix socket, handshake `{"v":1,...}` and SET_ACTIVITY observed on
+  the wire as ONE write per frame; **live Discord RP from Linux via the
+  npiperelay+socat bridge** (Windows Discord's pipe as a genuine Unix socket
+  — the wire capture shows production Discord's READY for the logged-in
+  user, "Doja Cat - Say So" ACCEPTED with the remoct_logo asset resolved,
+  the async iTunes art refresh ACCEPTED (`mp:external/...600x600bb.jpg`), a
+  natural on-air track change (Ariana Grande) pushed through, and after a
+  bridge kill+restart the NEXT track (JoJo) drove the lazy reconnect: failed
+  send → disconnect → fresh handshake + restored RP with art). Honest
+  limits, documented: the bridge's socket is socat's (flatpak/snap
+  candidates stay fixture-proven); **final 100% close = Dos verifies on a
+  native Debian 13 desktop with a live Discord account.** Windows live ^D is
+  a formality (TU bit-identical; the same Discord displayed the Linux RP). (code `5c823f8`;
   design `docs/phase3-slice3-design.md`, ratified before code). The LAST raw
   transport: StreamSource's continuous ICY path now has a Linux twin — curl
   `CONNECT_ONLY=1` (TCP+TLS) + hand-spoken HTTP/1.0 ICY request + hand-parsed

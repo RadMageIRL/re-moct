@@ -11,6 +11,14 @@ else()
     set(HTTP_IMPL ${CMAKE_SOURCE_DIR}/src/platform/linux/HttpCurl.cpp)
     set(HTTP_LIBS CURL::libcurl pthread)
 endif()
+
+# Per-platform IPC transport (slice 4) — same idea: one test file drives the
+# Windows named pipe AND the Linux Unix-domain socket.
+if(WIN32)
+    set(IPC_IMPL ${CMAKE_SOURCE_DIR}/src/platform/win/IpcWinPipe.cpp)
+else()
+    set(IPC_IMPL ${CMAKE_SOURCE_DIR}/src/platform/linux/IpcUnixSocket.cpp)
+endif()
 add_executable(iheart_sm_test
     iheart_sm_test.cpp
     ${CMAKE_SOURCE_DIR}/src/IHeartNowPlayingSM.cpp
@@ -163,22 +171,44 @@ target_link_libraries(icy_pipeline_test PRIVATE ${FDKAAC_LIB} ${HTTP_LIBS}
 add_test(NAME icy_pipeline_test COMMAND icy_pipeline_test)
 set_tests_properties(icy_pipeline_test PROPERTIES TIMEOUT 180)
 
-if(WIN32)
-    # slice 6 — Windows-only Discord IPC seam test. Links the REAL DiscordRP consumer
-    # + the named-pipe impl TU (linked only to satisfy core::ipc(); never invoked —
-    # the test injects a FakeIpc via constructor injection) and asserts the protocol
-    # frames the consumer builds: handshake shape, endpoint probe order, SET_ACTIVITY
-    # framing + jsonEscape, activity-null clear, CLOSE rejection, and lazy reconnect
-    # after channel death. The live gate (real Discord shows RP) proves the transport.
-    add_executable(discord_ipc_test
-        discord_ipc_test.cpp
-        ${CMAKE_SOURCE_DIR}/src/DiscordRP.cpp
-        ${CMAKE_SOURCE_DIR}/src/platform/win/IpcWinPipe.cpp
-    )
-    target_include_directories(discord_ipc_test PRIVATE
-        ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/lib)
-    add_test(NAME discord_ipc_test COMMAND discord_ipc_test)
+# slice 6 — Discord IPC seam test. Links the REAL DiscordRP consumer + the
+# platform impl TU (linked only to satisfy core::ipc(); never invoked — the
+# test injects a FakeIpc via constructor injection) and asserts the protocol
+# frames the consumer builds: handshake shape, endpoint probe order,
+# SET_ACTIVITY framing + jsonEscape, activity-null clear, CLOSE rejection, and
+# lazy reconnect after channel death. Windows-only until slice 4 delivered the
+# Unix-socket impl; portable since — pure protocol, both matrix jobs.
+add_executable(discord_ipc_test
+    discord_ipc_test.cpp
+    ${CMAKE_SOURCE_DIR}/src/DiscordRP.cpp
+    ${IPC_IMPL}
+)
+target_include_directories(discord_ipc_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/lib)
+add_test(NAME discord_ipc_test COMMAND discord_ipc_test)
 
+# slice 4 — REAL-transport IPC test (the fixture twin of http_cancel_test): a
+# real local server (Windows: CreateNamedPipe; Linux: Unix-socket listener in a
+# sandboxed XDG_RUNTIME_DIR) through the REAL impl via core::ipc(). Proves the
+# three primitives' semantics per platform: whole-buffer send, waitReadable
+# min_bytes/timeout/broken-peer behavior, recvSome byte accounting + EOF, the
+# dead-peer send (Linux: the MSG_NOSIGNAL regression case — a miss here is a
+# SIGPIPE death, not an assert), and (Linux) the flatpak/snap/env discovery
+# order. Run green on the untouched Windows baseline FIRST (slice-3 pattern).
+add_executable(ipc_echo_test
+    ipc_echo_test.cpp
+    ${IPC_IMPL}
+)
+target_include_directories(ipc_echo_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/lib)
+target_link_libraries(ipc_echo_test PRIVATE
+    $<$<PLATFORM_ID:Linux>:pthread>)
+add_test(NAME ipc_echo_test COMMAND ipc_echo_test)
+# Every wait is bounded (2s waits, 300ms timeouts) — a run near this limit is a
+# hang (a blocked ConnectNamedPipe/accept), not slowness. Fail fast in CI.
+set_tests_properties(ipc_echo_test PROPERTIES TIMEOUT 60)
+
+if(WIN32)
     # slice 8 — Windows-only CD-I/O seam test. Links the REAL CDSource consumer
     # + the IOCTL impl TU (linked only to satisfy core::cdio(); never invoked —
     # the test injects a FakeCdIo via constructor injection) and asserts the TOC

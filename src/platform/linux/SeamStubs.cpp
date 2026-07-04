@@ -6,7 +6,8 @@
 // removes its stub from here (this file shrinks to nothing and dies with slice 6):
 //   slice 2 — HttpCurl.cpp: ✅ LANDED — the HTTP stub + core::http()/setHttp()
 //             bridges moved there; libcurl now backs the seam for real.
-//   slice 4 — IpcUnixSocket.cpp ($XDG_RUNTIME_DIR/<name> Unix domain socket)
+//   slice 4 — IpcUnixSocket.cpp: ✅ LANDED — the IPC stub + core::ipc() bridge
+//             moved there; a Unix domain socket backs the seam for real.
 //   slice 5 — NotifyLibnotify.cpp (notify-send/libnotify, app id "RE-MOCT")
 //   slice 6 — CdIoSgIo.cpp      (SG_IO on /dev/srN: READ CD 0xBE, READ TOC 0x43,
 //                                TEST UNIT READY, INQUIRY, SET CD SPEED 0xBB)
@@ -22,17 +23,10 @@
 // the name must not break if that ever changes.
 #ifdef __linux__
 
-#include "core/IIpc.h"
 #include "core/INotify.h"
 #include "core/ICdIo.h"
 
 namespace platform::lnx {
-
-struct StubIpc final : core::IIpc {
-    std::unique_ptr<core::IIpcChannel> connect(const std::string&) override {
-        return nullptr;                  // endpoint not listening
-    }
-};
 
 struct StubNotify final : core::INotify {
     void notify(const std::string&, const std::string&) override {}   // best-effort no-op
@@ -48,12 +42,8 @@ struct StubCdIo final : core::ICdIo {
 
 namespace core {
 
-// (http()/setHttp() live in HttpCurl.cpp since slice 2.)
-
-IIpc& ipc() {
-    static platform::lnx::StubIpc instance;
-    return instance;
-}
+// (http()/setHttp() live in HttpCurl.cpp since slice 2;
+//  ipc() lives in IpcUnixSocket.cpp since slice 4.)
 
 INotify& notifier() {
     static platform::lnx::StubNotify instance;

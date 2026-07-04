@@ -161,11 +161,10 @@ UIManager::~UIManager() {
     if (lf_poll_thread_.joinable()) lf_poll_thread_.join();
     lb_validate_active_.store(false);
     if (lb_validate_thread_.joinable()) lb_validate_thread_.join();
-#ifdef _WIN32
     if (discord_art_thread_.joinable()) discord_art_thread_.join();
-#endif
     if (mb_search_win_) { delwin(mb_search_win_); mb_search_win_ = nullptr; }
 #ifdef _WIN32
+    // MBLookup/CDRipper cancel stay gated: CD is slice 6.
     mb_lookup_.cancel();
     cd_ripper_.cancel();
 #endif
@@ -3054,10 +3053,10 @@ static std::string normTrackId(const std::string& artist, const std::string& tra
     return id;
 }
 
-#ifdef _WIN32
 // Spawn a one-shot worker to resolve an album-cover URL (iTunes/Deezer) off the
 // UI thread. Single in-flight at a time; the result is picked up by the deferred
 // art-commit in updateScrobbler. No-op if a lookup is already running.
+// Portable since slice 4 (CoverArt has been WinINet-free since group (c)).
 void UIManager::startDiscordArtLookup(const std::string& artist,
                                       const std::string& album,
                                       const std::string& key,
@@ -3076,14 +3075,14 @@ void UIManager::startDiscordArtLookup(const std::string& artist,
         discord_art_done_.store(true);
     });
 }
-#endif
 
 void UIManager::updateScrobbler() {
     // Portable since slice 2 (the scrobble clients + MD5 signing run on both
     // platforms) — the whole-body _WIN32 gate came off with the ^B/^G key fix:
     // it was slice-1 scaffolding from the MD5-placeholder era, and it silently
     // no-op'd every scrobble/auth-commit on Linux while the login PROMPTS
-    // worked (Dos-found). Discord RP stays inner-gated below (slice 4).
+    // worked (Dos-found). Discord RP's inner gates came off at slice 4
+    // (Unix-socket IIpc) — the whole tick is common code now.
     static bool announced = false;
     if (!announced) {
         sclog("updateScrobbler active (session=%s)",
@@ -3125,19 +3124,15 @@ void UIManager::updateScrobbler() {
     }
 
     if (config_.lastfm_session.empty() && config_.listenbrainz_token.empty()
-#ifdef _WIN32
         && !config_.discord_presence
-#endif
         )
         return;   // nothing to drive (no scrobbler, no Discord) -> no-op
 
     auto st = audio_.state();
     if (st != PlaybackState::Playing && st != PlaybackState::Paused) {
         scrob_artist_.clear(); scrob_track_.clear();   // stopped -> reset
-#ifdef _WIN32
         if (discord_active_) { discord_.clearActivity(); discord_active_ = false; }
         discord_artist_.clear(); discord_track_.clear();
-#endif
         return;
     }
 
@@ -3194,8 +3189,8 @@ void UIManager::updateScrobbler() {
         return;
     }
     artist = deinvertArtist(artist);   // "Shins, The" -> "The Shins" for both services
-#ifdef _WIN32
     // Discord Rich Presence — same resolved metadata, independent of scrobbling.
+    // Portable since slice 4 (Unix-socket IIpc twin).
     if (config_.discord_presence) {
         // iHeart digital cover (empty in raw mode / on ad breaks -> logo). Tracked so a
         // cover that lands a tick after the track commits still refreshes the presence.
@@ -3269,7 +3264,6 @@ void UIManager::updateScrobbler() {
             }
         }
     }
-#endif
 
     const std::string& k  = config_.lastfm_key;
     const std::string& s  = config_.lastfm_secret;
@@ -3865,10 +3859,9 @@ void UIManager::handleInput(int ch) {
         // scrobbler-login and radio-URL keys from the Linux build (Dos-found:
         // ^U/^G/^B dead while ^N/^T/^L/^Q worked — a key probe proved the tty
         // delivers all of them; the gap was here). Gate each key on WHY:
-        // ^D = Discord IPC (slice 4); ^F = the MBSearch overlay's draw/input
-        // handlers are still Windows-gated; ^Y/^R = CD (slice 6, and the
-        // RipConfirm modal handler is Windows-gated).
-#ifdef _WIN32
+        // ^D = common since slice 4 (Unix-socket IIpc); ^F = the MBSearch
+        // overlay's draw/input handlers are still Windows-gated; ^Y/^R = CD
+        // (slice 6, and the RipConfirm modal handler is Windows-gated).
         case 4:  // Ctrl+D — toggle Discord Rich Presence
             config_.discord_presence = !config_.discord_presence;
             config_.save();
@@ -3882,7 +3875,6 @@ void UIManager::handleInput(int ch) {
                 showTrackToast("Discord presence: OFF", "", "");
             }
             break;
-#endif
         case 2:  // Ctrl+B — ListenBrainz login (paste user token; no browser/handshake)
             if (config_.listenbrainz_token.empty())
                 openInputBar(InputMode::ListenBrainzToken, "");

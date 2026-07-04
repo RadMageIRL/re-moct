@@ -64,6 +64,7 @@ if(UNIX)
     list(APPEND REMOCT_SOURCES
         ${CMAKE_SOURCE_DIR}/src/platform/linux/SeamStubs.cpp
         ${CMAKE_SOURCE_DIR}/src/platform/linux/HttpCurl.cpp
+        ${CMAKE_SOURCE_DIR}/src/platform/linux/IpcUnixSocket.cpp
     )
     # Module-mode search only: under WSL2 the appended Windows PATH would let
     # config-mode find MSYS2's CURLConfig.cmake at /mnt/c (CMake treats PATH
@@ -76,6 +77,7 @@ if(UNIX)
     # platform-clean even if the main target is mid-port).
     add_library(remoct_linux_seams OBJECT
         ${CMAKE_SOURCE_DIR}/src/platform/linux/SeamStubs.cpp
+        ${CMAKE_SOURCE_DIR}/src/platform/linux/IpcUnixSocket.cpp
     )
     target_include_directories(remoct_linux_seams PRIVATE ${CMAKE_SOURCE_DIR}/include)
     if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")

@@ -1,8 +1,9 @@
 // IIpc.h — platform-neutral local-IPC seam (Phase 1 slice 6).
 //
 // `core::IIpc` is the interface; `platform::win::WinPipeIpc`
-// (src/platform/win/IpcWinPipe.cpp) is the Windows named-pipe implementation. The
-// Linux sibling (Phase 3, src/platform/linux/) is a Unix domain socket.
+// (src/platform/win/IpcWinPipe.cpp) is the Windows named-pipe implementation;
+// `platform::lnx::UnixSocketIpc` (src/platform/linux/IpcUnixSocket.cpp, Phase 3
+// slice 4) is the Linux Unix-domain-socket sibling.
 //
 // The abstraction is "a local bidirectional byte channel", modeled on what the one
 // real consumer (DiscordRP) needs — NOT a general IPC framework. Protocol stays
@@ -46,11 +47,14 @@ public:
 };
 
 // Channel factory. connect() takes a LOGICAL endpoint name ("discord-ipc-0"); the
-// platform impl owns the name→path mapping (\\.\pipe\<name> on Windows,
-// $XDG_RUNTIME_DIR/<name> when the Linux impl exists) — the path prefix is exactly
-// as platform-specific as the transport itself. Returns nullptr when the endpoint
-// doesn't exist / isn't listening (e.g. Discord not running on that slot); probing
-// multiple slots is the CONSUMER's protocol knowledge, not the seam's.
+// platform impl owns the name→path mapping — \\.\pipe\<name> on Windows; on Linux
+// a CANDIDATE LIST: <base>/<name> with base = $XDG_RUNTIME_DIR (env fallback
+// TMPDIR/TMP/TEMP, then /tmp), plus the flatpak/snap install subdirs (see
+// IpcUnixSocket.cpp for the named knowledge leak that list carries). The path
+// prefix is exactly as platform-specific as the transport itself. Returns nullptr
+// when the endpoint doesn't exist / isn't listening (e.g. Discord not running on
+// that slot); probing multiple slots is the CONSUMER's protocol knowledge, not
+// the seam's.
 class IIpc {
 public:
     virtual ~IIpc() = default;

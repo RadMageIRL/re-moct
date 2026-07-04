@@ -275,6 +275,11 @@ void UIManager::initColours() {
     // themed viz pairs are fg==bg solid fills (a partial block would be invisible),
     // so the sub-cell lower-block glyphs (▁..▇) need a real bg to show their height.
     init_pair(CP_VIZ_TIP, fg[CP_VIZ_PEAK], -1);
+
+    // Reset the root screen to transparent so Classic re-inherits the terminal bg
+    // (undoes the Awesome stdscr base fill above). Pair 0 = terminal default under
+    // use_default_colors().
+    bkgd(COLOR_PAIR(0));
 }
 
 void UIManager::applyAwesomeTheme() {
@@ -353,6 +358,14 @@ void UIManager::applyAwesomeTheme() {
         for (const auto& d : defs)
             init_pair(d.pair, nearest(d.fg), nearest(d.bg));
     }
+
+    // stdscr base fill: the pane/title/cwd/cmdline subwindows get a base bg via
+    // wbkgd(CP_DIM) in createWindows(), but the inter-pane gutter, outer insets, and
+    // any cell no subwindow covers are stdscr itself — still at the default -1, which
+    // renders black. Fill the root with the same base-bg pair so no black seam shows
+    // through on non-near-black bases (Zero Cool, Nord, Gruvbox). CP_DIM.bg == base in
+    // Awesome; F8 re-runs applyAwesomeTheme(), so the fill tracks each theme.
+    bkgd(COLOR_PAIR(CP_DIM));
 }
 
 void UIManager::loadTheme(short* fg, short* bg) {
@@ -1041,6 +1054,13 @@ void UIManager::computeVizBins() {
 // Drawing
 // ─────────────────────────────────────────────────────────────────────────────
 void UIManager::drawAll() {
+    // Backdrop: refresh stdscr first so the inter-pane gutter, outer insets, and any
+    // cell no subwindow covers show the themed base (Awesome) or terminal default
+    // (Classic) set on stdscr by applyAwesomeTheme()/initColours(). The subwindow
+    // refreshes below overlay it in the virtual screen; doupdate flushes once, no
+    // flicker. Without this, the Awesome stdscr base fill would not repaint on an F8
+    // cycle (no resize runs there to push stdscr).
+    wnoutrefresh(stdscr);
     drawTitleBar();
     drawCwd();
     drawDirBrowser();

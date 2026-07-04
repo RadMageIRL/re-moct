@@ -105,8 +105,8 @@ no shell, `--` option-injection guard; argv builder in `NotifyArgv.h`,
 transport-side; new Linux-only `notify_argv_test`; Linux 14/14; kept the
 slice-2 cmdline echo as graceful degradation). Dos live-confirmed on Debian
 13 (song-to-song + ^D toasts). Follow-ups un-gating stale `#ifdef _WIN32`:
-stream connect/fail toasts (`a5b6bf6`, pushed) + Ctrl+A/Ctrl+K key cases
-(applied, pending live-test).
+stream connect/fail toasts (`a5b6bf6`) + Ctrl+A/Ctrl+K key cases & Ctrl+T/N
+toasts (`9cb73f5`) — both pushed (Dos live-test of the toggles outstanding).
 **Next: slice 6 (SG_IO CD — LAST) — READ CD 0xBE (want_c2), READ TOC 0x43,
 TEST UNIT READY, INQUIRY, SET CD SPEED 0xBB; gate: Relish rip via usbipd/WSL2,
 12/12 AR v2 conf 200 AND byte-identical to the Windows baseline log.**

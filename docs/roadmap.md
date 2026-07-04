@@ -171,12 +171,15 @@ carve the ABI first.
   Discord toast + RPC on/off works. **Two Dos-found Linux-parity follow-ups
   un-gating stale `#ifdef _WIN32` (same class as `4f0b240`/`91caf7a`): (a)
   async stream connect/fail toasts ("Streaming"/"FAILED") — `a5b6bf6`, PUSHED;
-  (b) Ctrl+A (deep iHeart log) + Ctrl+K (digital-vs-raw stream) key cases,
-  wholly compiled out on Linux — applied, ctest 14/14, pending Dos's go +
-  live-test.** Baseline (NOT a regression, left as-is per Dos): override-queue↔
-  song doesn't toast on EITHER platform (the file toast keys on
-  `playlist_.current()`, which queue plays bypass by design). Same-class cosmetic
-  gap noted: ^T/^N toggles work but their toast is still `#ifdef _WIN32`.
+  (b) Ctrl+A (deep iHeart log) + Ctrl+K (digital-vs-raw stream) key cases
+  (wholly compiled out on Linux — no toggle, no toast) PLUS the Ctrl+T (theme)
+  / Ctrl+N (nerd icons) toasts (function ran but the `showTrackToast` was
+  `#ifdef _WIN32`) — un-gated, `9cb73f5`, PUSHED, ctest 14/14 (Dos live-test of
+  the toggles outstanding). Left correctly deferred: Ctrl+F (MBSearch overlay
+  still Windows-gated), Ctrl+Y/Ctrl+R (CD, slice 6).** Baseline (NOT a
+  regression, left as-is per Dos decision A): override-queue↔song doesn't toast
+  on EITHER platform (the file toast keys on `playlist_.current()`, which queue
+  plays bypass by design).
 - **Phase 3 slice 4 — IPC: Unix-domain-socket core::IIpc twin: DONE** (code
   `671d2b3`; design `docs/phase3-slice4-design.md`, ratified before code).
   `src/platform/linux/IpcUnixSocket.cpp` (`platform::lnx::UnixSocketIpc` /

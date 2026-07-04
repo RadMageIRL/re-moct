@@ -600,6 +600,17 @@ not yet swapped - this deliberately isolates the codec question from the curses 
   `libfdk-aac.dll` (shared exe/plugin, by design) + `libebur128.dll` (holdout) + `plugins/`
   (dynamic, unchanged). Every DLL has a stated reason.
 - **Graduation gate (corrected from "single DLL exception"):** the Phase-5 `ldd` / Dependencies
-  check passes IFF the ONLY non-system DLLs are EXACTLY `libfdk-aac.dll` and `libebur128.dll`.
-  Any third non-system DLL fails the gate. The CI dependents-check must assert that explicit
-  two-name allowlist so nothing new sneaks in later and gets waved through as "expected."
+  check passes IFF the ONLY non-system DLLs are EXACTLY `libfdk-aac-2.dll` and `libebur128.dll`
+  (note the fdk-aac soname carries a `-2` version suffix - the exe's `ldd` shows
+  `libfdk-aac-2.dll`, not `libfdk-aac.dll`). Any third non-system DLL fails the gate. The CI
+  dependents-check must assert that explicit two-name allowlist so nothing new sneaks in later
+  and gets waved through as "expected."
+- **Plugin drags the GCC-runtime DLLs (OPEN packaging question).** `remoct_stream.dll` builds
+  dynamic (correct - it must stay a loadable module) and links the SHARED `libfdk-aac-2.dll`
+  (good - one codec state), but it also pulls `libgcc_s_seh-1.dll` / `libstdc++-6.dll` /
+  `libwinpthread-1.dll` that the STATIC exe does not carry. So the shipping package would need
+  those 3 GCC-runtime DLLs too, unless the plugin target gets `-static-libgcc -static-libstdc++`
+  (folds the C++ runtime into the plugin DLL; safe because the plugin boundary is a C ABI - no
+  C++ objects cross it, proven byte-identical in Phase 4 slice d). That is NOT the same as
+  `-static` on the plugin (which would break the loadable module). DECISION for Dos before Phase
+  5: static-libgcc/stdc++ the plugin (keeps the 2-DLL package) vs ship the 3 runtime DLLs.

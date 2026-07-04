@@ -139,6 +139,30 @@ target_link_libraries(hls_pipeline_test PRIVATE ${FDKAAC_LIB} ${HTTP_LIBS}
 add_test(NAME hls_pipeline_test COMMAND hls_pipeline_test)
 set_tests_properties(hls_pipeline_test PROPERTIES TIMEOUT 120)
 
+# icy_pipeline_test (slice 3): a REAL localhost ICY server fixture through the
+# REAL StreamSource Continuous path — connect (raw WinINet / curl twin) ->
+# readAudio de-interleave -> FDK -> ring -> readFrames. Closes the slice-0
+# "ICY is live-gate-only" limit; run green on the Windows baseline BEFORE the
+# Linux twin landed (baseline-first). Covers: Icy-MetaData request, metaint
+# alignment across two title transitions (the offset-0 invariant), server-drop
+# reconnect self-heal, bounded close on a silent stream, no-metaint passthrough.
+add_executable(icy_pipeline_test
+    icy_pipeline_test.cpp
+    ${CMAKE_SOURCE_DIR}/src/StreamSource.cpp
+    ${CMAKE_SOURCE_DIR}/src/IHeartRadio.cpp
+    ${CMAKE_SOURCE_DIR}/src/IHeartNowPlayingSM.cpp
+    ${CMAKE_SOURCE_DIR}/src/IHeartDeepLog.cpp
+    ${CMAKE_SOURCE_DIR}/src/Log.cpp
+    ${HTTP_IMPL}
+)
+target_include_directories(icy_pipeline_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/lib ${FDKAAC_INCLUDE})
+target_link_libraries(icy_pipeline_test PRIVATE ${FDKAAC_LIB} ${HTTP_LIBS}
+    $<$<PLATFORM_ID:Windows>:ws2_32>
+    $<$<PLATFORM_ID:Linux>:dl> $<$<PLATFORM_ID:Linux>:m>)
+add_test(NAME icy_pipeline_test COMMAND icy_pipeline_test)
+set_tests_properties(icy_pipeline_test PROPERTIES TIMEOUT 180)
+
 if(WIN32)
     # slice 6 — Windows-only Discord IPC seam test. Links the REAL DiscordRP consumer
     # + the named-pipe impl TU (linked only to satisfy core::ipc(); never invoked —

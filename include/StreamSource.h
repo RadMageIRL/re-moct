@@ -10,10 +10,12 @@
 // Step 1 scope: headless. No UI, no ICY metadata, MP3 only (forced backend).
 // Resamples whatever the station sends to a fixed 44100/stereo output.
 
-// WinINet backs ONLY the ICY/continuous raw read loop (permanently outside the
-// IHttp seam, by design). On Linux that transport is absent until Phase 3
-// slice 3 (design-first ICY twin): the HLS path below is fully seam-routed and
-// portable; connect() refuses Continuous mode off-Windows.
+// The ICY/continuous raw read loop is StreamSource-private transport,
+// permanently outside the IHttp seam by design: raw WinINet on Windows
+// (byte-verbatim baseline), and since Phase 3 slice 3 a curl CONNECT_ONLY +
+// curl_easy_recv twin on Linux (StreamSource.cpp; design + correctness
+// argument in docs/phase3-slice3-design.md). The HLS path is fully seam-routed
+// and portable.
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -210,12 +212,13 @@ private:
     mutable std::string       np_published_;
     std::string             iheart_art_;       // album-art URL for the committed song (digital mode; "" otherwise). Guarded by now_playing_mtx_.
 
-    // WinINet handles (owned by producer thread once open() returns). ICY/continuous
-    // path ONLY — the live audio read loop (rawRead -> InternetReadFile(hConn_) ->
-    // ring) stays raw WinINet, permanently outside the IHttp seam. On Linux the
-    // members exist as inert void* twins (HINTERNET is void*) so the ICY machinery
-    // COMPILES but is unreachable — connect() refuses Continuous mode there until
-    // the slice-3 ICY twin replaces this transport per-platform.
+    // Raw ICY-transport handles (owned by producer thread once open() returns).
+    // ICY/continuous path ONLY — the live audio read loop (rawRead -> one raw
+    // network read -> ring) is per-platform private transport, permanently
+    // outside the IHttp seam. Windows: WinINet, byte-verbatim baseline
+    // (hInet_/hConn_ are HINTERNET). Linux (slice 3): hConn_ holds the curl
+    // CONNECT_ONLY easy handle (CURL*) so the shared null-guards in rawRead()
+    // and onRead() work unmodified; hInet_ stays inert nullptr.
 #ifdef _WIN32
     HINTERNET               hInet_ = nullptr;
     HINTERNET               hConn_ = nullptr;

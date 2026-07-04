@@ -9,6 +9,15 @@
 #include <cstdio>
 #include <cstdarg>
 #include <cstdlib>
+#ifndef _WIN32
+// Phase 3 slice 3: the ICY twin's transport plumbing. Like WinINet on Windows,
+// this is StreamSource-private raw transport — permanently outside the IHttp
+// seam. curl CONNECT_ONLY gives TCP(+TLS); the ICY request/response and the
+// byte stream are spoken by hand so the pull-read shape stays verbatim.
+#include <curl/curl.h>
+#include <poll.h>
+#include <mutex>
+#endif
 
 
 // ── Tunables ─────────────────────────────────────────────────────────────────
@@ -90,6 +99,184 @@ void StreamSource::close() {
 
 // ─── Connection ───────────────────────────────────────────────────────────────
 
+#ifndef _WIN32
+// ── Slice 3: the Linux ICY transport twin (curl CONNECT_ONLY + easy_send/recv).
+// Design + correctness argument: docs/phase3-slice3-design.md. Everything above
+// rawRead() — de-interleave, ring feed, producers — is shared and unchanged;
+// these helpers exist only to hand connect() a connected socket whose next
+// byte is body offset 0 (THE alignment invariant) with icy-metaint parsed.
+namespace {
+
+// curl_global_init is process-wide; HttpCurl.cpp's guard is TU-private, so this
+// TU carries its own (thread-safe since curl 7.84; a second init is refcounted).
+std::once_flag g_icy_curl_init;
+void icyEnsureCurlInit() {
+    std::call_once(g_icy_curl_init, [] { curl_global_init(CURL_GLOBAL_DEFAULT); });
+}
+
+// Wait one slice for the connection's socket. Timeout/EINTR both mean "try the
+// recv/send again" — the caller's loop owns stop_/deadline policy.
+void icyWaitSocket(CURL* h, short events, int slice_ms) {
+    curl_socket_t s = CURL_SOCKET_BAD;
+    if (curl_easy_getinfo(h, CURLINFO_ACTIVESOCKET, &s) != CURLE_OK || s == CURL_SOCKET_BAD)
+        return;
+    struct pollfd pfd { s, events, 0 };
+    (void)poll(&pfd, 1, slice_ms);
+}
+
+// Send the whole request, bounded (the WinINet SEND_TIMEOUT twin), stop-aware.
+bool icySendAll(CURL* h, const std::string& data, const std::atomic<bool>& stop) {
+    size_t off = 0;
+    uint32_t start = port::tickMs();
+    while (off < data.size()) {
+        size_t sent = 0;
+        CURLcode rc = curl_easy_send(h, data.data() + off, data.size() - off, &sent);
+        if (rc == CURLE_OK) { off += sent; continue; }
+        if (rc != CURLE_AGAIN) return false;
+        if (stop.load()) return false;
+        if ((long)(port::tickMs() - start) >= 8000) return false;
+        icyWaitSocket(h, POLLOUT, 100);
+    }
+    return true;
+}
+
+// One connect+request+header hop of the ICY handshake.
+struct IcyHop {
+    CURL*       easy = nullptr;   // owned by the caller on ok
+    int         metaint = 0;
+    std::string leftover;         // bytes received PAST the header terminator = body offset 0..n
+    std::string redirect;         // raw Location value when the hop 3xx'd
+    bool        ok = false;       // 200 reached, easy/metaint/leftover valid
+};
+
+bool icyHop(const std::string& url, const std::atomic<bool>& stop, IcyHop& out) {
+    icyEnsureCurlInit();
+    CURL* h = curl_easy_init();
+    if (!h) return false;
+    curl_easy_setopt(h, CURLOPT_URL, url.c_str());
+    curl_easy_setopt(h, CURLOPT_CONNECT_ONLY, 1L);        // TCP + TLS (for https), no HTTP
+    curl_easy_setopt(h, CURLOPT_CONNECTTIMEOUT_MS, 8000L);// the WinINet CONNECT_TIMEOUT twin
+    curl_easy_setopt(h, CURLOPT_NOSIGNAL, 1L);
+    // ALPN OFF: with it on, a CDN edge (cloudflare) negotiates HTTP/2 and the
+    // hand-written HTTP/1.x request below is protocol garbage on that
+    // connection — the server just closes. Without ALPN it must assume
+    // HTTP/1.1. (Probe finding, 2026-07-03 — see the design doc.)
+    curl_easy_setopt(h, CURLOPT_SSL_ENABLE_ALPN, 0L);
+    CURLcode rc = curl_easy_perform(h);
+    if (rc != CURLE_OK) {
+        slog("icy connect: %s (%s)", curl_easy_strerror(rc), url.c_str());
+        curl_easy_cleanup(h);
+        return false;
+    }
+
+    // Build the request off curl's own URL parser (CURLU — nothing hand-rolled).
+    // HTTP/1.0 deliberately: a 1.0 request forbids Transfer-Encoding: chunked,
+    // so the response body is guaranteed to be the raw interleaved byte stream.
+    std::string req;
+    {
+        CURLU* u = curl_url();
+        if (!u || curl_url_set(u, CURLUPART_URL, url.c_str(), 0) != CURLUE_OK) {
+            if (u) curl_url_cleanup(u);
+            curl_easy_cleanup(h);
+            return false;
+        }
+        char *host = nullptr, *port_s = nullptr, *path = nullptr, *query = nullptr;
+        curl_url_get(u, CURLUPART_HOST, &host, 0);
+        curl_url_get(u, CURLUPART_PORT, &port_s, 0);      // null unless explicit in the URL
+        curl_url_get(u, CURLUPART_PATH, &path, 0);
+        curl_url_get(u, CURLUPART_QUERY, &query, 0);      // may be null
+        req = std::string("GET ") + (path ? path : "/")
+            + (query ? (std::string("?") + query) : std::string())
+            + " HTTP/1.0\r\nHost: " + (host ? host : "")
+            + (port_s ? (std::string(":") + port_s) : std::string())
+            + "\r\nUser-Agent: RE-MOCT/1.0.0-rc1 (https://github.com/RadMageIRL/re-moct)\r\n"
+              "Icy-MetaData: 1\r\n\r\n";
+        if (host)   curl_free(host);
+        if (port_s) curl_free(port_s);
+        if (path)   curl_free(path);
+        if (query)  curl_free(query);
+        curl_url_cleanup(u);
+    }
+    if (!icySendAll(h, req, stop)) { curl_easy_cleanup(h); return false; }
+
+    // Read the response headers OURSELVES (CONNECT_ONLY sends no HTTP, so no
+    // library consumed them) — that ownership is what makes "ICY 200 OK"
+    // tolerance ours. Bounded 16KB / 8s, stop-aware, tolerate bare \n\n.
+    std::string hdr;
+    size_t term = std::string::npos, tlen = 0;
+    uint32_t start = port::tickMs();
+    char buf[2048];
+    while (hdr.size() < 16384) {
+        size_t got = 0;
+        rc = curl_easy_recv(h, buf, sizeof(buf), &got);
+        if (rc == CURLE_AGAIN) {
+            if (stop.load() || (long)(port::tickMs() - start) >= 8000) {
+                curl_easy_cleanup(h);
+                return false;
+            }
+            icyWaitSocket(h, POLLIN, 100);
+            continue;
+        }
+        if (rc != CURLE_OK || got == 0) {                 // error or closed pre-headers
+            slog("icy connect: header read failed (%s)", curl_easy_strerror(rc));
+            curl_easy_cleanup(h);
+            return false;
+        }
+        hdr.append(buf, got);
+        if ((term = hdr.find("\r\n\r\n")) != std::string::npos) { tlen = 4; break; }
+        if ((term = hdr.find("\n\n"))     != std::string::npos) { tlen = 2; break; }
+    }
+    if (term == std::string::npos) { curl_easy_cleanup(h); return false; }
+
+    std::string head = hdr.substr(0, term);
+    std::string lh   = head;
+    for (char& ch : lh) ch = (char)std::tolower((unsigned char)ch);
+    auto hdrval = [&](const char* name) -> std::string {  // case-insensitive lookup
+        std::string key = std::string("\n") + name + ":";
+        size_t p = lh.find(key);
+        if (p == std::string::npos) return {};
+        p += key.size();
+        size_t e = head.find_first_of("\r\n", p);
+        std::string v = head.substr(p, e - p);
+        size_t s = v.find_first_not_of(" \t");
+        return s == std::string::npos ? std::string() : v.substr(s);
+    };
+
+    size_t eol = head.find_first_of("\r\n");
+    std::string sl = head.substr(0, eol == std::string::npos ? head.size() : eol);
+    bool ok200 = sl.rfind("ICY 200", 0) == 0 || sl.rfind("HTTP/1.0 200", 0) == 0
+              || sl.rfind("HTTP/1.1 200", 0) == 0;
+    bool redir = (sl.rfind("HTTP/1.0 3", 0) == 0 || sl.rfind("HTTP/1.1 3", 0) == 0);
+    if (redir) {
+        out.redirect = hdrval("location");
+        curl_easy_cleanup(h);                             // leftover of a 3xx hop = its html body; discarded with the hop
+        if (out.redirect.empty()) { slog("icy connect: 3xx without Location"); return false; }
+        return true;
+    }
+    if (!ok200) {
+        slog("icy connect: unexpected status \"%s\"", sl.c_str());
+        curl_easy_cleanup(h);
+        return false;
+    }
+    // A conformant server cannot chunk an HTTP/1.0 response; one that does
+    // anyway would break the metaint arithmetic — refuse loudly, never garble.
+    std::string te = hdrval("transfer-encoding");
+    if (te.find("chunked") != std::string::npos) {
+        slog("icy connect: server sent Transfer-Encoding: chunked to an HTTP/1.0 request -> refusing");
+        curl_easy_cleanup(h);
+        return false;
+    }
+
+    out.easy     = h;
+    out.metaint  = std::atoi(hdrval("icy-metaint").c_str());
+    out.leftover = hdr.substr(term + tlen);               // body offset 0..n — MUST be preserved
+    out.ok       = true;
+    return true;
+}
+
+} // namespace
+#endif // !_WIN32
+
 bool StreamSource::connect() {
     if (mode_ == Mode::HLS) return hlsConnect();   // segment-pump setup (no persistent ICY conn)
 
@@ -132,13 +319,36 @@ bool StreamSource::connect() {
     slog("connect: icy_metaint=%d", icy_metaint_);
     return true;
 #else
-    // Linux: the ICY raw transport does not exist yet — it is its OWN
-    // design-first slice (Phase 3 slice 3), not a ride-along. A continuous URL
-    // fails to connect exactly like a dead station; the HLS path above is
-    // fully seam-routed and portable.
-    last_error_ = "ICY/continuous streams not yet supported on this platform";
-    slog("connect: ICY/continuous unsupported on this platform (Phase 3 slice 3)");
-    return false;
+    // ── Slice 3: the ICY twin — curl CONNECT_ONLY, hand-spoken ICY request,
+    // hand-parsed response headers (helpers above). Redirects followed by hand
+    // (WinINet followed them internally), resolved via the portable
+    // hlsResolveUrl twin, capped at 5 hops. ─────────────────────────────────
+    std::string cur = url_;
+    for (int hops = 0; ; ++hops) {
+        IcyHop hop;
+        if (!icyHop(cur, stop_, hop)) return false;
+        if (!hop.redirect.empty()) {
+            if (hops >= 5) { slog("connect: redirect cap exceeded"); return false; }
+            cur = hlsResolveUrl(cur, hop.redirect);       // absolute passes through
+            slog("connect: redirect -> %s", cur.c_str());
+            continue;
+        }
+        // Publish the connection in the slice-1 void* twin member — the shared
+        // guards (rawRead's and onRead's hConn_ null checks) work unmodified.
+        hConn_       = hop.easy;                          // hInet_ stays inert on Linux
+        icy_metaint_ = hop.metaint;
+        // Post-connect state init, same as the Windows block above — except
+        // raw_buf_ is primed with the bytes the header reader received past the
+        // terminator: THE offset-0 invariant. The first byte rawRead ever
+        // serves is body offset 0, so readAudio()'s metaint arithmetic stays
+        // exact. (Windows never sees leftover — WinINet consumes precisely the
+        // headers.)
+        icy_counter_ = icy_metaint_;
+        raw_buf_.assign(hop.leftover.begin(), hop.leftover.end());
+        raw_pos_ = 0;
+        slog("connect: icy_metaint=%d", icy_metaint_);
+        return true;
+    }
 #endif
 }
 
@@ -146,6 +356,9 @@ void StreamSource::disconnect() {
 #ifdef _WIN32
     if (hConn_) { InternetCloseHandle(hConn_); hConn_ = nullptr; }
     if (hInet_) { InternetCloseHandle(hInet_); hInet_ = nullptr; }
+#else
+    // Slice 3: hConn_ holds the ICY twin's CURL easy handle (hInet_ is inert).
+    if (hConn_) { curl_easy_cleanup(static_cast<CURL*>(hConn_)); hConn_ = nullptr; }
 #endif
     hls_session_.reset();   // HLS: drop the keep-alive session (fresh one per
                             // re-handshake/re-pin — the lifetime the raw handle had)
@@ -1025,9 +1238,42 @@ uint32_t StreamSource::rawRead(void* dst, uint32_t want) {
     raw_pos_ += n;
     return n;
 #else
-    // Unreachable: connect() refuses Continuous mode off-Windows (slice 3).
-    (void)dst; (void)want;
-    return 0;
+    // ── Slice 3: curl_easy_recv in InternetReadFile's refill slot — the same
+    // pull shape, buffered layer, and return-0 semantics. curl_easy_recv is
+    // NON-blocking (CURLE_AGAIN when dry), so the wait is ours: recv FIRST
+    // (TLS may hold decrypted bytes the raw socket doesn't show — polling
+    // first would deadlock on data already in hand), then poll in 100 ms
+    // slices with stop_ checked per slice. 8 s of dry socket returns 0,
+    // mirroring the WinINet RECEIVE_TIMEOUT failure the producer treats as
+    // stream-end (reconnect). Net: stop aborts a stalled read in ~100 ms here
+    // vs <=8 s baseline — a named accepted-better delta. ────────────────────
+    if (raw_pos_ >= raw_buf_.size()) {
+        if (stop_.load() || hConn_ == nullptr) return 0;
+        CURL* h = static_cast<CURL*>(hConn_);
+        raw_buf_.assign(8192, 0);
+        size_t got = 0;
+        uint32_t start = port::tickMs();
+        for (;;) {
+            CURLcode rc = curl_easy_recv(h, raw_buf_.data(), raw_buf_.size(), &got);
+            if (rc == CURLE_OK && got > 0) break;         // data in hand
+            if (rc != CURLE_AGAIN) {                      // orderly close (got==0) or error
+                raw_buf_.clear(); raw_pos_ = 0;
+                return 0;
+            }
+            if (stop_.load() || (long)(port::tickMs() - start) >= 8000) {
+                raw_buf_.clear(); raw_pos_ = 0;
+                return 0;
+            }
+            icyWaitSocket(h, POLLIN, 100);
+        }
+        raw_buf_.resize(got);
+        raw_pos_ = 0;
+    }
+    uint32_t avail = (uint32_t)(raw_buf_.size() - raw_pos_);
+    uint32_t n = (want < avail) ? want : avail;
+    std::memcpy(dst, raw_buf_.data() + raw_pos_, n);
+    raw_pos_ += n;
+    return n;
 #endif
 }
 

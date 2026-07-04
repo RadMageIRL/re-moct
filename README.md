@@ -89,7 +89,8 @@ plugin built beside it in `build/bin/plugins/`.
 | `-` / `+` | Volume down / up | `Ctrl+D` | Discord Rich Presence toggle |
 | `*` | Star / unstar (FAVs) | `Ctrl+A` | iHeart deep-analysis log toggle |
 | `?` | Help pane | `Ctrl+P` | iHeart minted-profileId probe (experimental, off by default) |
-| `Ctrl+Q` | Quit | `Shift+T/L/A/E/D` | Track/Lyrics/About/EQ/Devices views |
+| `Ctrl+Q` | Quit | `Ctrl+K` | Stream mode: Web Player / Raw broadcast |
+| `i` / `e` | Track info / 10-band EQ | `Shift+L` / `Shift+A` / `Shift+X` | Lyrics / About / Output device picker |
 
 ## Configuration
 

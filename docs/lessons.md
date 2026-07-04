@@ -586,10 +586,20 @@ not yet swapped - this deliberately isolates the codec question from the curses 
   documented exception `libebur128.dll`. No `libgcc_s` / `libstdc++` / `libwinpthread` / codec /
   curses DLLs. **Phase 0 gate = PASS**, single-DLL exception. Gated behind a
   `-DREMOCT_STATIC_PROBE=ON` CMake option so the default dynamic build is untouched.
-- **To kill the last DLL later:** libebur128 is a tiny single-file lib; vendoring + building it
-  static (same discipline as the vendored Openwall MD5) would give a zero-non-system-DLL exe.
-  Not required - the graduation gate explicitly allows one documented codec-DLL exception.
-- **Plugin caveat (probe still owed):** `remoct_stream` (MODULE `.dll`) links fdk-aac
-  independently; its codec linkage is a SEPARATE question from the exe's. A codec DLL living in
-  `plugins/` next to the plugin is an acceptable shape regardless, so this is not a blocker -
-  just a probe to add to Phase 0 before wiring the real Phase-3 build.
+### Decisions locked post-probe (the shipping package is a COHERENT set, not one file)
+- **fdk-aac stays DYNAMIC on purpose - it static-links clean, but we choose not to.** The exe
+  AND the `remoct_stream` plugin both use fdk-aac. Static-linking it into the exe while the
+  plugin links its own copy would put TWO independent fdk-aac states in one process (aliasing /
+  dual-decoder-state -> the classic "works 99%, glitches inexplicably 1%" trap). Keeping one
+  shared `libfdk-aac.dll` = one codec, one state, one copy in the address space. This DISSOLVES
+  the plugin-codec double-linkage question rather than probing it. **Do NOT convert fdk-aac to
+  static later - that reintroduces the exact dual-state bug this avoids.** Contrast: FLAC / LAME
+  / TagLib are exe-only, so they static-link with no such risk.
+- **ebur128 stays DYNAMIC by necessity** - no `.a` published in UCRT64 (ReplayGain / loudness).
+- **Shipping shape:** `re-moct.exe` (static: PDCurses, GCC runtime, FLAC+LAME+TagLib+ogg) +
+  `libfdk-aac.dll` (shared exe/plugin, by design) + `libebur128.dll` (holdout) + `plugins/`
+  (dynamic, unchanged). Every DLL has a stated reason.
+- **Graduation gate (corrected from "single DLL exception"):** the Phase-5 `ldd` / Dependencies
+  check passes IFF the ONLY non-system DLLs are EXACTLY `libfdk-aac.dll` and `libebur128.dll`.
+  Any third non-system DLL fails the gate. The CI dependents-check must assert that explicit
+  two-name allowlist so nothing new sneaks in later and gets waved through as "expected."

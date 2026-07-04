@@ -485,3 +485,46 @@
   `get_paused()` getter: the host opened the URL and set the pause flag, so
   `PluginSource` tracks both itself. Surveying the real consumer surface (10 call
   sites) is what revealed these two were host bookkeeping, keeping the contract minimal.
+- **Extracting a subsystem to a .so, survey the host's INBOUND calls too, not just the
+  subsystem's outbound refs (Phase 4 slice c).** The `core::http()` survey (the moving
+  files' OUTBOUND host refs) was exhaustive and correct — but it can't see a HOST module
+  that reaches INTO the moving code: `UIManager`'s Ctrl+A called `IHeartDeepLog::toggle()`/
+  `path()` directly, a host->plugin call invisible in the plugin's own diff. Caught by
+  grepping the host for `#include` of the moving headers (`grep -rn '#include
+  "IHeartDeepLog.h"' src/`), not by the outbound survey. Rule: when a file moves behind a
+  binary boundary, grep BOTH directions — what it calls out (rewire to injected services)
+  AND who calls in (must cross the ABI). The fix reused the ABI's `set_config` (host tracks
+  the toggle state, pushes `("deeplog","1")`), exactly the sibling Ctrl+K handler's shape —
+  no new mechanism. (The two-layer discipline earned its keep: the static survey missed it,
+  the include-grep/build caught it.)
+- **A moved plugin links the raw transport it PRIVATELY owns — that's not "HTTP in the
+  plugin" (slice c, the single most load-bearing call).** "The plugin must not carry its own
+  HTTP" is true only for the `core::IHttp` SEAM (`HttpWinInet`/`HttpCurl` stay host-side,
+  reached via the injected service table). StreamSource's sacred ICY read loop is PRIVATE
+  raw WinINet / raw `curl_easy_recv` — not `core::http()` — so it moves with the plugin
+  byte-verbatim and the `.so` links `-lwininet` / `CURL::libcurl` for it. Two HTTP consumers
+  in one plugin; only the seam one crosses the table. Reading "no HTTP in the plugin"
+  literally would have meant rewriting the sacred loop or a link failure.
+- **Plugin-side HTTP is the host shim inverted.** `PluginHostServices` fills a
+  `RemoctHostServices` table FROM `core::IHttp` (host side); the plugin needs the MIRROR —
+  `plugin::HostServiceHttp : core::IHttp` OVER the injected C table — so the moved code's
+  `->openSession(cfg)`/`fetch(req)` is unchanged and the cancel `const int32_t*` crosses
+  verbatim (unified in slice b). The rewire is then exactly the two `core::http()` call
+  sites; audit `grep core::http() plugins/stream/ = 0`, no default arg `= core::http()` (it
+  would leave the symbol in a plugin header and fail link + audit).
+- **Two miniaudio/Log implementations in one process are safe under `RTLD_LOCAL`.** The host
+  compiles `MINIAUDIO_IMPLEMENTATION` (device + decode); the plugin needs its own decode-only
+  copy (`MA_NO_DEVICE_IO` — it never opens a device, the host owns it). Separate binaries +
+  `dlopen(RTLD_LOCAL)` (Posix) / per-module symbol space (Windows) keep the plugin's symbols
+  private — no collision. Same reasoning as linking `Log.cpp` into both: `fopen(...,"a")`
+  per-write is atomic-append so the host and plugin instances interleave safely. **Accepted
+  residual:** the plugin's `Log` has its own `g_enabled`, so a host log-disable doesn't gate
+  the plugin's `[stream]` line (documented, not worth an ABI knob). Also: the Ctrl+A "Deep
+  log: ON" toast dropped the capture path (`IHeartDeepLog::path()` is now plugin-side, and it
+  was lazily-created/racy — empty right after enable — so nothing reliable was lost).
+- **Prove "loaded, not compiled-in" with a negative control.** The loaded-`.so`/`.dll` ABI
+  round-trip (`core::loadPlugin` → create → caps → set_config → destroy) shows it loads; but
+  the airtight proof that PLAYBACK runs through the module is to remove the `.so` and confirm
+  the sink goes silent (RMS 0.0) while the same drive sequence runs. The host binary carries
+  no StreamSource symbol (removed from its sources), so streaming is impossible without the
+  module — the negative control makes that visible.

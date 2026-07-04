@@ -156,14 +156,54 @@ carve the ABI first.
     (`PluginHostServices`) bridges the ABI to `core::IHttp` (host-owned response memory,
     verbatim cancel passthrough); the adapter (`StreamPluginAdapter`) + driver
     (`core::PluginSource`) replace AudioManager's by-value `stream_source_`. See Done.
-  - **slice (c) — extract the stream stack as a real `.so/.dll`:** move StreamSource +
-    IHeartRadio + SM + DeepLog + the adapter into `plugins/stream/`; flip acquisition to
-    `loadPlugin()`; rewire iHeart/HLS HTTP `core::http()` → the injected host services
-    (the shim's real in-plugin consumer); move FDK-AAC/miniaudio-MP3 deps into the plugin.
+  - **slice (c) — extract the stream stack as a real `.so/.dll`: ✅ DONE** (2026-07-04;
+    design `docs/phase4-slice-c-design.md` ratified pre-code; live-gated both platforms).
+    StreamSource + IHeartRadio + SM + DeepLog + the adapter moved to `plugins/stream/`
+    (`git mv`, blame preserved), built as `remoct_stream.{so,dll}` exporting
+    `remoct_plugin_query`; acquisition flipped to `core::loadPlugin()`; iHeart/HLS HTTP
+    rewired `core::http()` → the injected host services (the shim inverted plugin-side as
+    `HostServiceHttp`); FDK-AAC + own miniaudio impl (`MA_NO_DEVICE_IO`) + the sacred raw
+    ICY transport moved into the plugin. See Done section.
   - **slice (d) — the identical-to-compiled-in gate:** `hls_pipeline_test` THROUGH the
     plugin boundary (byte-identical PCM) + the live parity battery, both platforms.
 
 ## Done (restructure branch)
+- **Phase 4 slice (c) — extract the streaming source as the first real `.so/.dll`: DONE**
+  (2026-07-04; design `docs/phase4-slice-c-design.md` ratified pre-code). The streaming
+  stack (StreamSource + IHeartRadio + IHeartNowPlayingSM + IHeartDeepLog + StreamPluginAdapter)
+  moved via `git mv` (blame preserved) into `plugins/stream/`, built as a MODULE library
+  `remoct_stream.{so,dll}` (`PREFIX ""`) exporting the ONE ABI symbol `remoct_plugin_query`
+  (the in-process `remoct_stream_plugin_query()` kept so `plugin_stream_test` stays the
+  compiled-in byte-identity reference). **The acquisition flip:** `AudioManager` loads the
+  module beside the binary (`port::exeDir()/plugins/…`, the new PortUtil helper) via
+  `core::loadPlugin()`; a failed load leaves `PluginSource` `valid()==false` → streaming
+  disabled, host alive (the slice-a reject paths, now production; `beginStream` guards +
+  toasts). **The HTTP rewire (the crux):** the two `core::http()` call sites
+  (StreamSource HLS session + IHeartRadio) rewired to an injected `core::IHttp&`; plugin-side
+  `plugin::HostServiceHttp : core::IHttp` is the slice-b shim INVERTED — it forwards
+  `openSession`/`fetch` to the injected `RemoctHostServices` C table (cancel `const int32_t*`
+  verbatim), so the moved code is otherwise unchanged. Audit: `grep core::http()
+  plugins/stream/ = 0`; the StreamSource diff = exactly the 2 rewire lines + ctor threading
+  (sacred ring/`prebuffered_`/`ringClear`/re-pin/150 untouched), IHeartNowPlayingSM a
+  byte-pure move. **Nuance (lessons.md):** the plugin links `-lwininet`/`CURL::libcurl` for
+  StreamSource's PRIVATE raw ICY loop (moved verbatim) — that is NOT the `core::IHttp` seam
+  (which stays host-side, crossing via the table); two HTTP consumers, only the seam crosses.
+  Own miniaudio impl (`MA_NO_DEVICE_IO`, decode/convert only — host owns the device) + FDK-AAC
+  moved in; dual miniaudio/Log impls safe under `dlopen(RTLD_LOCAL)`/per-module symbol space.
+  **Row-8 (build/survey caught what the outbound `core::http()` survey missed):** the host's
+  Ctrl+A called `IHeartDeepLog::toggle()`/`path()` directly — a host→plugin call rewired to
+  `set_config("deeplog", …)` + host-tracked state, exactly the sibling Ctrl+K handler's shape
+  (readiness §3). `xfade_handoff_test` dropped the moved files (AudioManager no longer names a
+  streaming symbol — proof the cut is clean) and links the loader instead. **Gates, both
+  platforms:** Windows build clean + ctest 19/19; Linux build clean + ctest 20/20;
+  loaded-module ABI round-trip (`loadPlugin` → create → caps → set_config → destroy) identical
+  Win/Linux. **LIVE from the loaded module:** WSL RMS — ICY 2111.6 (99.9% nz, nowPlaying
+  "Chris Zippel – Around, Arrived" + [LIVE]) + iHeart digital 4412.7 (100% nz, nowPlaying
+  "SABRINA CARPENTER – Feather" + [LIVE]); **negative control** — remove the `.so` → sink
+  silent (RMS 0.0), proving playback runs through the module (host binary carries no
+  StreamSource symbol). Windows live confirmed by Dos (iHeart + ICY audible, nowPlaying,
+  scrobble, re-pin). **"Fix iHeart and ship without rebuilding the host" is now literally
+  true.** Next = slice (d): `hls_pipeline_test` through the boundary (byte-identical PCM).
 - **Phase 4 slice (b) — host drives the streaming source through the plugin C ABI +
   the HTTP service shim: DONE** (2026-07-04; design `docs/phase4-slice-b-design.md`
   ratified pre-code, §5a cancel decision = option A). StreamSource stays compiled INTO

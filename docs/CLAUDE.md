@@ -132,11 +132,18 @@ Cancel unified on `int32_t` (`HttpRequest::cancel` → `const int32_t*`, read vi
 `core::IHttp` (host-owned response memory, verbatim cancel); the adapter
 `StreamPluginAdapter` + driver `core::PluginSource` replace AudioManager's by-value
 `stream_source_` (audio-thread delta = one set-once indirect `readFrames` call; ring
-untouched). **NEXT = slice (c):** move the stream stack to `plugins/stream/` as a
-real `.so/.dll`, flip acquisition to `loadPlugin()`, rewire iHeart/HLS HTTP
-`core::http()` → the injected host services, move FDK-AAC/miniaudio-MP3 into the
-plugin. Then slice (d): identical-to-compiled-in gate. See `docs/roadmap.md` +
-`docs/phase4-readiness.md` + `docs/phase4-slice-b-design.md`.
+untouched). **Slice (c) DONE (2026-07-04, live-gated both platforms):** the streaming
+stack moved (`git mv`) to `plugins/stream/`, built as `remoct_stream.{so,dll}` exporting
+`remoct_plugin_query`; `AudioManager` acquires it via `core::loadPlugin(port::exeDir()/
+plugins/…)` (graceful on load failure); the two `core::http()` sites rewired to an injected
+`core::IHttp&` = plugin-side `HostServiceHttp` (the slice-b shim inverted over the
+`RemoctHostServices` table); the plugin links its own FDK-AAC + miniaudio (`MA_NO_DEVICE_IO`)
++ the sacred raw ICY transport (`-lwininet`/`libcurl` — NOT the seam). Gates: Win ctest
+19/19, Linux 20/20, loaded-module round-trip both platforms, WSL live RMS (ICY 2111 + iHeart
+4412, nowPlaying + [LIVE]) + negative control, Windows live confirmed by Dos. **"Fix iHeart
+and ship without rebuilding the host" is now literally true. NEXT = slice (d):**
+`hls_pipeline_test` THROUGH the boundary (byte-identical PCM) + the live parity battery. See
+`docs/roadmap.md` + `docs/phase4-slice-c-design.md`.
 
 ## Deep knowledge — read the matching file when a task touches it
 - Roadmap, phases, parked items, decisions → `docs/roadmap.md`

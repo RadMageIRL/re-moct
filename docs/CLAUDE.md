@@ -96,7 +96,8 @@ retries; discovery XDG→TMPDIR→/tmp + flatpak/snap; DiscordRP zero-diff, ^D
 common; discord_ipc_test portable + new both-platform ipc_echo_test; Windows
 16/16 / Linux 13/13; live socat echo probe + REAL Discord RP from the Linux
 TUI via npiperelay bridge — title/artist + iTunes art accepted, track change,
-lazy reconnect. 100% close = Dos's native Debian 13 + live Discord check).
+lazy reconnect. **100% CLOSED: Dos verified on native Debian 13 + real
+Discord install — end-to-end all good**).
 **Next: slice 5 (notify: libnotify — gate: real notification via dunst;
 headless = documented best-effort no-op). Then slice 6 (SG_IO CD — LAST).**
 See `docs/roadmap.md` for the plan + gates.

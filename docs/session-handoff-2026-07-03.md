@@ -1,4 +1,4 @@
-# Session handoff — 2026-07-03 (rev 8: slice 4 (Unix-socket IIpc) LANDED, all gates passed incl. LIVE Discord RP from Linux; next = Dos's Debian-13 close-out, then slice 5 (libnotify))
+# Session handoff — 2026-07-03 (rev 8: slice 4 (Unix-socket IIpc) LANDED & 100% CLOSED — Dos verified on native Debian 13 + real Discord; next = slice 5 (libnotify))
 
 ## Rev-8 delta: slice 4 — the Unix-domain-socket IIpc twin (Discord RP transport)
 - **Landed:** code `671d2b3` + this docs commit. Design
@@ -39,9 +39,9 @@
   flatpak/snap discovery candidates are fixture-proven only (ipc_echo_test
   S7); Windows live ^D spot-check treated as a formality (TU bit-identical,
   and the same Discord client displayed the Linux-driven RP all gate long).
-- **NEXT: Dos closes slice 4 at 100% on the native Debian 13 box with a
-  live Discord account** (native socket discovery + RP end-to-end, no
-  bridge), reports back. Then **slice 5 (notify: libnotify/notify-send** —
+- **100% CLOSED: Dos verified slice 4 on the native Debian 13 box with a
+  real Discord install — native socket discovery + RP end-to-end, no
+  bridge, all good.** NEXT = **slice 5 (notify: libnotify/notify-send** —
   gate: real notification via dunst; headless = documented best-effort
   no-op; REVISIT the slice-2 cmdline toast fallback: keep or drop). Then
   slice 6 (SG_IO CD — LAST).

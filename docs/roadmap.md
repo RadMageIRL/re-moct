@@ -117,14 +117,15 @@ carve the ABI first.
     both-platform `icy_pipeline_test` closes the slice-0 "ICY live-gate-only"
     limit. See Done section. **The platform boundary's raw-transport work is
     complete** — slices 4/5/6 are seam impls.
-  - **slice 4 — IPC: Unix-socket IIpc: ✅ DONE** (design doc
+  - **slice 4 — IPC: Unix-socket IIpc: ✅ DONE — 100% CLOSED** (design doc
     `docs/phase3-slice4-design.md` ratified pre-code): `IpcUnixSocket.cpp`
     (`platform::lnx::UnixSocketIpc`), the WinPipeIpc sibling. Gates PASSED —
     Windows 16/16 (UIManager preprocessed TU bit-identical), Linux 13/13,
     live socat echo probe, AND live Discord RP from Linux via the
     npiperelay bridge (real Discord accepted title/artist + iTunes art,
-    survived an on-air track change). See Done section. Final 100% close:
-    Dos verifies on a native Debian 13 desktop with live Discord.
+    survived an on-air track change). See Done section. **Final 100% close
+    CONFIRMED: Dos verified on a native Debian 13 desktop with a real Discord
+    install — end-to-end all good (native socket discovery, no bridge).**
   - **slice 5 — notify: libnotify.** Gate: real notification via dunst;
     headless = documented best-effort no-op (the contract).
   - **slice 6 — CD: SG_IO ICdIo — LAST.** Gate: Relish rip via usbipd/WSL2 on
@@ -179,9 +180,10 @@ carve the ABI first.
   bridge kill+restart the NEXT track (JoJo) drove the lazy reconnect: failed
   send → disconnect → fresh handshake + restored RP with art). Honest
   limits, documented: the bridge's socket is socat's (flatpak/snap
-  candidates stay fixture-proven); **final 100% close = Dos verifies on a
-  native Debian 13 desktop with a live Discord account.** Windows live ^D is
-  a formality (TU bit-identical; the same Discord displayed the Linux RP). (code `5c823f8`;
+  candidates stay fixture-proven); Windows live ^D is a formality (TU
+  bit-identical; the same Discord displayed the Linux RP). **100% CLOSE
+  CONFIRMED: Dos verified on a native Debian 13 desktop with a real Discord
+  install — end-to-end all good, native socket discovery (no bridge).** (code `5c823f8`;
   design `docs/phase3-slice3-design.md`, ratified before code). The LAST raw
   transport: StreamSource's continuous ICY path now has a Linux twin — curl
   `CONNECT_ONLY=1` (TCP+TLS) + hand-spoken HTTP/1.0 ICY request + hand-parsed

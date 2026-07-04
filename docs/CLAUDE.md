@@ -85,10 +85,14 @@ cancel, LOW_SPEED stall-guard timeout) + vendored MD5 both platforms
 tests portable; Windows 14/14, Linux 10/10; live gates = MB probe (real
 Relish TOC resolved), RadioBrowser in the TUI (KWIN 97.7), digital iHeart
 HLS PLAYED on Linux (audible, RMS-proven, nowPlaying live).**
-**Next: slice 3 (ICY raw-loop Linux twin — design-first, sacred territory;
-lean shape: curl CONNECT_ONLY + curl_easy_recv keeps the pull-read shape).**
-The live read loop stays raw WinINet permanently on Windows. See
-`docs/roadmap.md` for the six-slice plan + per-slice gates.
+**Slice 3 DONE: the ICY continuous Linux twin** (curl CONNECT_ONLY +
+curl_easy_recv, pull-read shape verbatim, ALPN off, offset-0 invariant;
+Windows preprocessed TU bit-identical; new both-platform icy_pipeline_test;
+live gates: Dance Wave audible on Linux RMS 6393, titles ×2+, prompt switch).
+**The raw-transport work is complete — the Windows live read loop stays raw
+WinINet permanently, byte-verbatim.**
+**Next: slice 4 (IPC: Unix-socket IIpc twin — gate: discord_ipc_test on Linux
++ live socat echo probe).** See `docs/roadmap.md` for the plan + gates.
 
 ## Deep knowledge — read the matching file when a task touches it
 - Roadmap, phases, parked items, decisions → `docs/roadmap.md`

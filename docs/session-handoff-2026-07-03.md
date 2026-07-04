@@ -1,4 +1,51 @@
-# Session handoff — 2026-07-03 (rev 6: slice 2 (HTTP/libcurl + MD5) LANDED, gates passed; next = slice 3 (ICY twin, design-first))
+# Session handoff — 2026-07-03 (rev 7: slice 3 (ICY Linux twin) LANDED, all gates passed; next = slice 4 (IPC Unix-socket))
+
+## Rev-7 delta: slice 3 — the ICY continuous twin; raw-transport work COMPLETE
+- **Landed & PUSHED:** code `5c823f8` + this docs commit. Design doc
+  `docs/phase3-slice3-design.md` ratified by Dos BEFORE code (survey with
+  file:line, transport argument, THE correctness argument, audit + gate plan).
+- **Shape:** curl `CONNECT_ONLY=1` (TCP+TLS) + hand-spoken HTTP/1.0 ICY
+  request + hand-parsed headers + `curl_easy_recv` in InternetReadFile's
+  refill slot — the pull-read shape verbatim; de-interleave/ring/producers
+  untouched. `hConn_` holds the CURL* (shared guards unmodified); redirects
+  via the portable hlsResolveUrl twin (cap 5); recv-first-then-poll (TLS
+  buffering), 100 ms stop_ slices, 8 s dry bound. **Windows byte-verbatim at
+  the strongest standard: preprocessed `_WIN32` TU bit-identical (g++ -E -P
+  diff EMPTY).**
+- **Probe findings (five wild shapes validated pre-code):** ALPN must be OFF
+  (`CURLOPT_SSL_ENABLE_ALPN=0` — cloudflare negotiates h2 and kills the
+  hand-written request); leftover header-overrun bytes are common (1078–1931
+  observed) — the offset-0 invariant is exercised by real stations.
+- **Baseline finding (baseline-first fixture run):** WinINet yields
+  `icy_metaint=0` on "ICY 200 OK" status lines — Windows plays SHOUTcast v1
+  but never parses titles; pinned per-platform in the test; the twin parses
+  ICY status itself (named accepted-better, like its 75 ms vs 7703 ms
+  measured blocked-read close).
+- **New `icy_pipeline_test` (15th Windows / 11th Linux target):** real
+  localhost ICY server through the real Continuous pipeline; run green on the
+  untouched Windows baseline FIRST. Closes the slice-0 "ICY is live-gate-only"
+  honest limit.
+- **Gates ALL PASSED:** Windows ctest 15/15, Linux 11/11. Live Linux TUI:
+  Dance Wave (https + cloudflare redirect followed live, MP3 continuous path)
+  audible off the Pulse sink monitor (RMS 6393, 99.97% non-zero), StreamTitle
+  across 2+ transitions in the [LIVE] display, station switch → new connect
+  ~1.4 s after keypress; SomaFM real song transition caught. Windows
+  non-event proven live (temp harness, scratchpad-only): same stations,
+  titles + RMS + close 15 ms/0 ms.
+- **Gotcha recorded:** ^U prompts for URL THEN station name (Enter skips) —
+  a tmux gate must script the full prompt flow (cost three diagnostic loops).
+- **Also this session:** Last.fm ^G usability pair landed & pushed
+  (`02d1aa7`, Dos-ordered): session-check-first (mirrors ^B) + dead-pending
+  recovery (getSession error codes: 14 keeps token + re-arms poll; other API
+  errors clear pending and restart auth in the same keypress; transport
+  failures keep it). Live-proven on Linux both ways (real session toast;
+  sandboxed fake-HOME garbage token → fresh auth).
+- **NEXT: slice 4 — IPC: Unix-socket IIpc twin** (`$XDG_RUNTIME_DIR/<name>`
+  per the IIpc.h contract). Gate: discord_ipc_test on Linux + live socat echo
+  probe; full Discord RP stays Windows-verified, documented. Then slice 5
+  (libnotify), slice 6 (SG_IO CD — LAST).
+
+(Rev-6 and earlier below — still current history.)
 
 ## Rev-6 delta: slice 2 — libcurl IHttp + vendored MD5, both platforms green
 - **Verified:** Windows ctest 14/14; Linux ctest 10/10 (was 4). Shape + full

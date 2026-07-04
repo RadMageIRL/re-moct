@@ -116,6 +116,38 @@
   not noise. End-of-slice ritual now: `grep -n "#ifdef _WIN32" | audit each
   span` over files the slice made portable.
 
+## Raw ICY transport (Phase 3 slice 3)
+- **Disable ALPN before speaking hand-written HTTP/1.x over a curl
+  CONNECT_ONLY connection** (`CURLOPT_SSL_ENABLE_ALPN=0`). With ALPN on,
+  curl's TLS handshake offers h2; a CDN edge (cloudflare) accepts it, and the
+  hand-written HTTP/1.x request is then protocol garbage — the server just
+  closes. Plain Icecast/SHOUTcast hosts don't negotiate h2, so the recipe
+  works everywhere EXCEPT behind a CDN — exactly the shape a quick test
+  misses. Found by the five-shape station probe before a line of product code
+  (probe-first paying again).
+- **WinINet never surfaces `icy-metaint` from an "ICY 200 OK" status line** —
+  on a true SHOUTcast v1 server the Windows baseline gets `icy_metaint=0`:
+  audio plays (the decoder's ADTS/MP3 resync swallows the interleaved
+  metadata bleed) but StreamTitle never parses. Found by running the new
+  fixture test against the UNTOUCHED baseline (the baseline-first pattern
+  doing its job — the fixture spoke honest ICY and Windows failed the title
+  asserts). The behavior is pinned per-platform in icy_pipeline_test;
+  Windows stays byte-verbatim, the Linux twin parses ICY status itself (a
+  named accepted-better delta, same class as its 75 ms vs 8 s stop latency).
+- **The offset-0 invariant is the whole correctness story of a hand-rolled
+  ICY client:** the de-interleave arithmetic is transport-blind, so alignment
+  reduces to "the first byte served is body offset 0" — any bytes read past
+  the header terminator MUST be preserved as the stream head (they arrive
+  with the headers on most stations: 1078–1931 leftover bytes observed live).
+  WinINet hid this by consuming exactly the headers.
+- **Script a TUI's FULL prompt flow before reading a gate as failed.** The
+  first live gate showed [LIVE] but a silent sink — three diagnostic loops
+  (env, pulse, backend theories) before spotting that ^U asks for URL *then a
+  station-name prompt*, and the script never sent the second Enter: the
+  stream had simply not started during the capture window. A tmux gate is
+  driving the app blind — capture the pane after EVERY keystroke batch when
+  building the script, not just at the end.
+
 ## WSL build/test discipline — one run, one read, the log is the only truth
 - Run every build/test FOREGROUND, redirected to a log, with an exit marker:
   `<cmd> > /root/out.log 2>&1; echo EXIT=$?`. Then read the log ONCE:

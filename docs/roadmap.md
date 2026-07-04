@@ -109,9 +109,14 @@ carve the ABI first.
   - **slice 2 — HTTP: libcurl IHttp: ✅ DONE** (sessions, cancel token,
     RedirectPolicy, read_error; vendored MD5 both platforms; http_cancel_test
     made portable — one file, both transports). See Done section.
-  - **slice 3 — ICY raw-loop Linux twin** (design-first, sacred territory; lean:
-    curl CONNECT_ONLY + curl_easy_recv keeps the pull-read shape). Gate: ICY
-    station plays on Linux; Windows loop byte-diff empty.
+  - **slice 3 — ICY raw-loop Linux twin: ✅ DONE** (commit `5c823f8`; design
+    doc `docs/phase3-slice3-design.md` ratified pre-code): curl CONNECT_ONLY +
+    curl_easy_recv, pull-read shape verbatim, offset-0 invariant. Gate PASSED:
+    live station audible on Linux (Pulse RMS 6393), StreamTitle across 2+
+    transitions, prompt switch; Windows preprocessed TU bit-identical. New
+    both-platform `icy_pipeline_test` closes the slice-0 "ICY live-gate-only"
+    limit. See Done section. **The platform boundary's raw-transport work is
+    complete** — slices 4/5/6 are seam impls.
   - **slice 4 — IPC: Unix-socket IIpc.** Gate: discord_ipc_test on Linux + live
     socat echo probe (full Discord RP stays Windows-verified, documented).
   - **slice 5 — notify: libnotify.** Gate: real notification via dunst;
@@ -124,6 +129,45 @@ carve the ABI first.
   of the whole plugin system. ("Fix iHeart and ship without rebuilding the host.")
 
 ## Done (restructure branch)
+- **Phase 3 slice 3 — ICY continuous-stream Linux twin: DONE** (code `5c823f8`;
+  design `docs/phase3-slice3-design.md`, ratified before code). The LAST raw
+  transport: StreamSource's continuous ICY path now has a Linux twin — curl
+  `CONNECT_ONLY=1` (TCP+TLS) + hand-spoken HTTP/1.0 ICY request + hand-parsed
+  response headers ("ICY 200 OK" tolerance is OURS — that's the feature) +
+  `curl_easy_recv` in `InternetReadFile`'s refill slot, preserving the
+  pull-read shape verbatim. **Windows byte-verbatim held at the strongest
+  standard: the preprocessed `_WIN32` translation unit is bit-identical to
+  baseline (`g++ -E -P` diff EMPTY);** every deleted diff line was inside the
+  two slice-1 Linux placeholder stubs. THE correctness crux (offset-0
+  invariant): bytes received past the header terminator prime `raw_buf_`, so
+  `readAudio()`'s transport-blind metaint arithmetic stays exact; `hConn_`
+  (the slice-1 void* twin) holds the CURL* so the shared `onRead`/`rawRead`
+  null-guards work unmodified; redirects by hand via the portable
+  hlsResolveUrl twin (cap 5); stop_ polled per 100 ms recv-wait slice with an
+  8 s dry bound mirroring RECEIVE_TIMEOUT (close on a blocked read measured
+  **7703 ms Windows / 75 ms Linux** — the named accepted-better delta).
+  **Probe-first paid twice:** (1) ALPN must be DISABLED
+  (`CURLOPT_SSL_ENABLE_ALPN=0`) — with it, cloudflare negotiates HTTP/2 and
+  the hand-written request dies; (2) baseline finding — **WinINet yields
+  `icy_metaint=0` on an "ICY 200 OK" status line** (true SHOUTcast v1):
+  Windows plays via ADTS/MP3 resync but never parses titles there — reality
+  pinned per-platform in the test; the twin parses ICY status (named better).
+  New **`icy_pipeline_test`** (both platforms): a REAL localhost ICY server
+  through the REAL Continuous pipeline — run green on the UNTOUCHED Windows
+  baseline FIRST (slice-B pattern); covers metaint alignment across two title
+  transitions, Icy-MetaData request, server-drop reconnect self-heal, bounded
+  close, no-metaint passthrough — closes the slice-0 honest limit ("ICY
+  cannot be replayed headlessly"). Verified: Windows ctest 15/15, Linux
+  11/11. **Live gates:** Linux TUI played Dance Wave (https + cloudflare
+  redirect followed live, MP3 continuous path) — Pulse sink-monitor RMS 6393
+  / 99.97% non-zero, StreamTitle across 2+ transitions in the [LIVE] display
+  (6 flips logged + a real song change on SomaFM), station switch → new
+  connect ~1.4 s after keypress, metaint 16384/45000 parsed live; Windows
+  non-event proven live (same two stations through the verbatim path via a
+  temp harness — titles, RMS, close 15 ms/0 ms). Five wild station shapes
+  probe-validated pre-code (http, https, ICY-status v1, no-metaint,
+  multi-hop redirect). Test-infra gotcha recorded: ^U takes URL THEN a
+  station-name prompt (Enter skips) — script the full prompt flow.
 - **Phase 3 slice 2 — HTTP: libcurl core::IHttp + vendored MD5, both platforms
   green: DONE.** Design doc: `docs/phase3-slice2-design.md` (approved before
   code). `src/platform/linux/HttpCurl.cpp` (`platform::lnx::CurlHttp`/

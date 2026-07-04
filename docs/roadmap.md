@@ -136,11 +136,94 @@ carve the ABI first.
     CdIoSgIo.cpp` (`platform::lnx::SgIoCdIo`) + pure CDBs in `CdbSgIo.h`. Gate
     PROVEN on the real GHD3N via usbipd→WSL2 (VMware is NOT a valid CD venue — it
     exposes a virtual `NECVMWar` drive → +0 offset → wrong bytes). See Done section.
-- **Phase 4 — plugin-ize.** Harden the Source interface into a loadable C-ABI
-  `.dll`/`.so` boundary, and **extract iHeart as the first real plugin** — the test
-  of the whole plugin system. ("Fix iHeart and ship without rebuilding the host.")
+- **Phase 4 — plugin-ize. IN PROGRESS.** Harden the Source interface into a loadable
+  C-ABI `.dll`/`.so` boundary, and **extract iHeart (the streaming source) as the first
+  real plugin** — the test of the whole plugin system. ("Fix iHeart and ship without
+  rebuilding the host.") Readiness + ABI design ratified: `docs/phase4-readiness.md`
+  (§2 = the frozen C boundary; Boundary A = the first plugin is the STREAMING SOURCE
+  entire — StreamSource + iHeart metadata + ICY — iHeart as its headline capability).
+  - **slice (a) — freeze the C ABI against a disposable plugin: ✅ DONE.** `include/core/
+    remoct_plugin.h` (the frozen v1 SDK: one export `remoct_plugin_query` → POD
+    `RemoctPlugin` op table + injected `RemoctHostServices`; C linkage, noexcept, nobody
+    frees across the line; major-gate + struct-size versioning). The plugin loader is the
+    5th platform seam (`core::IPluginLoader` + `PluginLoaderWin`/`PluginLoaderPosix`);
+    policy (`validatePlugin`/`loadPlugin`) stays consumer-side in `PluginHost`. Proven by
+    a pure-C sine test plugin + `plugin_loader_test` (load → version-gate reject paths →
+    full lifecycle), both platforms. See Done.
+  - **slice (b) — host drives a source through the ABI + the HTTP service shim: ✅ DONE.**
+    StreamSource still compiled IN — an in-process plugin via `remoct_stream_plugin_query()`
+    (acquisition flips to `loadPlugin()` in (c)). Cancel unified on `int32_t`; the shim
+    (`PluginHostServices`) bridges the ABI to `core::IHttp` (host-owned response memory,
+    verbatim cancel passthrough); the adapter (`StreamPluginAdapter`) + driver
+    (`core::PluginSource`) replace AudioManager's by-value `stream_source_`. See Done.
+  - **slice (c) — extract the stream stack as a real `.so/.dll`:** move StreamSource +
+    IHeartRadio + SM + DeepLog + the adapter into `plugins/stream/`; flip acquisition to
+    `loadPlugin()`; rewire iHeart/HLS HTTP `core::http()` → the injected host services
+    (the shim's real in-plugin consumer); move FDK-AAC/miniaudio-MP3 deps into the plugin.
+  - **slice (d) — the identical-to-compiled-in gate:** `hls_pipeline_test` THROUGH the
+    plugin boundary (byte-identical PCM) + the live parity battery, both platforms.
 
 ## Done (restructure branch)
+- **Phase 4 slice (b) — host drives the streaming source through the plugin C ABI +
+  the HTTP service shim: DONE** (2026-07-04; design `docs/phase4-slice-b-design.md`
+  ratified pre-code, §5a cancel decision = option A). StreamSource stays compiled INTO
+  the host — an in-process plugin reached by a direct `remoct_stream_plugin_query()` call
+  (the ONLY (b)→(c) difference: (c) flips that to the `.so`'s export via `loadPlugin()`;
+  the driving code is byte-identical across the flip). Three parts: **(1) cancel unified
+  on `int32_t`** — `core::HttpRequest::cancel` `std::atomic<bool>*` → `const int32_t*`
+  (the ABI cancel type); a shared `core::httpCancelRequested()` reads it via
+  `std::atomic_ref<int32_t>` acquire-load; both transports call it. `StreamSource::stop_`
+  stays `std::atomic<bool>` (icyHop + its 22 sites untouched); a NEW plain `int32_t
+  http_cancel_` is written ONLY through a `setStop()` helper at `stop_`'s two write sites
+  (can't drift) and passed as `&http_cancel_` — zero reinterpret, conforming atomic_ref on
+  both sides (the literal "retype stop_ to atomic<int32_t>" was rejected: reading a
+  `std::atomic` via `atomic_ref` is non-conforming per [atomics.ref.generic] — see
+  lessons.md). Gate: cancel abort Win 393 ms / Linux 302 ms (the slice-4 ≤one-receive-
+  timeout property survived bool→int32). **(2) the HTTP service shim** `PluginHostServices`
+  (`core::HostServices(IHttp&)` fills a `RemoctHostServices` table): sessions wrap
+  `IHttpSession`; `http_fetch` translates `RemoctHttpReq`↔`HttpRequest` and passes the
+  `int32_t*` cancel through verbatim (zero bridging); response body/final_url are
+  malloc'd host-side and freed by `http_response_free` — nobody frees across the boundary;
+  every entry noexcept. **(3) adapter + driver + rewire:** `StreamPluginAdapter`
+  (`remoct_stream_plugin_query()` → a `RemoctPlugin` table 1:1 over an in-tree
+  StreamSource; callbacks are internal-linkage C++ statics assigned to C fn-ptrs, the same
+  pattern as miniaudio's `maDataCallback`); `core::PluginSource` (the host driver, same
+  method names StreamSource had — `url()`/`paused()` HOST-TRACKED, confirming they are not
+  ABI surface; metadata via snprintf-grow). AudioManager's `StreamSource stream_source_`
+  became `core::HostServices host_services_{}` + `core::PluginSource stream_plugin_{...}`
+  (in-class init so `= default` ctor holds). **Audio-thread delta = exactly one set-once
+  indirect call:** `readFrames` now goes through pointers set ONCE at construction (same
+  lifetime as the by-value member), under the unchanged `stream_mode_` guard, teardown
+  quiesces the device before close/destroy — ring/producer/`prebuffered_` byte-unchanged.
+  New tests (both platforms): `plugin_http_shim_test` (FakeHttp: translation + cancel
+  passthrough + ownership), `plugin_stream_test` (real StreamSource driven via the raw C
+  table AND `PluginSource`; a dead-port open fails fast → headless). **Verified: Windows
+  full build clean + ctest 16→19/19 (`plugin_stream_test` 20/20; xfade + hls/icy green);
+  Linux `plugin_*` tests + `AudioManager.cpp` clean.** LIVE gate BOTH PLATFORMS: Linux
+  pre-check (WSL2 pty) — SomaFM ICY audible through `PluginSource`, RDPSink.monitor RMS
+  4488.9 / 100% non-zero, nowPlaying + [LIVE] across the ABI (iHeart HLS was DNS-dead in
+  WSL — env quirk, not the driver); Windows — Dos confirmed digital iHeart + ICY play.
+- **Phase 4 slice (a) — freeze the plugin C ABI against a disposable plugin: DONE**
+  (2026-07-04). `include/core/remoct_plugin.h` — the FROZEN v1 SDK C header (compiles as
+  C, proven by the pure-C sine plugin): `REMOCT_ABI_VERSION 1`, one export
+  `remoct_plugin_query()` → a POD `RemoctPlugin` op table + an injected `RemoctHostServices`
+  (incl. the full HTTP-service PODs, frozen now though the sine plugin ignores them).
+  Fundamentals pinned: C linkage only, noexcept everywhere, nobody frees across the line,
+  major-version gate + struct-size additive growth. **The plugin loader is the 5th platform
+  seam** (LoadLibrary/dlopen are platform calls): `include/core/IPluginLoader.h` +
+  `src/platform/win/PluginLoaderWin.cpp` (LoadLibraryExW) + `src/platform/linux/
+  PluginLoaderPosix.cpp` (dlopen RTLD_NOW|RTLD_LOCAL) — `void*`→fn-ptr via memcpy
+  (warning-free under -Wpedantic). Policy stays consumer-side (the seam split): `include/
+  PluginHost.h` + `src/PluginHost.cpp` — pure `validatePlugin()` (null/AbiMismatch/TooSmall/
+  MissingRequiredFn) + `LoadedPlugin` RAII (module unloads AFTER the borrowed descriptor)
+  + `loadPlugin()`. Disposable `tests/plugin_sine.c` (pure C, dependency-free deterministic
+  ramp, built as a shared MODULE lib) + `tests/plugin_loader_test.cpp` (loads the real
+  `.dll/.so` via the seam, drives the full lifecycle through the C table, unit-tests the
+  version-gate reject paths). The loader is NOT in the remoct target yet — the host
+  consumer arrives in slice (b); it's built by the test + the `remoct_linux_seams`
+  platform-clean OBJECT check. Verified: Windows full build + ctest 16/16→17/17
+  (`plugin_loader_test`, 24 checks); Linux standalone (gcc sine `.so` + g++ loader test,
+  `-Wall -Wextra -Wpedantic` clean) PASSED.
 - **Phase 3 slice 6 — CD: SG_IO core::ICdIo twin: DONE — PHASE 3 COMPLETE**
   (2026-07-04; code `59792f9` [CDB builder + impl + portable tests] + `65887bd`
   [CD-UI un-gate], docs `687a412`/`5e53b73`, design `docs/phase3-slice6-design.md`

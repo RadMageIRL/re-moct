@@ -116,8 +116,27 @@ real GHD3N via usbipd→WSL2** (the ONLY valid CD venue — VMware exposes a vir
 drive with the wrong offset): `model()`→+6, TOC LBAs identical, `readRaw`
 byte-identical to `sg_raw` READ CD and to the Windows baseline raw samples → AR CRC
 byte-identical by construction. **Every platform call is now behind a seam on both
-platforms.** Next: Phase 4 (plugin-ize — harden the Source interface into a
-loadable C-ABI, extract iHeart as the first plugin). See `docs/roadmap.md`.
+platforms — PHASE 3 COMPLETE.**
+**PHASE 4 (plugin-ize) IN PROGRESS** — ABI ratified in `docs/phase4-readiness.md`
+(§2 = the frozen C boundary; Boundary A = the first plugin is the STREAMING SOURCE
+entire, iHeart its headline). **Slice (a) DONE:** `include/core/remoct_plugin.h` =
+the frozen v1 SDK (one export `remoct_plugin_query` → POD `RemoctPlugin` table +
+injected `RemoctHostServices`; C linkage, noexcept, nobody frees across the line,
+major-gate + struct-size versioning); the plugin loader = the 5th platform seam
+(`IPluginLoader` + Win/Posix), policy in `PluginHost`; proven by a pure-C sine
+plugin + `plugin_loader_test`. **Slice (b) DONE (live-gated both platforms):** the
+host DRIVES the streaming source through the C ABI — StreamSource still compiled IN
+(in-process plugin via `remoct_stream_plugin_query()`; (c) flips to `loadPlugin()`).
+Cancel unified on `int32_t` (`HttpRequest::cancel` → `const int32_t*`, read via
+`std::atomic_ref`); the HTTP shim `PluginHostServices` bridges the ABI to
+`core::IHttp` (host-owned response memory, verbatim cancel); the adapter
+`StreamPluginAdapter` + driver `core::PluginSource` replace AudioManager's by-value
+`stream_source_` (audio-thread delta = one set-once indirect `readFrames` call; ring
+untouched). **NEXT = slice (c):** move the stream stack to `plugins/stream/` as a
+real `.so/.dll`, flip acquisition to `loadPlugin()`, rewire iHeart/HLS HTTP
+`core::http()` → the injected host services, move FDK-AAC/miniaudio-MP3 into the
+plugin. Then slice (d): identical-to-compiled-in gate. See `docs/roadmap.md` +
+`docs/phase4-readiness.md` + `docs/phase4-slice-b-design.md`.
 
 ## Deep knowledge — read the matching file when a task touches it
 - Roadmap, phases, parked items, decisions → `docs/roadmap.md`

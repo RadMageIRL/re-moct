@@ -436,3 +436,52 @@
   change) or hidden the baseline's loop inside the impl (unauditable parity). The
   3-primitive channel (send/waitReadable/recvSome) keeps the consumer's loops verbatim —
   the read-loop twin of "diff the read loops, not just the flags."
+
+## Plugin C-ABI (Phase 4)
+- **Loading a shared library (`LoadLibrary`/`dlopen`) is a platform call — it's a
+  SEAM, not an `#ifdef`.** The plugin loader became the 5th platform seam
+  (`core::IPluginLoader` + Win/Posix impls), exactly like http/ipc/notify/cd_io:
+  the raw OS load lives in `src/platform/*`, and ALL policy (resolve the entry, the
+  ABI version gate, descriptor validation) stays consumer-side in `PluginHost` — the
+  same transport/protocol split every seam holds. If `core/` compiles on Linux,
+  nothing leaked.
+- **`void*` ↔ function pointer: convert with `memcpy`, never a cast.** `dlsym`/
+  `GetProcAddress` hand back an object pointer; casting it to a function-pointer type
+  is conditionally-supported and trips `-Wpedantic` (which the project builds with).
+  `std::memcpy(&fn, &sym, sizeof fn)` is the warning-free, standard-blessed bridge —
+  the same discipline as refusing UB-that-happens-to-work elsewhere.
+- **Prove the ABI against a DISPOSABLE consumer before moving real code.** Slice (a)
+  froze the whole v1 C header + loader against a throwaway pure-C sine plugin; slice
+  (c) then moves StreamSource against a FROZEN contract instead of debugging a
+  code-move and an evolving ABI at once. The pure-C plugin also PROVES the header is
+  genuinely C-consumable (no C++ leaked across the line). The reject-path tests
+  (null / wrong-ABI / too-small / missing-fn) are the important half — proving the
+  version gate REFUSES bad plugins is what makes the versioning contract real.
+- **`std::atomic_ref<T>` and `std::atomic<T>` must not both touch the same object.**
+  Directing "make `stop_` a `std::atomic<int32_t>` and have the transport read it via
+  `std::atomic_ref<int32_t>`" is UB: [atomics.ref.generic] requires an object be
+  accessed EXCLUSIVELY through `atomic_ref` while any `atomic_ref` references it, so
+  mixing `std::atomic` member ops (the writer) with `atomic_ref` (the reader) on the
+  same bytes is non-conforming (it happens to work on GCC — which is exactly the trap).
+  The conforming realization of "unify the HTTP cancel token on the ABI's `int32_t`":
+  leave `stop_` a `std::atomic<bool>` (zero churn on its 22 sites), add a PLAIN
+  `int32_t http_cancel_` accessed via `atomic_ref` on BOTH sides, written only through
+  a `setStop()` helper at `stop_`'s two write sites so it can never drift. Same
+  int32-end-to-end result, standard-correct, minimal. "UB-that-happens-to-work isn't
+  what we build on" — the twin of the `memcpy` fn-ptr rule above.
+- **Assigning a C++ static to a C ABI function pointer is fine — the codebase already
+  does it.** The RemoctPlugin table's members are C-linkage function pointers; the
+  StreamSource adapter's callbacks are internal-linkage C++ statics. Assigning them is
+  the SAME pattern as `ma_device_config.dataCallback = &AudioManager::maDataCallback`
+  (miniaudio's C callback). No `extern "C"` wrapper needed (and `extern "C"` inside an
+  anonymous namespace is a linkage contradiction to avoid).
+- **An in-process plugin makes the (b)→(c) boundary a single line.** Slice (b) drives
+  the streaming source through the C ABI while it is still compiled IN, reached by a
+  direct `remoct_stream_plugin_query()` call. Slice (c) flips ONLY that acquisition to
+  the `.so`'s exported `remoct_plugin_query` via `loadPlugin()` — the host-driving code
+  (`PluginSource`) is byte-identical across the flip. Host-plumbing (b) and the binary
+  extraction (c) never debug at the same time.
+- **What's host state doesn't belong in the ABI.** The plugin table has no `url()` or
+  `get_paused()` getter: the host opened the URL and set the pause flag, so
+  `PluginSource` tracks both itself. Surveying the real consumer surface (10 call
+  sites) is what revealed these two were host bookkeeping, keeping the contract minimal.

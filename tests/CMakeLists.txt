@@ -19,6 +19,18 @@ if(WIN32)
 else()
     set(IPC_IMPL ${CMAKE_SOURCE_DIR}/src/platform/linux/IpcUnixSocket.cpp)
 endif()
+
+# Per-platform CD-I/O transport (slice 6) — cd_toc_test / cd_pipeline_test inject a
+# FakeCdIo and link the real impl ONLY to satisfy core::cdio() (never invoked), so
+# the same test files run on Windows (WinCdIo IOCTL) AND Linux (SgIoCdIo SG_IO).
+# CDIO_LIBS carries the threading dep CDSource.cpp needs when linked on Linux.
+if(WIN32)
+    set(CDIO_IMPL ${CMAKE_SOURCE_DIR}/src/platform/win/CdIoWin.cpp)
+    set(CDIO_LIBS "")
+else()
+    set(CDIO_IMPL ${CMAKE_SOURCE_DIR}/src/platform/linux/CdIoSgIo.cpp)
+    set(CDIO_LIBS pthread)
+endif()
 add_executable(iheart_sm_test
     iheart_sm_test.cpp
     ${CMAKE_SOURCE_DIR}/src/IHeartNowPlayingSM.cpp
@@ -50,6 +62,18 @@ if(UNIX)
     target_include_directories(notify_argv_test PRIVATE
         ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src/platform/linux)
     add_test(NAME notify_argv_test COMMAND notify_argv_test)
+endif()
+
+# SG_IO CD-seam CDB builders (slice 6) — Linux-only, as the CD-IO transport is.
+# Asserts the EXACT SCSI CDB bytes (CdbSgIo.h) headless: READ CD 0xBE byte-9
+# 0x10/0x12 (the C2 request the non-C2 gate drive can't run live), LBA/transfer
+# big-endian, READ TOC 0x43 MSF/format, SET CD SPEED 0xBB, INQUIRY, TUR. The
+# CDBs live under src/platform/linux/ (transport knowledge), like NotifyArgv.h.
+if(UNIX)
+    add_executable(cdb_sgio_test cdb_sgio_test.cpp)
+    target_include_directories(cdb_sgio_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src/platform/linux)
+    add_test(NAME cdb_sgio_test COMMAND cdb_sgio_test)
 endif()
 
 # core::IHttp seam — pure FakeHttp-backed parse test (no WinINet, Linux-CI safe).
@@ -220,43 +244,41 @@ add_test(NAME ipc_echo_test COMMAND ipc_echo_test)
 # hang (a blocked ConnectNamedPipe/accept), not slowness. Fail fast in CI.
 set_tests_properties(ipc_echo_test PROPERTIES TIMEOUT 60)
 
+# slice 8 CD-I/O seam test — made portable at slice 6 (CDIO_IMPL). FakeCdIo via
+# ctor injection through the REAL CDSource; the impl TU is linked only to satisfy
+# core::cdio() (never invoked). Asserts the TOC parse against canned discs:
+# Relish-shaped non-standard pregap (T1 @ LBA 182), Enhanced-CD data track +
+# second-session leadout, malformed-TOC guards, drive-model → AR offset lookup,
+# media checks. The rip path's readRaw shape is proven by the Joan Osborne gate
+# (CDRipper's TU is too heavy to link). Runs on Windows AND Linux now.
+add_executable(cd_toc_test
+    cd_toc_test.cpp
+    ${CMAKE_SOURCE_DIR}/src/CDSource.cpp
+    ${CDIO_IMPL}
+)
+target_include_directories(cd_toc_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/lib)
+target_link_libraries(cd_toc_test PRIVATE ${CDIO_LIBS})
+add_test(NAME cd_toc_test COMMAND cd_toc_test)
+
+# ── Slice 0 (Phase 2 prep) — the thin replay net ──────────────────────────────
+# cd_pipeline_test: FakeCdIo through the REAL CDSource playback pipeline —
+# playTrack -> readerWorker -> SPSC ring -> readFrames. Byte-exact PCM fidelity
+# across the thread boundary, seek flush, pause continuity, backpressure,
+# silence-fill on transient errors, media-removal hard stop, teardown states.
+# Portable at slice 6 (timing via PortUtil: port::tickMs/port::sleepMs).
+add_executable(cd_pipeline_test
+    cd_pipeline_test.cpp
+    ${CMAKE_SOURCE_DIR}/src/CDSource.cpp
+    ${CDIO_IMPL}
+)
+target_include_directories(cd_pipeline_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/lib)
+target_link_libraries(cd_pipeline_test PRIVATE ${CDIO_LIBS})
+add_test(NAME cd_pipeline_test COMMAND cd_pipeline_test)
+set_tests_properties(cd_pipeline_test PROPERTIES TIMEOUT 120)
+
 if(WIN32)
-    # slice 8 — Windows-only CD-I/O seam test. Links the REAL CDSource consumer
-    # + the IOCTL impl TU (linked only to satisfy core::cdio(); never invoked —
-    # the test injects a FakeCdIo via constructor injection) and asserts the TOC
-    # parse against canned discs: Relish-shaped non-standard pregap (T1 @ LBA 182),
-    # Enhanced-CD data track + second-session leadout, malformed-TOC guards,
-    # drive-model → AR offset lookup, media checks. The rip path's readRaw shape
-    # is proven by the Joan Osborne gate (CDRipper's TU is too heavy to link).
-    add_executable(cd_toc_test
-        cd_toc_test.cpp
-        ${CMAKE_SOURCE_DIR}/src/CDSource.cpp
-        ${CMAKE_SOURCE_DIR}/src/platform/win/CdIoWin.cpp
-    )
-    target_include_directories(cd_toc_test PRIVATE
-        ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/lib)
-    add_test(NAME cd_toc_test COMMAND cd_toc_test)
-
-    # ── Slice 0 (Phase 2 prep) — the thin replay net ──────────────────────────
-    # Three tests that exercise the producer/consumer audio machinery the Source-
-    # interface refactor restructures, headlessly, through the seams Phase 1 built.
-    # A diff audit protects code that moves unopened; these protect the semantics
-    # at the seams the refactor deliberately changes.
-
-    # cd_pipeline_test: FakeCdIo through the REAL CDSource playback pipeline —
-    # playTrack -> readerWorker -> SPSC ring -> readFrames. Byte-exact PCM fidelity
-    # across the thread boundary, seek flush, pause continuity, backpressure,
-    # silence-fill on transient errors, media-removal hard stop, teardown states.
-    add_executable(cd_pipeline_test
-        cd_pipeline_test.cpp
-        ${CMAKE_SOURCE_DIR}/src/CDSource.cpp
-        ${CMAKE_SOURCE_DIR}/src/platform/win/CdIoWin.cpp
-    )
-    target_include_directories(cd_pipeline_test PRIVATE
-        ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/lib)
-    add_test(NAME cd_pipeline_test COMMAND cd_pipeline_test)
-    set_tests_properties(cd_pipeline_test PROPERTIES TIMEOUT 120)
-
     # xfade_handoff_test: the REAL AudioManager on generated WAVs through a real
     # (muted) device — the swap-adjacent file path Slice B restructures: gapless
     # EOF swap + track_swap_flag_ install, crossfade trigger/mix/completion,

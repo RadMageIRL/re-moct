@@ -25,12 +25,12 @@
 // 44.1kHz audio callback — real-time cadence and device interplay stay covered by
 // the live gates on 7of9. What this proves headlessly is the producer/consumer
 // SEMANTICS: ordering, flush, throttle, silence-fill, teardown.
-#ifdef _WIN32
+// Portable (slice 6): timing via PortUtil (port::tickMs/port::sleepMs — Windows
+// expansions ::GetTickCount/::Sleep verbatim, so behavior is unchanged). Runs on
+// Windows (WinCdIo) AND Linux (SgIoCdIo); the real impl is linked only for cdio().
 #include "CDSource.h"
 #include "core/ICdIo.h"
-
-#define WIN32_LEAN_AND_MEAN
-#include <windows.h>
+#include "PortUtil.h"
 
 #include <atomic>
 #include <cmath>
@@ -140,9 +140,9 @@ static void readChunk(core::ISource& src, std::vector<int16_t>& out) {
 static void drainAll(CDSource& cd, std::vector<int16_t>& out, int max_ms = 20000) {
     const uint64_t RING_SAMPLES =
         (uint64_t)CDSource::SECTOR_SAMPLES * CDSource::RING_SECTORS * 2;
-    DWORD t0 = GetTickCount();
+    uint32_t t0 = port::tickMs();
     uint64_t zero_run = 0;
-    while ((long)(GetTickCount() - t0) < max_ms) {
+    while ((long)(port::tickMs() - t0) < max_ms) {
         size_t before = out.size();
         readChunk(cd, out);
         bool all_zero = true;
@@ -152,7 +152,7 @@ static void drainAll(CDSource& cd, std::vector<int16_t>& out, int max_ms = 20000
         if (all_zero && !cd.isPlaying() && zero_run > RING_SAMPLES + 4096) return;
         // Pace only while the reader is live (never outrun the producer); once it
         // has stopped the ring is a static buffer and can be drained flat out.
-        if (cd.isPlaying()) Sleep(1);
+        if (cd.isPlaying()) port::sleepMs(1);
     }
     CHECK(!"drainAll timed out");
 }
@@ -217,10 +217,10 @@ static void feed(Cursor& c, const std::vector<int16_t>& chunk, const char* label
 }
 
 static bool waitFor(int timeout_ms, bool (*pred)(CDSource&), CDSource& cd) {
-    DWORD t0 = GetTickCount();
-    while ((long)(GetTickCount() - t0) < timeout_ms) {
+    uint32_t t0 = port::tickMs();
+    while ((long)(port::tickMs() - t0) < timeout_ms) {
         if (pred(cd)) return true;
-        Sleep(5);
+        port::sleepMs(5);
     }
     return false;
 }
@@ -252,7 +252,7 @@ int main() {
         CHECK(cd.playTrack(1));
         CHECK(cd.isPlaying());
         CHECK(s.durationSec() == 2.0);                    // 150 sectors / 75 via the interface
-        Sleep(100);                                       // let the reader prefill the ring
+        port::sleepMs(100);                                       // let the reader prefill the ring
         std::vector<int16_t> v;
         drainAll(cd, v);
         matchStream(v, {{false, (uint64_t)T1 * SLOTS_PER_SECTOR, (uint64_t)LEN * SLOTS_PER_SECTOR}},
@@ -267,7 +267,7 @@ int main() {
     // ── 2. Seek: flush + restart at target LBA (75 sectors/sec) ──────────────
     {
         CHECK(cd.playTrack(1));
-        Sleep(100);
+        port::sleepMs(100);
         std::vector<int16_t> pre;
         readChunk(cd, pre);                               // consume a little, discard
         CHECK(s.seekTo(1.0));                             // via the interface -> LBA 182 + 75 = 257
@@ -281,11 +281,11 @@ int main() {
     // ── 3+4. Pause continuity, then consumer-stall backpressure ──────────────
     {
         CHECK(cd.playTrack(2));
-        Sleep(100);
+        port::sleepMs(100);
         Cursor cur{ (uint64_t)T2 * SLOTS_PER_SECTOR };
         std::vector<int16_t> chunk;
         for (int i = 0; i < 20; ++i) {                    // steady consumption
-            chunk.clear(); readChunk(cd, chunk); feed(cur, chunk, "pause-pre"); Sleep(1);
+            chunk.clear(); readChunk(cd, chunk); feed(cur, chunk, "pause-pre"); port::sleepMs(1);
         }
         CHECK(cur.started);
 
@@ -298,9 +298,9 @@ int main() {
         chunk.clear(); readChunk(cd, chunk);
         feed(cur, chunk, "pause-resume");                 // exact continuation
 
-        Sleep(300);                                       // consumer stall: producer must throttle,
+        port::sleepMs(300);                                       // consumer stall: producer must throttle,
         for (int i = 0; i < 20; ++i) {                    // NOT overwrite unread ring data
-            chunk.clear(); readChunk(cd, chunk); feed(cur, chunk, "stall-resume"); Sleep(1);
+            chunk.clear(); readChunk(cd, chunk); feed(cur, chunk, "stall-resume"); port::sleepMs(1);
         }
         cd.stop();
         CHECK(!cd.isPlaying());
@@ -314,7 +314,7 @@ int main() {
         io.st->fail_at_lba.store(282);
         io.st->fail_budget.store(1);
         CHECK(cd.playTrack(1));
-        Sleep(100);
+        port::sleepMs(100);
         std::vector<int16_t> v;
         drainAll(cd, v);
         matchStream(v, {
@@ -352,7 +352,7 @@ int main() {
     // ── 7. playTrack while playing: join, flush, new track's data ─────────────
     {
         CHECK(cd.playTrack(1));
-        Sleep(100);
+        port::sleepMs(100);
         std::vector<int16_t> pre;
         readChunk(cd, pre);                               // consume a little of T1
         CHECK(cd.playTrack(2));                           // switch mid-play
@@ -365,7 +365,7 @@ int main() {
     // ── 8. stopReader leaves the device open (the CDRipper handoff contract) ──
     {
         CHECK(cd.playTrack(1));
-        Sleep(50);
+        port::sleepMs(50);
         cd.stopReader();
         CHECK(cd.isOpen());                               // device still open for ripping
         CHECK(!cd.isPlaying());
@@ -378,6 +378,3 @@ int main() {
     std::printf("cd_pipeline_test: %d FAILURE(S)\n", g_fail);
     return 1;
 }
-#else
-int main() { return 0; }
-#endif

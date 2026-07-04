@@ -58,14 +58,15 @@ endif()
 
 # Phase 3: Linux platform sources. Slice 0 landed SeamStubs.cpp (inert seam
 # placeholders + the core:: link-time bridges); slice 1 builds the full remoct
-# target on UNIX against them. Each seam slice (2/4/5/6) replaces its stub with
-# a real impl file appended here.
+# target on UNIX against them. Each seam slice (2/4/5/6) replaced its stub with a
+# real impl file — slice 6 (CdIoSgIo.cpp) is the last, so SeamStubs.cpp is gone
+# and every seam now has its real Linux transport.
 if(UNIX)
     list(APPEND REMOCT_SOURCES
-        ${CMAKE_SOURCE_DIR}/src/platform/linux/SeamStubs.cpp
         ${CMAKE_SOURCE_DIR}/src/platform/linux/HttpCurl.cpp
         ${CMAKE_SOURCE_DIR}/src/platform/linux/IpcUnixSocket.cpp
         ${CMAKE_SOURCE_DIR}/src/platform/linux/NotifyNotifySend.cpp
+        ${CMAKE_SOURCE_DIR}/src/platform/linux/CdIoSgIo.cpp
     )
     # Module-mode search only: under WSL2 the appended Windows PATH would let
     # config-mode find MSYS2's CURLConfig.cmake at /mnt/c (CMake treats PATH
@@ -77,9 +78,9 @@ if(UNIX)
     # proves src/platform/linux/ + the core interface headers stay
     # platform-clean even if the main target is mid-port).
     add_library(remoct_linux_seams OBJECT
-        ${CMAKE_SOURCE_DIR}/src/platform/linux/SeamStubs.cpp
         ${CMAKE_SOURCE_DIR}/src/platform/linux/IpcUnixSocket.cpp
         ${CMAKE_SOURCE_DIR}/src/platform/linux/NotifyNotifySend.cpp
+        ${CMAKE_SOURCE_DIR}/src/platform/linux/CdIoSgIo.cpp
     )
     target_include_directories(remoct_linux_seams PRIVATE ${CMAKE_SOURCE_DIR}/include)
     if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")

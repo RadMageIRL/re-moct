@@ -6,10 +6,12 @@
 // non-standard pregap, Enhanced-CD data track + session-2 leadout, malformed-TOC
 // clamps, drive-model → AccurateRip offset lookup, media checks.
 //
-// HONEST LIMIT: a fake cannot prove the Windows impl builds RAW_READ_INFO right
-// or that a real drive returns the right bytes — that proof is the Joan Osborne
+// HONEST LIMIT: a fake cannot prove the platform impl builds the request right or
+// that a real drive returns the right bytes — that proof is the Joan Osborne
 // Relish gate (12/12 AR v2 conf 200, byte-identical CRCs).
-#ifdef _WIN32
+//
+// Portable (slice 6): pure FakeCdIo + CDSource; the real impl (CDIO_IMPL) is
+// linked only for core::cdio(). Runs on Windows (WinCdIo) AND Linux (SgIoCdIo).
 #include "CDSource.h"
 #include "core/ICdIo.h"
 
@@ -230,6 +232,3 @@ int main() {
     std::printf("cd_toc_test: %d FAILURE(S)\n", g_fail);
     return 1;
 }
-#else
-int main() { return 0; }
-#endif

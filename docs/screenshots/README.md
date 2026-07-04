@@ -13,5 +13,6 @@ Drop the release screenshots here (referenced by the root `README.md` and
 <br><br>
 <img width="1263" height="532" alt="image" src="https://github.com/user-attachments/assets/724a8853-0ea2-4fe2-acad-45b3a7589999" />
 <br><br>
-<img width="1287" height="665" alt="image" src="https://github.com/user-attachments/assets/709130b5-e766-4679-a2fb-261f271adfc2" />
+<img width="1285" height="632" alt="image" src="https://github.com/user-attachments/assets/660cbdf9-04e5-4c40-90ec-bcd603ed3d14" />
+
 

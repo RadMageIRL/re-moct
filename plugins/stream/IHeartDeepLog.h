@@ -87,9 +87,14 @@ struct Record {
     int         connectSeq       = 0;
 };
 
-// Flip on/off. Returns the new state. Called from the UI thread (Ctrl+A). On a
-// 0->1 transition the next emit() starts a fresh capture file.
+// Flip on/off. Returns the new state. On a 0->1 transition the next emit() starts
+// a fresh capture file.
 bool toggle();
+// Set an absolute on/off state (Phase 4 slice c: the host tracks the deep-log
+// state and pushes it across the ABI via set_config("deeplog",...), since Ctrl+A
+// can no longer call toggle() directly across the .so boundary). Same 0->1
+// fresh-file transition as toggle(); a no-op when already in the requested state.
+void setEnabled(bool on);
 bool enabled();
 
 // Emit one tick. No-op when disabled. Applies the change/heartbeat write policy,

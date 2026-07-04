@@ -57,11 +57,18 @@ public:
     static constexpr int PREBUFFER_SAMPLES = SAMPLE_RATE * CHANNELS * PREBUFFER_SEC;
     static constexpr int FADE_IN_FRAMES    = SAMPLE_RATE / 2;                 // re-pin fade-in (~0.5s); ramps the new song in instead of a hard cut
 
-    StreamSource() : ring_(RING_SIZE, 0) {}
+    // The HTTP transport is INJECTED (Phase 4 slice c): in the plugin it is a
+    // plugin::HostServiceHttp over the injected host services (the core::http()
+    // global is unreachable from a loaded .so); in-tree host callers pass
+    // core::http(). No default arg — an explicit ref keeps `grep core::http()
+    // plugins/stream/ = 0`. iheart_ + the staging lane get the same transport.
+    explicit StreamSource(core::IHttp& http)
+        : http_(&http), iheart_(http), ring_(RING_SIZE, 0) {}
     // Staging-lane constructor: a second instance the coordinator owns to prebuffer
     // a parallel session. is_lane_ stops it recursing (no staging-of-staging) and
     // suppresses the one global side-effect it would otherwise touch (the deep log).
-    explicit StreamSource(bool lane) : ring_(RING_SIZE, 0) { is_lane_ = lane; }
+    StreamSource(bool lane, core::IHttp& http)
+        : http_(&http), iheart_(http), ring_(RING_SIZE, 0) { is_lane_ = lane; }
     ~StreamSource() { close(); }
 
     StreamSource(const StreamSource&)            = delete;
@@ -149,6 +156,12 @@ private:
     // iHeart doesn't embed song info in-band (their ID3 is only the HLS timestamp
     // PRIV frame), so for iHeart streams we poll their JSON via the isolated
     // IHeartRadio module on the producer thread's existing ~10s cadence.
+    // Injected HTTP transport (Phase 4 slice c) — plugin::HostServiceHttp over the
+    // host services in production; core::http() for in-tree callers. Backs the HLS
+    // one-shots (hls_session_) and IHeartRadio's session. Non-owning; outlives us
+    // (host services live as long as AudioManager per the ABI lifetime contract).
+    // Declared before iheart_ so the ctor init list stays in declaration order.
+    core::IHttp* http_ = nullptr;
     IHeartRadio iheart_;
     bool        is_iheart_        = false;  // set in hlsConnect by URL sniff
     std::atomic<bool> prefer_digital_{ false };  // user pref: try web-player (digital) rendition

@@ -354,7 +354,7 @@ int main() {
         srv.setTitle("Alpha One");
         CHECK(srv.start());
 
-        StreamSource ss;
+        StreamSource ss(core::http());   // slice c: HTTP injected (unused on the raw ICY path)
         std::string url = "http://127.0.0.1:" + std::to_string(srv.port) + "/fixture.aac";
 
         // 1+2. open -> Continuous mode -> prebuffer -> real audio
@@ -428,7 +428,7 @@ int main() {
         srv.metaint = 0;
         CHECK(srv.start());
 
-        StreamSource ss;
+        StreamSource ss(core::http());   // slice c: HTTP injected (unused on the raw ICY path)
         std::string url = "http://127.0.0.1:" + std::to_string(srv.port) + "/fixture.aac";
         CHECK(ss.open(url));
         CHECK(waitFor(15000, [&] { return ss.isPrebuffered(); }));
@@ -452,7 +452,7 @@ int main() {
         srv.setTitle("Icy Epsilon");
         CHECK(srv.start());
 
-        StreamSource ss;
+        StreamSource ss(core::http());   // slice c: HTTP injected (unused on the raw ICY path)
         std::string url = "http://127.0.0.1:" + std::to_string(srv.port) + "/fixture.aac";
         CHECK(ss.open(url));
         CHECK(waitFor(15000, [&] { return ss.isPrebuffered(); }));

@@ -40,6 +40,9 @@ public:
     const std::string& url() const { return url_; }         // host-tracked
     double positionSec() const;
     void setPreferDigital(bool b);
+    // Generic config passthrough to the plugin's set_config (slice c). Used for the
+    // deep-log toggle ("deeplog","1"/"0") — see AudioManager::setDeepLog.
+    void setConfig(const char* key, const char* value);
 
 private:
     const RemoctPlugin* plugin_ = nullptr;

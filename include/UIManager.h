@@ -122,6 +122,11 @@ private:
     bool show_remaining_ = false;
     bool show_clock_     = false;
     bool show_hidden_    = false;
+    // iHeart deep-analysis capture toggle (Ctrl+A). Host-tracked since slice c:
+    // IHeartDeepLog moved into the streaming plugin, so the state is pushed across
+    // the ABI (audio_.setDeepLog) rather than read back from the plugin. Diagnostic,
+    // not persisted.
+    bool deeplog_on_     = false;
     int  sleep_minutes_  = 0;   // 0 = disabled
     std::chrono::steady_clock::time_point sleep_start_;  // show hidden (dot) files in browser   // show wall clock in title bar
 

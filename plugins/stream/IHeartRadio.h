@@ -34,7 +34,10 @@
 // ─────────────────────────────────────────────────────────────────────────────
 class IHeartRadio {
 public:
-    IHeartRadio();
+    // HTTP transport injected (Phase 4 slice c): plugin::HostServiceHttp over the
+    // host services in the plugin; core::http() for in-tree callers. Was the
+    // core::http() global inside ensureSession — unreachable from a loaded .so.
+    explicit IHeartRadio(core::IHttp& http);
     ~IHeartRadio();
     IHeartRadio(const IHeartRadio&)            = delete;
     IHeartRadio& operator=(const IHeartRadio&) = delete;
@@ -91,6 +94,9 @@ public:
     static std::string sidecarPath();   // %TEMP%\re-moct-iheart-stations.json
 
 private:
+    // Injected HTTP transport (slice c). Non-owning; outlives us. Declared before
+    // session_ so the ctor init list stays in declaration order.
+    core::IHttp* http_ = nullptr;
     // Persistent keep-alive session (own UA + deliberate 5s timeouts; see ensureSession).
     std::unique_ptr<core::IHttpSession> session_;
     bool        resolved_   = false;

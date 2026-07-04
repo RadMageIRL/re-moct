@@ -39,7 +39,8 @@
 #include "Config.h"
 #include "LrcData.h"
 #include "Toast.h"
-#include "IHeartDeepLog.h"
+// IHeartDeepLog moved into the streaming plugin (slice c) — the host no longer
+// includes it. Ctrl+A toggles it across the ABI via audio_.setDeepLog().
 
 #include <filesystem>
 #include <algorithm>
@@ -3819,9 +3820,14 @@ void UIManager::handleInput(int ch) {
         // b2abb12.
         case 1:  // Ctrl+A — toggle deep-analysis iHeart capture log (diagnostic; not persisted)
         {
-            bool on = IHeartDeepLog::toggle();
-            if (on) showTrackToast("Deep log: ON", IHeartDeepLog::path(), "");
-            else    showTrackToast("Deep log: OFF", "", "");
+            // Deep log lives in the streaming plugin now (slice c): toggle it across
+            // the ABI (audio_.setDeepLog -> set_config("deeplog",...)). The host
+            // tracks the on/off state; the plugin-side capture path is no longer
+            // surfaced in the toast (it was lazily created on the producer thread
+            // anyway — path() right after enable was already racy/empty).
+            deeplog_on_ = !deeplog_on_;
+            audio_.setDeepLog(deeplog_on_);
+            showTrackToast(deeplog_on_ ? "Deep log: ON" : "Deep log: OFF", "", "");
         }
             break;
         case 11:  // Ctrl+K — toggle iHeart stream mode: digital (web player) vs raw broadcast

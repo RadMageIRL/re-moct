@@ -93,7 +93,7 @@ int main() {
     const std::string url = std::string("https://n1a.revma.ihrhls.com/") + kZc + "/hls.m3u8";
     CHECK(IHeartRadio::isIHeartUrl(url));
 
-    IHeartRadio ih;
+    IHeartRadio ih(core::http());   // slice c: HTTP injected; setHttp(&fake) above backs core::http()
     ih.setLogger([](const std::string& s){ std::printf("  [log] %s\n", s.c_str()); });
 
     // ── resolve: sidecar miss -> self-resolve via liveStations ──

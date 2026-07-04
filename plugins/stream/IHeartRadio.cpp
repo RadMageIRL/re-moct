@@ -13,7 +13,7 @@
 using json = nlohmann::json;
 
 // ── Construction ─────────────────────────────────────────────────────────────
-IHeartRadio::IHeartRadio()  = default;
+IHeartRadio::IHeartRadio(core::IHttp& http) : http_(&http) {}
 IHeartRadio::~IHeartRadio() = default;   // session_ closes itself
 
 // ── Paths ────────────────────────────────────────────────────────────────────
@@ -55,7 +55,7 @@ bool IHeartRadio::ensureSession() {
     cfg.timeout_ms = 5000;   // shorter than a stream connect: this polls on the audio
                              // producer thread, so a hung iHeart connection mustn't
                              // stall playback for long — skip and retry next cycle.
-    session_ = core::http().openSession(cfg);
+    session_ = http_->openSession(cfg);   // slice c: injected host services (was core::http())
     if (!session_) { logmsg("iheart: openSession failed"); return false; }
     return true;
 }

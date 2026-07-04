@@ -2,6 +2,8 @@
 #include "AudioManager.h"
 #include "StringUtils.h"
 #include "AacDecoder.h"   // FDK-AAC custom miniaudio backend (used by detectBpm's analysis decoder)
+#include "PortUtil.h"     // port::exeDir — resolve the streaming plugin beside the binary (slice c)
+#include "Log.h"          // stream-plugin load diagnostics
 
 // Slice B: the file-path helpers (populate_track_info / open_decoder /
 // prime_decoder) and the TagLib metadata read moved verbatim into
@@ -20,6 +22,27 @@
 
 // ─── construction ────────────────────────────────────────────────────────────
 AudioManager::AudioManager()  = default;
+
+// Streaming plugin (slice c): resolve <exeDir>/plugins/remoct_stream.{dll,so} —
+// the module beside the binary. Static (used by loaded_plugin_'s default member
+// initializer). exeDir() falls back to "." if the OS query fails.
+std::string AudioManager::streamPluginPath() {
+    std::string dir = port::exeDir();
+    if (dir.empty()) dir = ".";
+#ifdef _WIN32
+    return dir + "/plugins/remoct_stream.dll";
+#else
+    return dir + "/plugins/remoct_stream.so";
+#endif
+}
+
+// "" when the streaming plugin loaded; else a human-readable reason (the slice-a
+// reject-path names, now a production diagnostic).
+std::string AudioManager::streamPluginError() const {
+    if (stream_plugin_.valid()) return {};
+    return std::string("streaming plugin unavailable: ") +
+           core::pluginLoadName(plugin_load_result_);
+}
 AudioManager::~AudioManager() {
     bpm_cancel_.store(true);
     if (bpm_thread_.joinable()) bpm_thread_.join();
@@ -1131,6 +1154,15 @@ void AudioManager::closeCD() {
 // Non-blocking radio start. If a connect is already running, remember the latest
 // request (depth-1, latest-wins) instead of racing a second worker.
 void AudioManager::beginStream(const std::string& url) {
+    // Graceful failure (slice c): a missing/incompatible plugin means no streaming.
+    // PluginSource::open() would no-op to false anyway, but guard early so we never
+    // spawn a connect worker, and surface a failure the UI can toast. (UIManager
+    // also preflights streamPluginReady() for the specific reason.)
+    if (!stream_plugin_.valid()) {
+        Log::write("stream", streamPluginError() + " — ignoring beginStream");
+        stream_just_failed_.store(true);
+        return;
+    }
     std::lock_guard<std::mutex> lock(state_mutex_);
     if (stream_connecting_.load()) {
         std::lock_guard<std::mutex> lk(stream_connect_mtx_);

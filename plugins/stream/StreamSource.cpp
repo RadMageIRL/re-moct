@@ -375,7 +375,7 @@ bool StreamSource::hlsEnsureSession() {
     core::HttpSessionConfig cfg;
     cfg.user_agent = "";     // impl default == the exact UA the raw handle used
     cfg.timeout_ms = 8000;   // mirror connect() timeouts (connect/receive/send)
-    hls_session_ = core::http().openSession(cfg);
+    hls_session_ = http_->openSession(cfg);   // slice c: injected host services (was core::http())
     if (!hls_session_) { slog("hlsEnsureSession: openSession FAILED"); return false; }
     return true;
 }
@@ -1002,7 +1002,7 @@ void StreamSource::serviceStaging() {
         if (digital_active_.load() && ih_sm_.state() == IHNow::Live &&
             (long)(now - stg_cooldown_until_) >= 0 &&
             !stg_opening_.load() && !staging_) {
-            staging_ = std::make_unique<StreamSource>(true);   // is_lane_ = true
+            staging_ = std::make_unique<StreamSource>(true, *http_);  // is_lane_ = true; same injected transport
             staging_->setPreferDigital(true);
             stg_opening_.store(true);
             stg_state_ = Stg::Opening;

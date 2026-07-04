@@ -1,29 +1,37 @@
 // StreamPluginAdapter.cpp — the RemoctPlugin C-ABI adapter over StreamSource
-// (Phase 4 slice b). Each C entry forwards 1:1 to the in-tree StreamSource; the
-// instance (`self`) IS a StreamSource. In slice (c) this file + StreamSource move
-// into plugins/stream/ and gain the exported remoct_plugin_query; here it is
-// compiled into the host and reached directly (StreamPluginAdapter.h).
+// (Phase 4). Each C entry forwards 1:1 to a StreamSource; the instance (`self`) is
+// a StreamInstance owning the source + the plugin-side HTTP bridge. Since slice (c)
+// this file + StreamSource live in plugins/stream/ and this TU exports
+// remoct_plugin_query (the .so's one symbol); remoct_stream_plugin_query() is kept
+// so the compiled-in plugin_stream_test stays the byte-identity reference (D4).
 //
 // The callbacks are internal-linkage (anonymous namespace) and noexcept (the ABI
 // forbids exceptions across the line — StreamSource's queried surface does not
 // throw). Assigning C++ statics to the RemoctPlugin C function-pointer members is
 // the same pattern the codebase already uses for miniaudio's C callbacks
-// (AudioManager::maDataCallback). HTTP still goes through core::http() here;
-// routing it through the injected host services is the slice-(c) rewire (the
-// descriptor already receives the services at create).
+// (AudioManager::maDataCallback). HTTP is routed through the injected host services
+// (slice c): create() builds a plugin::HostServiceHttp over the RemoctHostServices
+// table and constructs StreamSource with it — no core::http() in the plugin.
 #include "StreamPluginAdapter.h"
 #include "StreamSource.h"
+#include "HostServiceHttp.h"   // core::IHttp over the injected host services (slice c)
+#include "IHeartDeepLog.h"     // set_config("deeplog", ...) — deep-log toggle across the ABI
 
 #include <cstring>
 #include <string>
 
 namespace {
 
-// The instance behind `self`. Holds the source + the host services it was handed
-// at create (unused in (b); the (c) HTTP rewire consumes them).
+// The instance behind `self`. Owns the source + the plugin-side HTTP bridge built
+// from the host services handed in at create. Member order matters: `host` then
+// `http` (built from host) then `src` (built from http) — declaration order = ctor
+// init order, so each is live before the next uses it.
 struct StreamInstance {
-    StreamSource              src;
-    const RemoctHostServices* host = nullptr;
+    const RemoctHostServices* host;
+    plugin::HostServiceHttp   http;   // core::IHttp over host->http_* (the slice-b shim's real consumer)
+    StreamSource              src;    // constructed with the injected transport
+    explicit StreamInstance(const RemoctHostServices* h)
+        : host(h), http(h), src(http) {}
 };
 
 inline StreamInstance* inst(void* self) { return static_cast<StreamInstance*>(self); }
@@ -39,9 +47,10 @@ std::size_t fillBuf(char* buf, std::size_t cap, const std::string& s) {
 }
 
 void* sp_create(const RemoctHostServices* host, void* /*host_ctx*/) noexcept {
-    auto* i = new (std::nothrow) StreamInstance();
-    if (i) i->host = host;
-    return i;
+    // try/catch: StreamSource's ctor allocates the ring — no exception may cross
+    // the C ABI (rule #2), so a bad_alloc becomes a null return (create failed).
+    try { return new StreamInstance(host); }
+    catch (...) { return nullptr; }
 }
 void sp_destroy(void* self) noexcept { delete inst(self); }
 
@@ -86,8 +95,15 @@ std::size_t sp_last_error(void* self, char* b, std::size_t c) noexcept {
 }
 
 void sp_set_config(void* self, const char* key, const char* value) noexcept {
-    if (key && std::strcmp(key, "prefer_digital") == 0)
-        inst(self)->src.setPreferDigital(value && value[0] == '1');
+    if (!key) return;
+    const bool on = value && value[0] == '1';
+    if (std::strcmp(key, "prefer_digital") == 0)
+        inst(self)->src.setPreferDigital(on);
+    else if (std::strcmp(key, "deeplog") == 0)
+        // Deep-log toggle crosses the ABI here (was UIManager -> IHeartDeepLog::
+        // toggle() directly; IHeartDeepLog now lives in this .so). Host tracks the
+        // on/off state and pushes it; this is the in-plugin call. (slice c, row 8)
+        IHeartDeepLog::setEnabled(on);
 }
 
 const RemoctPlugin STREAM_PLUGIN = {
@@ -115,4 +131,11 @@ const RemoctPlugin STREAM_PLUGIN = {
 
 } // namespace
 
+// In-process acquisition (compiled-in): kept so plugin_stream_test drives the
+// SAME descriptor without dlopen — the byte-identity reference slice (d) compares
+// the loaded .so against (D4).
 const RemoctPlugin* remoct_stream_plugin_query() { return &STREAM_PLUGIN; }
+
+// The ONE exported symbol (C linkage via remoct_plugin.h's extern "C"). This is
+// what core::loadPlugin resolves from the .so/.dll (slice c). Same descriptor.
+REMOCT_EXPORT const RemoctPlugin* remoct_plugin_query(void) { return &STREAM_PLUGIN; }

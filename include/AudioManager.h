@@ -15,13 +15,14 @@
 #include "LocalFileSource.h"  // the file path as a source object (slice B)
 #include <memory>
 #include "CDSource.h"
-// Phase 4 slice b: the streaming source is driven through the plugin C ABI. The
-// host holds a PluginSource (the driver) over the in-process StreamSource adapter
-// descriptor, plus the HTTP service table it hands the plugin at create. It no
-// longer includes StreamSource.h directly — the source is behind the ABI now.
+// Phase 4: the streaming source is driven through the plugin C ABI. The host holds
+// a PluginSource (the driver) over the plugin descriptor, plus the HTTP service
+// table it hands the plugin at create. Since slice (c) the descriptor comes from a
+// LOADED .so/.dll (core::loadPlugin) instead of the compiled-in adapter — the
+// host no longer references any streaming-source symbol.
 #include "PluginSource.h"
 #include "PluginHostServices.h"
-#include "StreamPluginAdapter.h"
+#include "PluginHost.h"        // core::loadPlugin / LoadedPlugin / PluginLoad (slice c)
 
 enum class PlaybackState { Stopped, Playing, Paused };
 
@@ -118,6 +119,15 @@ public:
     bool     streamMode()        const { return stream_mode_.load(); }
     // Prefer the iHeart digital (web-player) rendition on the next stream connect.
     void     setPreferDigital(bool b) { stream_plugin_.setPreferDigital(b); }
+    // Deep-log toggle across the ABI (slice c): the host tracks the on/off state
+    // (UIManager, Ctrl+A) and pushes it here; IHeartDeepLog now lives in the .so.
+    void     setDeepLog(bool on) { stream_plugin_.setConfig("deeplog", on ? "1" : "0"); }
+    // Whether the streaming plugin loaded (slice c). false => streaming disabled
+    // (missing/incompatible .so/.dll). beginStream() guards on this and surfaces a
+    // failure toast; the UI may also preflight streamPluginError() for the specific
+    // reason. Host stays alive either way.
+    bool     streamPluginReady() const { return stream_plugin_.valid(); }
+    std::string streamPluginError() const;   // "" when ready, else a human reason
     // True while a stream connect is being negotiated off the UI thread.
     bool     streamConnecting()  const { return stream_connecting_.load(); }
     // Non-blocking radio start: stops current playback, negotiates the stream on
@@ -201,13 +211,30 @@ private:
     std::atomic<bool>          cd_mode_  { false };
     CDSource                   cd_source_;
     std::atomic<bool>          stream_mode_  { false };
+    // Absolute path of the streaming plugin next to the binary:
+    // <exeDir>/plugins/remoct_stream.{dll,so} (slice c). Static — used by the
+    // loaded_plugin_ default member initializer below.
+    static std::string streamPluginPath();
+
     // The HTTP service table handed to the streaming plugin at create, backed by
     // core::http(). Declared BEFORE stream_plugin_ so it is constructed first
-    // (the plugin instance is created with its table()). Both live as long as
+    // (the plugin instance is created with its table()). All three live as long as
     // AudioManager — the ABI service-lifetime contract.
     core::HostServices         host_services_{};
-    core::PluginSource         stream_plugin_{ remoct_stream_plugin_query(),
-                                               host_services_.table() };
+    // Acquisition flip (slice c): the streaming source is a LOADED .so/.dll now.
+    // loaded_plugin_ owns the module + borrows the descriptor (RAII: module unloads
+    // after the descriptor). A load failure (missing / ABI-mismatch / too-small —
+    // slice-(a) reject paths, now in production) leaves loaded_plugin_ null and
+    // plugin_load_result_ set; PluginSource(nullptr,...) is valid()==false, so every
+    // op no-ops and the host stays alive. Declaration order = init order:
+    // plugin_load_result_ (out-param) then loaded_plugin_ (the load) then
+    // stream_plugin_ (built from the descriptor).
+    core::PluginLoad                    plugin_load_result_ = core::PluginLoad::Ok;
+    std::unique_ptr<core::LoadedPlugin> loaded_plugin_ =
+        core::loadPlugin(streamPluginPath(), &plugin_load_result_);
+    core::PluginSource         stream_plugin_{
+        loaded_plugin_ ? loaded_plugin_->plugin() : nullptr,
+        host_services_.table() };
 
     // ── Async stream connect (StreamSource::open runs off the UI thread) ──
     // beginStream() stops current playback and spawns a worker that runs the slow

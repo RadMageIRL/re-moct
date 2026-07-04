@@ -193,6 +193,17 @@ bool toggle() {
     return now;
 }
 
+void setEnabled(bool on) {
+    std::lock_guard<std::mutex> lk(g_mtx);
+    if (on == g_enabled.load()) return;      // no transition
+    g_enabled.store(on);
+    if (on) {                                // 0->1: fresh capture file on next emit
+        g_cur_path.clear();
+        g_last_sig.clear();
+        g_last_write_tick = 0;
+    }
+}
+
 bool enabled() { return g_enabled.load(); }
 
 std::string path() {

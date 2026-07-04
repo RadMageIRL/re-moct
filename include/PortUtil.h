@@ -110,4 +110,30 @@ inline std::string logDir() {
 #endif
 }
 
+// Directory of the running executable, NO trailing separator (Phase 4 slice c:
+// resolve the streaming plugin at <exeDir>/plugins/remoct_stream.{dll,so}).
+// Windows: GetModuleFileNameW -> strip the file name -> UTF-8. Linux: readlink
+// /proc/self/exe -> dirname. Returns "" if the OS query fails (caller falls back).
+inline std::string exeDir() {
+#ifdef _WIN32
+    wchar_t buf[MAX_PATH];
+    DWORD n = GetModuleFileNameW(nullptr, buf, MAX_PATH);
+    if (n == 0 || n >= MAX_PATH) return {};
+    while (n > 0 && buf[n - 1] != L'\\' && buf[n - 1] != L'/') --n;  // strip file name
+    if (n > 0) --n;                                                  // drop the separator
+    int len = ::WideCharToMultiByte(CP_UTF8, 0, buf, (int)n, nullptr, 0, nullptr, nullptr);
+    std::string out(static_cast<size_t>(len), '\0');
+    if (len) ::WideCharToMultiByte(CP_UTF8, 0, buf, (int)n, out.data(), len, nullptr, nullptr);
+    return out;
+#else
+    char buf[4096];
+    ssize_t n = ::readlink("/proc/self/exe", buf, sizeof(buf) - 1);
+    if (n <= 0) return {};
+    buf[n] = '\0';
+    std::string p(buf);
+    size_t slash = p.find_last_of('/');
+    return (slash == std::string::npos) ? std::string(".") : p.substr(0, slash);
+#endif
+}
+
 } // namespace port

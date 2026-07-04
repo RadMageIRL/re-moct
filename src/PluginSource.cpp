@@ -63,4 +63,8 @@ void PluginSource::setPreferDigital(bool b) {
     if (self_ && plugin_->set_config) plugin_->set_config(self_, "prefer_digital", b ? "1" : "0");
 }
 
+void PluginSource::setConfig(const char* key, const char* value) {
+    if (self_ && plugin_->set_config && key) plugin_->set_config(self_, key, value ? value : "");
+}
+
 } // namespace core

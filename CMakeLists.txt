@@ -29,17 +29,16 @@ set(REMOCT_SOURCES
     src/MBLookup.cpp
     src/CDRipper.cpp
     src/CoverArt.cpp
-    src/StreamSource.cpp
-    # Phase 4 slice b: the streaming source is driven through the plugin C ABI.
-    src/StreamPluginAdapter.cpp   # RemoctPlugin table over StreamSource (in-process; -> .so in slice c)
+    # Phase 4: the streaming source is driven through the plugin C ABI. Slice (c)
+    # moved StreamSource + IHeartRadio + IHeartNowPlayingSM + IHeartDeepLog + the
+    # adapter into plugins/stream/ (built as remoct_stream.{so,dll}); the host keeps
+    # only the DRIVER side + the loader.
     src/PluginSource.cpp          # host-side driver over a RemoctPlugin table
     src/PluginHostServices.cpp    # RemoctHostServices HTTP shim over core::IHttp
-    src/IHeartNowPlayingSM.cpp
+    src/PluginHost.cpp            # loadPlugin / validatePlugin / LoadedPlugin (host is a loader now)
     src/ar_crc.cpp
-    src/AacDecoder.cpp
+    src/AacDecoder.cpp            # FDK-AAC file (.m4a/.m4b) backend — stays host (D5)
     src/Mp4Chapters.cpp
-    src/IHeartRadio.cpp
-    src/IHeartDeepLog.cpp
     src/RadioBrowser.cpp
     src/LastFm.cpp
     src/Log.cpp
@@ -57,6 +56,7 @@ if(WIN32)
         ${CMAKE_SOURCE_DIR}/src/platform/win/IpcWinPipe.cpp
         ${CMAKE_SOURCE_DIR}/src/platform/win/NotifyWinToast.cpp
         ${CMAKE_SOURCE_DIR}/src/platform/win/CdIoWin.cpp
+        ${CMAKE_SOURCE_DIR}/src/platform/win/PluginLoaderWin.cpp  # slice c: LoadLibrary seam in the host
     )
 endif()
 
@@ -71,6 +71,7 @@ if(UNIX)
         ${CMAKE_SOURCE_DIR}/src/platform/linux/IpcUnixSocket.cpp
         ${CMAKE_SOURCE_DIR}/src/platform/linux/NotifyNotifySend.cpp
         ${CMAKE_SOURCE_DIR}/src/platform/linux/CdIoSgIo.cpp
+        ${CMAKE_SOURCE_DIR}/src/platform/linux/PluginLoaderPosix.cpp  # slice c: dlopen seam in the host
     )
     # Module-mode search only: under WSL2 the appended Windows PATH would let
     # config-mode find MSYS2's CURLConfig.cmake at /mnt/c (CMake treats PATH
@@ -85,10 +86,9 @@ if(UNIX)
         ${CMAKE_SOURCE_DIR}/src/platform/linux/IpcUnixSocket.cpp
         ${CMAKE_SOURCE_DIR}/src/platform/linux/NotifyNotifySend.cpp
         ${CMAKE_SOURCE_DIR}/src/platform/linux/CdIoSgIo.cpp
-        # Phase 4 slice (a): the plugin-loader seam (dlopen). Not yet in the
-        # remoct target — the host consumer arrives in slice (b) — but built here
-        # so CI proves src/platform/linux/ stays platform-clean, and by the
-        # plugin_loader_test on both jobs.
+        # Phase 4 plugin-loader seam (dlopen). Now also a real host source (slice c
+        # made the host a loader); kept here too so CI proves src/platform/linux/
+        # stays platform-clean, and it's exercised by plugin_loader_test on both jobs.
         ${CMAKE_SOURCE_DIR}/src/platform/linux/PluginLoaderPosix.cpp
     )
     target_include_directories(remoct_linux_seams PRIVATE ${CMAKE_SOURCE_DIR}/include)
@@ -213,6 +213,14 @@ set_target_properties(remoct PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 
 install(TARGETS remoct RUNTIME DESTINATION bin)
+
+# ── Phase 4 slice (c): the streaming source as a loadable plugin ────────────
+# Built AFTER the host target so FDKAAC_LIB/INCLUDE + CURL::libcurl (found above)
+# are in scope. add_dependencies makes `ninja remoct` also build remoct_stream so
+# the .so/.dll is always present beside the binary (bin/plugins) for loadPlugin.
+add_subdirectory(plugins/stream)
+add_dependencies(remoct remoct_stream)
+install(TARGETS remoct_stream LIBRARY DESTINATION bin/plugins RUNTIME DESTINATION bin/plugins)
 
 # ── Phase 0 pure-unit tests ───────────────────────────────────────────────
 enable_testing()

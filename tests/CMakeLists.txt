@@ -44,9 +44,10 @@ endif()
 
 add_executable(iheart_sm_test
     iheart_sm_test.cpp
-    ${CMAKE_SOURCE_DIR}/src/IHeartNowPlayingSM.cpp
+    ${CMAKE_SOURCE_DIR}/plugins/stream/IHeartNowPlayingSM.cpp   # moved in slice c
 )
-target_include_directories(iheart_sm_test PRIVATE ${CMAKE_SOURCE_DIR}/include)
+target_include_directories(iheart_sm_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/plugins/stream)
 add_test(NAME iheart_sm_test COMMAND iheart_sm_test)
 
 add_executable(ar_crc_test
@@ -162,11 +163,11 @@ set_tests_properties(http_cancel_test PROPERTIES TIMEOUT 60)
 # token) and the three verified endpoints. Portable since slice 2.
 add_executable(iheart_request_test
     iheart_request_test.cpp
-    ${CMAKE_SOURCE_DIR}/src/IHeartRadio.cpp
+    ${CMAKE_SOURCE_DIR}/plugins/stream/IHeartRadio.cpp   # moved in slice c
     ${HTTP_IMPL}
 )
 target_include_directories(iheart_request_test PRIVATE
-    ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/lib)
+    ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/lib ${CMAKE_SOURCE_DIR}/plugins/stream)
 target_link_libraries(iheart_request_test PRIVATE ${HTTP_LIBS})
 add_test(NAME iheart_request_test COMMAND iheart_request_test)
 
@@ -180,15 +181,15 @@ add_test(NAME iheart_request_test COMMAND iheart_request_test)
 # live-gate-only. Portable since slice 2 — the HLS pump runs on both platforms.
 add_executable(hls_pipeline_test
     hls_pipeline_test.cpp
-    ${CMAKE_SOURCE_DIR}/src/StreamSource.cpp
-    ${CMAKE_SOURCE_DIR}/src/IHeartRadio.cpp
-    ${CMAKE_SOURCE_DIR}/src/IHeartNowPlayingSM.cpp
-    ${CMAKE_SOURCE_DIR}/src/IHeartDeepLog.cpp
+    ${CMAKE_SOURCE_DIR}/plugins/stream/StreamSource.cpp        # moved in slice c
+    ${CMAKE_SOURCE_DIR}/plugins/stream/IHeartRadio.cpp
+    ${CMAKE_SOURCE_DIR}/plugins/stream/IHeartNowPlayingSM.cpp
+    ${CMAKE_SOURCE_DIR}/plugins/stream/IHeartDeepLog.cpp
     ${CMAKE_SOURCE_DIR}/src/Log.cpp
     ${HTTP_IMPL}
 )
 target_include_directories(hls_pipeline_test PRIVATE
-    ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/lib ${FDKAAC_INCLUDE})
+    ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/lib ${CMAKE_SOURCE_DIR}/plugins/stream ${FDKAAC_INCLUDE})
 target_link_libraries(hls_pipeline_test PRIVATE ${FDKAAC_LIB} ${HTTP_LIBS}
     $<$<PLATFORM_ID:Linux>:dl> $<$<PLATFORM_ID:Linux>:m>)
 add_test(NAME hls_pipeline_test COMMAND hls_pipeline_test)
@@ -203,15 +204,15 @@ set_tests_properties(hls_pipeline_test PROPERTIES TIMEOUT 120)
 # reconnect self-heal, bounded close on a silent stream, no-metaint passthrough.
 add_executable(icy_pipeline_test
     icy_pipeline_test.cpp
-    ${CMAKE_SOURCE_DIR}/src/StreamSource.cpp
-    ${CMAKE_SOURCE_DIR}/src/IHeartRadio.cpp
-    ${CMAKE_SOURCE_DIR}/src/IHeartNowPlayingSM.cpp
-    ${CMAKE_SOURCE_DIR}/src/IHeartDeepLog.cpp
+    ${CMAKE_SOURCE_DIR}/plugins/stream/StreamSource.cpp        # moved in slice c
+    ${CMAKE_SOURCE_DIR}/plugins/stream/IHeartRadio.cpp
+    ${CMAKE_SOURCE_DIR}/plugins/stream/IHeartNowPlayingSM.cpp
+    ${CMAKE_SOURCE_DIR}/plugins/stream/IHeartDeepLog.cpp
     ${CMAKE_SOURCE_DIR}/src/Log.cpp
     ${HTTP_IMPL}
 )
 target_include_directories(icy_pipeline_test PRIVATE
-    ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/lib ${FDKAAC_INCLUDE})
+    ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/lib ${CMAKE_SOURCE_DIR}/plugins/stream ${FDKAAC_INCLUDE})
 target_link_libraries(icy_pipeline_test PRIVATE ${FDKAAC_LIB} ${HTTP_LIBS}
     $<$<PLATFORM_ID:Windows>:ws2_32>
     $<$<PLATFORM_ID:Linux>:dl> $<$<PLATFORM_ID:Linux>:m>)
@@ -295,18 +296,20 @@ if(WIN32)
     # EOF swap + track_swap_flag_ install, crossfade trigger/mix/completion,
     # clearNext mid-crossfade (device-stop quiesce branch), end-without-preload.
     # Needs an audio device: SKIPs (exit 77) when none can be opened.
+    # Slice c: AudioManager drives the stream through a LOADED plugin now, so it no
+    # longer references any streaming-source symbol — this file crossfade test drops
+    # the moved StreamSource/IHeart* stack and instead links the loader (PluginHost +
+    # PluginLoaderWin). No .so sits beside the test binary, so loadPlugin returns null
+    # and streaming is disabled (graceful) — irrelevant to the file crossfade path.
     add_executable(xfade_handoff_test
         xfade_handoff_test.cpp
         ${CMAKE_SOURCE_DIR}/src/AudioManager.cpp
         ${CMAKE_SOURCE_DIR}/src/LocalFileSource.cpp
-        ${CMAKE_SOURCE_DIR}/src/StreamSource.cpp
-        ${CMAKE_SOURCE_DIR}/src/StreamPluginAdapter.cpp
         ${CMAKE_SOURCE_DIR}/src/PluginSource.cpp
         ${CMAKE_SOURCE_DIR}/src/PluginHostServices.cpp
+        ${CMAKE_SOURCE_DIR}/src/PluginHost.cpp
+        ${CMAKE_SOURCE_DIR}/src/platform/win/PluginLoaderWin.cpp
         ${CMAKE_SOURCE_DIR}/src/CDSource.cpp
-        ${CMAKE_SOURCE_DIR}/src/IHeartRadio.cpp
-        ${CMAKE_SOURCE_DIR}/src/IHeartNowPlayingSM.cpp
-        ${CMAKE_SOURCE_DIR}/src/IHeartDeepLog.cpp
         ${CMAKE_SOURCE_DIR}/src/AacDecoder.cpp
         ${CMAKE_SOURCE_DIR}/src/Mp4Chapters.cpp
         ${CMAKE_SOURCE_DIR}/src/Log.cpp
@@ -371,20 +374,25 @@ set_tests_properties(plugin_http_shim_test PROPERTIES TIMEOUT 60)
 # raw C table AND via core::PluginSource (the driver AudioManager uses). Links the
 # real StreamSource stack (like hls_pipeline_test) + the plugin host files; a
 # dead-port open() fails fast so it's headless and quick. Both jobs.
+# Slice c: the moved streaming stack lives in plugins/stream/; this test compiles it
+# IN (the byte-identity reference D4 — the compiled-in adapter drives the SAME
+# descriptor the .so exports). HostServiceHttp.cpp is added because the adapter now
+# builds it from the host services (over core::http() here via HTTP_IMPL).
 add_executable(plugin_stream_test
     plugin_stream_test.cpp
-    ${CMAKE_SOURCE_DIR}/src/StreamPluginAdapter.cpp
+    ${CMAKE_SOURCE_DIR}/plugins/stream/StreamPluginAdapter.cpp
+    ${CMAKE_SOURCE_DIR}/plugins/stream/HostServiceHttp.cpp
     ${CMAKE_SOURCE_DIR}/src/PluginSource.cpp
     ${CMAKE_SOURCE_DIR}/src/PluginHostServices.cpp
-    ${CMAKE_SOURCE_DIR}/src/StreamSource.cpp
-    ${CMAKE_SOURCE_DIR}/src/IHeartRadio.cpp
-    ${CMAKE_SOURCE_DIR}/src/IHeartNowPlayingSM.cpp
-    ${CMAKE_SOURCE_DIR}/src/IHeartDeepLog.cpp
+    ${CMAKE_SOURCE_DIR}/plugins/stream/StreamSource.cpp
+    ${CMAKE_SOURCE_DIR}/plugins/stream/IHeartRadio.cpp
+    ${CMAKE_SOURCE_DIR}/plugins/stream/IHeartNowPlayingSM.cpp
+    ${CMAKE_SOURCE_DIR}/plugins/stream/IHeartDeepLog.cpp
     ${CMAKE_SOURCE_DIR}/src/Log.cpp
     ${HTTP_IMPL}
 )
 target_include_directories(plugin_stream_test PRIVATE
-    ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/lib ${FDKAAC_INCLUDE})
+    ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/lib ${CMAKE_SOURCE_DIR}/plugins/stream ${FDKAAC_INCLUDE})
 target_link_libraries(plugin_stream_test PRIVATE ${FDKAAC_LIB} ${HTTP_LIBS}
     $<$<PLATFORM_ID:Linux>:dl> $<$<PLATFORM_ID:Linux>:m>)
 add_test(NAME plugin_stream_test COMMAND plugin_stream_test)

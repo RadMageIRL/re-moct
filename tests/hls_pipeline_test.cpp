@@ -249,7 +249,7 @@ int main() {
 
     core::setHttp(&fake);
     {
-        StreamSource ss;
+        StreamSource ss(core::http());                    // slice c: HTTP injected (== fake via setHttp)
         core::ISource& s = ss;                            // the slice-A contract
 
         // ── 0. The core::ISource contract surface (slice A) ───────────────────

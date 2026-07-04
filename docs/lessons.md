@@ -555,3 +555,41 @@
      with `DRAIN < PREBUFFER`: the ring can't empty during the drain → no silence-fill → the
      head is fixed decoded audio whatever the producer thread does (the slice-0 "static buffer,
      drain flat out" lesson, applied to byte-identity).
+
+## Windows static single-exe (Option C - Phase 0 gate)
+Probe on `experimental/win-pdcurses`, MSYS2 UCRT64, against the CURRENT ncursesw (PDCurses
+not yet swapped - this deliberately isolates the codec question from the curses question).
+
+- **Static archives exist for everything except libebur128.** UCRT64 ships `libFLAC.a`,
+  `libFLAC++.a`, `libmp3lame.a`, `libfdk-aac.a`, `libtag.a` (+`libtag_c.a`), `libogg.a`,
+  `libncursesw.a`, `libpanelw.a`, plus the GCC runtime trio (`libstdc++.a`, `libwinpthread.a`,
+  `libgcc.a`). **libebur128 is DLL-only** - only a `libebur128.dll.a` import stub + the DLL, no
+  `.a` anywhere in ucrt64. fdk-aac and TagLib (the plan's predicted problem children)
+  static-link CLEAN; the lone holdout is ebur128 (ReplayGain / EBU R128).
+- **`find_library` resolves to the `.dll.a` import stub by default**, so the stock build is
+  fully dynamic even though the `.a` files sit right beside them. `-DCMAKE_FIND_LIBRARY_SUFFIXES=".a;.dll.a"`
+  passed at configure time does NOT stick - MSYS2's Windows-GNU platform module resets that
+  variable during `project()`. It must be set inside CMakeLists (after `project()`, before the
+  `find_library` calls) to take effect.
+- **Every dllimport-decorated lib needs its "I am static" define at COMPILE time**, else the
+  objects reference `__imp_<sym>` that the static `.a` lacks (link fails: undefined reference to
+  `` `__imp_...' ``). Compile-side fix, not link-side:
+  - ncurses -> `NCURSES_STATIC` (already in the tree)
+  - TagLib  -> `TAGLIB_STATIC`
+  - FLAC    -> `FLAC__NO_DLL`
+  The C codecs with no dllimport decoration (mp3lame, fdk-aac) needed nothing.
+- **Static libFLAC needs libogg linked explicitly.** The dynamic build pulled ogg in
+  transitively via the FLAC DLL; the static `libFLAC.a` exposes the dependency, so
+  `${MSYS2_PREFIX}/lib/libogg.a` must be added to the link line.
+- **Result:** `-static -static-libgcc -static-libstdc++` + the three defines + libogg ->
+  `re-moct.exe` (10.9 MB) links, and `ldd` shows ONLY Windows system DLLs plus the one
+  documented exception `libebur128.dll`. No `libgcc_s` / `libstdc++` / `libwinpthread` / codec /
+  curses DLLs. **Phase 0 gate = PASS**, single-DLL exception. Gated behind a
+  `-DREMOCT_STATIC_PROBE=ON` CMake option so the default dynamic build is untouched.
+- **To kill the last DLL later:** libebur128 is a tiny single-file lib; vendoring + building it
+  static (same discipline as the vendored Openwall MD5) would give a zero-non-system-DLL exe.
+  Not required - the graduation gate explicitly allows one documented codec-DLL exception.
+- **Plugin caveat (probe still owed):** `remoct_stream` (MODULE `.dll`) links fdk-aac
+  independently; its codec linkage is a SEPARATE question from the exe's. A codec DLL living in
+  `plugins/` next to the plugin is an acceptable shape regardless, so this is not a blocker -
+  just a probe to add to Phase 0 before wiring the real Phase-3 build.

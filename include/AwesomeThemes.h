@@ -37,6 +37,12 @@ static constexpr AwesomeTheme kAwesomeThemes[] = {
     { "Niflheim",     0x2e3440, 0xeceff4, 0x88c0d0, 0x8fbcbb, 0x81a1c1, 0x2e3440, 0x88c0d0, 0xa3be8c, 0xbf616a, 0x434c5e, 0x616e88, 0xa3be8c, 0xebcb8b, 0x81a1c1, 0xb48ead },
     { "Nyarlathotep", 0x282a36, 0xf8f8f2, 0xbd93f9, 0x8be9fd, 0xff79c6, 0x282a36, 0xbd93f9, 0x50fa7b, 0xff5555, 0x44475a, 0x6272a4, 0x50fa7b, 0xf1fa8c, 0x8be9fd, 0xff79c6 },
     { "Zero Cool",    0x0d0b06, 0xffcf7a, 0xffb000, 0xffe08a, 0xff8c1a, 0x0d0b06, 0xffb000, 0xc6d40a, 0xff4a3d, 0x4d3a12, 0x8a6a24, 0x6b4d0f, 0xc07f10, 0xffb000, 0xffe08a },
+    // DOS: the original RE-MOCT look - authentic IBM PC / CGA-VGA text-mode 16
+    // colours. Light-gray body on black, white titles, yellow-on-blue now-playing
+    // selection, green/red status, cyan borders. Every value is an exact ANSI-16
+    // slot, so the nearest-ANSI fallback renders it identically to truecolor.
+    // name          base      text      title     focus     accent    selfg     prog      ok        err       border    dim       viz_low   viz_mid   viz_high  viz_peak
+    { "DOS",          0x000000, 0xaaaaaa, 0xffffff, 0x0000aa, 0x0000aa, 0xffff55, 0x00aaaa, 0x55ff55, 0xff5555, 0x00aaaa, 0xaaaaaa, 0x0000aa, 0xaa5500, 0x5555ff, 0xffff55 },
 };
 
 static constexpr int kNumAwesomeThemes =

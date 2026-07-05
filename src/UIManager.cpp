@@ -66,6 +66,9 @@ static constexpr int kThemeTagGoneTick = 125;   // ~10s : removed
 // pane height below which the strip is dropped (small-terminal guard).
 static constexpr int kVizStripRows = 7;         // 2 frame + ~5 bar rows
 static constexpr int kMinPaneRows  = 3;         // panes need at least this many
+// Minimum spectrum bar height (in cells) so a low-activity band still shows a
+// small nub instead of vanishing. ~1/3 cell -> a short lower-block tip glyph.
+static constexpr float kVizFloorCells = 0.35f;
 
 static void sclog(const char* fmt, ...) {
     char buf[2048];
@@ -1866,24 +1869,29 @@ void UIManager::drawVisualizer() {
     const int bar_area_cols = cols - 2;  // -1 each side border
     if (bar_area_rows < 2 || bar_area_cols < 4) return;
 
-    // Each bar is 2 cols wide + 1 col gap = 3 cols per bar slot
-    // Pack as many bins as fit
-    const int bar_w    = 2;   // bar width in columns
-    const int bar_gap  = 1;   // gap between bars
-    const int bar_slot = bar_w + bar_gap;
-    const int n_bars   = std::min(VIZ_BINS, bar_area_cols / bar_slot);
+    // Bars are spread EVENLY across the full bar area (no left-clumping) by
+    // interpolating each bar's column span, so every column is covered and no bar
+    // is dropped by integer rounding at odd widths. Each bar keeps a 1-col gap.
+    // n_bars fills the width up to VIZ_BINS, at >= 2 cols per bar.
+    const int gap    = 1;
+    const int n_bars = std::clamp(bar_area_cols / 2, 1, VIZ_BINS);
 
     for (int b = 0; b < n_bars; ++b) {
+        int x0 = 1 + (b       * bar_area_cols) / n_bars;
+        int x1 = 1 + ((b + 1) * bar_area_cols) / n_bars;
+        int bw = (x1 - x0) - gap;
+        if (bw < 1) bw = 1;
+
         float val = viz_smoothed_[b * VIZ_BINS / n_bars];
-        // Fractional bar height: full cells + a sub-cell remainder in eighths, for
-        // smooth motion instead of whole-row jumps.
-        float exact   = std::clamp(val, 0.0f, 1.0f) * bar_area_rows;
+        // Fractional bar height in eighths for smooth motion. Floor to a small
+        // minimum so a low-activity band still shows a visible nub instead of
+        // vanishing (Dos: bars visible most of the time).
+        float exact = std::clamp(val, 0.0f, 1.0f) * bar_area_rows;
+        if (exact < kVizFloorCells) exact = kVizFloorCells;
         int   full    = (int)exact;
         int   eighths = (int)((exact - full) * 8.0f + 0.5f);
         if (eighths >= 8) { ++full; eighths = 0; }
         full = std::clamp(full, 0, bar_area_rows);
-
-        int col = 1 + b * bar_slot;
 
         // Colour by frequency position
         short pair;
@@ -1892,7 +1900,7 @@ void UIManager::drawVisualizer() {
         else if (pos < 0.66f) pair = CP_VIZ_MID;
         else                  pair = CP_VIZ_HIGH;
 
-        // Draw bar from bottom up — 2 cols wide
+        // Draw bar from bottom up, bw cols wide.
         for (int r = 0; r < bar_area_rows; ++r) {
             int screen_row = rows - 1 - r;
             if (r < full) {
@@ -1900,8 +1908,8 @@ void UIManager::drawVisualizer() {
                 // peak colour only when no fractional cell rides above it.
                 short draw_pair = (r == full - 1 && eighths == 0) ? CP_VIZ_PEAK : pair;
                 wattron(win_viz_, COLOR_PAIR(draw_pair));
-                for (int w = 0; w < bar_w && col + w < cols - 1; ++w)
-                    mvwaddch(win_viz_, screen_row, col + w, ' ');
+                for (int w = 0; w < bw && x0 + w < cols - 1; ++w)
+                    mvwaddch(win_viz_, screen_row, x0 + w, ' ');
                 wattroff(win_viz_, COLOR_PAIR(draw_pair));
             } else if (r == full && eighths > 0) {
                 // Fractional top: a lower-block glyph (▁..▇) in the tip colour on the
@@ -1909,8 +1917,8 @@ void UIManager::drawVisualizer() {
                 cchar_t cc;
                 wchar_t s[2] = { (wchar_t)(0x2580 + eighths), 0 };  // U+2581..U+2587
                 setcchar(&cc, s, A_NORMAL, CP_VIZ_TIP, nullptr);
-                for (int w = 0; w < bar_w && col + w < cols - 1; ++w)
-                    mvwadd_wch(win_viz_, screen_row, col + w, &cc);
+                for (int w = 0; w < bw && x0 + w < cols - 1; ++w)
+                    mvwadd_wch(win_viz_, screen_row, x0 + w, &cc);
             }
         }
     }

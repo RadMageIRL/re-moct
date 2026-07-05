@@ -156,7 +156,8 @@ private:
     int screen_cols_ = 0;
 
     // Visualizer
-    static constexpr int VIZ_BINS = 28;
+    static constexpr int VIZ_BINS = 64;   // finer spectrum: fills a wide strip with
+                                          // thin bars (DFT cost is per-k, not per-bin)
     std::array<float, VIZ_BINS> viz_bars_     {};
     std::array<float, VIZ_BINS> viz_smoothed_ {};
     void computeVizBins();

@@ -87,6 +87,24 @@ namespace {
 // not be installed system-wide ("runs anywhere"). The face is config-overridable
 // (config_.wingui_font); default is a Mono Nerd Font.
 void initWinguiFont(const std::string& configured_face) {
+    // PDCursesMod wingui persists the last font+window-size to
+    // HKCU\SOFTWARE\PDCurses\<exeBaseName> and RESTORES it inside initscr(),
+    // which overrides the face we set here (e.g. a stale "Courier New" saved by a
+    // pre-font-fix run stays sticky forever). Clear our value so OUR choice wins
+    // every launch - the wingui_font config key is the persistence layer, not the
+    // registry. Cost: the wingui window's size/position is not remembered across
+    // launches (a deterministic default is fine; RE-MOCT reflows).
+    {
+        wchar_t mod[MAX_PATH] = {0};
+        if (GetModuleFileNameW(nullptr, mod, MAX_PATH)) {
+            std::wstring name = mod;                 // basename sans extension ==
+            size_t slash = name.find_last_of(L"\\/"); // PDCurses' get_app_name()
+            if (slash != std::wstring::npos) name.erase(0, slash + 1);
+            size_t dot = name.find_last_of(L'.');
+            if (dot != std::wstring::npos) name.erase(dot);
+            RegDeleteKeyValueW(HKEY_CURRENT_USER, L"SOFTWARE\\PDCurses", name.c_str());
+        }
+    }
     std::error_code ec;
     fs::path fdir = fs::path(port::exeDir()) / "fonts";
     if (fs::is_directory(fdir, ec)) {
@@ -676,7 +694,14 @@ void UIManager::run() {
         if (audio_.takeStreamFailed())
             showTrackToast("Radio stream connect FAILED", "", "");
 
-        // Force periodic resize check and redraw every ~80ms
+        // Force periodic resize check and redraw every ~80ms.
+        // wingui (REMOCT_PDCURSES) delivers KEY_RESIZE and repaints its OWN GDI
+        // window, so this console-size poll is meaningless here AND its
+        // unconditional redraw_needed_ every ~80ms forces a full-window repaint
+        // every tick = constant flashing. Gate the whole heartbeat out for wingui;
+        // KEY_RESIZE plus the per-change redraw triggers cover it. The ncursesw
+        // console build (ConPTY size-poll workaround) and Linux are unchanged.
+#if !defined(REMOCT_PDCURSES)
         static int resize_poll = 0;
         if (++resize_poll >= 1) {
             resize_poll = 0;
@@ -729,6 +754,7 @@ void UIManager::run() {
 #endif
             redraw_needed_.store(true);
         }
+#endif
 
         // Force redraw when lyrics active (sync with playback position)
         if (right_pane_ == RightPane::Lyrics)

@@ -278,6 +278,7 @@ UIManager::~UIManager() {
     if (lb_validate_thread_.joinable()) lb_validate_thread_.join();
     if (discord_art_thread_.joinable()) discord_art_thread_.join();
     if (radio_art_thread_.joinable())   radio_art_thread_.join();
+    if (info_art_thread_.joinable())    info_art_thread_.join();
     if (mb_search_win_) { delwin(mb_search_win_); mb_search_win_ = nullptr; }
 #ifdef _WIN32
     // MBLookup/CDRipper cancel stay gated: CD is slice 6.
@@ -806,18 +807,19 @@ void UIManager::run() {
         if (audio_.takeStreamFailed())
             showTrackToast("Radio stream connect FAILED", "", "");
 
-        // Force periodic resize check and redraw every ~80ms.
-        // wingui (REMOCT_PDCURSES) delivers KEY_RESIZE and repaints its OWN GDI
-        // window, so this console-size poll is meaningless here AND its
-        // unconditional redraw_needed_ every ~80ms forces a full-window repaint
-        // every tick = constant flashing. Gate the whole heartbeat out for wingui;
-        // KEY_RESIZE plus the per-change redraw triggers cover it. The ncursesw
-        // console build (ConPTY size-poll workaround) and Linux are unchanged.
-#if !defined(REMOCT_PDCURSES)
+        // Windows-console size poll + forced ~80ms repaint. This whole heartbeat is
+        // a Windows-ONLY workaround: ConPTY (Windows Terminal/conhost) doesn't
+        // deliver KEY_RESIZE reliably, so we poll the window rect and force a full
+        // repaint. wingui (REMOCT_PDCURSES) repaints its own GDI window and Linux
+        // ncursesw gets real KEY_RESIZE via SIGWINCH - neither needs this, and the
+        // unconditional redraw_needed_ every tick just churns the panes (flicker /
+        // input-timing glitches). So gate it to the Windows console build only;
+        // everywhere else, KEY_RESIZE + the per-change redraw triggers + the
+        // lightweight per-tick draw (title/cwd/progress/viz) cover everything.
+#if !defined(REMOCT_PDCURSES) && defined(_WIN32)
         static int resize_poll = 0;
         if (++resize_poll >= 1) {
             resize_poll = 0;
-#ifdef _WIN32
             int new_cols = screen_cols_, new_rows = screen_rows_;
 
             // Windows Terminal ConPTY workaround:
@@ -863,7 +865,6 @@ void UIManager::run() {
                 screen_rows_ = new_rows;
                 resizeWindows();
             }
-#endif
             redraw_needed_.store(true);
         }
 #endif
@@ -2865,23 +2866,83 @@ bool UIManager::allocArtColorPairs(const cover::Rendered& art,
     return true;
 }
 
-// Refresh the cached cover render + colour pairs for `path` at the given art-box
-// size. Cheap early-out when the (path, box) key is unchanged - decode/quantise
-// happen once per track (or resize), NOT per frame. Never blocks, never throws.
-void UIManager::refreshInfoArt(const std::string& path, int box_cols, int box_rows) {
-    std::string key = path + "|" + std::to_string(box_cols) + "x" + std::to_string(box_rows);
-    if (key == info_art_key_) return;
-    info_art_key_ = key;
-    info_art_ = cover::Rendered{};
-    info_art_pairs_.clear();
-    if (path.empty() || isCDTrackPath(path) || box_cols < 4 || box_rows < 2) return;
+// Small MRU cache of decoded covers, keyed on "path|box". Look-up never reorders
+// (so the returned pointer stays valid until the next put); FIFO eviction at cap.
+const cover::Rendered* UIManager::artCacheGet(const std::string& key) {
+    for (auto& e : info_art_cache_) if (e.key == key) return &e.art;
+    return nullptr;
+}
+void UIManager::artCachePut(const std::string& key, const cover::Rendered& r) {
+    for (auto& e : info_art_cache_) if (e.key == key) { e.art = r; return; }
+    info_art_cache_.push_back({ key, r });
+    if (info_art_cache_.size() > kInfoArtCacheMax) info_art_cache_.erase(info_art_cache_.begin());
+}
 
-    std::vector<uint8_t> bytes = extractEmbeddedArt(path);
-    if (bytes.empty()) return;
-    cover::Rendered r = cover::render(bytes, box_cols, box_rows);
-    if (!r.ok) return;
-    if (!allocArtColorPairs(r, info_art_pairs_)) return;
-    info_art_ = std::move(r);
+// Commit a decoded grid as the shown art: allocate its colour pairs (UI thread -
+// curses palette) and mark the key. r.ok==false is a valid "no art" verdict.
+void UIManager::commitInfoArt(const std::string& key, const cover::Rendered& r) {
+    info_art_key_ = key;
+    info_art_ = r;
+    info_art_pairs_.clear();
+    if (info_art_.ok) allocArtColorPairs(info_art_, info_art_pairs_);
+}
+
+// Spawn the one-shot decode worker (file read + stb decode, both curses-free).
+// Single in-flight (guarded by info_art_active_); the result is picked up by
+// refreshInfoArt on the UI thread, which does the colour allocation.
+void UIManager::startInfoArtDecode(const std::string& path, const std::string& key,
+                                   int box_cols, int box_rows) {
+    if (info_art_active_.load()) return;
+    info_art_active_.store(true);
+    info_art_done_.store(false);
+    { std::lock_guard<std::mutex> lk(info_art_mtx_);
+      info_art_want_key_ = key; info_art_result_ = cover::Rendered{}; }
+    if (info_art_thread_.joinable()) info_art_thread_.join();   // prior worker already done
+    std::string p = path; int bc = box_cols, br = box_rows;
+    info_art_thread_ = std::thread([this, p, bc, br]() {
+        std::vector<uint8_t> bytes = extractEmbeddedArt(p);
+        cover::Rendered r;
+        if (!bytes.empty()) r = cover::render(bytes, bc, br);   // r.ok stays false if no art
+        { std::lock_guard<std::mutex> lk(info_art_mtx_); info_art_result_ = std::move(r); }
+        info_art_done_.store(true);
+    });
+}
+
+// Ensure the shown cover matches (path, box). Same key -> already committed, no
+// work. Cached decode -> commit instantly (colour-alloc only). Otherwise decode
+// off the UI thread and fill it in when it lands, so the pane never blocks. Never
+// throws. First open / track-change briefly shows no art, then the cover fills in.
+void UIManager::refreshInfoArt(const std::string& path, int box_cols, int box_rows) {
+    const std::string key = path + "|" + std::to_string(box_cols) + "x" + std::to_string(box_rows);
+
+    // Pick up a finished background decode: cache it, and show it if still current.
+    if (info_art_done_.exchange(false)) {
+        cover::Rendered r; std::string forkey;
+        { std::lock_guard<std::mutex> lk(info_art_mtx_);
+          r = std::move(info_art_result_); forkey = info_art_want_key_; }
+        if (info_art_thread_.joinable()) info_art_thread_.join();
+        info_art_active_.store(false);
+        artCachePut(forkey, r);
+        if (forkey == key) { commitInfoArt(forkey, r); requestRedraw(); }
+    }
+
+    if (key == info_art_key_) return;                 // already committed & drawn
+
+    if (const cover::Rendered* c = artCacheGet(key)) { commitInfoArt(key, *c); return; }
+
+    // Not decoded yet: clear the stale cover (don't show the wrong one) and kick
+    // off the decode. Leave info_art_key_ on the old key so we keep retrying the
+    // spawn until this key's decode lands and commits it.
+    if (!info_art_.cells.empty() || !info_art_pairs_.empty()) {
+        info_art_ = cover::Rendered{};
+        info_art_pairs_.clear();
+    }
+    if (path.empty() || isCDTrackPath(path) || box_cols < 4 || box_rows < 2) {
+        artCachePut(key, cover::Rendered{});          // cache the "no art" verdict
+        commitInfoArt(key, cover::Rendered{});
+        return;
+    }
+    startInfoArtDecode(path, key, box_cols, box_rows);
 }
 
 // Lazy-load the bundled RE-MOCT logo (the radio-art floor). Tried once; if the

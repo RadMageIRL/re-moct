@@ -220,11 +220,32 @@ private:
     // Cover art in the Info pane (half-block cells). Rendered + colour-allocated
     // once per (track, art-box size), cached and blitted each frame. See
     // refreshInfoArt / drawArt in UIManager.cpp.
-    std::string        info_art_key_;    // "<path>|<cols>x<rows>" the cache is valid for
+    std::string        info_art_key_;    // "<path>|<cols>x<rows>" the COMMITTED art reflects
     cover::Rendered    info_art_;        // decoded half-block grid (info_art_.ok gates drawing)
     std::vector<short> info_art_pairs_;  // curses colour-pair per cell (parallel to info_art_.cells)
     void refreshInfoArt(const std::string& path, int box_cols, int box_rows);
     bool allocArtColorPairs(const cover::Rendered& art, std::vector<short>& out_pairs);
+
+    // Async local-file cover decode: the file read (TagLib) + stb decode run on a
+    // worker so drawTrackInfo NEVER blocks the UI thread (a synchronous decode
+    // stalled input on Linux, where the draw loop repaints frequently - a quick
+    // 'e'/Esc around a stall felt dropped). Colour-pair allocation stays on the UI
+    // thread (curses palette). A small MRU cache of recent (path|box) decodes keeps
+    // tag-edit toggles and track re-visits instant (no re-decode, no re-read).
+    std::thread          info_art_thread_;
+    std::atomic<bool>    info_art_active_{false};   // decode worker in flight
+    std::atomic<bool>    info_art_done_{false};     // decoded grid ready for pickup
+    std::mutex           info_art_mtx_;
+    std::string          info_art_want_key_;        // "path|box" the worker decodes for (guarded)
+    cover::Rendered      info_art_result_;          // decoded grid from the worker (guarded)
+    struct ArtCacheEntry { std::string key; cover::Rendered art; };
+    std::vector<ArtCacheEntry> info_art_cache_;     // small MRU cache (FIFO-evicted)
+    static constexpr std::size_t kInfoArtCacheMax = 6;
+    void startInfoArtDecode(const std::string& path, const std::string& key,
+                            int box_cols, int box_rows);
+    void commitInfoArt(const std::string& key, const cover::Rendered& r);   // UI thread: alloc + show
+    const cover::Rendered* artCacheGet(const std::string& key);
+    void artCachePut(const std::string& key, const cover::Rendered& r);
 
     // ── Radio cover art (Info pane) ───────────────────────────────────────────
     // Live-stream art shadows the Discord committed-song decision: on a committed

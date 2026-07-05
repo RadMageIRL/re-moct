@@ -295,6 +295,17 @@
   config replaced hint sniffing (the slice-8 "don't migrate garbage" rule);
   (4) setDevice's file-restart now primes the decoder and re-reads tags into
   the source's private info_ (current_track_ untouched) - inert warm-up.
+- **Varispeed is linear interpolation BY CHOICE, not by laziness.** The playback-
+  speed resampler uses linear interp deliberately - it's cheap, zero-latency, and
+  the slight top-end softening is the right feel for a scrub/speed control (you're
+  changing pitch anyway). What keeps it CLICK-FREE is discipline, not filter order:
+  RESET the interpolator residual (the fractional read position / last-sample carry)
+  on every seek, track-swap, and stop, so a fresh stream never interpolates against
+  a stale tail. Don't "upgrade" to sinc/polyphase without a concrete reason - it buys
+  inaudible quality here at real latency + complexity cost, and a sinc kernel that
+  forgets to flush its history on the same three events reintroduces exactly the
+  clicks the reset already prevents. If varispeed ever clicks, look at residual reset
+  on those boundaries FIRST, not at the interpolation math.
 
 ## Replay-net / test-fixture lessons (Phase 2 slice 0)
 - **"A few quiet reads" is NOT end-of-stream when legitimate in-stream silence

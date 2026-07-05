@@ -77,8 +77,15 @@ namespace fs = std::filesystem;
 // wingui global (pdcdisp.c), UNICODE build => wchar_t[128]. Declared at global
 // scope: an extern "C" inside an anonymous namespace is a linkage contradiction.
 extern "C" TCHAR PDC_font_name[];
+// wingui (pdcscrn.c): registers a callback invoked on every WM_SIZE, including
+// inside Windows' modal resize-drag loop where our getch() loop is blocked.
+extern "C" void PDC_set_window_resized_callback(void (*)(void));
 
 namespace {
+// Trampoline for the C resize callback -> the live UIManager (single UI instance).
+UIManager* g_wingui_ui = nullptr;
+void winguiResizeTrampoline() { if (g_wingui_ui) g_wingui_ui->onWinguiLiveResize(); }
+
 // PDCursesMod wingui owns its GDI font (unlike a terminal, where the font is the
 // terminal's). Point it at a glyph-complete face so box-drawing corners (rounded
 // ╭╮╰╯), viz blocks ▁▂▇█ and Nerd icons render instead of tofu. MUST run BEFORE
@@ -145,6 +152,9 @@ UIManager::UIManager(PlaylistManager& playlist, AudioManager& audio,
     // the RE-MOCT caption. Colour / transparent-bg parity (PDC_ORIGINAL_COLORS
     // vs use_default_colors) is tuned on the Task-4 visual re-probe, not here.
     PDC_set_title("RE-MOCT");
+    // Repaint live during the modal resize-drag (see onWinguiLiveResize).
+    g_wingui_ui = this;
+    PDC_set_window_resized_callback(&winguiResizeTrampoline);
 #endif
     setlocale(LC_ALL, "");
     cbreak();
@@ -223,6 +233,19 @@ UIManager::~UIManager() {
 #endif
     destroyWindows();
     endwin();
+}
+
+void UIManager::onWinguiLiveResize() {
+    // Fires from wingui's WM_SIZE handler during the modal resize-drag, on the UI
+    // thread while getch() is blocked in the drag loop. Rebuild + repaint so the
+    // window shows live content instead of blanking until the drag is released.
+    // Reentrancy guard: a nested WM_SIZE (should not happen mid-drag, but be safe)
+    // must not recurse into a second rebuild. Same-thread, so a plain bool suffices.
+    static bool in_live_resize = false;
+    if (in_live_resize) return;
+    in_live_resize = true;
+    resizeWindows();
+    in_live_resize = false;
 }
 
 void UIManager::resizeWindows() {

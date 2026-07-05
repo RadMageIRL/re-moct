@@ -43,6 +43,10 @@ public:
 
     void run();
     void requestRedraw() { redraw_needed_.store(true); }
+    // wingui only: repaint live during Windows' modal resize-drag loop (the app's
+    // getch() loop is blocked there, so without this the window is blank mid-drag).
+    // Registered as PDCurses' window-resized callback; a no-op elsewhere.
+    void onWinguiLiveResize();
     const std::string& currentDir() const { return current_dir_; }
 
 private:

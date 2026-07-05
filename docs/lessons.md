@@ -625,3 +625,64 @@ not yet swapped - this deliberately isolates the codec question from the curses 
   C++ objects cross it, proven byte-identical in Phase 4 slice d). That is NOT the same as
   `-static` on the plugin (which would break the loadable module). DECISION for Dos before Phase
   5: static-libgcc/stdc++ the plugin (keeps the 2-DLL package) vs ship the 3 runtime DLLs.
+- **Static libwinpthread needs `--whole-archive`, not just `-static-libstdc++`.** libwinpthread
+  is pulled by `libstdc++.a`'s pthread refs at the driver's IMPLICIT tail, and `-static-libstdc++`
+  emits a `-Bdynamic` right after libstdc++, so a plain `-lwinpthread` (before the objects) is
+  discarded and a trailing `-Bstatic` is undone -> the DLL stays dynamic. `-Wl,-Bstatic,--whole-archive
+  -lwinpthread -Wl,--no-whole-archive,-Bdynamic` forces the whole archive in regardless of ref
+  position. Verified by `ldd` showing no libwinpthread-1.dll.
+
+## PDCursesMod wingui (Option C - the Windows GUI port)
+The wingui port draws its OWN GDI window - it is NOT a console. Almost every failure here is
+runtime-discoverable, not compile-discoverable; a green build proves nothing about the window.
+
+- **The seam header must NOT be named `Curses.h`.** On Windows's case-insensitive filesystem,
+  with `include/` ahead of the vendored dir on the search path, `#include <curses.h>` (from the
+  seam's own PDCurses branch) matches the seam itself, and `#pragma once` then expands it to
+  nothing -> every curses symbol undeclared. Named it `CursesSeam.h`. (Symptom: `WINDOW` undefined,
+  "did you mean WINDOWPOS" - windows.h is all that's visible.)
+- **wingui owns the font; the registry overrides a pre-initscr set.** The face is the extern
+  global `PDC_font_name` (`wchar_t[128]` under the forced-UNICODE build; no public setter), set
+  BEFORE initscr (wingui measures the font during screen open). BUT wingui restores the last
+  font+size from `HKCU\SOFTWARE\PDCurses\<exeBaseName>` INSIDE initscr, which clobbers your set -
+  a stale "Courier New" saved by a pre-fix run stays sticky forever. Clear that value first
+  (`RegDeleteKeyValueW`) so your choice wins. Bundle a glyph-complete Nerd Font via
+  `AddFontResourceExW(FR_PRIVATE)` from `<exeDir>/fonts/` so it need not be installed. Default
+  "Courier New" lacks rounded box corners / sub-blocks / Nerd icons -> tofu.
+- **Resize: use `resize_term(0,0)`, never the console APIs.** `GetConsoleWindow`/`CONOUT$` report
+  nothing meaningful on a console-less GDI app and drive `resize_term` to a mismatched size (no
+  reflow + crash from drawing into a stale cell buffer). wingui already stored the new window
+  size and queued KEY_RESIZE; `resize_term(0,0)` adopts it and refreshes LINES/COLS/stdscr - the
+  canonical PDCurses idiom (its own getch.c does the same).
+- **Live repaint during a drag needs `PDC_set_window_resized_callback`.** Windows runs a MODAL
+  message loop while the user drags the frame, so the app's getch()/draw loop is blocked and the
+  window blanks until release. wingui invokes the registered callback from its WM_SIZE handler
+  INSIDE that modal loop - repaint from there. Skip the intermediate blank-frame `doupdate()` in
+  resizeWindows for wingui or every WM_SIZE flashes (wingui double-buffers WM_PAINT, so one clean
+  composed frame per tick is flicker-free).
+- **THE ordering trap: register that callback LAST.** Any window op that fires WM_SIZE
+  SYNCHRONOUSLY (SetWindowPos with SWP_FRAMECHANGED, SetMenu, ...) re-enters the resize callback
+  the instant it is registered - and in the CONSTRUCTOR that runs `resizeWindows()` (drawAll,
+  createWindows) on a HALF-BUILT UIManager -> crash / garbage launch. Do ALL ctor-time window
+  manipulation FIRST, then register `PDC_set_window_resized_callback` as the last wingui step.
+  (Cost us a black launch that looked like a font/resize bug but was pure reentrancy.)
+- **Hide the menu with wingui's OWN toggle, not raw SetMenu.** A raw `SetMenu(hwnd, NULL)` grows
+  the client area and desyncs the curses grid; trying to fix that with a hand-computed
+  `resize_term` mis-sized/relocated the window (title bar shoved off-screen, unresizable). wingui's
+  `WM_TOGGLE_MENU` (`WM_USER+4`, sent via `WM_COMMAND`) is built for this: it removes the menu,
+  KEEPS the curses grid unchanged, and shrinks the window to match - no desync, and because the
+  grid doesn't change it can't re-enter the resize callback. `menu_shown` starts at 1 (we clear
+  the registry each launch), so one toggle hides it.
+- **DWM dark mode does not cover the menu bar.** `DwmSetWindowAttribute(hwnd,
+  DWMWA_USE_IMMERSIVE_DARK_MODE=20, ...)` (19 on older Win10) darkens the title bar/border to
+  match the OS (read `HKCU ...\Personalize\AppsUseLightTheme`, 0=dark) - but a standard Win32 menu
+  bar stays light regardless. Dark-theming the menu bar itself needs owner-draw / undocumented
+  uxtheme; hiding it (above) was the clean answer once the font moved to config.
+- **Spectrum in a short strip: gamma-lift + a floor, and DFT bins are ~free.** A 5-row strip
+  crushes dynamics that fill a 40-row pane, so in Awesome only lift values (`pow(val,0.65)`) and
+  raise the floor so bars fill and do not collapse to a nub. Spread bars by interpolating each
+  bar's column span (`x0..x1 = b*cols/n_bars`) so they fill the FULL width and integer rounding
+  never drops one. More `VIZ_BINS` is nearly free: the DFT cost is dominated by the per-k
+  frequency sweep (bins just partition the same k's). A low band whose log-spaced range collapses
+  onto a single FFT bin (`k_lo==k_hi`) must use that k, not hit the above-Nyquist "empty" skip, or
+  low bands drop out.

@@ -300,17 +300,26 @@ void UIManager::resizeWindows() {
 #endif
     destroyWindows();
 
-    // Physically blank every cell on stdscr — critical when shrinking
-    // so old content outside the new smaller bounds gets wiped
+    // Blank stdscr so stale content outside the new bounds is wiped; clearok
+    // forces a full (non-diffed) repaint on the next doupdate.
     clearok(stdscr, TRUE);
     werase(stdscr);
+#if !defined(REMOCT_PDCURSES)
+    // Console/ncurses: paint + FLUSH a blank frame first (belt-and-suspenders on
+    // shrink). On wingui this intermediate doupdate() shows a blank frame on
+    // every WM_SIZE during a live resize-drag = visible flicker; there we skip it
+    // and let the single composed doupdate() below repaint cleanly (wingui
+    // double-buffers its WM_PAINT, so one full repaint per tick is flicker-free).
     for (int r = 0; r < screen_rows_; ++r)
         for (int c = 0; c < screen_cols_; ++c)
             mvaddch(r, c, ' ');
     wnoutrefresh(stdscr);
     doupdate();
+#endif
 
     if (screen_rows_ < 9 || screen_cols_ < 40) {
+        wnoutrefresh(stdscr);
+        doupdate();
         redraw_needed_.store(true);
         return;
     }
@@ -1536,9 +1545,20 @@ void UIManager::drawCwd() {
     // Format: " >> /full/path/to/current/directory "
     std::string path = in_drive_list_ ? "[Drives]" : current_dir_;
 
-    // If path is wider than screen, show only the tail
+    // Awesome mode: a persistent [THEME:<name>] tag right-aligned here, directly
+    // below the RE-MOCT version in the title bar. This replaces the transient
+    // F8/Ctrl+T theme toast. Classic mode shows nothing on the right.
+    std::string theme_tag;
+    if (config_.awesome_mode)
+        theme_tag = std::string(" [THEME:") + kAwesomeThemes[config_.awesome_theme].name + "] ";
+    const int tag_w = (int)dispWidth(theme_tag);
+
+    const int cwx   = config_.awesome_mode ? 1 : 0;   // align with inset pane frames
+    const int avail = screen_cols_ - cwx - tag_w;     // width left for the path line
+
+    // If path is wider than the available width, show only the tail
     // Keep a leading "<<" indicator to show it's truncated
-    const int maxw = screen_cols_ - 4;  // 4 = " >> " prefix
+    const int maxw = avail - 4;  // 4 = " >> " prefix
     std::string display = path;
     std::string prefix  = " >> ";
     if (dispWidth(display) > maxw) {
@@ -1547,12 +1567,18 @@ void UIManager::drawCwd() {
     }
 
     std::string line = prefix + display;
-    int cwx = config_.awesome_mode ? 1 : 0;   // align with inset pane frames
-    std::wstring wcwd = utf8_to_wide(padToWidth(line, screen_cols_ - cwx));
+    std::wstring wcwd = utf8_to_wide(padToWidth(line, avail));
 
     wattron(win_cwd_, COLOR_PAIR(CP_DIM));
     mvwaddnwstr(win_cwd_, 0, cwx, wcwd.c_str(), (int)wcwd.size());
     wattroff(win_cwd_, COLOR_PAIR(CP_DIM));
+
+    if (tag_w > 0) {
+        std::wstring wtag = utf8_to_wide(theme_tag);
+        wattron(win_cwd_, COLOR_PAIR(CP_TITLE) | A_BOLD);
+        mvwaddnwstr(win_cwd_, 0, screen_cols_ - tag_w, wtag.c_str(), (int)wtag.size());
+        wattroff(win_cwd_, COLOR_PAIR(CP_TITLE) | A_BOLD);
+    }
 }
 
 void UIManager::drawDirBrowser() {
@@ -4062,9 +4088,8 @@ void UIManager::handleInput(int ch) {
             initColours();
             resizeWindows();        // rebuild panes with theme-aware geometry +
             redraw_needed_.store(true);   // full shrink-safe screen wipe
-            showTrackToast(config_.awesome_mode
-                               ? (std::string("Awesome - ") + kAwesomeThemes[config_.awesome_theme].name)
-                               : std::string("Theme: Classic"), "", "");
+            // No toast: the recolour + the persistent [THEME:<name>] tag on the
+            // cwd line (Awesome) are the feedback (Dos: indicator, not toast).
             break;
         case 14:  // Ctrl+N — toggle Nerd Font title icons (needs a Nerd Font)
             config_.nerd_icons = !config_.nerd_icons;
@@ -4090,19 +4115,7 @@ void UIManager::handleInput(int ch) {
             config_.save();
             applyAwesomeTheme();          // recolour in place — pairs are global, no rebuild
             clearok(stdscr, TRUE);
-            redraw_needed_.store(true);
-            const std::string name = kAwesomeThemes[config_.awesome_theme].name;
-            // F8 is a repeat key: desktop notify only when the user opted into toasts;
-            // otherwise the recolour + in-TUI status line is the feedback (no notify spam).
-            if (config_.toast_enabled) {
-                showTrackToast("Theme: " + name, "", "");
-            } else {
-#ifndef _WIN32
-                status_msg_ = "Theme: " + name;
-                status_msg_ticks_ = 0;
-                redraw_needed_.store(true);
-#endif
-            }
+            redraw_needed_.store(true);   // the [THEME:<name>] tag repaints with the new name
             break;
         }
         // Per-case Windows gates below (slice-2 fix): a single #ifdef here

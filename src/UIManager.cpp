@@ -70,7 +70,7 @@ static constexpr int kMinPaneRows  = 3;         // panes need at least this many
 // small nub instead of vanishing. Classic's tall pane uses ~1/3 cell; the short
 // Awesome strip uses a taller floor (it only has ~5 rows to work with).
 static constexpr float kVizFloorCells      = 0.35f;   // Classic overlay
-static constexpr float kVizStripFloorCells = 0.8f;    // Awesome strip (~16% of ~5 rows)
+static constexpr float kVizStripFloorCells = 0.9f;    // Awesome strip (~18% of ~5 rows)
 
 static void sclog(const char* fmt, ...) {
     char buf[2048];
@@ -1201,9 +1201,12 @@ void UIManager::computeVizBins() {
         val = std::pow(val, 0.6f);
         val = std::clamp(val, 0.0f, 0.95f);
 
-        // Exponential smoothing: very fast attack, moderate decay
-        float prev = viz_smoothed_[b];
-        float alpha = (val > prev) ? 0.85f : 0.25f;
+        // Exponential smoothing: very fast attack, moderate decay. Slow the
+        // fall-off a touch more in Awesome (only one viz mode is on screen at a
+        // time, so Classic's locked feel is unchanged).
+        float prev  = viz_smoothed_[b];
+        float decay = config_.awesome_mode ? 0.18f : 0.25f;
+        float alpha = (val > prev) ? 0.85f : decay;
         viz_smoothed_[b] = prev + alpha * (val - prev);
     }
 }

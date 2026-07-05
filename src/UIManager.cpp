@@ -57,6 +57,11 @@ static const char* const kVersionTag = "v" REMOCT_VERSION "-win";
 static const char* const kVersionTag = "v" REMOCT_VERSION "-linux";
 #endif
 
+// [THEME:name] cwd-line tag lifetime, in ~80ms loop ticks (timeout(80)):
+// bold up to the fade point, dimmed after it, removed at the end (~10s).
+static constexpr int kThemeTagFadeTick = 106;   // ~8.5s: bold -> dim
+static constexpr int kThemeTagGoneTick = 125;   // ~10s : removed
+
 static void sclog(const char* fmt, ...) {
     char buf[2048];
     va_list ap; va_start(ap, fmt);
@@ -933,6 +938,15 @@ void UIManager::run() {
         } else if (cd_ripper_.isActive()) {
             rip_msg_ticks_ = 0;
         }
+        // Age the [THEME:name] cwd tag (~10s). Repaint only at the fade point
+        // (bold -> dim) and when it is removed - the tag is static in between, so
+        // no per-tick repaint (stays flash-free on wingui).
+        if (theme_tag_ticks_ < kThemeTagGoneTick) {
+            ++theme_tag_ticks_;
+            if (theme_tag_ticks_ == kThemeTagFadeTick ||
+                theme_tag_ticks_ == kThemeTagGoneTick)
+                redraw_needed_.store(true);
+        }
 #ifndef _WIN32
         // Expire the toast-fallback status line (same cadence as rip_status_).
         if (!status_msg_.empty() && ++status_msg_ticks_ > 60) {
@@ -1545,12 +1559,17 @@ void UIManager::drawCwd() {
     // Format: " >> /full/path/to/current/directory "
     std::string path = in_drive_list_ ? "[Drives]" : current_dir_;
 
-    // Awesome mode: a persistent [THEME:<name>] tag right-aligned here, directly
-    // below the RE-MOCT version in the title bar. This replaces the transient
-    // F8/Ctrl+T theme toast. Classic mode shows nothing on the right.
+    // On a theme switch (Ctrl+T / F8) show a [THEME:<name>] tag right-aligned here,
+    // directly below the RE-MOCT version in the title bar - then fade it out after
+    // ~10s (bold, then dim, then gone). Replaces the transient theme toast.
     std::string theme_tag;
-    if (config_.awesome_mode)
-        theme_tag = std::string(" [THEME:") + kAwesomeThemes[config_.awesome_theme].name + "] ";
+    bool        theme_tag_dim = false;
+    if (theme_tag_ticks_ < kThemeTagGoneTick) {
+        theme_tag = config_.awesome_mode
+            ? std::string(" [THEME:") + kAwesomeThemes[config_.awesome_theme].name + "] "
+            : std::string(" [THEME:Classic] ");
+        theme_tag_dim = (theme_tag_ticks_ >= kThemeTagFadeTick);
+    }
     const int tag_w = (int)dispWidth(theme_tag);
 
     const int cwx   = config_.awesome_mode ? 1 : 0;   // align with inset pane frames
@@ -1575,9 +1594,10 @@ void UIManager::drawCwd() {
 
     if (tag_w > 0) {
         std::wstring wtag = utf8_to_wide(theme_tag);
-        wattron(win_cwd_, COLOR_PAIR(CP_TITLE) | A_BOLD);
+        const attr_t a = COLOR_PAIR(CP_TITLE) | (theme_tag_dim ? A_DIM : A_BOLD);
+        wattron(win_cwd_, a);
         mvwaddnwstr(win_cwd_, 0, screen_cols_ - tag_w, wtag.c_str(), (int)wtag.size());
-        wattroff(win_cwd_, COLOR_PAIR(CP_TITLE) | A_BOLD);
+        wattroff(win_cwd_, a);
     }
 }
 
@@ -4088,8 +4108,7 @@ void UIManager::handleInput(int ch) {
             initColours();
             resizeWindows();        // rebuild panes with theme-aware geometry +
             redraw_needed_.store(true);   // full shrink-safe screen wipe
-            // No toast: the recolour + the persistent [THEME:<name>] tag on the
-            // cwd line (Awesome) are the feedback (Dos: indicator, not toast).
+            theme_tag_ticks_ = 0;   // flash [THEME:<name>] on the cwd line for ~10s
             break;
         case 14:  // Ctrl+N — toggle Nerd Font title icons (needs a Nerd Font)
             config_.nerd_icons = !config_.nerd_icons;
@@ -4115,7 +4134,8 @@ void UIManager::handleInput(int ch) {
             config_.save();
             applyAwesomeTheme();          // recolour in place — pairs are global, no rebuild
             clearok(stdscr, TRUE);
-            redraw_needed_.store(true);   // the [THEME:<name>] tag repaints with the new name
+            redraw_needed_.store(true);
+            theme_tag_ticks_ = 0;   // flash [THEME:<name>] on the cwd line for ~10s
             break;
         }
         // Per-case Windows gates below (slice-2 fix): a single #ifdef here

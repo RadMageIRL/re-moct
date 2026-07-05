@@ -248,6 +248,11 @@ private:
     std::string rip_status_;   // shown in cmdline during/after rip
     int         rip_msg_ticks_ = 0;  // auto-clear counter
 
+    // [THEME:name] tag on the cwd line, shown on a theme switch (Ctrl+T / F8):
+    // bold, then dimmed near the end, gone after ~10s. Counts ~80ms loop ticks
+    // (timeout(80)). Initialised past the timeout so it is hidden at startup.
+    int         theme_tag_ticks_ = 125;
+
 #ifndef _WIN32
     // Cmdline echo (KEPT past slice 5): a real notify-send toast now renders on
     // a Linux desktop with a notification daemon, but headless/no-daemon Linux

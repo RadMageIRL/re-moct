@@ -287,6 +287,20 @@ endif()
 set_target_properties(remoct PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 
+# ── App icon (Windows) ─────────────────────────────────────────────────────
+# icon/remoct.ico is a LOCAL, gitignored asset. When present, embed it as the
+# exe's first icon resource: Explorer/taskbar/shortcut use it, and PDCursesMod
+# wingui uses the exe's first icon for its window class (titlebar top-left). A
+# generated .rc (build tree) points windres at the absolute path. Conditional,
+# so a checkout without the asset still builds.
+if(WIN32 AND EXISTS "${CMAKE_SOURCE_DIR}/icon/remoct.ico")
+    enable_language(RC)
+    set(REMOCT_ICON_RC "${CMAKE_BINARY_DIR}/remoct_icon.rc")
+    file(WRITE "${REMOCT_ICON_RC}" "1 ICON \"${CMAKE_SOURCE_DIR}/icon/remoct.ico\"\n")
+    target_sources(remoct PRIVATE "${REMOCT_ICON_RC}")
+    message(STATUS "app icon: embedding icon/remoct.ico")
+endif()
+
 install(TARGETS remoct RUNTIME DESTINATION bin)
 
 # ── Phase 4 slice (c): the streaming source as a loadable plugin ────────────

@@ -24,3 +24,7 @@ binary-dev/
 # test/app run from the repo root can drop one here.
 remoct.conf
 theme.conf
+
+# App icon asset (local, not tracked). CMake conditionally embeds icon/remoct.ico
+# as the exe's first icon when present (Explorer/taskbar/shortcut + wingui window).
+icon/

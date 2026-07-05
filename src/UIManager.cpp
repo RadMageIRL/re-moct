@@ -70,7 +70,7 @@ static constexpr int kMinPaneRows  = 3;         // panes need at least this many
 // small nub instead of vanishing. Classic's tall pane uses ~1/3 cell; the short
 // Awesome strip uses a taller floor (it only has ~5 rows to work with).
 static constexpr float kVizFloorCells      = 0.35f;   // Classic overlay
-static constexpr float kVizStripFloorCells = 0.6f;    // Awesome strip
+static constexpr float kVizStripFloorCells = 0.8f;    // Awesome strip (~16% of ~5 rows)
 
 static void sclog(const char* fmt, ...) {
     char buf[2048];

@@ -67,8 +67,10 @@ static constexpr int kThemeTagGoneTick = 125;   // ~10s : removed
 static constexpr int kVizStripRows = 7;         // 2 frame + ~5 bar rows
 static constexpr int kMinPaneRows  = 3;         // panes need at least this many
 // Minimum spectrum bar height (in cells) so a low-activity band still shows a
-// small nub instead of vanishing. ~1/3 cell -> a short lower-block tip glyph.
-static constexpr float kVizFloorCells = 0.35f;
+// small nub instead of vanishing. Classic's tall pane uses ~1/3 cell; the short
+// Awesome strip uses a taller floor (it only has ~5 rows to work with).
+static constexpr float kVizFloorCells      = 0.35f;   // Classic overlay
+static constexpr float kVizStripFloorCells = 0.6f;    // Awesome strip
 
 static void sclog(const char* fmt, ...) {
     char buf[2048];
@@ -1161,11 +1163,18 @@ void UIManager::computeVizBins() {
         k_lo = std::clamp(k_lo, 1, N/2);
         k_hi = std::clamp(k_hi, 1, N/2);
         if (k_hi <= k_lo) {
-            // Empty range after clamping — happens for bands at/above Nyquist on
-            // low-sample-rate sources. No bins map here; decay and skip so the
-            // divisor below can never be zero (which produced NaN poisoning).
-            viz_smoothed_[b] *= 0.5f;
-            continue;
+            if (k_lo < N/2) {
+                // A LOW band whose log-spaced range collapsed onto a single FFT
+                // bin (many fine bins pack into the coarse low-k region). Use that
+                // one bin instead of decaying to nothing - otherwise low bands drop
+                // out entirely (worse with more VIZ_BINS).
+                k_hi = k_lo + 1;
+            } else {
+                // Genuinely at/above Nyquist (low-sample-rate source): nothing maps
+                // here; decay and skip so the divisor below can't be zero (NaN).
+                viz_smoothed_[b] *= 0.5f;
+                continue;
+            }
         }
 
         // DFT magnitude over [k_lo, k_hi)
@@ -1883,11 +1892,16 @@ void UIManager::drawVisualizer() {
         if (bw < 1) bw = 1;
 
         float val = viz_smoothed_[b * VIZ_BINS / n_bars];
-        // Fractional bar height in eighths for smooth motion. Floor to a small
-        // minimum so a low-activity band still shows a visible nub instead of
-        // vanishing (Dos: bars visible most of the time).
+        // The short Awesome strip (~5 bar rows) crushes dynamics, so lift the
+        // values with an extra gamma and use a taller floor: bars fill the strip
+        // and don't collapse to a bare nub between beats. Classic's tall pane keeps
+        // the raw response (its floor is fine as-is).
+        float floor = kVizFloorCells;
+        if (aw) { val = std::pow(val, 0.65f); floor = kVizStripFloorCells; }
+        // Fractional bar height in eighths for smooth motion; floor keeps a
+        // low-activity band visible instead of vanishing.
         float exact = std::clamp(val, 0.0f, 1.0f) * bar_area_rows;
-        if (exact < kVizFloorCells) exact = kVizFloorCells;
+        if (exact < floor) exact = floor;
         int   full    = (int)exact;
         int   eighths = (int)((exact - full) * 8.0f + 0.5f);
         if (eighths >= 8) { ++full; eighths = 0; }

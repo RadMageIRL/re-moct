@@ -72,6 +72,17 @@ static bool httpGet(const std::string& url, std::vector<uint8_t>& out,
     return !out.empty();
 }
 
+// Download an already-resolved cover URL to image bytes (see CoverArt.h). Only
+// returns data that begins with a known image signature, so an HTML/JSON error
+// body served with a 200 is never mistaken for cover art.
+std::vector<uint8_t> bytesByUrl(const std::string& url) {
+    if (url.empty()) return {};
+    std::vector<uint8_t> img;
+    if (httpGet(url, img, "RE-MOCT/" REMOCT_VERSION) && looksLikeImage(img))
+        return img;
+    return {};
+}
+
 // Open, no-auth cover-art fallback keyed by artist + album text.
 // Runs ONLY when Cover Art Archive returns nothing: Discogs releases have no
 // MBID (so CAA can't be queried), and a few MB releases lack a CAA front cover.

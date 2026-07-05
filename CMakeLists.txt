@@ -303,6 +303,20 @@ if(WIN32 AND EXISTS "${CMAKE_SOURCE_DIR}/icon/remoct.ico")
     message(STATUS "app icon: embedding icon/remoct.ico")
 endif()
 
+# ── App logo (radio-art floor) ─────────────────────────────────────────────
+# remoct_logo.jpg is the RE-MOCT logo, shipped with the app: the Info pane
+# renders it as the half-block cover-art floor when a radio song has no confident
+# cover match. Copy it beside the exe (bin/) so logoBytes() finds it at <exeDir>,
+# and install it to bin/. Conditional so a checkout without the asset still builds.
+if(EXISTS "${CMAKE_SOURCE_DIR}/icon/remoct_logo.jpg")
+    add_custom_command(TARGET remoct POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${CMAKE_SOURCE_DIR}/icon/remoct_logo.jpg"
+                "$<TARGET_FILE_DIR:remoct>/remoct_logo.jpg"
+        VERBATIM)
+    install(FILES "${CMAKE_SOURCE_DIR}/icon/remoct_logo.jpg" DESTINATION bin)
+endif()
+
 install(TARGETS remoct RUNTIME DESTINATION bin)
 
 # ── Phase 4 slice (c): the streaming source as a loadable plugin ────────────

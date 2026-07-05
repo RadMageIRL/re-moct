@@ -70,7 +70,7 @@ static constexpr int kMinPaneRows  = 3;         // panes need at least this many
 // small nub instead of vanishing. Classic's tall pane uses ~1/3 cell; the short
 // Awesome strip uses a taller floor (it only has ~5 rows to work with).
 static constexpr float kVizFloorCells      = 0.35f;   // Classic overlay
-static constexpr float kVizStripFloorCells = 1.035f;  // Awesome strip (~21% of ~5 rows)
+static constexpr float kVizStripFloorCells = 1.19f;   // Awesome strip (~24% of ~5 rows; +15% floor)
 
 static void sclog(const char* fmt, ...) {
     char buf[2048];
@@ -277,6 +277,7 @@ UIManager::~UIManager() {
     lb_validate_active_.store(false);
     if (lb_validate_thread_.joinable()) lb_validate_thread_.join();
     if (discord_art_thread_.joinable()) discord_art_thread_.join();
+    if (radio_art_thread_.joinable())   radio_art_thread_.join();
     if (mb_search_win_) { delwin(mb_search_win_); mb_search_win_ = nullptr; }
 #ifdef _WIN32
     // MBLookup/CDRipper cancel stay gated: CD is slice 6.
@@ -1242,7 +1243,7 @@ void UIManager::computeVizBins() {
         // fall-off a touch more in Awesome (only one viz mode is on screen at a
         // time, so Classic's locked feel is unchanged).
         float prev  = viz_smoothed_[b];
-        float decay = config_.awesome_mode ? 0.162f : 0.25f;
+        float decay = config_.awesome_mode ? 0.178f : 0.25f;   // Awesome: +10% falloff
         float alpha = (val > prev) ? 0.85f : decay;
         viz_smoothed_[b] = prev + alpha * (val - prev);
     }
@@ -1937,7 +1938,7 @@ void UIManager::drawVisualizer() {
         // and don't collapse to a bare nub between beats. Classic's tall pane keeps
         // the raw response (its floor is fine as-is).
         float floor = kVizFloorCells;
-        if (aw) { val = std::pow(val, 0.65f); floor = kVizStripFloorCells; }
+        if (aw) { val = std::pow(val, 0.65f) * 1.10f; floor = kVizStripFloorCells; }  // +10% gain
         // Fractional bar height in eighths for smooth motion; floor keeps a
         // low-activity band visible instead of vanishing.
         float exact = std::clamp(val, 0.0f, 1.0f) * bar_area_rows;
@@ -2883,6 +2884,140 @@ void UIManager::refreshInfoArt(const std::string& path, int box_cols, int box_ro
     info_art_ = std::move(r);
 }
 
+// Lazy-load the bundled RE-MOCT logo (the radio-art floor). Tried once; if the
+// asset isn't found the floor is simply blank (metadata reflows full width, same
+// as a local file with no embedded cover). Copied beside the exe at build time
+// (remoct_logo.jpg); a couple of source-tree relatives cover in-place dev runs.
+const std::vector<uint8_t>& UIManager::logoBytes() {
+    if (logo_load_tried_) return logo_bytes_;
+    logo_load_tried_ = true;
+    const fs::path exe = fs::path(port::exeDir());
+    for (const fs::path& p : { exe / "remoct_logo.jpg",
+                               exe / "icon" / "remoct_logo.jpg",
+                               exe / ".." / "icon" / "remoct_logo.jpg",
+                               exe / ".." / ".." / "icon" / "remoct_logo.jpg" }) {
+        std::error_code ec;
+        if (!fs::exists(p, ec)) continue;
+        std::ifstream f(p, std::ios::binary | std::ios::ate);
+        if (!f) continue;
+        std::streamoff n = f.tellg();
+        if (n <= 0) continue;
+        logo_bytes_.resize((size_t)n);
+        f.seekg(0);
+        if (f.read((char*)logo_bytes_.data(), n)) break;
+        logo_bytes_.clear();   // short read -> treat as absent
+    }
+    return logo_bytes_;
+}
+
+// Spawn the one-shot radio-art fetch worker: resolve the cover URL (station-
+// supplied iHeart cover if given, else a song-entity urlBySong lookup) and GET
+// the bytes, all off the UI thread. Single in-flight (guarded by radio_art_active_).
+void UIManager::startRadioArtFetch(const std::string& artist, const std::string& title,
+                                   const std::string& station_art) {
+    if (radio_art_active_.load()) return;
+    radio_art_active_.store(true);
+    radio_art_done_.store(false);
+    radio_fetch_station_ = !station_art.empty();
+    { std::lock_guard<std::mutex> lk(radio_art_mtx_);
+      radio_art_want_key_ = artist + "\t" + title; radio_art_result_.clear(); }
+    if (radio_art_thread_.joinable()) radio_art_thread_.join();   // prior worker already done
+    std::string a = artist, t = title, sa = station_art;
+    radio_art_thread_ = std::thread([this, a, t, sa]() {
+        std::string url = sa.empty() ? CoverArt::urlBySong(a, t) : sa;
+        std::vector<uint8_t> bytes = CoverArt::bytesByUrl(url);   // {} when url empty or not an image
+        { std::lock_guard<std::mutex> lk(radio_art_mtx_); radio_art_result_ = std::move(bytes); }
+        radio_art_done_.store(true);
+    });
+}
+
+// Resolve + decode the cover for the currently-committed radio song into the
+// Info-pane art box. Mirrors the Discord committed-song decision but runs
+// independently (so the pane's art works with Discord presence off). UI thread.
+void UIManager::refreshRadioArt(int box_cols, int box_rows) {
+    // Committed-song identity — same parse as updateScrobbler's radio branch.
+    std::string song_key, artist, title;
+    {
+        std::string np = audio_.streamNowPlaying();      // "Artist - Title"
+        auto dash = np.find(" - ");
+        if (dash != std::string::npos) {
+            artist = np.substr(0, dash);
+            title  = np.substr(dash + 3);
+            auto trim = [](std::string& x){
+                while (!x.empty() && (x.front()==' '||x.front()=='\t')) x.erase(x.begin());
+                while (!x.empty() && (x.back()==' '||x.back()=='\t')) x.pop_back();
+            };
+            trim(artist); trim(title);
+            if (!artist.empty() && !title.empty()) song_key = artist + "\t" + title;
+        }
+    }
+    const std::string station_art = audio_.streamArtUrl();   // iHeart digital cover ("" -> logo/lookup)
+
+    // Pick up a finished fetch for the still-current song. A confirmed miss on a
+    // urlBySong lookup is remembered in the shared negative cache so the same song
+    // returning in rotation keeps the logo without re-querying (station-art misses
+    // are NOT neg-cached: a late-landing station cover should still get a chance).
+    if (radio_art_done_.exchange(false)) {
+        std::vector<uint8_t> bytes; std::string forkey; bool was_station = radio_fetch_station_;
+        { std::lock_guard<std::mutex> lk(radio_art_mtx_);
+          bytes = std::move(radio_art_result_); forkey = radio_art_want_key_; }
+        if (radio_art_thread_.joinable()) radio_art_thread_.join();
+        radio_art_active_.store(false);
+        if (forkey == song_key) {
+            radio_bytes_ = std::move(bytes);
+            radio_bytes_key_ = song_key;
+            radio_bytes_resolved_ = true;
+            radio_render_key_.clear();                       // force a re-decode
+            if (radio_bytes_.empty() && !was_station)
+                discord_art_neg_.insert(song_key);
+            requestRedraw();                                 // cover landed -> repaint
+        }
+        // else: the song moved on mid-fetch; the (re)trigger below handles the new one.
+    }
+
+    // (Re)start resolution on a committed song-change, or when the station supplies
+    // a new non-empty cover URL for the same song (iHeart digital art can land a
+    // tick after the title commits). While a fetch is in flight we hold off so the
+    // in-flight result isn't discarded; once it clears we re-evaluate and catch up.
+    if (!song_key.empty()) {
+        const bool song_changed    = (song_key != radio_bytes_key_);
+        const bool station_changed = (!station_art.empty() && station_art != radio_last_station_art_);
+        if ((song_changed || station_changed) && !radio_art_active_.load()) {
+            radio_last_station_art_ = station_art;
+            radio_bytes_key_        = song_key;
+            radio_bytes_resolved_   = false;                 // show the logo floor while we fetch
+            radio_render_key_.clear();
+            if (!station_art.empty())
+                startRadioArtFetch(artist, title, station_art);
+            else if (discord_art_neg_.find(song_key) == discord_art_neg_.end())
+                startRadioArtFetch(artist, title, "");       // song-entity lookup
+            else { radio_bytes_.clear(); radio_bytes_resolved_ = true; }   // known miss -> floor
+        }
+    } else if (song_key != radio_bytes_key_) {
+        // No parseable now-playing (ad break / LIVE / pre-title): float on the logo.
+        radio_bytes_key_ = song_key;   // ""
+        radio_bytes_.clear();
+        radio_bytes_resolved_ = true;
+        radio_render_key_.clear();
+    }
+
+    // Decode step: real cover if we have one, else the logo floor. Cached on
+    // (source | box), so no per-frame re-decode and the logo doesn't thrash.
+    const bool use_logo = !(radio_bytes_resolved_ && !radio_bytes_.empty());
+    const std::vector<uint8_t>& src = use_logo ? logoBytes() : radio_bytes_;
+    std::string rkey = (use_logo ? std::string("\x01logo") : song_key)
+                     + "|" + std::to_string(box_cols) + "x" + std::to_string(box_rows);
+    if (rkey == radio_render_key_) return;
+    radio_render_key_ = rkey;
+    radio_art_ = cover::Rendered{};
+    radio_art_pairs_.clear();
+    if (src.empty() || box_cols < 4 || box_rows < 2) return;
+    cover::Rendered r = cover::render(src, box_cols, box_rows);
+    if (!r.ok) return;
+    if (!allocArtColorPairs(r, radio_art_pairs_)) return;
+    radio_art_ = std::move(r);
+}
+
 void UIManager::drawTrackInfo() {
     WINDOW* w = win_playlist_;
     werase(w);
@@ -3051,17 +3186,24 @@ void UIManager::drawTrackInfo() {
         const int art_x = 1, art_y = 2;
         const int box_cols = std::clamp(22, 4, cols - 26);
         const int box_rows = std::clamp(11, 2, rows - 4);
-        refreshInfoArt(path, box_cols, box_rows);
-        const bool has_art    = info_art_.ok && !tag_edit_mode_;
-        const int  art_cols   = has_art ? info_art_.cols : 0;
-        const int  art_rows   = has_art ? info_art_.rows : 0;
+        // Live-stream item shown while it's the playing stream: resolve radio art
+        // (station cover / song lookup / logo floor). Everything else: local-file
+        // embedded art. Both feed the same half-block box below.
+        const bool radio_item = audio_.streamMode() && path == audio_.streamUrl();
+        if (radio_item) refreshRadioArt(box_cols, box_rows);
+        else            refreshInfoArt(path, box_cols, box_rows);
+        const cover::Rendered&    art_r  = radio_item ? radio_art_       : info_art_;
+        const std::vector<short>& art_pr = radio_item ? radio_art_pairs_ : info_art_pairs_;
+        const bool has_art    = art_r.ok && !tag_edit_mode_;
+        const int  art_cols   = has_art ? art_r.cols : 0;
+        const int  art_rows   = has_art ? art_r.rows : 0;
         const int  art_bottom = art_y + art_rows;      // first row below the art band
         if (has_art) {
             for (int cy = 0; cy < art_rows; ++cy)
                 for (int cx = 0; cx < art_cols; ++cx) {
                     cchar_t cc; wchar_t s[2] = { (wchar_t)0x2580, 0 };   // ▀ UPPER HALF BLOCK
                     setcchar(&cc, s, A_NORMAL,
-                             info_art_pairs_[(size_t)cy * art_cols + cx], nullptr);
+                             art_pr[(size_t)cy * art_cols + cx], nullptr);
                     mvwadd_wch(w, art_y + cy, art_x + cx, &cc);
                 }
         }
@@ -3238,18 +3380,76 @@ void UIManager::drawProgress() {
     }
     if (audio_.streamMode()) {
         // Live stream: no position/duration. Repurpose this row for the ICY
-        // now-playing title, with a [LIVE]/[BUFFERING] marker and volume.
+        // now-playing title, a [LIVE]/[BUFFERING] marker + volume, and a KITT
+        // scanner sweeping the idle gap between them. It all draws in this single
+        // stream-bar pass (one wnoutrefresh by the caller), so the scanner and the
+        // title can never fight for the region -> no flicker.
         std::string title = audio_.streamNowPlaying();
         std::string right = audio_.streamBuffering() ? "[BUFFERING]" : "[LIVE]";
         right += "  vol:" + std::to_string((int)(audio_.volume()*100.0f+0.5f)) + "%";
         std::string left = title.empty() ? "(live stream)" : title;
-        int avail = cols - (int)right.size() - 3;
-        if (avail < 1) avail = 1;
-        if ((int)left.size() > avail) left = left.substr(0, (size_t)avail);
+
+        const int right_w = (int)right.size();          // ASCII -> byte width == display width
+        const int right_x = cols - right_w - 1;         // first col of the right block
+        int left_cap = right_x - 2;                     // keep >=1 blank col before the right block
+        if (left_cap < 0) left_cap = 0;
+        if (dispWidth(left) > left_cap) left = truncateToWidth(left, left_cap);   // keep the head
+        const int left_w   = dispWidth(left);
+        const int left_end = 1 + left_w;                // first free col past the title
+
         wattron(win_progress_, COLOR_PAIR(CP_TITLE));
-        mvwaddstr(win_progress_, 0, 1, left.c_str());
-        mvwaddstr(win_progress_, 0, cols - (int)right.size() - 1, right.c_str());
+        if (left_w > 0) {
+            std::wstring wl = utf8_to_wide(left);
+            mvwaddnwstr(win_progress_, 0, 1, wl.c_str(), (int)wl.size());
+        }
+        if (right_x >= left_end)
+            mvwaddstr(win_progress_, 0, right_x, right.c_str());
         wattroff(win_progress_, COLOR_PAIR(CP_TITLE));
+
+        // Scanner track = free cells between the title and the right block, 1-col
+        // padded each side so the bright head never touches text/tag. If the title
+        // fills the gap (long song, narrow window) there's no room -> draw nothing,
+        // exactly the graceful-collapse the spectrum strip uses.
+        const int track_x0 = left_end + 1;
+        const int track_x1 = right_x - 2;               // inclusive
+        const int track_w  = track_x1 - track_x0 + 1;
+        if (track_w >= 4) {
+            // Advance on a wall-clock step so the sweep speed is independent of the
+            // draw cadence / keypress jitter (rides the ~80ms heartbeat; ~1 cell/tick).
+            using namespace std::chrono;
+            auto now = steady_clock::now();
+            if (scanner_last_.time_since_epoch().count() == 0) scanner_last_ = now;
+            long steps = (long)(duration_cast<milliseconds>(now - scanner_last_).count()
+                                / kScannerStepMs);
+            if (scanner_pos_ >= track_w) { scanner_pos_ = track_w - 1; scanner_dir_ = -1; }
+            for (long s = 0; s < steps; ++s) {
+                scanner_pos_ += scanner_dir_;
+                if      (scanner_pos_ >= track_w - 1) { scanner_pos_ = track_w - 1; scanner_dir_ = -1; }
+                else if (scanner_pos_ <= 0)           { scanner_pos_ = 0;           scanner_dir_ =  1; }
+            }
+            if (steps > 0) scanner_last_ = now;
+            if (scanner_pos_ < 0) scanner_pos_ = 0;      // window shrank since last frame
+
+            // Bright head (viz_peak) + a long gradient tail (viz_high -> mid -> low)
+            // trailing kScannerTail cells in the travel direction. viz pairs paint
+            // solid theme-coloured cells, so each palette gets its own scanner and it
+            // rhymes with the spectrum.
+            for (int i = 0; i < track_w; ++i) {
+                const int behind = (scanner_dir_ > 0) ? (scanner_pos_ - i) : (i - scanner_pos_);
+                if (behind < 0 || behind > kScannerTail) continue;   // ahead of head / past the tail
+                wchar_t g; short pair;
+                if (behind == 0) { g = 0x2588; pair = CP_VIZ_PEAK; }             // █ head
+                else {
+                    const float f = (float)behind / (kScannerTail + 1);          // 0..1 down the tail
+                    if      (f < 0.34f) { g = 0x2593; pair = CP_VIZ_HIGH; }      // ▓ near
+                    else if (f < 0.67f) { g = 0x2592; pair = CP_VIZ_MID;  }      // ▒ mid
+                    else                { g = 0x2591; pair = CP_VIZ_LOW;  }      // ░ far
+                }
+                cchar_t cc; wchar_t s[2] = { g, 0 };
+                setcchar(&cc, s, A_NORMAL, pair, nullptr);
+                mvwadd_wch(win_progress_, 0, track_x0 + i, &cc);
+            }
+        }
         return;
     }
     wattron(win_progress_, COLOR_PAIR(CP_PROGRESS));

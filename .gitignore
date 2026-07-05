@@ -27,4 +27,6 @@ theme.conf
 
 # App icon asset (local, not tracked). CMake conditionally embeds icon/remoct.ico
 # as the exe's first icon when present (Explorer/taskbar/shortcut + wingui window).
-icon/
+# remoct_logo.jpg IS shipped though — it's the app logo, used as the radio-art floor.
+icon/*
+!icon/remoct_logo.jpg

@@ -226,6 +226,38 @@ private:
     void refreshInfoArt(const std::string& path, int box_cols, int box_rows);
     bool allocArtColorPairs(const cover::Rendered& art, std::vector<short>& out_pairs);
 
+    // ── Radio cover art (Info pane) ───────────────────────────────────────────
+    // Live-stream art shadows the Discord committed-song decision: on a committed
+    // radio track-change, resolve a cover URL (the station-supplied iHeart cover
+    // if any, else a urlBySong lookup) off the UI thread, GET the bytes, and
+    // half-block render them into the SAME Info-pane art box as local files. No
+    // confident match => the bundled RE-MOCT logo floor (its own cache key so it
+    // never thrashes against real covers). Best-effort/decorative: a slow fetch
+    // shows the logo now and fills the cover when it lands (never stalls the UI).
+    std::thread          radio_art_thread_;
+    std::atomic<bool>    radio_art_active_{false};   // fetch worker in flight
+    std::atomic<bool>    radio_art_done_{false};     // bytes ready for pickup
+    std::mutex           radio_art_mtx_;
+    std::string          radio_art_want_key_;        // "artist\ttitle" the worker fetches for (guarded)
+    std::vector<uint8_t> radio_art_result_;          // downloaded image bytes (guarded; {} => no match)
+    bool                 radio_fetch_station_ = false; // worker used the station URL (skip neg-cache on miss)
+    // Bytes cache (one committed song): avoids re-GET on rotation-return and on box resize.
+    std::string          radio_bytes_key_;           // song key the bytes belong to ("" = none/floor)
+    std::vector<uint8_t> radio_bytes_;               // cached cover bytes ({} + resolved => logo floor)
+    bool                 radio_bytes_resolved_ = false; // fetch finished for radio_bytes_key_
+    std::string          radio_last_station_art_;    // station art URL a resolution was based on
+    // Decoded-block cache (keyed on song + box + logo-vs-cover), parallel to info_art_.
+    std::string          radio_render_key_;
+    cover::Rendered      radio_art_;
+    std::vector<short>   radio_art_pairs_;
+    // Bundled RE-MOCT logo, decoded once and reused as the floor (own cache key).
+    std::vector<uint8_t> logo_bytes_;                // loaded lazily from remoct_logo.jpg
+    bool                 logo_load_tried_ = false;
+    void refreshRadioArt(int box_cols, int box_rows);              // UI thread: resolve/fetch/decode
+    void startRadioArtFetch(const std::string& artist, const std::string& title,
+                            const std::string& station_art);       // spawn the off-UI fetch worker
+    const std::vector<uint8_t>& logoBytes();                       // lazy-load the bundled logo bytes
+
     // CD state
     std::string cd_drive_letter_;
     int         cd_poll_ticks_   = 0;
@@ -383,6 +415,19 @@ private:
     static constexpr int MARQUEE_SPEED  = 3;
     int  text_scroll_offset_ = 0;   // shared offset for all truncated text rows
     int  text_scroll_ticks_  = 0;
+
+    // KITT scanner (radio status bar). A bright head + fading gradient tail sweeps
+    // the idle gap between the now-playing title and the [LIVE] tag, bouncing end
+    // to end. Rides the existing ~80ms draw heartbeat (advances on a wall-clock
+    // step so keypress/tick jitter doesn't change its speed); theme-coloured via
+    // the viz roles so each palette gets its own scanner. Drawn in drawProgress'
+    // single stream-bar repaint pass (no separate refresh) so it can't fight the
+    // title for the region. Always animates while live/connected.
+    static constexpr double kScannerStepMs = 70.0;   // ~1 cell per heartbeat; tune by eye
+    static constexpr int    kScannerTail   = 14;     // trailing cells behind the head (~4x the head)
+    int    scanner_pos_ = 0;         // head column within the scanner track (0..track_w-1)
+    int    scanner_dir_ = 1;         // +1 / -1 sweep direction
+    std::chrono::steady_clock::time_point scanner_last_ {};  // last wall-clock advance
 
     // Drive browser
     bool in_drive_list_ = false;

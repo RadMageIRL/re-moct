@@ -19,6 +19,12 @@ std::vector<uint8_t> bytesByMbid(const std::string& mb_id);                  // 
 std::vector<uint8_t> bytesByText(const std::string& artist,
                                  const std::string& album);                  // iTunes -> Deezer fallback
 
+// Download an already-resolved cover URL to image bytes. Returns {} unless the
+// body is a real raster image (guards against HTML/JSON error pages served 200).
+// Used by the radio Info-pane art path: urlBySong resolves a URL, this fetches
+// it. BLOCKING network I/O — call off the UI thread.
+std::vector<uint8_t> bytesByUrl(const std::string& url);
+
 // External cover-art URL. Used by Discord Rich Presence.
 std::string urlByText(const std::string& artist, const std::string& album); // album-oriented (file/CD)
 std::string urlBySong(const std::string& artist, const std::string& title); // song-oriented (radio fallback)

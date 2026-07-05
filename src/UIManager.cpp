@@ -204,6 +204,13 @@ UIManager::UIManager(PlaylistManager& playlist, AudioManager& audio,
     // under WM_COMMAND. The grid doesn't change, so this can't re-enter our
     // resize callback (it only fires on a row/col change).
     if (PDC_hWnd) SendMessageW(PDC_hWnd, WM_COMMAND, WM_USER + 4, 0);
+    // Restore the last window size (persisted in OUR config since we wipe the
+    // PDCurses registry to keep our font - see initWinguiFont). Do it BEFORE
+    // registering the resize callback so this programmatic resize_term can't
+    // re-enter it while the pane windows don't exist yet. getmaxyx below then
+    // reflects the restored grid, so createWindows lays out at the right size.
+    if (config_.wingui_cols >= 40 && config_.wingui_rows >= 9)
+        resize_term(config_.wingui_rows, config_.wingui_cols);
     // Repaint live during the modal resize-drag (see onWinguiLiveResize).
     g_wingui_ui = this;
     PDC_set_window_resized_callback(&winguiResizeTrampoline);
@@ -233,6 +240,15 @@ UIManager::UIManager(PlaylistManager& playlist, AudioManager& audio,
     keypad(stdscr, TRUE);
     curs_set(0);
     timeout(80);
+#ifndef PDCURSES
+    // ncurses waits ESCDELAY ms (default 1000!) after a lone ESC to disambiguate
+    // it from an escape sequence (arrows / function keys are ESC-prefixed). That
+    // made every Esc-to-close-a-pane feel like a ~1s freeze on Linux. keypad(TRUE)
+    // already decodes the real sequences, so a short window is plenty; 25ms is
+    // imperceptible yet still catches a multibyte sequence on a slow link. PDCurses
+    // reads discrete key events (no ESC ambiguity), so this is ncurses-only.
+    set_escdelay(25);
+#endif
     initColours();
     getmaxyx(stdscr, screen_rows_, screen_cols_);
     createWindows();
@@ -280,6 +296,16 @@ UIManager::~UIManager() {
     if (radio_art_thread_.joinable())   radio_art_thread_.join();
     if (info_art_thread_.joinable())    info_art_thread_.join();
     if (mb_search_win_) { delwin(mb_search_win_); mb_search_win_ = nullptr; }
+#ifdef PDCURSES
+    // Remember the wingui window size for next launch (screen_rows_/cols_ track the
+    // live size via resizeWindows). Only rewrite config when it actually changed.
+    if (screen_cols_ >= 40 && screen_rows_ >= 9 &&
+        (screen_cols_ != config_.wingui_cols || screen_rows_ != config_.wingui_rows)) {
+        config_.wingui_cols = screen_cols_;
+        config_.wingui_rows = screen_rows_;
+        config_.save();
+    }
+#endif
 #ifdef _WIN32
     // MBLookup/CDRipper cancel stay gated: CD is slice 6.
     mb_lookup_.cancel();
@@ -301,6 +327,44 @@ void UIManager::onWinguiLiveResize() {
     resizeWindows();
     in_live_resize = false;
 }
+
+#ifdef PDCURSES
+// Alt+Enter: toggle a borderless window that fills the current monitor, and back.
+// Stripping WS_OVERLAPPEDWINDOW + covering the monitor is the standard Raymond-Chen
+// borderless-fullscreen; wingui's WM_SIZE then reflows the curses grid through the
+// resize callback, exactly like a drag. State is a single-window latch, so file-
+// local statics are enough.
+void UIManager::toggleWinguiFullscreen() {
+    if (!PDC_hWnd) return;
+    static bool             fs = false;
+    static LONG_PTR         saved_style = 0;
+    static WINDOWPLACEMENT  saved_wp = { sizeof(WINDOWPLACEMENT) };
+    HWND h = PDC_hWnd;
+    if (!fs) {
+        MONITORINFO mi = { sizeof(MONITORINFO) };
+        if (!GetWindowPlacement(h, &saved_wp) ||
+            !GetMonitorInfo(MonitorFromWindow(h, MONITOR_DEFAULTTONEAREST), &mi))
+            return;
+        saved_style = GetWindowLongPtr(h, GWL_STYLE);
+        SetWindowLongPtr(h, GWL_STYLE, saved_style & ~(LONG_PTR)WS_OVERLAPPEDWINDOW);
+        SetWindowPos(h, HWND_TOP, mi.rcMonitor.left, mi.rcMonitor.top,
+                     mi.rcMonitor.right - mi.rcMonitor.left,
+                     mi.rcMonitor.bottom - mi.rcMonitor.top,
+                     SWP_NOOWNERZORDER | SWP_FRAMECHANGED);
+        fs = true;
+    } else {
+        SetWindowLongPtr(h, GWL_STYLE, saved_style);
+        SetWindowPlacement(h, &saved_wp);
+        SetWindowPos(h, nullptr, 0, 0, 0, 0,
+                     SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER |
+                     SWP_NOOWNERZORDER | SWP_FRAMECHANGED);
+        fs = false;
+    }
+    // The style change can drop the dark chrome; re-apply so windowed mode matches
+    // the OS theme again (harmless while borderless).
+    applyOsTitleBarTheme();
+}
+#endif
 
 void UIManager::resizeWindows() {
 #if defined(REMOCT_PDCURSES)
@@ -2061,7 +2125,10 @@ void UIManager::drawHelp() {
         { "Ctrl+Y",         "Rip CD  (A=AccurateRip  C=CUETools  Y=Local  B=Local 2-pass)" },
         { "Ctrl+D",         "Toggle Discord Rich Presence" },
         { "Ctrl+T",         "Toggle Classic / Awesome theme" },
-        { "F8",             "Cycle Awesome theme" },
+        { "F7  /  F8",      "Awesome theme: previous / next" },
+#ifdef PDCURSES
+        { "Alt+Enter",      "Toggle fullscreen (borderless)"      },
+#endif
         { "~",              "Reload theme.conf colours (live)" },
         { "Ctrl+N",         "Toggle Nerd Font icons (needs Nerd Font)" },
         { "Ctrl+A",         "Toggle deep-analysis iHeart log (diagnostic)" },
@@ -4651,9 +4718,10 @@ void UIManager::handleInput(int ch) {
             showTrackToast(config_.nerd_icons ? "Nerd icons: ON (needs Nerd Font)"
                                               : "Nerd icons: OFF", "", "");
             break;
-        case KEY_F(8): {  // cycle the Awesome-mode named palette (F8)
+        case KEY_F(7):    // previous Awesome named palette (F7)
+        case KEY_F(8): {  // next Awesome named palette (F8)
             if (!config_.awesome_mode) {
-                // F8 only cycles in Awesome mode; hint otherwise (Classic keeps its
+                // F7/F8 only cycle in Awesome mode; hint otherwise (Classic keeps its
                 // theme.conf colours; named palettes are an Awesome feature).
 #ifndef _WIN32
                 status_msg_ = "Themes live in Awesome mode (Ctrl+T)";
@@ -4664,7 +4732,9 @@ void UIManager::handleInput(int ch) {
 #endif
                 break;
             }
-            config_.awesome_theme = (config_.awesome_theme + 1) % kNumAwesomeThemes;
+            // F7 steps back, F8 steps forward - a smooth forward/back cycle.
+            const int step = (ch == KEY_F(7)) ? (kNumAwesomeThemes - 1) : 1;
+            config_.awesome_theme = (config_.awesome_theme + step) % kNumAwesomeThemes;
             config_.save();
             applyAwesomeTheme();          // recolour in place — pairs are global, no rebuild
             clearok(stdscr, TRUE);
@@ -4672,6 +4742,14 @@ void UIManager::handleInput(int ch) {
             theme_tag_ticks_ = 0;   // flash [THEME:<name>] on the cwd line for ~10s
             break;
         }
+#ifdef PDCURSES
+        case ALT_ENTER:      // Alt+Enter — wingui borderless-fullscreen toggle
+        case ALT_PADENTER:   // (numpad Enter variant)
+            toggleWinguiFullscreen();
+            clearok(stdscr, TRUE);
+            redraw_needed_.store(true);
+            break;
+#endif
         // Per-case Windows gates below (slice-2 fix): a single #ifdef here
         // used to span ^D/^B/^F/^G/^U/^Y/^R, silently deleting the portable
         // scrobbler-login and radio-URL keys from the Linux build (Dos-found:

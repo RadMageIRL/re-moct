@@ -49,6 +49,12 @@ public:
     // Registered as PDCurses' window-resized callback; a no-op elsewhere.
     void onWinguiLiveResize();
     const std::string& currentDir() const { return current_dir_; }
+#ifdef PDCURSES
+    // wingui only (Alt+Enter): toggle a borderless window that fills the monitor,
+    // and back to the previous framed size. The curses grid reflows via the resize
+    // callback, exactly like a user drag.
+    void toggleWinguiFullscreen();
+#endif
 
 private:
     // Notifications seam (slice 7): injected fake in tests, core::notifier() in prod.

@@ -50,6 +50,14 @@ struct DigiConfig {
     // process-privately at startup, so a bundled font need not be installed.
     std::string wingui_font;
 
+    // Windows wingui build ONLY: the last GDI window size (grid rows x cols),
+    // remembered across launches. We can't lean on PDCurses' own registry
+    // persistence because we wipe that key each launch to keep our font choice
+    // (see initWinguiFont), so we persist the size here instead. 0 => unset
+    // (use the wingui default). Restored via resize_term() at startup.
+    int wingui_cols = 0;
+    int wingui_rows = 0;
+
     // Bookmarks: list of saved directory paths
     std::vector<std::string> bookmarks;
 

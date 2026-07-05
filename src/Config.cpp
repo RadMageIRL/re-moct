@@ -192,6 +192,8 @@ void DigiConfig::load() {
         else if (key == "iheart_probe_minted")   iheart_probe_minted   = (val == "1");
         else if (key == "nerd_icons")         nerd_icons         = (val == "1");
         else if (key == "wingui_font")        wingui_font        = val;
+        else if (key == "wingui_cols")        try { wingui_cols = std::stoi(val); } catch (...) {}
+        else if (key == "wingui_rows")        try { wingui_rows = std::stoi(val); } catch (...) {}
         else if (key == "lastfm-key")       lastfm_key        = val;
         else if (key == "lastfm-secret")    lastfm_secret     = val;
         else if (key == "lastfm-session")   lastfm_session    = val;
@@ -302,6 +304,8 @@ void DigiConfig::save() const {
         f << "iheart_probe_minted="   << (iheart_probe_minted ? "1" : "0") << "\n";
         f << "nerd_icons="        << (nerd_icons ? "1" : "0") << "\n";
         if (!wingui_font.empty()) f << "wingui_font="    << wingui_font << "\n";
+        if (wingui_cols > 0)      f << "wingui_cols="    << wingui_cols << "\n";
+        if (wingui_rows > 0)      f << "wingui_rows="    << wingui_rows << "\n";
         if (!lastfm_key.empty())     f << "lastfm-key="     << nl(lastfm_key)     << "\n";
         if (!lastfm_secret.empty())  f << "lastfm-secret="  << nl(lastfm_secret)  << "\n";
         if (!lastfm_session.empty()) f << "lastfm-session=" << nl(lastfm_session) << "\n";

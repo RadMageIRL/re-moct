@@ -1069,6 +1069,24 @@ void UIManager::run() {
             continue;
         }
 
+        // ── 3. HANDLE INPUT before drawing ──
+        // Draw AFTER the key is applied, so a keypress takes effect in this SAME
+        // iteration. (Previously the draw ran first and a keypress only showed on
+        // the next loop - and the next getch() blocks up to ~80ms first, so every
+        // pane switch / action carried up to ~80ms latency. Very sluggish on Linux
+        // where nothing else was forcing an interim repaint.) Modal-open handlers
+        // set redraw_needed_ themselves, so the draw block below paints them too.
+        if (ch != ERR) {
+            if (goto_active_)
+                handleGotoInput(ch);
+            else if (ui_overlay_ == UIOverlay::MBSearch)
+                handleMBSearchInput(ch);
+            else
+                handleInput(ch);
+            if (ui_overlay_ == UIOverlay::None)
+                redraw_needed_.store(true);
+        }
+
         // Periodically check if the current directory changed on disk
         if (!in_drive_list_ && ++dir_poll_ticks_ >= DIR_POLL_INTERVAL) {
             dir_poll_ticks_ = 0;
@@ -1147,19 +1165,6 @@ void UIManager::run() {
             wnoutrefresh(win_progress_);
             doupdate();
             }
-        }
-
-        if (ch != ERR) {
-            if (goto_active_)
-                handleGotoInput(ch);
-            else if (ui_overlay_ == UIOverlay::MBSearch)
-                handleMBSearchInput(ch);
-            else
-                handleInput(ch);
-            // Don't blindly redraw on every key while modal is open —
-            // the modal redraws itself above
-            if (ui_overlay_ == UIOverlay::None)
-                redraw_needed_.store(true);
         }
     }
 }

@@ -85,6 +85,8 @@ static void sclog(const char* fmt, ...) {
 #include <taglib/fileref.h>
 #include <taglib/tag.h>
 #include <taglib/audioproperties.h>
+#include <taglib/tvariant.h>      // complexProperties("PICTURE") -> embedded cover
+#include <taglib/tbytevector.h>
 
 namespace fs = std::filesystem;
 
@@ -2756,6 +2758,131 @@ void UIManager::drawDevices() {
     }
 }
 
+// Pull the embedded front-cover (or first picture) bytes from a file's tags via
+// TagLib's generic complexProperties("PICTURE"). Empty vector = no art / any
+// failure. Local + synchronous (fast); no network. (Radio/streams have no file -
+// they degrade to metadata-only, matching the isCDTrackPath skip.)
+static std::vector<uint8_t> extractEmbeddedArt(const std::string& path) {
+    try {
+#ifdef _WIN32
+        auto wp = utf8_to_wide(path);
+        TagLib::FileRef ref(wp.c_str(), false);
+#else
+        TagLib::FileRef ref(path.c_str(), false);
+#endif
+        if (ref.isNull()) return {};
+        const auto pics = ref.complexProperties("PICTURE");
+        TagLib::ByteVector first, front;
+        for (const auto& pic : pics) {
+            auto d = pic.find("data");
+            if (d == pic.end()) continue;
+            TagLib::ByteVector bv = d->second.value<TagLib::ByteVector>();
+            if (bv.isEmpty()) continue;
+            if (first.isEmpty()) first = bv;
+            auto t = pic.find("pictureType");
+            if (t != pic.end() && t->second.value<TagLib::String>() == "Front Cover") {
+                front = bv; break;
+            }
+        }
+        const TagLib::ByteVector& use = front.isEmpty() ? first : front;
+        if (!use.isEmpty())
+            return std::vector<uint8_t>(use.data(), use.data() + use.size());
+    } catch (...) {}
+    return {};
+}
+
+// Allocate curses colours + pairs for a rendered cover, filling out_pairs (one
+// pair index per cell). Uses a DEDICATED slot/pair range so it never disturbs the
+// theme (colours 16..~30, pairs 1..14): art colours start at 64, pairs at 20,
+// both capped at index 255 so plain init_color/init_pair (short) work on ncursesw
+// (256) and PDCurses alike - no extended-colour API needed. Greedy-quantises to
+// the budget (exact match -> reuse; else allocate; else nearest already-allocated).
+// Truecolor tier when COLORS>=256 && can_change_color(); else nearest-of-16 (the
+// same fidelity ladder the themes use). Returns false only if colour is unusable.
+bool UIManager::allocArtColorPairs(const cover::Rendered& art,
+                                   std::vector<short>& out_pairs) {
+    out_pairs.assign(art.cells.size(), 0);
+    if (!has_colors() || art.cells.empty()) return false;
+
+    const bool truecolor = (COLORS >= 256 && can_change_color());
+    const short C0 = 64;
+    const int   c_budget = truecolor ? std::min((int)COLORS, 256) - C0 : 0;   // art colour slots
+    const short P0 = 20;
+    const int   p_budget = std::min(COLOR_PAIRS, 256) - P0;                    // art pair slots
+    if (p_budget < 1) return false;
+
+    static const int kBasic16[16][3] = {
+        {0,0,0},{128,0,0},{0,128,0},{128,128,0},{0,0,128},{128,0,128},{0,128,128},{192,192,192},
+        {128,128,128},{255,0,0},{0,255,0},{255,255,0},{0,0,255},{255,0,255},{0,255,255},{255,255,255},
+    };
+    auto dist = [](int r,int g,int b,int R,int G,int B) -> long {
+        long dr=r-R, dg=g-G, db=b-B; return 2*dr*dr + 4*dg*dg + 3*db*db;
+    };
+
+    std::vector<std::array<int,3>> pal;   // slot index i -> rgb (truecolor path)
+    auto colorFor = [&](int r,int g,int b) -> short {
+        if (!truecolor) {                 // nearest-of-16
+            long best=-1; short bi=0;
+            for (short i=0;i<16;++i){ long d=dist(r,g,b,kBasic16[i][0],kBasic16[i][1],kBasic16[i][2]);
+                                      if(best<0||d<best){best=d;bi=i;} }
+            return bi;
+        }
+        for (size_t i=0;i<pal.size();++i)
+            if (pal[i][0]==r && pal[i][1]==g && pal[i][2]==b) return (short)(C0+i);
+        if ((int)pal.size() < c_budget) {
+            const short id = (short)(C0 + pal.size());
+            auto sc=[](int c)->short{ return (short)((c*1000+127)/255); };  // 0..255 -> 0..1000
+            init_color(id, sc(r), sc(g), sc(b));
+            pal.push_back({r,g,b});
+            return id;
+        }
+        long best=-1; short bi=C0;        // budget spent: nearest existing
+        for (size_t i=0;i<pal.size();++i){ long d=dist(r,g,b,pal[i][0],pal[i][1],pal[i][2]);
+                                           if(best<0||d<best){best=d;bi=(short)(C0+i);} }
+        return bi;
+    };
+
+    std::vector<std::pair<short,short>> pairs;   // pair index j -> (fg,bg)
+    auto pairFor = [&](short fg, short bg) -> short {
+        for (size_t j=0;j<pairs.size();++j)
+            if (pairs[j].first==fg && pairs[j].second==bg) return (short)(P0+j);
+        if ((int)pairs.size() < p_budget) {
+            const short id = (short)(P0 + pairs.size());
+            init_pair(id, fg, bg);
+            pairs.push_back({fg,bg});
+            return id;
+        }
+        // Budget spent (only if a pane were huge): reuse the closest fg's pair.
+        return (short)P0;
+    };
+
+    for (size_t i=0;i<art.cells.size();++i) {
+        const auto& c = art.cells[i];
+        out_pairs[i] = pairFor(colorFor(c.r_top,c.g_top,c.b_top),
+                               colorFor(c.r_bot,c.g_bot,c.b_bot));
+    }
+    return true;
+}
+
+// Refresh the cached cover render + colour pairs for `path` at the given art-box
+// size. Cheap early-out when the (path, box) key is unchanged - decode/quantise
+// happen once per track (or resize), NOT per frame. Never blocks, never throws.
+void UIManager::refreshInfoArt(const std::string& path, int box_cols, int box_rows) {
+    std::string key = path + "|" + std::to_string(box_cols) + "x" + std::to_string(box_rows);
+    if (key == info_art_key_) return;
+    info_art_key_ = key;
+    info_art_ = cover::Rendered{};
+    info_art_pairs_.clear();
+    if (path.empty() || isCDTrackPath(path) || box_cols < 4 || box_rows < 2) return;
+
+    std::vector<uint8_t> bytes = extractEmbeddedArt(path);
+    if (bytes.empty()) return;
+    cover::Rendered r = cover::render(bytes, box_cols, box_rows);
+    if (!r.ok) return;
+    if (!allocArtColorPairs(r, info_art_pairs_)) return;
+    info_art_ = std::move(r);
+}
+
 void UIManager::drawTrackInfo() {
     WINDOW* w = win_playlist_;
     werase(w);
@@ -2917,6 +3044,29 @@ void UIManager::drawTrackInfo() {
             }
         }
 
+        // ── Cover art (top-left half-block box) + metadata reflow ──
+        // Box ~22 cols wide (square-ish given the 2:1 cell aspect), clamped so the
+        // metadata keeps room beside it; skipped on a too-small pane or in tag-edit
+        // mode. Rendered + colour-allocated once per (track, box) - cached.
+        const int art_x = 1, art_y = 2;
+        const int box_cols = std::clamp(22, 4, cols - 26);
+        const int box_rows = std::clamp(11, 2, rows - 4);
+        refreshInfoArt(path, box_cols, box_rows);
+        const bool has_art    = info_art_.ok && !tag_edit_mode_;
+        const int  art_cols   = has_art ? info_art_.cols : 0;
+        const int  art_rows   = has_art ? info_art_.rows : 0;
+        const int  art_bottom = art_y + art_rows;      // first row below the art band
+        if (has_art) {
+            for (int cy = 0; cy < art_rows; ++cy)
+                for (int cx = 0; cx < art_cols; ++cx) {
+                    cchar_t cc; wchar_t s[2] = { (wchar_t)0x2580, 0 };   // ▀ UPPER HALF BLOCK
+                    setcchar(&cc, s, A_NORMAL,
+                             info_art_pairs_[(size_t)cy * art_cols + cx], nullptr);
+                    mvwadd_wch(w, art_y + cy, art_x + cx, &cc);
+                }
+        }
+        const int meta_right_x = has_art ? (art_x + art_cols + 2) : 0;
+
         // Render label: value pairs
         // Editable fields: Title(0) Artist(1) Album(2) Genre(3) Year(4)
         static const char* editable[] = {"Title","Artist","Album","Genre","Year"};
@@ -2924,6 +3074,10 @@ void UIManager::drawTrackInfo() {
         int row = 2;
         for (const auto& f : fields) {
             if (row >= rows - 1) break;
+
+            // Position: right of the art within its vertical band, then full-width
+            // below it (or from col 0 when there's no art).
+            const int base_x = (has_art && row < art_bottom) ? meta_right_x : 0;
 
             // Check if this field is editable
             int edit_idx = -1;
@@ -2938,12 +3092,13 @@ void UIManager::drawTrackInfo() {
                                    : (COLOR_PAIR(CP_TITLE)|A_BOLD));
             std::string lbl = "  " + f.label + ": ";
             lbl.resize((size_t)(label_w + 2), ' ');
-            mvwaddnstr(w, row, 0, lbl.c_str(), label_w + 2);
+            mvwaddnstr(w, row, base_x, lbl.c_str(), label_w + 2);
             wattroff(w, is_selected ? (COLOR_PAIR(CP_SELECTED)|A_BOLD)
                                     : (COLOR_PAIR(CP_TITLE)|A_BOLD));
 
             // Value
-            int val_w = cols - label_w - 3;
+            const int val_x = base_x + label_w + 2;
+            int val_w = cols - val_x - 1;
             if (val_w > 0) {
                 std::string val;
                 if (tag_edit_mode_ && edit_idx >= 0)
@@ -2959,21 +3114,22 @@ void UIManager::drawTrackInfo() {
                     std::string disp = val;
                     if (dispWidth(disp) > val_w - 1) disp = truncateToWidthRight(disp, val_w - 1);
                     std::wstring wdisp = utf8_to_wide(padToWidth(disp, val_w));
-                    mvwaddnwstr(w, row, label_w + 2, wdisp.c_str(), (int)wdisp.size());
+                    mvwaddnwstr(w, row, val_x, wdisp.c_str(), (int)wdisp.size());
                     // Blink cursor position
                     int cur_col = std::min(dispWidth(val), val_w - 1);
-                    mvwaddch(w, row, label_w + 2 + cur_col, '_');
+                    mvwaddch(w, row, val_x + cur_col, '_');
                     wattroff(w, COLOR_PAIR(CP_SELECTED) | A_BOLD);
                 } else {
                     wattron(w, edit_idx >= 0 && !tag_edit_mode_
                               ? (COLOR_PAIR(CP_DIM)|A_BOLD) : COLOR_PAIR(CP_DIM));
                     std::wstring wval = utf8_to_wide(scrollToWidth(val, val_w, text_scroll_offset_));
-                    mvwaddnwstr(w, row, label_w + 2, wval.c_str(), (int)wval.size());
+                    mvwaddnwstr(w, row, val_x, wval.c_str(), (int)wval.size());
                     wattroff(w, edit_idx >= 0 && !tag_edit_mode_
                                ? (COLOR_PAIR(CP_DIM)|A_BOLD) : COLOR_PAIR(CP_DIM));
                 }
             }
             ++row;
+            if (has_art && row == art_bottom) ++row;   // 1-row gap below the art band
         }
 
         // Hint when not in edit mode and file is editable

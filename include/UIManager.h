@@ -20,6 +20,7 @@
 #include "LrcData.h"
 #include "Mp4Chapters.h"
 #include "AwesomeThemes.h"
+#include "CoverArtRender.h"
 #include "core/INotify.h"
 
 class PlaylistManager;
@@ -215,6 +216,15 @@ private:
     // Track info cache — avoids TagLib re-read on every drawTrackInfo call
     std::string info_cached_path_;
     TrackInfo   info_cached_track_;
+
+    // Cover art in the Info pane (half-block cells). Rendered + colour-allocated
+    // once per (track, art-box size), cached and blitted each frame. See
+    // refreshInfoArt / drawArt in UIManager.cpp.
+    std::string        info_art_key_;    // "<path>|<cols>x<rows>" the cache is valid for
+    cover::Rendered    info_art_;        // decoded half-block grid (info_art_.ok gates drawing)
+    std::vector<short> info_art_pairs_;  // curses colour-pair per cell (parallel to info_art_.cells)
+    void refreshInfoArt(const std::string& path, int box_cols, int box_rows);
+    bool allocArtColorPairs(const cover::Rendered& art, std::vector<short>& out_pairs);
 
     // CD state
     std::string cd_drive_letter_;

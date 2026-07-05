@@ -48,6 +48,7 @@ set(REMOCT_SOURCES
     src/MBLookup.cpp
     src/CDRipper.cpp
     src/CoverArt.cpp
+    src/CoverArtRender.cpp        # decode + half-block render of cover art (Info pane)
     # Phase 4: the streaming source is driven through the plugin C ABI. Slice (c)
     # moved StreamSource + IHeartRadio + IHeartNowPlayingSM + IHeartDeepLog + the
     # adapter into plugins/stream/ (built as remoct_stream.{so,dll}); the host keeps

@@ -70,7 +70,7 @@ static constexpr int kMinPaneRows  = 3;         // panes need at least this many
 // small nub instead of vanishing. Classic's tall pane uses ~1/3 cell; the short
 // Awesome strip uses a taller floor (it only has ~5 rows to work with).
 static constexpr float kVizFloorCells      = 0.35f;   // Classic overlay
-static constexpr float kVizStripFloorCells = 0.9f;    // Awesome strip (~18% of ~5 rows)
+static constexpr float kVizStripFloorCells = 1.035f;  // Awesome strip (~21% of ~5 rows)
 
 static void sclog(const char* fmt, ...) {
     char buf[2048];
@@ -89,17 +89,41 @@ static void sclog(const char* fmt, ...) {
 namespace fs = std::filesystem;
 
 #ifdef PDCURSES
+#include <dwmapi.h>   // DwmSetWindowAttribute — OS-matching (dark) title bar
 // wingui global (pdcdisp.c), UNICODE build => wchar_t[128]. Declared at global
 // scope: an extern "C" inside an anonymous namespace is a linkage contradiction.
 extern "C" TCHAR PDC_font_name[];
 // wingui (pdcscrn.c): registers a callback invoked on every WM_SIZE, including
 // inside Windows' modal resize-drag loop where our getch() loop is blocked.
 extern "C" void PDC_set_window_resized_callback(void (*)(void));
+extern "C" HWND PDC_hWnd;   // wingui's GDI window handle (pdcscrn.c)
 
 namespace {
 // Trampoline for the C resize callback -> the live UIManager (single UI instance).
 UIManager* g_wingui_ui = nullptr;
 void winguiResizeTrampoline() { if (g_wingui_ui) g_wingui_ui->onWinguiLiveResize(); }
+
+// Make the wingui GDI window's title bar / border follow the OS light/dark theme
+// (Windows 10 20H1+). Reads HKCU AppsUseLightTheme (0 = dark) and applies
+// DWMWA_USE_IMMERSIVE_DARK_MODE - attribute 20 on current builds, 19 on older
+// Win10; setting both is harmless where one is ignored. Without this the window
+// keeps the default light chrome even when the OS is in dark mode.
+void applyOsTitleBarTheme() {
+    if (!PDC_hWnd) return;
+    BOOL dark = TRUE;   // default to dark; flip to light only if the OS says so
+    HKEY hk;
+    if (RegOpenKeyExW(HKEY_CURRENT_USER,
+            L"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize",
+            0, KEY_READ, &hk) == ERROR_SUCCESS) {
+        DWORD v = 1, sz = sizeof(v), ty = 0;
+        if (RegQueryValueExW(hk, L"AppsUseLightTheme", nullptr, &ty,
+                             reinterpret_cast<LPBYTE>(&v), &sz) == ERROR_SUCCESS)
+            dark = (v == 0) ? TRUE : FALSE;
+        RegCloseKey(hk);
+    }
+    DwmSetWindowAttribute(PDC_hWnd, 20, &dark, sizeof(dark));
+    DwmSetWindowAttribute(PDC_hWnd, 19, &dark, sizeof(dark));
+}
 
 // PDCursesMod wingui owns its GDI font (unlike a terminal, where the font is the
 // terminal's). Point it at a glyph-complete face so box-drawing corners (rounded
@@ -167,6 +191,17 @@ UIManager::UIManager(PlaylistManager& playlist, AudioManager& audio,
     // the RE-MOCT caption. Colour / transparent-bg parity (PDC_ORIGINAL_COLORS
     // vs use_default_colors) is tuned on the Task-4 visual re-probe, not here.
     PDC_set_title("RE-MOCT");
+    applyOsTitleBarTheme();   // dark/light window chrome to match the OS
+    // Hide wingui's "Font" menu bar (a light Win32 menu that ignores the dark
+    // title bar; the font is config-driven now) via wingui's OWN toggle rather
+    // than a raw SetMenu: WM_TOGGLE_MENU keeps the curses grid unchanged and just
+    // shrinks the window to match, so there's no size desync (raw SetMenu grew the
+    // client area and mis-sized/relocated the window). SendMessage is synchronous;
+    // menu_shown starts at 1 (initWinguiFont cleared the registry), so one toggle
+    // hides it. WM_USER+4 is wingui's private WM_TOGGLE_MENU command id, dispatched
+    // under WM_COMMAND. The grid doesn't change, so this can't re-enter our
+    // resize callback (it only fires on a row/col change).
+    if (PDC_hWnd) SendMessageW(PDC_hWnd, WM_COMMAND, WM_USER + 4, 0);
     // Repaint live during the modal resize-drag (see onWinguiLiveResize).
     g_wingui_ui = this;
     PDC_set_window_resized_callback(&winguiResizeTrampoline);
@@ -1205,7 +1240,7 @@ void UIManager::computeVizBins() {
         // fall-off a touch more in Awesome (only one viz mode is on screen at a
         // time, so Classic's locked feel is unchanged).
         float prev  = viz_smoothed_[b];
-        float decay = config_.awesome_mode ? 0.18f : 0.25f;
+        float decay = config_.awesome_mode ? 0.162f : 0.25f;
         float alpha = (val > prev) ? 0.85f : decay;
         viz_smoothed_[b] = prev + alpha * (val - prev);
     }

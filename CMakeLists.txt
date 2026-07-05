@@ -250,6 +250,7 @@ target_link_libraries(remoct PRIVATE
     $<$<PLATFORM_ID:Windows>:wininet>
     $<$<PLATFORM_ID:Windows>:shell32>
     $<$<PLATFORM_ID:Windows>:advapi32>
+    $<$<PLATFORM_ID:Windows>:dwmapi>   # DwmSetWindowAttribute: OS dark title bar (wingui)
     # Linux: miniaudio's runtime backend loading (dlopen) + threads + libm;
     # libcurl backs the core::IHttp seam (slice 2).
     $<$<PLATFORM_ID:Linux>:pthread>

@@ -62,6 +62,11 @@ static const char* const kVersionTag = "v" REMOCT_VERSION "-linux";
 static constexpr int kThemeTagFadeTick = 106;   // ~8.5s: bold -> dim
 static constexpr int kThemeTagGoneTick = 125;   // ~10s : removed
 
+// Awesome-mode full-width Spectrum strip: height incl. frame, and the minimum
+// pane height below which the strip is dropped (small-terminal guard).
+static constexpr int kVizStripRows = 7;         // 2 frame + ~5 bar rows
+static constexpr int kMinPaneRows  = 3;         // panes need at least this many
+
 static void sclog(const char* fmt, ...) {
     char buf[2048];
     va_list ap; va_start(ap, fmt);
@@ -554,13 +559,32 @@ void UIManager::loadTheme(short* fg, short* bg) {
     }
 }
 
+bool UIManager::vizStripShown() const {
+    // The Awesome full-width Spectrum strip is on screen iff we're in Awesome mode
+    // and win_viz_ was created as the strip (createWindows leaves it null in Awesome
+    // when the strip is toggled off or the terminal is too short). In Classic,
+    // win_viz_ is the right-pane overlay, not a strip, so this is false there.
+    return config_.awesome_mode && win_viz_ != nullptr;
+}
+
 void UIManager::createWindows() {
     // Awesome theme insets the two panes: a 1-col gutter on each outer edge and
     // a 1-col gap between them, giving the padded "floating panel" look. Classic
     // keeps the panes flush (gut = 0), so its geometry is byte-identical to before.
     const bool aw  = config_.awesome_mode;
     const int  gut = aw ? 1 : 0;
-    const int  pane_rows  = screen_rows_ - 4;
+
+    // Awesome mode: a full-width Spectrum strip lives below the two panes (toggle
+    // 'v', default on), shortening them by kVizStripRows. Classic keeps its
+    // right-pane visualizer overlay instead - no strip. Small-terminal guard:
+    // if the panes would be crushed, drop the strip and give the rows back.
+    bool strip = aw && awesome_viz_strip_;
+    int  viz_h = strip ? kVizStripRows : 0;
+    int  pane_rows = screen_rows_ - 4 - viz_h;
+    if (strip && pane_rows < kMinPaneRows) {
+        strip = false; viz_h = 0; pane_rows = screen_rows_ - 4;
+    }
+
     const int  avail_cols = screen_cols_ - (aw ? 3 : 0);   // left + mid + right gutters
     const int  left_cols  = avail_cols / 2;
     const int  right_cols = avail_cols - left_cols;
@@ -570,7 +594,15 @@ void UIManager::createWindows() {
     win_cwd_      = newwin(1,         screen_cols_, 1,              0);
     win_dir_      = newwin(pane_rows, left_cols,    2,              dir_x);
     win_playlist_ = newwin(pane_rows, right_cols,   2,              right_x);
-    win_viz_      = newwin(pane_rows, right_cols,   2,              right_x);
+    if (strip)
+        // Awesome full-width Spectrum strip, below the panes.
+        win_viz_ = newwin(viz_h, screen_cols_, 2 + pane_rows, 0);
+    else if (!aw)
+        // Classic right-pane visualizer overlay (same geometry as the queue).
+        win_viz_ = newwin(pane_rows, right_cols, 2, right_x);
+    else
+        // Awesome with the strip hidden: no viz window this layout.
+        win_viz_ = nullptr;
     win_progress_ = newwin(1,         screen_cols_, screen_rows_-2, 0);
     win_cmdline_  = newwin(1,         screen_cols_, screen_rows_-1, 0);
     // Set black background on all windows so colors render correctly
@@ -1011,8 +1043,9 @@ void UIManager::run() {
             } catch (...) {}
         }
 
-        // Always recompute viz bins so bars animate smoothly
-        if (right_pane_ == RightPane::Visualizer)
+        // Always recompute viz bins so bars animate smoothly (Classic right-pane
+        // overlay OR the Awesome full-width strip).
+        if (right_pane_ == RightPane::Visualizer || vizStripShown())
             computeVizBins();
 
         // Animate the breathing progress head — only in Awesome mode while playing,
@@ -1060,7 +1093,8 @@ void UIManager::run() {
             drawTitleBar();
             drawCwd();
             drawProgress();
-            if (right_pane_ == RightPane::Visualizer) {
+            // Animate the spectrum: Classic right-pane overlay OR the Awesome strip.
+            if (right_pane_ == RightPane::Visualizer || vizStripShown()) {
                 drawVisualizer();
                 wnoutrefresh(win_viz_);
             }
@@ -1187,15 +1221,24 @@ void UIManager::drawAll() {
     else if (right_pane_ == RightPane::Queue)        drawQueue();
     else if (right_pane_ == RightPane::Chapters)     drawChapters();
     else                                             drawHelp();
+    // Awesome full-width Spectrum strip: its own region below the panes; the right
+    // pane keeps whatever mode it's in. (Classic uses the RightPane::Visualizer
+    // overlay handled by the dispatch above instead.)
+    if (vizStripShown())
+        drawVisualizer();
     drawProgress();
     drawCmdLine();
     wnoutrefresh(win_title_);
     wnoutrefresh(win_cwd_);
     wnoutrefresh(win_dir_);
-    if (right_pane_ == RightPane::Visualizer)
+    // Classic can swap the right pane for the visualizer overlay; Awesome always
+    // shows the list pane there and the strip (below) separately.
+    if (!config_.awesome_mode && right_pane_ == RightPane::Visualizer)
         wnoutrefresh(win_viz_);
     else
         wnoutrefresh(win_playlist_);
+    if (vizStripShown())
+        wnoutrefresh(win_viz_);
     wnoutrefresh(win_progress_);
     wnoutrefresh(win_cmdline_);
     doupdate();
@@ -1814,8 +1857,7 @@ void UIManager::drawVisualizer() {
         int my = rows / 2;
         if (mx > 0) mvwaddstr(win_viz_, my, mx, msg);
         wattroff(win_viz_, COLOR_PAIR(CP_DIM) | A_DIM);
-        if (aw) panelFrame(win_viz_, " Visualizer [v:back] ",
-                           focus_ == Pane::Playlist, L'\uf001');
+        if (aw) panelFrame(win_viz_, " Spectrum ", false, L'\uf001');
         return;
     }
 
@@ -1874,7 +1916,7 @@ void UIManager::drawVisualizer() {
     }
 
     if (aw) {
-        panelFrame(win_viz_, " Visualizer [v:back] ", focus_ == Pane::Playlist, L'\uf001');
+        panelFrame(win_viz_, " Spectrum ", false, L'\uf001');
     } else {
         // Border
         wattron(win_viz_, COLOR_PAIR(CP_BORDER));
@@ -3826,12 +3868,17 @@ void UIManager::handleInput(int ch) {
     // Dismiss help with any non-? key too (just re-route to normal handling)
     // Actually let ? be the only toggle — other keys pass through below
 
-    // v toggles visualizer (not from help)
+    // v: Awesome -> show/hide the full-width Spectrum strip; Classic -> the
+    // right-pane visualizer overlay (unchanged MOC-style toggle).
     if (ch == 'v' || ch == 'V') {
-        if (right_pane_ == RightPane::Visualizer)
-            right_pane_ = RightPane::Playlist;
-        else
-            right_pane_ = RightPane::Visualizer;
+        if (config_.awesome_mode) {
+            awesome_viz_strip_ = !awesome_viz_strip_;
+            resizeWindows();              // rebuild panes with/without the strip
+            redraw_needed_.store(true);
+        } else {
+            right_pane_ = (right_pane_ == RightPane::Visualizer)
+                              ? RightPane::Playlist : RightPane::Visualizer;
+        }
         return;
     }
 
@@ -4101,6 +4148,11 @@ void UIManager::handleInput(int ch) {
         case 20:  // Ctrl+T — toggle Classic / Awesome theme
             config_.awesome_mode = !config_.awesome_mode;
             config_.save();
+            // Awesome has no right-pane visualizer (the spectrum is the bottom
+            // strip); if Classic left the right pane in viz mode, reset it so the
+            // pane doesn't come up blank after the switch.
+            if (config_.awesome_mode && right_pane_ == RightPane::Visualizer)
+                right_pane_ = RightPane::Playlist;
             // Re-init colour pairs for the new mode BEFORE rebuilding windows: Awesome
             // gives CP_DIM a solid base bg, so createWindows()'s wbkgd(CP_DIM) then fills
             // every pane (and the title/cwd/cmdline strips) with the themed base; Classic

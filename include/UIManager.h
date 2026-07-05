@@ -113,6 +113,13 @@ private:
     Pane      focus_           = Pane::DirBrowser;
     RightPane right_pane_      = RightPane::Playlist;
     RightPane prev_right_pane_ = RightPane::Playlist;
+    // Awesome mode: a permanent full-width Spectrum strip below the panes,
+    // toggled with 'v' (default on). Classic mode ignores this and keeps its
+    // RightPane::Visualizer overlay instead. The strip is only actually created
+    // (win_viz_ non-null in Awesome) when this is on AND the terminal is tall
+    // enough; vizStripShown() is the live "is the strip on screen" test.
+    bool awesome_viz_strip_ = true;
+    bool vizStripShown() const;   // Awesome + strip actually on screen (win_viz_ != null)
     bool running_       = false;
     std::atomic<bool> redraw_needed_ { true };
     int  help_scroll_   = 0;   // scroll position in help pane

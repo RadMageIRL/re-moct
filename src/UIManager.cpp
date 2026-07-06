@@ -1584,9 +1584,6 @@ void UIManager::drawTitleBar() {
     wattron(win_title_, COLOR_PAIR(CP_TITLE) | A_BOLD);
     const auto& track = audio_.currentTrack();
     std::string np;
-    // slice 6: the CD now-playing label is live on Linux. The streamMode branch
-    // below stays Windows-gated — Linux streaming top-bar behavior is unchanged
-    // (a separate pre-existing gap, deliberately out of this CD slice).
     if (audio_.cdMode() && audio_.cdCurrentTrack() > 0) {
         int t = audio_.cdCurrentTrack();
         // Check if MB has populated the track name in the playlist
@@ -1602,7 +1599,6 @@ void UIManager::drawTitleBar() {
         else
             np = cd_title + " [" + cd_drive_letter_ + ":]";
     } else
-#ifdef _WIN32
     if (audio_.streamMode()) {
         // Live stream: show the station identity (its RADIO: label) so the top
         // line reflects the playing station, not the stale last-file track held
@@ -1613,11 +1609,11 @@ void UIManager::drawTitleBar() {
         // (queue items have no playlist row), so current() still points at the
         // previous song and would paint its stale title here. URL-based labeling
         // is cursor-independent and still upgrades when a user-supplied station
-        // name lands in config.
+        // name lands in config. (Common since the top-bar radio gate came off -
+        // stationLabel/streamUrl are portable.)
         std::string label = stationLabel(audio_.streamUrl());
         np = label.empty() ? "(live stream)" : label;
     } else
-#endif
     if (audio_.state() != PlaybackState::Stopped && !track.path.empty()) {
         np = track.artist.empty() ? track.title : track.artist + " - " + track.title;
         if (np.empty()) np = fs::path(track.path).filename().string();

@@ -2041,6 +2041,8 @@ void UIManager::drawVisualizer() {
         // response.
         float floor = kVizFloorCells;
         if (aw) { val = std::pow(val, 0.65f) * 1.10f; floor = kVizStripFloorCells; }
+        // Lift the resting floor per spectrum style: 80s LED +20%, classic bars +10%.
+        floor *= config_.viz_led ? 1.20f : 1.10f;
         float exact = std::clamp(val, 0.0f, 1.0f) * bar_area_rows;
         if (exact < floor) exact = floor;
 

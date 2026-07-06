@@ -48,6 +48,18 @@ and a playlist/rip view. The public feature guide is [`docs/index.html`](docs/in
 - Last.fm (Ctrl+G) and ListenBrainz (Ctrl+B) scrobbling + now-playing
 - Discord Rich Presence with album art
 
+**Interface & visuals**
+- Two modes: **Classic** (a faithful MOC homage) and **Awesome** (**Ctrl+T**) - comet
+  progress bar, breathing animations, a full-width spectrum
+- Spectrum styles (**F2**): classic solid bars, or an 80s graphic-EQ "LED" look; the
+  bars fill the full width at any size
+- Cover art in the Track Info (**i**) pane for local files and radio (half-block render,
+  station cover / iTunes-Deezer lookup / logo floor)
+- 18 named truecolor Awesome palettes, cycled with **F7** / **F8**; a KITT scanner in
+  the radio status bar
+- Optional Windows GDI (wingui) build: truecolor window, remembered size, **Alt+Enter**
+  borderless fullscreen (see [BUILD.md](BUILD.md))
+
 **Cross-platform & plugin architecture**
 - Runs on **Windows** (MSYS2 UCRT64) and **Linux** (Debian Trixie); every platform
   call sits behind a seam with a Windows and a Linux implementation
@@ -64,7 +76,9 @@ cmake -S . -B build -G Ninja && cmake --build build
 ```
 
 Binary: `build/bin/remoct.exe` (Windows) / `build/bin/remoct` (Linux), with the streaming
-plugin built beside it in `build/bin/plugins/`.
+plugin built beside it in `build/bin/plugins/`. Windows has two render backends - the
+console `ncursesw` build (default) and a GDI **wingui** build (`-DREMOCT_PDCURSES=ON`,
+truecolor + Alt+Enter fullscreen); see [BUILD.md](BUILD.md).
 
 ## Keybindings (selection)
 
@@ -80,6 +94,8 @@ plugin built beside it in `build/bin/plugins/`.
 | `?` | Help pane | `Ctrl+P` | iHeart minted-profileId probe (experimental, off by default) |
 | `Ctrl+Q` | Quit | `Ctrl+K` | Stream mode: Web Player / Raw broadcast |
 | `i` / `e` | Track info / 10-band EQ | `Shift+L` / `Shift+A` / `Shift+X` | Lyrics / About / Output device picker |
+| `F2` | Spectrum: classic / 80s LED | `F7` / `F8` | Awesome theme: previous / next |
+| `Alt+Enter` | Fullscreen (Windows wingui build) | | |
 
 ## Configuration
 

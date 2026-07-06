@@ -5,6 +5,48 @@ All notable changes to RE-MOCT are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.0] - 2026-07-05
+
+Feature release: cover art in the Info pane, a segmented "80s LED" spectrum mode,
+an optional PDCursesMod wingui/GDI render backend for Windows (truecolor,
+borderless fullscreen), more Awesome themes, and a batch of input-latency and
+navigation fixes.
+
+### Added
+
+**Interface**
+- Cover art in the Track Info (i) pane, rendered as half-block cells: embedded art
+  for local files, and for radio the station-supplied cover (iHeart) or an
+  iTunes/Deezer song lookup, falling back to the RE-MOCT logo. Decoded off the UI
+  thread and cached, so opening the pane and toggling tag-edit never stall.
+- KITT scanner: a Knight-Rider sweep across the idle gap in the radio status bar,
+  theme-coloured via the visualizer roles.
+- Spectrum styles (**F2**): the classic solid bars, or an 80s graphic-EQ "LED" look
+  (stacked half-block segments coloured by height). The spectrum now fills the full
+  width with uniform single-column bars at any terminal size.
+- Awesome themes: 18 named truecolor palettes (adds **Matrix**, digital-rain green);
+  **F7** / **F8** cycle to the previous / next palette.
+
+**Windows (PDCursesMod wingui build)**
+- Optional GDI render backend (`-DREMOCT_PDCURSES=ON`) that draws the TUI in its own
+  window with guaranteed truecolor for Awesome mode, an OS-matched dark title bar,
+  and process-private bundled-font loading. See [BUILD.md](BUILD.md).
+- **Alt+Enter** toggles borderless fullscreen (covers the taskbar); the window
+  remembers its size across launches.
+
+### Changed
+
+- The radio station label now shows in the top bar on Linux too (was Windows-only).
+
+### Fixed
+
+- Input latency: a keypress now takes effect in the same frame instead of waiting up
+  to ~80ms for the next input poll, so pane switches and navigation feel immediate.
+- Esc no longer stalls ~1s before closing a pane on Linux (ncurses `ESCDELAY`).
+- The Info pane no longer blocks the UI thread while decoding cover art (async + cached).
+
+[1.1.0]: https://github.com/RadMageIRL/re-moct/releases/tag/1.1.0
+
 ## [1.0.0] - 2026-07-04
 
 Initial public release. RE-MOCT is a terminal music player, CD ripper, and

@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.20)
 # C is enabled alongside CXX for the one vendored C TU: lib/md5.c (the
 # public-domain Openwall MD5 behind LastFm's api_sig — slice 2, both platforms).
-project(remoct VERSION 0.1.0 LANGUAGES C CXX)
+project(remoct VERSION 1.1.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)

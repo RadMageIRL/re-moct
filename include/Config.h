@@ -36,11 +36,30 @@ struct DigiConfig {
 
     // UI theme toggle (Ctrl+T): false = Classic, true = Awesome (rounded panels)
     bool  awesome_mode = false;
+    int   awesome_theme = 0;   // index into kAwesomeThemes (Ctrl+T Awesome look; F8 cycles)
+    // Spectrum style (F2): false = classic solid bars (default), true = 80s segmented
+    // "LED" bars (stacked half-block segments, colour-by-height).
+    bool  viz_led = false;
     bool  prefer_digital_stream = false;   // iHeart: try web-player (ad-reduced) rendition; raw broadcast otherwise
     bool  iheart_probe_minted   = false;   // probe: use a minted anonymous profileId on the digital handshake (deep-log A/B only)
 
     // Nerd Font pane-title icons (Ctrl+N). Requires a Nerd Font terminal font.
     bool  nerd_icons = false;
+
+    // Windows PDCursesMod wingui build ONLY: the GDI window owns its font (unlike
+    // a terminal, where the font is the terminal's). This names the face used, so
+    // box-drawing corners + viz blocks + Nerd icons render. Empty => the built-in
+    // default ("JetBrainsMono NFM"). Any .ttf dropped in <exeDir>/fonts/ is loaded
+    // process-privately at startup, so a bundled font need not be installed.
+    std::string wingui_font;
+
+    // Windows wingui build ONLY: the last GDI window size (grid rows x cols),
+    // remembered across launches. We can't lean on PDCurses' own registry
+    // persistence because we wipe that key each launch to keep our font choice
+    // (see initWinguiFont), so we persist the size here instead. 0 => unset
+    // (use the wingui default). Restored via resize_term() at startup.
+    int wingui_cols = 0;
+    int wingui_rows = 0;
 
     // Bookmarks: list of saved directory paths
     std::vector<std::string> bookmarks;

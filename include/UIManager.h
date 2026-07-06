@@ -1,10 +1,5 @@
 #pragma once
-#ifdef _WIN32
-#  ifndef NCURSES_STATIC
-#    define NCURSES_STATIC
-#  endif
-#endif
-#include <ncurses.h>
+#include "CursesSeam.h"
 #include <string>
 #include <vector>
 #include <array>
@@ -24,6 +19,8 @@
 #include "miniaudio.h"
 #include "LrcData.h"
 #include "Mp4Chapters.h"
+#include "AwesomeThemes.h"
+#include "CoverArtRender.h"
 #include "core/INotify.h"
 
 class PlaylistManager;
@@ -47,7 +44,17 @@ public:
 
     void run();
     void requestRedraw() { redraw_needed_.store(true); }
+    // wingui only: repaint live during Windows' modal resize-drag loop (the app's
+    // getch() loop is blocked there, so without this the window is blank mid-drag).
+    // Registered as PDCurses' window-resized callback; a no-op elsewhere.
+    void onWinguiLiveResize();
     const std::string& currentDir() const { return current_dir_; }
+#ifdef PDCURSES
+    // wingui only (Alt+Enter): toggle a borderless window that fills the monitor,
+    // and back to the previous framed size. The curses grid reflows via the resize
+    // callback, exactly like a user drag.
+    void toggleWinguiFullscreen();
+#endif
 
 private:
     // Notifications seam (slice 7): injected fake in tests, core::notifier() in prod.
@@ -113,6 +120,13 @@ private:
     Pane      focus_           = Pane::DirBrowser;
     RightPane right_pane_      = RightPane::Playlist;
     RightPane prev_right_pane_ = RightPane::Playlist;
+    // Awesome mode: a permanent full-width Spectrum strip below the panes,
+    // toggled with 'v' (default on). Classic mode ignores this and keeps its
+    // RightPane::Visualizer overlay instead. The strip is only actually created
+    // (win_viz_ non-null in Awesome) when this is on AND the terminal is tall
+    // enough; vizStripShown() is the live "is the strip on screen" test.
+    bool awesome_viz_strip_ = true;
+    bool vizStripShown() const;   // Awesome + strip actually on screen (win_viz_ != null)
     bool running_       = false;
     std::atomic<bool> redraw_needed_ { true };
     int  help_scroll_   = 0;   // scroll position in help pane
@@ -149,7 +163,8 @@ private:
     int screen_cols_ = 0;
 
     // Visualizer
-    static constexpr int VIZ_BINS = 28;
+    static constexpr int VIZ_BINS = 64;   // finer spectrum: fills a wide strip with
+                                          // thin bars (DFT cost is per-k, not per-bin)
     std::array<float, VIZ_BINS> viz_bars_     {};
     std::array<float, VIZ_BINS> viz_smoothed_ {};
     void computeVizBins();
@@ -208,6 +223,68 @@ private:
     std::string info_cached_path_;
     TrackInfo   info_cached_track_;
 
+    // Cover art in the Info pane (half-block cells). Rendered + colour-allocated
+    // once per (track, art-box size), cached and blitted each frame. See
+    // refreshInfoArt / drawArt in UIManager.cpp.
+    std::string        info_art_key_;    // "<path>|<cols>x<rows>" the COMMITTED art reflects
+    cover::Rendered    info_art_;        // decoded half-block grid (info_art_.ok gates drawing)
+    std::vector<short> info_art_pairs_;  // curses colour-pair per cell (parallel to info_art_.cells)
+    void refreshInfoArt(const std::string& path, int box_cols, int box_rows);
+    bool allocArtColorPairs(const cover::Rendered& art, std::vector<short>& out_pairs);
+
+    // Async local-file cover decode: the file read (TagLib) + stb decode run on a
+    // worker so drawTrackInfo NEVER blocks the UI thread (a synchronous decode
+    // stalled input on Linux, where the draw loop repaints frequently - a quick
+    // 'e'/Esc around a stall felt dropped). Colour-pair allocation stays on the UI
+    // thread (curses palette). A small MRU cache of recent (path|box) decodes keeps
+    // tag-edit toggles and track re-visits instant (no re-decode, no re-read).
+    std::thread          info_art_thread_;
+    std::atomic<bool>    info_art_active_{false};   // decode worker in flight
+    std::atomic<bool>    info_art_done_{false};     // decoded grid ready for pickup
+    std::mutex           info_art_mtx_;
+    std::string          info_art_want_key_;        // "path|box" the worker decodes for (guarded)
+    cover::Rendered      info_art_result_;          // decoded grid from the worker (guarded)
+    struct ArtCacheEntry { std::string key; cover::Rendered art; };
+    std::vector<ArtCacheEntry> info_art_cache_;     // small MRU cache (FIFO-evicted)
+    static constexpr std::size_t kInfoArtCacheMax = 6;
+    void startInfoArtDecode(const std::string& path, const std::string& key,
+                            int box_cols, int box_rows);
+    void commitInfoArt(const std::string& key, const cover::Rendered& r);   // UI thread: alloc + show
+    const cover::Rendered* artCacheGet(const std::string& key);
+    void artCachePut(const std::string& key, const cover::Rendered& r);
+
+    // ── Radio cover art (Info pane) ───────────────────────────────────────────
+    // Live-stream art shadows the Discord committed-song decision: on a committed
+    // radio track-change, resolve a cover URL (the station-supplied iHeart cover
+    // if any, else a urlBySong lookup) off the UI thread, GET the bytes, and
+    // half-block render them into the SAME Info-pane art box as local files. No
+    // confident match => the bundled RE-MOCT logo floor (its own cache key so it
+    // never thrashes against real covers). Best-effort/decorative: a slow fetch
+    // shows the logo now and fills the cover when it lands (never stalls the UI).
+    std::thread          radio_art_thread_;
+    std::atomic<bool>    radio_art_active_{false};   // fetch worker in flight
+    std::atomic<bool>    radio_art_done_{false};     // bytes ready for pickup
+    std::mutex           radio_art_mtx_;
+    std::string          radio_art_want_key_;        // "artist\ttitle" the worker fetches for (guarded)
+    std::vector<uint8_t> radio_art_result_;          // downloaded image bytes (guarded; {} => no match)
+    bool                 radio_fetch_station_ = false; // worker used the station URL (skip neg-cache on miss)
+    // Bytes cache (one committed song): avoids re-GET on rotation-return and on box resize.
+    std::string          radio_bytes_key_;           // song key the bytes belong to ("" = none/floor)
+    std::vector<uint8_t> radio_bytes_;               // cached cover bytes ({} + resolved => logo floor)
+    bool                 radio_bytes_resolved_ = false; // fetch finished for radio_bytes_key_
+    std::string          radio_last_station_art_;    // station art URL a resolution was based on
+    // Decoded-block cache (keyed on song + box + logo-vs-cover), parallel to info_art_.
+    std::string          radio_render_key_;
+    cover::Rendered      radio_art_;
+    std::vector<short>   radio_art_pairs_;
+    // Bundled RE-MOCT logo, decoded once and reused as the floor (own cache key).
+    std::vector<uint8_t> logo_bytes_;                // loaded lazily from remoct_logo.jpg
+    bool                 logo_load_tried_ = false;
+    void refreshRadioArt(int box_cols, int box_rows);              // UI thread: resolve/fetch/decode
+    void startRadioArtFetch(const std::string& artist, const std::string& title,
+                            const std::string& station_art);       // spawn the off-UI fetch worker
+    const std::vector<uint8_t>& logoBytes();                       // lazy-load the bundled logo bytes
+
     // CD state
     std::string cd_drive_letter_;
     int         cd_poll_ticks_   = 0;
@@ -247,6 +324,11 @@ private:
     UIOverlay   ui_overlay_    = UIOverlay::None;
     std::string rip_status_;   // shown in cmdline during/after rip
     int         rip_msg_ticks_ = 0;  // auto-clear counter
+
+    // [THEME:name] tag on the cwd line, shown on a theme switch (Ctrl+T / F8):
+    // bold, then dimmed near the end, gone after ~10s. Counts ~80ms loop ticks
+    // (timeout(80)). Initialised past the timeout so it is hidden at startup.
+    int         theme_tag_ticks_ = 125;
 
 #ifndef _WIN32
     // Cmdline echo (KEPT past slice 5): a real notify-send toast now renders on
@@ -361,6 +443,19 @@ private:
     int  text_scroll_offset_ = 0;   // shared offset for all truncated text rows
     int  text_scroll_ticks_  = 0;
 
+    // KITT scanner (radio status bar). A bright head + fading gradient tail sweeps
+    // the idle gap between the now-playing title and the [LIVE] tag, bouncing end
+    // to end. Rides the existing ~80ms draw heartbeat (advances on a wall-clock
+    // step so keypress/tick jitter doesn't change its speed); theme-coloured via
+    // the viz roles so each palette gets its own scanner. Drawn in drawProgress'
+    // single stream-bar repaint pass (no separate refresh) so it can't fight the
+    // title for the region. Always animates while live/connected.
+    static constexpr double kScannerStepMs = 70.0;   // ~1 cell per heartbeat; tune by eye
+    static constexpr int    kScannerTail   = 14;     // trailing cells behind the head (~4x the head)
+    int    scanner_pos_ = 0;         // head column within the scanner track (0..track_w-1)
+    int    scanner_dir_ = 1;         // +1 / -1 sweep direction
+    std::chrono::steady_clock::time_point scanner_last_ {};  // last wall-clock advance
+
     // Drive browser
     bool in_drive_list_ = false;
     static std::vector<std::string> listDrives();
@@ -381,7 +476,17 @@ private:
     static constexpr short CP_VIZ_PEAK   = 12;
     static constexpr short CP_SELECTED_UNFOCUSED = 13;
     static constexpr short CP_VIZ_TIP    = 14;  // viz fractional tip: peak fg on default bg
+    // Segmented "LED" spectrum: the viz band colours on the base/dark bg (like the
+    // tip). A lower half-block (▄) drawn in these leaves a dark gap above each cell,
+    // so a bar reads as stacked LEDs. Peak band reuses CP_VIZ_TIP.
+    static constexpr short CP_VIZ_LOW_B  = 15;
+    static constexpr short CP_VIZ_MID_B  = 16;
+    static constexpr short CP_VIZ_HIGH_B = 17;
 
     void initColours();
     void loadTheme(short* fg, short* bg);   // overrides defaults from theme.conf
+    // Re-inits the colour pairs from kAwesomeThemes[config_.awesome_theme] without
+    // rebuilding windows (truecolor via init_color, or nearest-ANSI-16 fallback).
+    // Idempotent; safe to call repeatedly (F8 cycle, Ctrl+T into Awesome).
+    void applyAwesomeTheme();
 };

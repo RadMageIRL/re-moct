@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.20)
 # C is enabled alongside CXX for the one vendored C TU: lib/md5.c (the
 # public-domain Openwall MD5 behind LastFm's api_sig — slice 2, both platforms).
-project(remoct VERSION 0.1.0 LANGUAGES C CXX)
+project(remoct VERSION 1.1.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -16,6 +16,25 @@ if(WIN32)
     list(APPEND CMAKE_PREFIX_PATH "${MSYS2_PREFIX}")
 endif()
 
+# ── Phase 0 static-link probe (experimental/win-pdcurses) ──────────────────
+# Toggle with -DREMOCT_STATIC_PROBE=ON. Prefers static .a archives over the
+# MSYS2 import stubs (.dll.a) so curses + codecs + GCC runtime fold into the
+# exe. OFF by default -> the normal dynamic build is completely unchanged.
+option(REMOCT_STATIC_PROBE "Prefer static archives + static libgcc/stdc++ (Windows single-exe probe)" OFF)
+if(WIN32 AND REMOCT_STATIC_PROBE)
+    set(CMAKE_FIND_LIBRARY_SUFFIXES ".a;.dll.a")
+    message(STATUS "STATIC PROBE: preferring .a archives over .dll.a import stubs")
+endif()
+
+# ── Option C: PDCursesMod wingui (Windows single-exe truecolor) ─────────────
+# Toggle with -DREMOCT_PDCURSES=ON (Windows only). Renders the TUI via the
+# vendored PDCursesMod wingui/GDI port instead of ncursesw, guaranteeing
+# truecolor for Awesome mode. OFF by default -> Windows keeps ncursesw. Linux
+# is always ncursesw and ignores this. Defining it swaps the curses selection
+# below AND makes Curses.h include <curses.h> (PDCurses) via the REMOCT_PDCURSES
+# compile definition on the remoct target.
+option(REMOCT_PDCURSES "Windows: render via vendored PDCursesMod wingui instead of ncursesw" OFF)
+
 # ── Sources ────────────────────────────────────────────────────────────────
 set(REMOCT_SOURCES
     src/main.cpp
@@ -29,6 +48,7 @@ set(REMOCT_SOURCES
     src/MBLookup.cpp
     src/CDRipper.cpp
     src/CoverArt.cpp
+    src/CoverArtRender.cpp        # decode + half-block render of cover art (Info pane)
     # Phase 4: the streaming source is driven through the plugin C ABI. Slice (c)
     # moved StreamSource + IHeartRadio + IHeartNowPlayingSM + IHeartDeepLog + the
     # adapter into plugins/stream/ (built as remoct_stream.{so,dll}); the host keeps
@@ -108,10 +128,10 @@ target_include_directories(remoct PRIVATE
     ${FDKAAC_INCLUDE}
 )
 if(WIN32)
-    target_include_directories(remoct PRIVATE
-        ${MSYS2_PREFIX}/include
-        ${MSYS2_PREFIX}/include/ncursesw
-    )
+    target_include_directories(remoct PRIVATE ${MSYS2_PREFIX}/include)
+    if(NOT REMOCT_PDCURSES)
+        target_include_directories(remoct PRIVATE ${MSYS2_PREFIX}/include/ncursesw)
+    endif()
 else()
     # Debian keeps the wide-char build's headers under /usr/include/ncursesw —
     # putting it on the path makes <ncurses.h> resolve to the ncursesw variant
@@ -152,12 +172,43 @@ find_library(FDKAAC_LIB NAMES fdk-aac
     PATHS "${MSYS2_PREFIX}/lib" REQUIRED)
 find_path(FDKAAC_INCLUDE NAMES fdk-aac/aacdecoder_lib.h
     PATHS "${MSYS2_PREFIX}/include" REQUIRED)
+if(WIN32 AND REMOCT_STATIC_PROBE)
+    # fdk-aac stays DYNAMIC by design even under the static single-exe build:
+    # the exe and the remoct_stream plugin share it, so one libfdk-aac.dll = one
+    # codec state (static in the exe + a plugin copy would alias into two decoder
+    # states). Force the import lib past the static-first suffix preference. This
+    # normal-var set() shadows the .a the find_library above cached.
+    set(FDKAAC_LIB "${MSYS2_PREFIX}/lib/libfdk-aac.dll.a")
+endif()
 message(STATUS "fdk-aac: ${FDKAAC_LIB}")
-find_library(NCURSESW_LIB NAMES ncursesw
-    PATHS "${MSYS2_PREFIX}/lib" REQUIRED)
-find_library(PANELW_LIB NAMES panelw
-    PATHS "${MSYS2_PREFIX}/lib")
-message(STATUS "ncursesw: ${NCURSESW_LIB}")
+# ── Curses: PDCursesMod wingui (Windows+REMOCT_PDCURSES) or ncursesw ────────
+if(WIN32 AND REMOCT_PDCURSES)
+    # Vendored PDCursesMod (pinned; see lib/pdcursesmod/VENDOR.md). Build the
+    # wingui/GDI port as a static lib: portable core (pdcurses/*.c) + the 7
+    # platform TUs (wingui/*.c, which #include the needed common/*.c helpers).
+    set(PDC_DIR "${CMAKE_SOURCE_DIR}/lib/pdcursesmod")
+    file(GLOB PDC_CORE_SRC "${PDC_DIR}/pdcurses/*.c")
+    set(PDC_WINGUI_SRC
+        "${PDC_DIR}/wingui/pdcclip.c"  "${PDC_DIR}/wingui/pdcdisp.c"
+        "${PDC_DIR}/wingui/pdcgetsc.c" "${PDC_DIR}/wingui/pdckbd.c"
+        "${PDC_DIR}/wingui/pdcscrn.c"  "${PDC_DIR}/wingui/pdcsetsc.c"
+        "${PDC_DIR}/wingui/pdcutil.c")
+    add_library(pdcurses_wingui STATIC ${PDC_CORE_SRC} ${PDC_WINGUI_SRC})
+    target_include_directories(pdcurses_wingui PUBLIC "${PDC_DIR}")
+    # PDC_WIDE + PDC_FORCE_UTF8: single-column wide glyphs + UTF-8 (box-drawing,
+    # viz blocks). The wingui GDI port draws its own colours (truecolor).
+    target_compile_definitions(pdcurses_wingui PRIVATE PDC_WIDE PDC_FORCE_UTF8)
+    target_link_libraries(pdcurses_wingui PUBLIC gdi32 comdlg32 winmm)
+    # Silence third-party warnings; this is vendored code, not ours to fix.
+    target_compile_options(pdcurses_wingui PRIVATE -w)
+    message(STATUS "curses: PDCursesMod wingui (vendored, static) - Option C")
+else()
+    find_library(NCURSESW_LIB NAMES ncursesw
+        PATHS "${MSYS2_PREFIX}/lib" REQUIRED)
+    find_library(PANELW_LIB NAMES panelw
+        PATHS "${MSYS2_PREFIX}/lib")
+    message(STATUS "ncursesw: ${NCURSESW_LIB}")
+endif()
 
 # ── TagLib ─────────────────────────────────────────────────────────────────
 find_package(PkgConfig QUIET)
@@ -175,10 +226,20 @@ else()
 endif()
 target_include_directories(remoct PRIVATE ${TAGLIB_INCLUDE_DIRS})
 
+# ── Curses linkage (selected above) ────────────────────────────────────────
+if(WIN32 AND REMOCT_PDCURSES)
+    target_link_libraries(remoct PRIVATE pdcurses_wingui)
+    # Curses.h -> <curses.h> (PDCursesMod) instead of ncursesw.
+    target_compile_definitions(remoct PRIVATE REMOCT_PDCURSES)
+else()
+    target_link_libraries(remoct PRIVATE
+        ${NCURSESW_LIB}
+        $<$<BOOL:${PANELW_LIB}>:${PANELW_LIB}>
+    )
+endif()
+
 # ── Link ───────────────────────────────────────────────────────────────────
 target_link_libraries(remoct PRIVATE
-    ${NCURSESW_LIB}
-    $<$<BOOL:${PANELW_LIB}>:${PANELW_LIB}>
     ${TAGLIB_LIBRARIES}
     ${FLAC_LIB}
     ${LAME_LIB}
@@ -190,6 +251,7 @@ target_link_libraries(remoct PRIVATE
     $<$<PLATFORM_ID:Windows>:wininet>
     $<$<PLATFORM_ID:Windows>:shell32>
     $<$<PLATFORM_ID:Windows>:advapi32>
+    $<$<PLATFORM_ID:Windows>:dwmapi>   # DwmSetWindowAttribute: OS dark title bar (wingui)
     # Linux: miniaudio's runtime backend loading (dlopen) + threads + libm;
     # libcurl backs the core::IHttp seam (slice 2).
     $<$<PLATFORM_ID:Linux>:pthread>
@@ -198,6 +260,21 @@ target_link_libraries(remoct PRIVATE
 )
 if(UNIX)
     target_link_libraries(remoct PRIVATE CURL::libcurl)
+endif()
+
+# ── Phase 0 static-link probe: static runtime + explicit transitive deps ────
+if(WIN32 AND REMOCT_STATIC_PROBE)
+    target_link_options(remoct PRIVATE -static -static-libgcc -static-libstdc++)
+    # TagLib's headers default TAGLIB_EXPORT to __declspec(dllimport); without
+    # this define the objects reference __imp_ symbols the static libtag.a lacks
+    # (the C++ analog of the NCURSES_STATIC define already set above).
+    target_compile_definitions(remoct PRIVATE TAGLIB_STATIC)
+    # FLAC_API defaults to __declspec(dllimport) on Windows unless FLAC__NO_DLL
+    # is defined -> same __imp_ mismatch against the static libFLAC.a.
+    target_compile_definitions(remoct PRIVATE FLAC__NO_DLL)
+    # Static libFLAC needs libogg explicitly (the dynamic build pulled ogg in
+    # transitively via the FLAC DLL; a static .a exposes the dependency).
+    target_link_libraries(remoct PRIVATE "${MSYS2_PREFIX}/lib/libogg.a")
 endif()
 
 # ── Compiler warnings ──────────────────────────────────────────────────────
@@ -211,6 +288,34 @@ endif()
 
 set_target_properties(remoct PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
+
+# ── App icon (Windows) ─────────────────────────────────────────────────────
+# icon/remoct.ico is a LOCAL, gitignored asset. When present, embed it as the
+# exe's first icon resource: Explorer/taskbar/shortcut use it, and PDCursesMod
+# wingui uses the exe's first icon for its window class (titlebar top-left). A
+# generated .rc (build tree) points windres at the absolute path. Conditional,
+# so a checkout without the asset still builds.
+if(WIN32 AND EXISTS "${CMAKE_SOURCE_DIR}/icon/remoct.ico")
+    enable_language(RC)
+    set(REMOCT_ICON_RC "${CMAKE_BINARY_DIR}/remoct_icon.rc")
+    file(WRITE "${REMOCT_ICON_RC}" "1 ICON \"${CMAKE_SOURCE_DIR}/icon/remoct.ico\"\n")
+    target_sources(remoct PRIVATE "${REMOCT_ICON_RC}")
+    message(STATUS "app icon: embedding icon/remoct.ico")
+endif()
+
+# ── App logo (radio-art floor) ─────────────────────────────────────────────
+# remoct_logo.jpg is the RE-MOCT logo, shipped with the app: the Info pane
+# renders it as the half-block cover-art floor when a radio song has no confident
+# cover match. Copy it beside the exe (bin/) so logoBytes() finds it at <exeDir>,
+# and install it to bin/. Conditional so a checkout without the asset still builds.
+if(EXISTS "${CMAKE_SOURCE_DIR}/icon/remoct_logo.jpg")
+    add_custom_command(TARGET remoct POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${CMAKE_SOURCE_DIR}/icon/remoct_logo.jpg"
+                "$<TARGET_FILE_DIR:remoct>/remoct_logo.jpg"
+        VERBATIM)
+    install(FILES "${CMAKE_SOURCE_DIR}/icon/remoct_logo.jpg" DESTINATION bin)
+endif()
 
 install(TARGETS remoct RUNTIME DESTINATION bin)
 

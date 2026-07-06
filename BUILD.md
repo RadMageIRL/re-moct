@@ -53,6 +53,30 @@ be reachable - either keep `C:\msys64\ucrt64\bin` on `PATH` or copy them next to
 > **VSCode note:** IntelliSense may resolve headers against an unrelated project and
 > report bogus diagnostics. The Ninja/GCC build is the only ground truth.
 
+### Two Windows render backends
+
+RE-MOCT renders on Windows two ways. Both build from the same source; pick one at
+configure time:
+
+- **ncursesw (default)** - the console build. Runs in any terminal (Windows Terminal,
+  conhost); this is what the commands above produce. It keeps a ConPTY size-poll +
+  repaint heartbeat so live resize works under Windows Terminal.
+- **PDCursesMod wingui** (`-DREMOCT_PDCURSES=ON`) - draws the TUI in its own GDI
+  window instead of a terminal, guaranteeing truecolor for Awesome mode. Adds an
+  OS-matched dark title bar, process-private bundled-font loading (drop a `.ttf`/`.otf`
+  in `<exeDir>/fonts/`), a remembered window size, and **Alt+Enter** borderless
+  fullscreen. The wingui/GDI port is vendored (`lib/pdcursesmod/`) and compiled by
+  CMake when the option is on - no extra packages needed.
+
+  ```bash
+  cmake -S . -B build-wingui -G Ninja -DCMAKE_BUILD_TYPE=Release -DREMOCT_PDCURSES=ON
+  cmake --build build-wingui
+  ```
+
+  The `ncurses` package is still needed for the default build; the wingui build does
+  not use it. Everything else (TagLib, FLAC, LAME, libebur128, FDK-AAC) is common to
+  both. The two configs use separate build directories, so you can keep both around.
+
 ---
 
 ## Linux (Debian Trixie)

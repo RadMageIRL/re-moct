@@ -9,22 +9,11 @@ It is a homage to [MOC](http://moc.daper.net/) (Music On Console) with a twist. 
 it becomes *RE-MOCT* - the remix: a comet progress bar, a sub-cell block visualizer, and
 breathing animations. The mode toggle is the whole point.
 
-```
-┌─ RE-MOCT – Music On Console Terminal [REPEAT ALL] [SHUFFLE] [CD] [Tragic Kingdom (1995)] v1.0.0 ─┐
->> [Drives]
-┌─────────────────────────────────┐  ┌─ Playlist [14]  46m 8s ──────────────────────────────────────────┐
-│ [Recent]                        │  │ > No Doubt – Spiderwebs                                      4:28 │
-│ [FAVs]                          │  │   No Doubt – Excuse Me Mr.                                   3:05 │
-│ [Bookmarks]                     │  │   No Doubt – Just a Girl                                     3:29 │
-│ C:\                             │  │   No Doubt – Happy Now?                                      3:43 │
-│ F:\  ◄─ CD drive                │  │   No Doubt – Different People                                4:35 │
-└─────────────────────────────────┘  └──────────────────────────────────────────────────────────────────┘
-┌──────────────────────────────────────────────────────────────────────┐
-│ ════════════════════════════════════░░░░░░░░░░░░░░░░  2:14 / 4:28   │
-└──────────────────────────────────────────────────────────────────────┘
- Ripping track 5/14  [47%]  8.3x  C2  →  AR: [A v2 OK conf=84]
- SPC:pause  n/p:next/prev  [/]:seek  -/+:vol  Tab:focus  Enter:play  ?:help  ^Q:quit
-```
+<br>
+<img width="1278" height="646" alt="image" src="https://github.com/user-attachments/assets/8ae162e9-750d-427a-a96d-136287046bef" />
+<br><br>
+<img width="1279" height="616" alt="image" src="https://github.com/user-attachments/assets/03bf66f0-f62e-46d2-8a41-176393a48b3d" />
+<br>
 
 ## Screenshots
 
@@ -59,6 +48,18 @@ and a playlist/rip view. The public feature guide is [`docs/index.html`](docs/in
 - Last.fm (Ctrl+G) and ListenBrainz (Ctrl+B) scrobbling + now-playing
 - Discord Rich Presence with album art
 
+**Interface & visuals**
+- Two modes: **Classic** (a faithful MOC homage) and **Awesome** (**Ctrl+T**) - comet
+  progress bar, breathing animations, a full-width spectrum
+- Spectrum styles (**F2**): classic solid bars, or an 80s graphic-EQ "LED" look; the
+  bars fill the full width at any size
+- Cover art in the Track Info (**i**) pane for local files and radio (half-block render,
+  station cover / iTunes-Deezer lookup / logo floor)
+- 18 named truecolor Awesome palettes, cycled with **F7** / **F8**; a KITT scanner in
+  the radio status bar
+- Optional Windows GDI (wingui) build: truecolor window, remembered size, **Alt+Enter**
+  borderless fullscreen (see [BUILD.md](BUILD.md))
+
 **Cross-platform & plugin architecture**
 - Runs on **Windows** (MSYS2 UCRT64) and **Linux** (Debian Trixie); every platform
   call sits behind a seam with a Windows and a Linux implementation
@@ -75,7 +76,9 @@ cmake -S . -B build -G Ninja && cmake --build build
 ```
 
 Binary: `build/bin/remoct.exe` (Windows) / `build/bin/remoct` (Linux), with the streaming
-plugin built beside it in `build/bin/plugins/`.
+plugin built beside it in `build/bin/plugins/`. Windows has two render backends - the
+console `ncursesw` build (default) and a GDI **wingui** build (`-DREMOCT_PDCURSES=ON`,
+truecolor + Alt+Enter fullscreen); see [BUILD.md](BUILD.md).
 
 ## Keybindings (selection)
 
@@ -91,6 +94,8 @@ plugin built beside it in `build/bin/plugins/`.
 | `?` | Help pane | `Ctrl+P` | iHeart minted-profileId probe (experimental, off by default) |
 | `Ctrl+Q` | Quit | `Ctrl+K` | Stream mode: Web Player / Raw broadcast |
 | `i` / `e` | Track info / 10-band EQ | `Shift+L` / `Shift+A` / `Shift+X` | Lyrics / About / Output device picker |
+| `F2` | Spectrum: classic / 80s LED | `F7` / `F8` | Awesome theme: previous / next |
+| `Alt+Enter` | Fullscreen (Windows wingui build) | | |
 
 ## Configuration
 

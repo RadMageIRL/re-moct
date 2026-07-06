@@ -1,5 +1,6 @@
 #include "Config.h"
 #include "StringUtils.h"
+#include "AwesomeThemes.h"   // kNumAwesomeThemes for clamping awesome_theme on load
 
 #include <fstream>
 #include <algorithm>
@@ -186,9 +187,14 @@ void DigiConfig::load() {
         else if (key == "eq_enabled")       eq_enabled        = (val == "1");
         else if (key == "discord_presence") discord_presence  = (val == "1");
         else if (key == "awesome_mode")      awesome_mode       = (val == "1");
+        else if (key == "viz_led")            viz_led            = (val == "1");
+        else if (key == "awesome_theme")     try { awesome_theme = std::stoi(val); } catch (...) {}
         else if (key == "prefer_digital_stream") prefer_digital_stream = (val == "1");
         else if (key == "iheart_probe_minted")   iheart_probe_minted   = (val == "1");
         else if (key == "nerd_icons")         nerd_icons         = (val == "1");
+        else if (key == "wingui_font")        wingui_font        = val;
+        else if (key == "wingui_cols")        try { wingui_cols = std::stoi(val); } catch (...) {}
+        else if (key == "wingui_rows")        try { wingui_rows = std::stoi(val); } catch (...) {}
         else if (key == "lastfm-key")       lastfm_key        = val;
         else if (key == "lastfm-secret")    lastfm_secret     = val;
         else if (key == "lastfm-session")   lastfm_session    = val;
@@ -258,6 +264,7 @@ void DigiConfig::load() {
 
     volume      = std::max(0.0f, std::min(2.0f, volume));
     repeat_mode = std::max(0, std::min(2, repeat_mode));
+    if (awesome_theme < 0 || awesome_theme >= kNumAwesomeThemes) awesome_theme = 0;
     if (playlist_current >= playlist_paths.size() && !playlist_paths.empty())
         playlist_current = 0;
     if ((int)recent_tracks.size() > RECENT_MAX)
@@ -293,9 +300,14 @@ void DigiConfig::save() const {
         f << "eq_enabled="       << (eq_enabled ? "1" : "0") << "\n";
         f << "discord_presence=" << (discord_presence ? "1" : "0") << "\n";
         f << "awesome_mode="      << (awesome_mode ? "1" : "0") << "\n";
+        f << "viz_led="           << (viz_led ? "1" : "0") << "\n";
+        f << "awesome_theme="     << awesome_theme << "\n";
         f << "prefer_digital_stream=" << (prefer_digital_stream ? "1" : "0") << "\n";
         f << "iheart_probe_minted="   << (iheart_probe_minted ? "1" : "0") << "\n";
         f << "nerd_icons="        << (nerd_icons ? "1" : "0") << "\n";
+        if (!wingui_font.empty()) f << "wingui_font="    << wingui_font << "\n";
+        if (wingui_cols > 0)      f << "wingui_cols="    << wingui_cols << "\n";
+        if (wingui_rows > 0)      f << "wingui_rows="    << wingui_rows << "\n";
         if (!lastfm_key.empty())     f << "lastfm-key="     << nl(lastfm_key)     << "\n";
         if (!lastfm_secret.empty())  f << "lastfm-secret="  << nl(lastfm_secret)  << "\n";
         if (!lastfm_session.empty()) f << "lastfm-session=" << nl(lastfm_session) << "\n";

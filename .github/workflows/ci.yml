@@ -18,9 +18,9 @@ name: CI
 
 on:
   push:
-    branches: [restructure, main]
+    branches: [restructure, main, experimental/win-pdcurses]
   pull_request:
-    branches: [restructure, main]
+    branches: [restructure, main, experimental/win-pdcurses]
 
 jobs:
   linux:
@@ -78,3 +78,31 @@ jobs:
         run: cmake --build build
       - name: Test
         run: ctest --test-dir build --output-on-failure
+      # ── Option C single-exe package: assert the dependency allowlist ──
+      # Build the static wingui package (re-moct.exe + remoct_stream.dll) and
+      # confirm the ONLY non-system DLLs across BOTH are exactly libfdk-aac-2.dll
+      # + libebur128.dll (the two documented, deliberately-dynamic codecs). A
+      # third non-system DLL sneaking back in (e.g. libstdc++ / libgcc_s) fails
+      # the build - the Phase-5 graduation gate, mechanised.
+      - name: Option C dependents check (2-DLL allowlist)
+        run: |
+          set -e
+          cmake -S . -B build-oc -G Ninja -DCMAKE_BUILD_TYPE=Release \
+                -DREMOCT_PDCURSES=ON -DREMOCT_STATIC_PROBE=ON
+          cmake --build build-oc
+          deps=$( { ldd build-oc/bin/remoct.exe; \
+                    ldd build-oc/bin/plugins/remoct_stream.dll; } \
+                  | grep '=>' | grep -iv '/windows/' | awk '{print $1}' | sort -u )
+          echo "Non-system DLL dependencies (exe + plugin):"
+          echo "$deps"
+          fail=0
+          for d in $deps; do
+            case "$d" in
+              libfdk-aac-2.dll|libebur128.dll) ;;
+              *) echo "::error::disallowed non-system DLL: $d"; fail=1 ;;
+            esac
+          done
+          if [ "$fail" != "0" ]; then
+            echo "Option C dependents check FAILED"; exit 1
+          fi
+          echo "Option C dependents check PASSED — only libfdk-aac-2.dll + libebur128.dll"

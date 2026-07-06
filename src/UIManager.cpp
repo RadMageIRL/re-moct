@@ -1,31 +1,15 @@
 // UIManager.cpp
 
+// windows.h must precede the curses seam (PDCurses/windows.h symbol-order rule);
+// it is also used directly by the Windows-only code below (ShellExecute etc.).
 #ifdef _WIN32
-#  ifndef NCURSES_STATIC
-#    define NCURSES_STATIC
-#  endif
 #  include <windows.h>
 #endif
-// Enable the wide-character ncurses API (cchar_t / setcchar / mvwadd_wch). This
-// MUST be defined before <ncurses.h> is included. Without it, this build's
-// narrow string functions pass UTF-8 bytes through undecoded, so box-drawing
-// glyphs (╭ ╮ ╰ ╯) render as Latin-1 mojibake. Wide chars render as one cell.
-#ifndef NCURSES_WIDECHAR
-#  define NCURSES_WIDECHAR 1
-#endif
-// Use the wide-char ncurses header for mvwaddwstr support
-#ifdef __has_include
-#  if __has_include(<ncursesw/ncurses.h>)
-#    include <ncursesw/ncurses.h>
-#  else
-#    include <ncurses.h>
-#  endif
-#else
-#  include <ncurses.h>
-#endif
+#include "CursesSeam.h"
 
 #include "UIManager.h"
 #include "CoverArt.h"
+#include "PortUtil.h"   // port::exeDir — locate a bundled wingui font beside the exe
 #ifdef _WIN32
 #include <shellapi.h>   // ShellExecuteA for Last.fm browser auth
 #else
@@ -73,6 +57,21 @@ static const char* const kVersionTag = "v" REMOCT_VERSION "-win";
 static const char* const kVersionTag = "v" REMOCT_VERSION "-linux";
 #endif
 
+// [THEME:name] cwd-line tag lifetime, in ~80ms loop ticks (timeout(80)):
+// bold up to the fade point, dimmed after it, removed at the end (~10s).
+static constexpr int kThemeTagFadeTick = 106;   // ~8.5s: bold -> dim
+static constexpr int kThemeTagGoneTick = 125;   // ~10s : removed
+
+// Awesome-mode full-width Spectrum strip: height incl. frame, and the minimum
+// pane height below which the strip is dropped (small-terminal guard).
+static constexpr int kVizStripRows = 7;         // 2 frame + ~5 bar rows
+static constexpr int kMinPaneRows  = 3;         // panes need at least this many
+// Minimum spectrum bar height (in cells) so a low-activity band still shows a
+// small nub instead of vanishing. Classic's tall pane uses ~1/3 cell; the short
+// Awesome strip uses a taller floor (it only has ~5 rows to work with).
+static constexpr float kVizFloorCells      = 0.35f;   // Classic overlay
+static constexpr float kVizStripFloorCells = 1.19f;   // Awesome strip (~24% of ~5 rows; +15% floor)
+
 static void sclog(const char* fmt, ...) {
     char buf[2048];
     va_list ap; va_start(ap, fmt);
@@ -86,8 +85,96 @@ static void sclog(const char* fmt, ...) {
 #include <taglib/fileref.h>
 #include <taglib/tag.h>
 #include <taglib/audioproperties.h>
+#include <taglib/tvariant.h>      // complexProperties("PICTURE") -> embedded cover
+#include <taglib/tbytevector.h>
 
 namespace fs = std::filesystem;
+
+#ifdef PDCURSES
+#include <dwmapi.h>   // DwmSetWindowAttribute — OS-matching (dark) title bar
+// wingui global (pdcdisp.c), UNICODE build => wchar_t[128]. Declared at global
+// scope: an extern "C" inside an anonymous namespace is a linkage contradiction.
+extern "C" TCHAR PDC_font_name[];
+// wingui (pdcscrn.c): registers a callback invoked on every WM_SIZE, including
+// inside Windows' modal resize-drag loop where our getch() loop is blocked.
+extern "C" void PDC_set_window_resized_callback(void (*)(void));
+extern "C" HWND PDC_hWnd;   // wingui's GDI window handle (pdcscrn.c)
+extern "C" int PDC_cxChar, PDC_cyChar;   // wingui glyph cell size in px (pdcscrn.c)
+extern "C" int PDC_skip_size_snap;       // wingui: suppress the WM_SIZE cell-snap (pdcscrn.c)
+
+namespace {
+// Trampoline for the C resize callback -> the live UIManager (single UI instance).
+UIManager* g_wingui_ui = nullptr;
+void winguiResizeTrampoline() { if (g_wingui_ui) g_wingui_ui->onWinguiLiveResize(); }
+
+// Make the wingui GDI window's title bar / border follow the OS light/dark theme
+// (Windows 10 20H1+). Reads HKCU AppsUseLightTheme (0 = dark) and applies
+// DWMWA_USE_IMMERSIVE_DARK_MODE - attribute 20 on current builds, 19 on older
+// Win10; setting both is harmless where one is ignored. Without this the window
+// keeps the default light chrome even when the OS is in dark mode.
+void applyOsTitleBarTheme() {
+    if (!PDC_hWnd) return;
+    BOOL dark = TRUE;   // default to dark; flip to light only if the OS says so
+    HKEY hk;
+    if (RegOpenKeyExW(HKEY_CURRENT_USER,
+            L"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize",
+            0, KEY_READ, &hk) == ERROR_SUCCESS) {
+        DWORD v = 1, sz = sizeof(v), ty = 0;
+        if (RegQueryValueExW(hk, L"AppsUseLightTheme", nullptr, &ty,
+                             reinterpret_cast<LPBYTE>(&v), &sz) == ERROR_SUCCESS)
+            dark = (v == 0) ? TRUE : FALSE;
+        RegCloseKey(hk);
+    }
+    DwmSetWindowAttribute(PDC_hWnd, 20, &dark, sizeof(dark));
+    DwmSetWindowAttribute(PDC_hWnd, 19, &dark, sizeof(dark));
+}
+
+// PDCursesMod wingui owns its GDI font (unlike a terminal, where the font is the
+// terminal's). Point it at a glyph-complete face so box-drawing corners (rounded
+// ╭╮╰╯), viz blocks ▁▂▇█ and Nerd icons render instead of tofu. MUST run BEFORE
+// initscr() - wingui measures the font while opening the screen. Any .ttf/.otf in
+// <exeDir>/fonts/ is added PROCESS-PRIVATE (FR_PRIVATE), so a bundled font need
+// not be installed system-wide ("runs anywhere"). The face is config-overridable
+// (config_.wingui_font); default is a Mono Nerd Font.
+void initWinguiFont(const std::string& configured_face) {
+    // PDCursesMod wingui persists the last font+window-size to
+    // HKCU\SOFTWARE\PDCurses\<exeBaseName> and RESTORES it inside initscr(),
+    // which overrides the face we set here (e.g. a stale "Courier New" saved by a
+    // pre-font-fix run stays sticky forever). Clear our value so OUR choice wins
+    // every launch - the wingui_font config key is the persistence layer, not the
+    // registry. Cost: the wingui window's size/position is not remembered across
+    // launches (a deterministic default is fine; RE-MOCT reflows).
+    {
+        wchar_t mod[MAX_PATH] = {0};
+        if (GetModuleFileNameW(nullptr, mod, MAX_PATH)) {
+            std::wstring name = mod;                 // basename sans extension ==
+            size_t slash = name.find_last_of(L"\\/"); // PDCurses' get_app_name()
+            if (slash != std::wstring::npos) name.erase(0, slash + 1);
+            size_t dot = name.find_last_of(L'.');
+            if (dot != std::wstring::npos) name.erase(dot);
+            RegDeleteKeyValueW(HKEY_CURRENT_USER, L"SOFTWARE\\PDCurses", name.c_str());
+        }
+    }
+    std::error_code ec;
+    fs::path fdir = fs::path(port::exeDir()) / "fonts";
+    if (fs::is_directory(fdir, ec)) {
+        for (const auto& e : fs::directory_iterator(fdir, ec)) {
+            const auto ext = e.path().extension();
+            if (ext == ".ttf" || ext == ".otf" || ext == ".TTF" || ext == ".OTF")
+                AddFontResourceExW(e.path().wstring().c_str(), FR_PRIVATE, nullptr);
+        }
+    }
+    std::wstring face;
+    if (!configured_face.empty()) {
+        int n = MultiByteToWideChar(CP_UTF8, 0, configured_face.c_str(), -1, nullptr, 0);
+        if (n > 1) { face.resize(n - 1);
+            MultiByteToWideChar(CP_UTF8, 0, configured_face.c_str(), -1, face.data(), n); }
+    }
+    if (face.empty()) face = L"JetBrainsMono NFM";   // Mono Nerd Font: single-cell glyphs
+    if (face.size() < 128) wcscpy(PDC_font_name, face.c_str());
+}
+} // namespace
+#endif
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Construction
@@ -98,7 +185,38 @@ UIManager::UIManager(PlaylistManager& playlist, AudioManager& audio,
     : notify_(notify ? notify : &core::notifier()),
       playlist_(playlist), audio_(audio), config_(config)
 {
+#ifdef PDCURSES
+    // wingui measures its font during initscr(), so choose the face FIRST.
+    initWinguiFont(config_.wingui_font);
+#endif
     if (!initscr()) throw std::runtime_error("initscr() failed");
+#ifdef PDCURSES
+    // PDCursesMod wingui (Option C): the GDI port opens its own window - give it
+    // the RE-MOCT caption. Colour / transparent-bg parity (PDC_ORIGINAL_COLORS
+    // vs use_default_colors) is tuned on the Task-4 visual re-probe, not here.
+    PDC_set_title("RE-MOCT");
+    applyOsTitleBarTheme();   // dark/light window chrome to match the OS
+    // Hide wingui's "Font" menu bar (a light Win32 menu that ignores the dark
+    // title bar; the font is config-driven now) via wingui's OWN toggle rather
+    // than a raw SetMenu: WM_TOGGLE_MENU keeps the curses grid unchanged and just
+    // shrinks the window to match, so there's no size desync (raw SetMenu grew the
+    // client area and mis-sized/relocated the window). SendMessage is synchronous;
+    // menu_shown starts at 1 (initWinguiFont cleared the registry), so one toggle
+    // hides it. WM_USER+4 is wingui's private WM_TOGGLE_MENU command id, dispatched
+    // under WM_COMMAND. The grid doesn't change, so this can't re-enter our
+    // resize callback (it only fires on a row/col change).
+    if (PDC_hWnd) SendMessageW(PDC_hWnd, WM_COMMAND, WM_USER + 4, 0);
+    // Restore the last window size (persisted in OUR config since we wipe the
+    // PDCurses registry to keep our font - see initWinguiFont). Do it BEFORE
+    // registering the resize callback so this programmatic resize_term can't
+    // re-enter it while the pane windows don't exist yet. getmaxyx below then
+    // reflects the restored grid, so createWindows lays out at the right size.
+    if (config_.wingui_cols >= 40 && config_.wingui_rows >= 9)
+        resize_term(config_.wingui_rows, config_.wingui_cols);
+    // Repaint live during the modal resize-drag (see onWinguiLiveResize).
+    g_wingui_ui = this;
+    PDC_set_window_resized_callback(&winguiResizeTrampoline);
+#endif
     setlocale(LC_ALL, "");
     cbreak();
     noecho();
@@ -124,6 +242,15 @@ UIManager::UIManager(PlaylistManager& playlist, AudioManager& audio,
     keypad(stdscr, TRUE);
     curs_set(0);
     timeout(80);
+#ifndef PDCURSES
+    // ncurses waits ESCDELAY ms (default 1000!) after a lone ESC to disambiguate
+    // it from an escape sequence (arrows / function keys are ESC-prefixed). That
+    // made every Esc-to-close-a-pane feel like a ~1s freeze on Linux. keypad(TRUE)
+    // already decodes the real sequences, so a short window is plenty; 25ms is
+    // imperceptible yet still catches a multibyte sequence on a slow link. PDCurses
+    // reads discrete key events (no ESC ambiguity), so this is ncurses-only.
+    set_escdelay(25);
+#endif
     initColours();
     getmaxyx(stdscr, screen_rows_, screen_cols_);
     createWindows();
@@ -168,7 +295,19 @@ UIManager::~UIManager() {
     lb_validate_active_.store(false);
     if (lb_validate_thread_.joinable()) lb_validate_thread_.join();
     if (discord_art_thread_.joinable()) discord_art_thread_.join();
+    if (radio_art_thread_.joinable())   radio_art_thread_.join();
+    if (info_art_thread_.joinable())    info_art_thread_.join();
     if (mb_search_win_) { delwin(mb_search_win_); mb_search_win_ = nullptr; }
+#ifdef PDCURSES
+    // Remember the wingui window size for next launch (screen_rows_/cols_ track the
+    // live size via resizeWindows). Only rewrite config when it actually changed.
+    if (screen_cols_ >= 40 && screen_rows_ >= 9 &&
+        (screen_cols_ != config_.wingui_cols || screen_rows_ != config_.wingui_rows)) {
+        config_.wingui_cols = screen_cols_;
+        config_.wingui_rows = screen_rows_;
+        config_.save();
+    }
+#endif
 #ifdef _WIN32
     // MBLookup/CDRipper cancel stay gated: CD is slice 6.
     mb_lookup_.cancel();
@@ -178,8 +317,88 @@ UIManager::~UIManager() {
     endwin();
 }
 
+void UIManager::onWinguiLiveResize() {
+    // Fires from wingui's WM_SIZE handler during the modal resize-drag, on the UI
+    // thread while getch() is blocked in the drag loop. Rebuild + repaint so the
+    // window shows live content instead of blanking until the drag is released.
+    // Reentrancy guard: a nested WM_SIZE (should not happen mid-drag, but be safe)
+    // must not recurse into a second rebuild. Same-thread, so a plain bool suffices.
+    static bool in_live_resize = false;
+    if (in_live_resize) return;
+    in_live_resize = true;
+    resizeWindows();
+    in_live_resize = false;
+}
+
+#ifdef PDCURSES
+// Alt+Enter: toggle a borderless window that fills the current monitor, and back.
+// Stripping WS_OVERLAPPEDWINDOW + covering the monitor is the standard Raymond-Chen
+// borderless-fullscreen; wingui's WM_SIZE then reflows the curses grid through the
+// resize callback, exactly like a drag. State is a single-window latch, so file-
+// local statics are enough.
+void UIManager::toggleWinguiFullscreen() {
+    if (!PDC_hWnd) return;
+    static bool             fs = false;
+    static LONG_PTR         saved_style = 0;
+    static LONG_PTR         saved_exstyle = 0;
+    static WINDOWPLACEMENT  saved_wp = { sizeof(WINDOWPLACEMENT) };
+    HWND h = PDC_hWnd;
+    if (!fs) {
+        MONITORINFO mi = { sizeof(MONITORINFO) };
+        if (!GetWindowPlacement(h, &saved_wp) ||
+            !GetMonitorInfo(MonitorFromWindow(h, MONITOR_DEFAULTTONEAREST), &mi))
+            return;
+        saved_style   = GetWindowLongPtr(h, GWL_STYLE);
+        saved_exstyle = GetWindowLongPtr(h, GWL_EXSTYLE);
+        // Use the EXACT monitor rect - not rounded to a cell multiple. wingui would
+        // normally snap a non-multiple window down to a multiple (shrinking it under
+        // the monitor: taskbar re-exposed / an edge clipped, worst on 4K where the
+        // remainder is biggest), so suppress that snap for the duration. The curses
+        // grid just uses the whole cells that fit; the <1-cell strip at the far edge
+        // is harmless window background, and NOTHING is clipped off-screen.
+        PDC_skip_size_snap = 1;
+        // Strip BOTH the frame (WS_OVERLAPPEDWINDOW) AND the extended client edge that
+        // wingui creates the window with (WS_EX_CLIENTEDGE). Leaving the client edge on
+        // kept the client area inset from the window, so the window never read as a true
+        // fullscreen app - which is what makes Windows auto-hide the taskbar.
+        SetWindowLongPtr(h, GWL_STYLE,   saved_style   & ~(LONG_PTR)WS_OVERLAPPEDWINDOW);
+        SetWindowLongPtr(h, GWL_EXSTYLE, saved_exstyle & ~(LONG_PTR)WS_EX_CLIENTEDGE);
+        SetWindowPos(h, HWND_TOPMOST, mi.rcMonitor.left, mi.rcMonitor.top,
+                     mi.rcMonitor.right - mi.rcMonitor.left,
+                     mi.rcMonitor.bottom - mi.rcMonitor.top,
+                     SWP_NOOWNERZORDER | SWP_FRAMECHANGED);
+        BringWindowToTop(h);
+        SetForegroundWindow(h);   // ensure we're the active fullscreen window over the taskbar
+        fs = true;
+    } else {
+        PDC_skip_size_snap = 0;   // restore stock drag-resize snapping
+        SetWindowLongPtr(h, GWL_STYLE,   saved_style);
+        SetWindowLongPtr(h, GWL_EXSTYLE, saved_exstyle);
+        // Drop topmost, then restore the saved framed placement.
+        SetWindowPos(h, HWND_NOTOPMOST, 0, 0, 0, 0,
+                     SWP_NOMOVE | SWP_NOSIZE | SWP_NOOWNERZORDER | SWP_FRAMECHANGED);
+        SetWindowPlacement(h, &saved_wp);
+        fs = false;
+    }
+    // The style change can drop the dark chrome; re-apply so windowed mode matches
+    // the OS theme again (harmless while borderless).
+    applyOsTitleBarTheme();
+}
+#endif
+
 void UIManager::resizeWindows() {
-#ifdef _WIN32
+#if defined(REMOCT_PDCURSES)
+    // PDCursesMod wingui draws its OWN GDI window - there is NO console, so the
+    // GetConsoleWindow/CONOUT$ measuring used by the ncursesw-on-console build
+    // (below) reports the wrong geometry here and would drive resize_term to a
+    // size that mismatches the actual window: no reflow, plus an intermittent
+    // crash from drawing into a stale-sized cell buffer. wingui has already
+    // stored the new window size (PDC_n_rows/cols) and queued KEY_RESIZE;
+    // resize_term(0, 0) adopts that pending size and refreshes LINES/COLS/stdscr
+    // in one call (the canonical PDCurses idiom - its own getch.c does the same).
+    resize_term(0, 0);
+    getmaxyx(stdscr, screen_rows_, screen_cols_);
+#elif defined(_WIN32)
     {
         int new_cols = screen_cols_, new_rows = screen_rows_;
         // Try GetConsoleWindow pixel method first
@@ -212,24 +431,33 @@ void UIManager::resizeWindows() {
         if (new_cols > 0) screen_cols_ = new_cols;
         if (new_rows > 0) screen_rows_ = new_rows;
     }
+    resize_term(screen_rows_, screen_cols_);
 #else
     getmaxyx(stdscr, screen_rows_, screen_cols_);
-#endif
-
     resize_term(screen_rows_, screen_cols_);
+#endif
     destroyWindows();
 
-    // Physically blank every cell on stdscr — critical when shrinking
-    // so old content outside the new smaller bounds gets wiped
+    // Blank stdscr so stale content outside the new bounds is wiped; clearok
+    // forces a full (non-diffed) repaint on the next doupdate.
     clearok(stdscr, TRUE);
     werase(stdscr);
+#if !defined(REMOCT_PDCURSES)
+    // Console/ncurses: paint + FLUSH a blank frame first (belt-and-suspenders on
+    // shrink). On wingui this intermediate doupdate() shows a blank frame on
+    // every WM_SIZE during a live resize-drag = visible flicker; there we skip it
+    // and let the single composed doupdate() below repaint cleanly (wingui
+    // double-buffers its WM_PAINT, so one full repaint per tick is flicker-free).
     for (int r = 0; r < screen_rows_; ++r)
         for (int c = 0; c < screen_cols_; ++c)
             mvaddch(r, c, ' ');
     wnoutrefresh(stdscr);
     doupdate();
+#endif
 
     if (screen_rows_ < 9 || screen_cols_ < 40) {
+        wnoutrefresh(stdscr);
+        doupdate();
         redraw_needed_.store(true);
         return;
     }
@@ -244,6 +472,14 @@ void UIManager::initColours() {
     if (!has_colors()) return;
     start_color();
     use_default_colors();
+
+    // Split by mode (design spec section 6.5): theme.conf governs Classic; the named
+    // truecolor palettes fully own Awesome. No layering, no 8-colour degradation of a
+    // truecolor palette. Awesome sets its own pairs (incl. solid base bg) and returns.
+    if (config_.awesome_mode) {
+        applyAwesomeTheme();
+        return;
+    }
 
     // Built-in defaults (index 0 unused; slots 1..13 map to CP_*). These reproduce
     // the previous hard-coded pairs exactly, so a missing theme.conf changes nothing.
@@ -267,6 +503,105 @@ void UIManager::initColours() {
     // themed viz pairs are fg==bg solid fills (a partial block would be invisible),
     // so the sub-cell lower-block glyphs (▁..▇) need a real bg to show their height.
     init_pair(CP_VIZ_TIP, fg[CP_VIZ_PEAK], -1);
+    // Segmented-LED band colours on the default bg (see header). Same fg as the
+    // solid viz pairs, but a real bg so the half-block glyph shows its gap.
+    init_pair(CP_VIZ_LOW_B,  fg[CP_VIZ_LOW],  -1);
+    init_pair(CP_VIZ_MID_B,  fg[CP_VIZ_MID],  -1);
+    init_pair(CP_VIZ_HIGH_B, fg[CP_VIZ_HIGH], -1);
+
+    // Reset the root screen to transparent so Classic re-inherits the terminal bg
+    // (undoes the Awesome stdscr base fill above). Pair 0 = terminal default under
+    // use_default_colors().
+    bkgd(COLOR_PAIR(0));
+}
+
+void UIManager::applyAwesomeTheme() {
+    if (!has_colors()) return;
+    // start_color()/use_default_colors() are guaranteed by the callers (initColours
+    // routes here; the F8 handler re-applies after they have already run). We only
+    // re-init pairs — no window rebuild — so a live cycle is just a recolour.
+    const AwesomeTheme& t = kAwesomeThemes[config_.awesome_theme];
+
+    // Semantic -> colour-pair mapping (design spec section 4.2). Every otherwise
+    // transparent role takes bg = base so glyphs never sit on terminal-bg patches
+    // inside a base-filled pane. The four viz pairs stay fg==bg solid fills; the
+    // derived viz tip keeps a base bg so its fractional lower-block glyph shows.
+    struct PairDef { short pair; unsigned fg; unsigned bg; };
+    const PairDef defs[] = {
+        { CP_TITLE,              t.title,    t.base     },
+        { CP_FOCUSED,            t.selfg,    t.focus    },
+        { CP_SELECTED,           t.selfg,    t.accent   },
+        { CP_PROGRESS,           t.prog,     t.base     },
+        { CP_STATUS_OK,          t.ok,       t.base     },
+        { CP_STATUS_ERR,         t.err,      t.base     },
+        { CP_BORDER,             t.border,   t.base     },
+        { CP_DIM,                t.dim,      t.base     },
+        { CP_VIZ_LOW,            t.viz_low,  t.viz_low  },
+        { CP_VIZ_MID,            t.viz_mid,  t.viz_mid  },
+        { CP_VIZ_HIGH,           t.viz_high, t.viz_high },
+        { CP_VIZ_PEAK,           t.viz_peak, t.viz_peak },
+        { CP_SELECTED_UNFOCUSED, t.text,     t.border   },
+        { CP_VIZ_TIP,            t.viz_peak, t.base     },
+        { CP_VIZ_LOW_B,          t.viz_low,  t.base     },   // segmented-LED band colours
+        { CP_VIZ_MID_B,          t.viz_mid,  t.base     },   // on the base bg (gap above
+        { CP_VIZ_HIGH_B,         t.viz_high, t.base     },   // each half-block segment)
+    };
+
+    if (COLORS >= 256 && can_change_color()) {
+        // Truecolor path: dedupe the palette's unique hex values, assign custom slot
+        // ids starting at 16 (0..15 reserved for base ANSI), init_color() each, then
+        // reference them by slot id. Re-applying a theme re-init_colors the same slot
+        // pool with new values — no leak, no window rebuild.
+        std::vector<std::pair<unsigned, short>> slots;   // hex -> assigned slot id
+        short next = 16;
+        auto slotFor = [&](unsigned hex) -> short {
+            for (const auto& s : slots) if (s.first == hex) return s.second;
+            const short id = next++;
+            const int r = (int)((hex >> 16) & 0xff);
+            const int g = (int)((hex >> 8)  & 0xff);
+            const int b = (int)( hex        & 0xff);
+            auto sc = [](int c) -> short { return (short)((c * 1000 + 127) / 255); };  // 0..255 -> 0..1000
+            init_color(id, sc(r), sc(g), sc(b));
+            slots.push_back({ hex, id });
+            return id;
+        };
+        for (const auto& d : defs)
+            init_pair(d.pair, slotFor(d.fg), slotFor(d.bg));
+    } else {
+        // Fallback: map each hex to the nearest of the first min(COLORS,16) basic
+        // colours by weighted RGB distance (2dr^2 + 4dg^2 + 3db^2). Graceful path for
+        // TERM=xterm / terminals without can_change_color().
+        struct RGB { int r, g, b; };
+        static const RGB kBasic16[16] = {
+            {0x00,0x00,0x00},{0x80,0x00,0x00},{0x00,0x80,0x00},{0x80,0x80,0x00},
+            {0x00,0x00,0x80},{0x80,0x00,0x80},{0x00,0x80,0x80},{0xc0,0xc0,0xc0},
+            {0x80,0x80,0x80},{0xff,0x00,0x00},{0x00,0xff,0x00},{0xff,0xff,0x00},
+            {0x00,0x00,0xff},{0xff,0x00,0xff},{0x00,0xff,0xff},{0xff,0xff,0xff},
+        };
+        const int limit = (COLORS >= 16) ? 16 : (COLORS >= 8 ? 8 : (COLORS > 0 ? COLORS : 8));
+        auto nearest = [&](unsigned hex) -> short {
+            const int r = (int)((hex >> 16) & 0xff);
+            const int g = (int)((hex >> 8)  & 0xff);
+            const int b = (int)( hex        & 0xff);
+            long best = -1; short bi = 0;
+            for (int i = 0; i < limit; ++i) {
+                const long dr = r - kBasic16[i].r, dg = g - kBasic16[i].g, db = b - kBasic16[i].b;
+                const long d  = 2*dr*dr + 4*dg*dg + 3*db*db;
+                if (best < 0 || d < best) { best = d; bi = (short)i; }
+            }
+            return bi;
+        };
+        for (const auto& d : defs)
+            init_pair(d.pair, nearest(d.fg), nearest(d.bg));
+    }
+
+    // stdscr base fill: the pane/title/cwd/cmdline subwindows get a base bg via
+    // wbkgd(CP_DIM) in createWindows(), but the inter-pane gutter, outer insets, and
+    // any cell no subwindow covers are stdscr itself — still at the default -1, which
+    // renders black. Fill the root with the same base-bg pair so no black seam shows
+    // through on non-near-black bases (Zero Cool, Nord, Gruvbox). CP_DIM.bg == base in
+    // Awesome; F8 re-runs applyAwesomeTheme(), so the fill tracks each theme.
+    bkgd(COLOR_PAIR(CP_DIM));
 }
 
 void UIManager::loadTheme(short* fg, short* bg) {
@@ -360,13 +695,32 @@ void UIManager::loadTheme(short* fg, short* bg) {
     }
 }
 
+bool UIManager::vizStripShown() const {
+    // The Awesome full-width Spectrum strip is on screen iff we're in Awesome mode
+    // and win_viz_ was created as the strip (createWindows leaves it null in Awesome
+    // when the strip is toggled off or the terminal is too short). In Classic,
+    // win_viz_ is the right-pane overlay, not a strip, so this is false there.
+    return config_.awesome_mode && win_viz_ != nullptr;
+}
+
 void UIManager::createWindows() {
     // Awesome theme insets the two panes: a 1-col gutter on each outer edge and
     // a 1-col gap between them, giving the padded "floating panel" look. Classic
     // keeps the panes flush (gut = 0), so its geometry is byte-identical to before.
     const bool aw  = config_.awesome_mode;
     const int  gut = aw ? 1 : 0;
-    const int  pane_rows  = screen_rows_ - 4;
+
+    // Awesome mode: a full-width Spectrum strip lives below the two panes (toggle
+    // 'v', default on), shortening them by kVizStripRows. Classic keeps its
+    // right-pane visualizer overlay instead - no strip. Small-terminal guard:
+    // if the panes would be crushed, drop the strip and give the rows back.
+    bool strip = aw && awesome_viz_strip_;
+    int  viz_h = strip ? kVizStripRows : 0;
+    int  pane_rows = screen_rows_ - 4 - viz_h;
+    if (strip && pane_rows < kMinPaneRows) {
+        strip = false; viz_h = 0; pane_rows = screen_rows_ - 4;
+    }
+
     const int  avail_cols = screen_cols_ - (aw ? 3 : 0);   // left + mid + right gutters
     const int  left_cols  = avail_cols / 2;
     const int  right_cols = avail_cols - left_cols;
@@ -376,7 +730,15 @@ void UIManager::createWindows() {
     win_cwd_      = newwin(1,         screen_cols_, 1,              0);
     win_dir_      = newwin(pane_rows, left_cols,    2,              dir_x);
     win_playlist_ = newwin(pane_rows, right_cols,   2,              right_x);
-    win_viz_      = newwin(pane_rows, right_cols,   2,              right_x);
+    if (strip)
+        // Awesome full-width Spectrum strip, below the panes.
+        win_viz_ = newwin(viz_h, screen_cols_, 2 + pane_rows, 0);
+    else if (!aw)
+        // Classic right-pane visualizer overlay (same geometry as the queue).
+        win_viz_ = newwin(pane_rows, right_cols, 2, right_x);
+    else
+        // Awesome with the strip hidden: no viz window this layout.
+        win_viz_ = nullptr;
     win_progress_ = newwin(1,         screen_cols_, screen_rows_-2, 0);
     win_cmdline_  = newwin(1,         screen_cols_, screen_rows_-1, 0);
     // Set black background on all windows so colors render correctly
@@ -537,11 +899,19 @@ void UIManager::run() {
         if (audio_.takeStreamFailed())
             showTrackToast("Radio stream connect FAILED", "", "");
 
-        // Force periodic resize check and redraw every ~80ms
+        // Windows-console size poll + forced ~80ms repaint. This whole heartbeat is
+        // a Windows-ONLY workaround: ConPTY (Windows Terminal/conhost) doesn't
+        // deliver KEY_RESIZE reliably, so we poll the window rect and force a full
+        // repaint. wingui (REMOCT_PDCURSES) repaints its own GDI window and Linux
+        // ncursesw gets real KEY_RESIZE via SIGWINCH - neither needs this, and the
+        // unconditional redraw_needed_ every tick just churns the panes (flicker /
+        // input-timing glitches). So gate it to the Windows console build only;
+        // everywhere else, KEY_RESIZE + the per-change redraw triggers + the
+        // lightweight per-tick draw (title/cwd/progress/viz) cover everything.
+#if !defined(REMOCT_PDCURSES) && defined(_WIN32)
         static int resize_poll = 0;
         if (++resize_poll >= 1) {
             resize_poll = 0;
-#ifdef _WIN32
             int new_cols = screen_cols_, new_rows = screen_rows_;
 
             // Windows Terminal ConPTY workaround:
@@ -587,9 +957,9 @@ void UIManager::run() {
                 screen_rows_ = new_rows;
                 resizeWindows();
             }
-#endif
             redraw_needed_.store(true);
         }
+#endif
 
         // Force redraw when lyrics active (sync with playback position)
         if (right_pane_ == RightPane::Lyrics)
@@ -736,6 +1106,15 @@ void UIManager::run() {
         } else if (cd_ripper_.isActive()) {
             rip_msg_ticks_ = 0;
         }
+        // Age the [THEME:name] cwd tag (~10s). Repaint only at the fade point
+        // (bold -> dim) and when it is removed - the tag is static in between, so
+        // no per-tick repaint (stays flash-free on wingui).
+        if (theme_tag_ticks_ < kThemeTagGoneTick) {
+            ++theme_tag_ticks_;
+            if (theme_tag_ticks_ == kThemeTagFadeTick ||
+                theme_tag_ticks_ == kThemeTagGoneTick)
+                redraw_needed_.store(true);
+        }
 #ifndef _WIN32
         // Expire the toast-fallback status line (same cadence as rip_status_).
         if (!status_msg_.empty() && ++status_msg_ticks_ > 60) {
@@ -782,6 +1161,24 @@ void UIManager::run() {
             continue;
         }
 
+        // ── 3. HANDLE INPUT before drawing ──
+        // Draw AFTER the key is applied, so a keypress takes effect in this SAME
+        // iteration. (Previously the draw ran first and a keypress only showed on
+        // the next loop - and the next getch() blocks up to ~80ms first, so every
+        // pane switch / action carried up to ~80ms latency. Very sluggish on Linux
+        // where nothing else was forcing an interim repaint.) Modal-open handlers
+        // set redraw_needed_ themselves, so the draw block below paints them too.
+        if (ch != ERR) {
+            if (goto_active_)
+                handleGotoInput(ch);
+            else if (ui_overlay_ == UIOverlay::MBSearch)
+                handleMBSearchInput(ch);
+            else
+                handleInput(ch);
+            if (ui_overlay_ == UIOverlay::None)
+                redraw_needed_.store(true);
+        }
+
         // Periodically check if the current directory changed on disk
         if (!in_drive_list_ && ++dir_poll_ticks_ >= DIR_POLL_INTERVAL) {
             dir_poll_ticks_ = 0;
@@ -800,8 +1197,9 @@ void UIManager::run() {
             } catch (...) {}
         }
 
-        // Always recompute viz bins so bars animate smoothly
-        if (right_pane_ == RightPane::Visualizer)
+        // Always recompute viz bins so bars animate smoothly (Classic right-pane
+        // overlay OR the Awesome full-width strip).
+        if (right_pane_ == RightPane::Visualizer || vizStripShown())
             computeVizBins();
 
         // Animate the breathing progress head — only in Awesome mode while playing,
@@ -849,7 +1247,8 @@ void UIManager::run() {
             drawTitleBar();
             drawCwd();
             drawProgress();
-            if (right_pane_ == RightPane::Visualizer) {
+            // Animate the spectrum: Classic right-pane overlay OR the Awesome strip.
+            if (right_pane_ == RightPane::Visualizer || vizStripShown()) {
                 drawVisualizer();
                 wnoutrefresh(win_viz_);
             }
@@ -858,19 +1257,6 @@ void UIManager::run() {
             wnoutrefresh(win_progress_);
             doupdate();
             }
-        }
-
-        if (ch != ERR) {
-            if (goto_active_)
-                handleGotoInput(ch);
-            else if (ui_overlay_ == UIOverlay::MBSearch)
-                handleMBSearchInput(ch);
-            else
-                handleInput(ch);
-            // Don't blindly redraw on every key while modal is open —
-            // the modal redraws itself above
-            if (ui_overlay_ == UIOverlay::None)
-                redraw_needed_.store(true);
         }
     }
 }
@@ -913,11 +1299,18 @@ void UIManager::computeVizBins() {
         k_lo = std::clamp(k_lo, 1, N/2);
         k_hi = std::clamp(k_hi, 1, N/2);
         if (k_hi <= k_lo) {
-            // Empty range after clamping — happens for bands at/above Nyquist on
-            // low-sample-rate sources. No bins map here; decay and skip so the
-            // divisor below can never be zero (which produced NaN poisoning).
-            viz_smoothed_[b] *= 0.5f;
-            continue;
+            if (k_lo < N/2) {
+                // A LOW band whose log-spaced range collapsed onto a single FFT
+                // bin (many fine bins pack into the coarse low-k region). Use that
+                // one bin instead of decaying to nothing - otherwise low bands drop
+                // out entirely (worse with more VIZ_BINS).
+                k_hi = k_lo + 1;
+            } else {
+                // Genuinely at/above Nyquist (low-sample-rate source): nothing maps
+                // here; decay and skip so the divisor below can't be zero (NaN).
+                viz_smoothed_[b] *= 0.5f;
+                continue;
+            }
         }
 
         // DFT magnitude over [k_lo, k_hi)
@@ -944,9 +1337,12 @@ void UIManager::computeVizBins() {
         val = std::pow(val, 0.6f);
         val = std::clamp(val, 0.0f, 0.95f);
 
-        // Exponential smoothing: very fast attack, moderate decay
-        float prev = viz_smoothed_[b];
-        float alpha = (val > prev) ? 0.85f : 0.25f;
+        // Exponential smoothing: very fast attack, moderate decay. Slow the
+        // fall-off a touch more in Awesome (only one viz mode is on screen at a
+        // time, so Classic's locked feel is unchanged).
+        float prev  = viz_smoothed_[b];
+        float decay = config_.awesome_mode ? 0.178f : 0.25f;   // Awesome: +10% falloff
+        float alpha = (val > prev) ? 0.85f : decay;
         viz_smoothed_[b] = prev + alpha * (val - prev);
     }
 }
@@ -955,6 +1351,13 @@ void UIManager::computeVizBins() {
 // Drawing
 // ─────────────────────────────────────────────────────────────────────────────
 void UIManager::drawAll() {
+    // Backdrop: refresh stdscr first so the inter-pane gutter, outer insets, and any
+    // cell no subwindow covers show the themed base (Awesome) or terminal default
+    // (Classic) set on stdscr by applyAwesomeTheme()/initColours(). The subwindow
+    // refreshes below overlay it in the virtual screen; doupdate flushes once, no
+    // flicker. Without this, the Awesome stdscr base fill would not repaint on an F8
+    // cycle (no resize runs there to push stdscr).
+    wnoutrefresh(stdscr);
     drawTitleBar();
     drawCwd();
     drawDirBrowser();
@@ -969,15 +1372,24 @@ void UIManager::drawAll() {
     else if (right_pane_ == RightPane::Queue)        drawQueue();
     else if (right_pane_ == RightPane::Chapters)     drawChapters();
     else                                             drawHelp();
+    // Awesome full-width Spectrum strip: its own region below the panes; the right
+    // pane keeps whatever mode it's in. (Classic uses the RightPane::Visualizer
+    // overlay handled by the dispatch above instead.)
+    if (vizStripShown())
+        drawVisualizer();
     drawProgress();
     drawCmdLine();
     wnoutrefresh(win_title_);
     wnoutrefresh(win_cwd_);
     wnoutrefresh(win_dir_);
-    if (right_pane_ == RightPane::Visualizer)
+    // Classic can swap the right pane for the visualizer overlay; Awesome always
+    // shows the list pane there and the strip (below) separately.
+    if (!config_.awesome_mode && right_pane_ == RightPane::Visualizer)
         wnoutrefresh(win_viz_);
     else
         wnoutrefresh(win_playlist_);
+    if (vizStripShown())
+        wnoutrefresh(win_viz_);
     wnoutrefresh(win_progress_);
     wnoutrefresh(win_cmdline_);
     doupdate();
@@ -1172,9 +1584,6 @@ void UIManager::drawTitleBar() {
     wattron(win_title_, COLOR_PAIR(CP_TITLE) | A_BOLD);
     const auto& track = audio_.currentTrack();
     std::string np;
-    // slice 6: the CD now-playing label is live on Linux. The streamMode branch
-    // below stays Windows-gated — Linux streaming top-bar behavior is unchanged
-    // (a separate pre-existing gap, deliberately out of this CD slice).
     if (audio_.cdMode() && audio_.cdCurrentTrack() > 0) {
         int t = audio_.cdCurrentTrack();
         // Check if MB has populated the track name in the playlist
@@ -1190,7 +1599,6 @@ void UIManager::drawTitleBar() {
         else
             np = cd_title + " [" + cd_drive_letter_ + ":]";
     } else
-#ifdef _WIN32
     if (audio_.streamMode()) {
         // Live stream: show the station identity (its RADIO: label) so the top
         // line reflects the playing station, not the stale last-file track held
@@ -1201,11 +1609,11 @@ void UIManager::drawTitleBar() {
         // (queue items have no playlist row), so current() still points at the
         // previous song and would paint its stale title here. URL-based labeling
         // is cursor-independent and still upgrades when a user-supplied station
-        // name lands in config.
+        // name lands in config. (Common since the top-bar radio gate came off -
+        // stationLabel/streamUrl are portable.)
         std::string label = stationLabel(audio_.streamUrl());
         np = label.empty() ? "(live stream)" : label;
     } else
-#endif
     if (audio_.state() != PlaybackState::Stopped && !track.path.empty()) {
         np = track.artist.empty() ? track.title : track.artist + " - " + track.title;
         if (np.empty()) np = fs::path(track.path).filename().string();
@@ -1341,9 +1749,25 @@ void UIManager::drawCwd() {
     // Format: " >> /full/path/to/current/directory "
     std::string path = in_drive_list_ ? "[Drives]" : current_dir_;
 
-    // If path is wider than screen, show only the tail
+    // On a theme switch (Ctrl+T / F8) show a [THEME:<name>] tag right-aligned here,
+    // directly below the RE-MOCT version in the title bar - then fade it out after
+    // ~10s (bold, then dim, then gone). Replaces the transient theme toast.
+    std::string theme_tag;
+    bool        theme_tag_dim = false;
+    if (theme_tag_ticks_ < kThemeTagGoneTick) {
+        theme_tag = config_.awesome_mode
+            ? std::string(" [THEME:") + kAwesomeThemes[config_.awesome_theme].name + "] "
+            : std::string(" [THEME:Classic] ");
+        theme_tag_dim = (theme_tag_ticks_ >= kThemeTagFadeTick);
+    }
+    const int tag_w = (int)dispWidth(theme_tag);
+
+    const int cwx   = config_.awesome_mode ? 1 : 0;   // align with inset pane frames
+    const int avail = screen_cols_ - cwx - tag_w;     // width left for the path line
+
+    // If path is wider than the available width, show only the tail
     // Keep a leading "<<" indicator to show it's truncated
-    const int maxw = screen_cols_ - 4;  // 4 = " >> " prefix
+    const int maxw = avail - 4;  // 4 = " >> " prefix
     std::string display = path;
     std::string prefix  = " >> ";
     if (dispWidth(display) > maxw) {
@@ -1352,12 +1776,19 @@ void UIManager::drawCwd() {
     }
 
     std::string line = prefix + display;
-    int cwx = config_.awesome_mode ? 1 : 0;   // align with inset pane frames
-    std::wstring wcwd = utf8_to_wide(padToWidth(line, screen_cols_ - cwx));
+    std::wstring wcwd = utf8_to_wide(padToWidth(line, avail));
 
     wattron(win_cwd_, COLOR_PAIR(CP_DIM));
     mvwaddnwstr(win_cwd_, 0, cwx, wcwd.c_str(), (int)wcwd.size());
     wattroff(win_cwd_, COLOR_PAIR(CP_DIM));
+
+    if (tag_w > 0) {
+        std::wstring wtag = utf8_to_wide(theme_tag);
+        const attr_t a = COLOR_PAIR(CP_TITLE) | (theme_tag_dim ? A_DIM : A_BOLD);
+        wattron(win_cwd_, a);
+        mvwaddnwstr(win_cwd_, 0, screen_cols_ - tag_w, wtag.c_str(), (int)wtag.size());
+        wattroff(win_cwd_, a);
+    }
 }
 
 void UIManager::drawDirBrowser() {
@@ -1573,8 +2004,7 @@ void UIManager::drawVisualizer() {
         int my = rows / 2;
         if (mx > 0) mvwaddstr(win_viz_, my, mx, msg);
         wattroff(win_viz_, COLOR_PAIR(CP_DIM) | A_DIM);
-        if (aw) panelFrame(win_viz_, " Visualizer [v:back] ",
-                           focus_ == Pane::Playlist, L'\uf001');
+        if (aw) panelFrame(win_viz_, " Spectrum ", false, L'\uf001');
         return;
     }
 
@@ -1583,57 +2013,85 @@ void UIManager::drawVisualizer() {
     const int bar_area_cols = cols - 2;  // -1 each side border
     if (bar_area_rows < 2 || bar_area_cols < 4) return;
 
-    // Each bar is 2 cols wide + 1 col gap = 3 cols per bar slot
-    // Pack as many bins as fit
-    const int bar_w    = 2;   // bar width in columns
-    const int bar_gap  = 1;   // gap between bars
-    const int bar_slot = bar_w + bar_gap;
-    const int n_bars   = std::min(VIZ_BINS, bar_area_cols / bar_slot);
+    // Thin, uniform bars that fill the width. Each bar is a SINGLE column with a
+    // SINGLE-column gap (slot 2); the count grows to fill the strip rather than the
+    // bars getting wider. A 1-col bar can't show a seam down its middle (a 2-col one
+    // does, on many fonts) and 1-on/1-off never clumps. Since that's usually MORE
+    // than the 64 DSP bins, each bar's level is linearly INTERPOLATED across the bins,
+    // so every bar is distinct; the sub-slot remainder is a tiny centred margin.
+    const int bar_w = 1, gap = 1, slot = bar_w + gap;
+    const int n_bars  = std::clamp(bar_area_cols / slot, 1, 4 * VIZ_BINS);
+    const int x_start = 1 + std::max(0, (bar_area_cols - n_bars * slot) / 2);
 
     for (int b = 0; b < n_bars; ++b) {
-        float val = viz_smoothed_[b * VIZ_BINS / n_bars];
-        // Fractional bar height: full cells + a sub-cell remainder in eighths, for
-        // smooth motion instead of whole-row jumps.
-        float exact   = std::clamp(val, 0.0f, 1.0f) * bar_area_rows;
-        int   full    = (int)exact;
-        int   eighths = (int)((exact - full) * 8.0f + 0.5f);
-        if (eighths >= 8) { ++full; eighths = 0; }
-        full = std::clamp(full, 0, bar_area_rows);
+        const int x0 = x_start + b * slot;
 
-        int col = 1 + b * bar_slot;
+        float val;
+        if (n_bars <= 1) {
+            val = viz_smoothed_[0];
+        } else {
+            const double fb  = (double)b * (VIZ_BINS - 1) / (n_bars - 1);  // bin position
+            const int    i0  = (int)fb;
+            const int    i1  = std::min(i0 + 1, VIZ_BINS - 1);
+            const float  frac = (float)(fb - i0);
+            val = viz_smoothed_[i0] * (1.0f - frac) + viz_smoothed_[i1] * frac;
+        }
+        // Short Awesome strip crushes dynamics -> lift with a gamma + gain and a
+        // taller floor so bars fill the strip; Classic's tall pane keeps the raw
+        // response.
+        float floor = kVizFloorCells;
+        if (aw) { val = std::pow(val, 0.65f) * 1.10f; floor = kVizStripFloorCells; }
+        float exact = std::clamp(val, 0.0f, 1.0f) * bar_area_rows;
+        if (exact < floor) exact = floor;
 
-        // Colour by frequency position
-        short pair;
-        float pos = (float)b / n_bars;
-        if      (pos < 0.33f) pair = CP_VIZ_LOW;
-        else if (pos < 0.66f) pair = CP_VIZ_MID;
-        else                  pair = CP_VIZ_HIGH;
-
-        // Draw bar from bottom up — 2 cols wide
-        for (int r = 0; r < bar_area_rows; ++r) {
-            int screen_row = rows - 1 - r;
-            if (r < full) {
-                // Solid cell (space + background colour). Topmost full cell takes the
-                // peak colour only when no fractional cell rides above it.
-                short draw_pair = (r == full - 1 && eighths == 0) ? CP_VIZ_PEAK : pair;
-                wattron(win_viz_, COLOR_PAIR(draw_pair));
-                for (int w = 0; w < bar_w && col + w < cols - 1; ++w)
-                    mvwaddch(win_viz_, screen_row, col + w, ' ');
-                wattroff(win_viz_, COLOR_PAIR(draw_pair));
-            } else if (r == full && eighths > 0) {
-                // Fractional top: a lower-block glyph (▁..▇) in the tip colour on the
-                // default background, giving 8× sub-cell vertical resolution.
-                cchar_t cc;
-                wchar_t s[2] = { (wchar_t)(0x2580 + eighths), 0 };  // U+2581..U+2587
-                setcchar(&cc, s, A_NORMAL, CP_VIZ_TIP, nullptr);
-                for (int w = 0; w < bar_w && col + w < cols - 1; ++w)
-                    mvwadd_wch(win_viz_, screen_row, col + w, &cc);
+        if (config_.viz_led) {
+            // 80s graphic-EQ (F2 on): stacked LED segments, colour by HEIGHT in FIXED
+            // zones - base band at the bottom rising to the peak colour at the top
+            // (idle bars sit green; only loud ones reach red). Each lit cell is a lower
+            // half-block on the base bg, so a dark gap sits above it => discrete LEDs.
+            // >=1 keeps a lit baseline LED while playing (EQ resting row).
+            const int full = std::clamp((int)(exact + 0.5f), 1, bar_area_rows);
+            for (int r = 0; r < full; ++r) {
+                const int   screen_row = rows - 1 - r;
+                const float fr = (bar_area_rows > 1) ? (float)r / (bar_area_rows - 1) : 1.0f;
+                const short pair = (fr < 0.50f) ? CP_VIZ_LOW_B
+                                 : (fr < 0.78f) ? CP_VIZ_MID_B
+                                 : (fr < 0.92f) ? CP_VIZ_HIGH_B : CP_VIZ_TIP;
+                cchar_t cc; wchar_t s[2] = { (wchar_t)0x2584, 0 };   // ▄ LOWER HALF BLOCK
+                setcchar(&cc, s, A_NORMAL, pair, nullptr);
+                for (int c = 0; c < bar_w && x0 + c < cols - 1; ++c)
+                    mvwadd_wch(win_viz_, screen_row, x0 + c, &cc);
+            }
+        } else {
+            // Classic solid bars (default): colour by FREQUENCY position, peak-tipped,
+            // with an 8x sub-cell fractional top (▁..▇) for smooth motion.
+            int full    = (int)exact;
+            int eighths = (int)((exact - full) * 8.0f + 0.5f);
+            if (eighths >= 8) { ++full; eighths = 0; }
+            full = std::clamp(full, 0, bar_area_rows);
+            const float pos  = (float)b / n_bars;
+            const short pair = (pos < 0.33f) ? CP_VIZ_LOW
+                             : (pos < 0.66f) ? CP_VIZ_MID : CP_VIZ_HIGH;
+            for (int r = 0; r < bar_area_rows; ++r) {
+                const int screen_row = rows - 1 - r;
+                if (r < full) {
+                    const short dp = (r == full - 1 && eighths == 0) ? CP_VIZ_PEAK : pair;
+                    wattron(win_viz_, COLOR_PAIR(dp));
+                    for (int c = 0; c < bar_w && x0 + c < cols - 1; ++c)
+                        mvwaddch(win_viz_, screen_row, x0 + c, ' ');
+                    wattroff(win_viz_, COLOR_PAIR(dp));
+                } else if (r == full && eighths > 0) {
+                    cchar_t cc; wchar_t s[2] = { (wchar_t)(0x2580 + eighths), 0 };
+                    setcchar(&cc, s, A_NORMAL, CP_VIZ_TIP, nullptr);
+                    for (int c = 0; c < bar_w && x0 + c < cols - 1; ++c)
+                        mvwadd_wch(win_viz_, screen_row, x0 + c, &cc);
+                }
             }
         }
     }
 
     if (aw) {
-        panelFrame(win_viz_, " Visualizer [v:back] ", focus_ == Pane::Playlist, L'\uf001');
+        panelFrame(win_viz_, " Spectrum ", false, L'\uf001');
     } else {
         // Border
         wattron(win_viz_, COLOR_PAIR(CP_BORDER));
@@ -1709,6 +2167,11 @@ void UIManager::drawHelp() {
         { "Ctrl+Y",         "Rip CD  (A=AccurateRip  C=CUETools  Y=Local  B=Local 2-pass)" },
         { "Ctrl+D",         "Toggle Discord Rich Presence" },
         { "Ctrl+T",         "Toggle Classic / Awesome theme" },
+        { "F2",             "Spectrum style: classic / 80s LED"   },
+        { "F7  /  F8",      "Awesome theme: previous / next" },
+#ifdef PDCURSES
+        { "Alt+Enter",      "Toggle fullscreen (borderless)"      },
+#endif
         { "~",              "Reload theme.conf colours (live)" },
         { "Ctrl+N",         "Toggle Nerd Font icons (needs Nerd Font)" },
         { "Ctrl+A",         "Toggle deep-analysis iHeart log (diagnostic)" },
@@ -2412,6 +2875,325 @@ void UIManager::drawDevices() {
     }
 }
 
+// Pull the embedded front-cover (or first picture) bytes from a file's tags via
+// TagLib's generic complexProperties("PICTURE"). Empty vector = no art / any
+// failure. Local + synchronous (fast); no network. (Radio/streams have no file -
+// they degrade to metadata-only, matching the isCDTrackPath skip.)
+static std::vector<uint8_t> extractEmbeddedArt(const std::string& path) {
+    try {
+#ifdef _WIN32
+        auto wp = utf8_to_wide(path);
+        TagLib::FileRef ref(wp.c_str(), false);
+#else
+        TagLib::FileRef ref(path.c_str(), false);
+#endif
+        if (ref.isNull()) return {};
+        const auto pics = ref.complexProperties("PICTURE");
+        TagLib::ByteVector first, front;
+        for (const auto& pic : pics) {
+            auto d = pic.find("data");
+            if (d == pic.end()) continue;
+            TagLib::ByteVector bv = d->second.value<TagLib::ByteVector>();
+            if (bv.isEmpty()) continue;
+            if (first.isEmpty()) first = bv;
+            auto t = pic.find("pictureType");
+            if (t != pic.end() && t->second.value<TagLib::String>() == "Front Cover") {
+                front = bv; break;
+            }
+        }
+        const TagLib::ByteVector& use = front.isEmpty() ? first : front;
+        if (!use.isEmpty())
+            return std::vector<uint8_t>(use.data(), use.data() + use.size());
+    } catch (...) {}
+    return {};
+}
+
+// Allocate curses colours + pairs for a rendered cover, filling out_pairs (one
+// pair index per cell). Uses a DEDICATED slot/pair range so it never disturbs the
+// theme (colours 16..~30, pairs 1..14): art colours start at 64, pairs at 20,
+// both capped at index 255 so plain init_color/init_pair (short) work on ncursesw
+// (256) and PDCurses alike - no extended-colour API needed. Greedy-quantises to
+// the budget (exact match -> reuse; else allocate; else nearest already-allocated).
+// Truecolor tier when COLORS>=256 && can_change_color(); else nearest-of-16 (the
+// same fidelity ladder the themes use). Returns false only if colour is unusable.
+bool UIManager::allocArtColorPairs(const cover::Rendered& art,
+                                   std::vector<short>& out_pairs) {
+    out_pairs.assign(art.cells.size(), 0);
+    if (!has_colors() || art.cells.empty()) return false;
+
+    const bool truecolor = (COLORS >= 256 && can_change_color());
+    const short C0 = 64;
+    const int   c_budget = truecolor ? std::min((int)COLORS, 256) - C0 : 0;   // art colour slots
+    const short P0 = 20;
+    const int   p_budget = std::min(COLOR_PAIRS, 256) - P0;                    // art pair slots
+    if (p_budget < 1) return false;
+
+    static const int kBasic16[16][3] = {
+        {0,0,0},{128,0,0},{0,128,0},{128,128,0},{0,0,128},{128,0,128},{0,128,128},{192,192,192},
+        {128,128,128},{255,0,0},{0,255,0},{255,255,0},{0,0,255},{255,0,255},{0,255,255},{255,255,255},
+    };
+    auto dist = [](int r,int g,int b,int R,int G,int B) -> long {
+        long dr=r-R, dg=g-G, db=b-B; return 2*dr*dr + 4*dg*dg + 3*db*db;
+    };
+
+    std::vector<std::array<int,3>> pal;   // slot index i -> rgb (truecolor path)
+    auto colorFor = [&](int r,int g,int b) -> short {
+        if (!truecolor) {                 // nearest-of-16
+            long best=-1; short bi=0;
+            for (short i=0;i<16;++i){ long d=dist(r,g,b,kBasic16[i][0],kBasic16[i][1],kBasic16[i][2]);
+                                      if(best<0||d<best){best=d;bi=i;} }
+            return bi;
+        }
+        for (size_t i=0;i<pal.size();++i)
+            if (pal[i][0]==r && pal[i][1]==g && pal[i][2]==b) return (short)(C0+i);
+        if ((int)pal.size() < c_budget) {
+            const short id = (short)(C0 + pal.size());
+            auto sc=[](int c)->short{ return (short)((c*1000+127)/255); };  // 0..255 -> 0..1000
+            init_color(id, sc(r), sc(g), sc(b));
+            pal.push_back({r,g,b});
+            return id;
+        }
+        long best=-1; short bi=C0;        // budget spent: nearest existing
+        for (size_t i=0;i<pal.size();++i){ long d=dist(r,g,b,pal[i][0],pal[i][1],pal[i][2]);
+                                           if(best<0||d<best){best=d;bi=(short)(C0+i);} }
+        return bi;
+    };
+
+    std::vector<std::pair<short,short>> pairs;   // pair index j -> (fg,bg)
+    auto pairFor = [&](short fg, short bg) -> short {
+        for (size_t j=0;j<pairs.size();++j)
+            if (pairs[j].first==fg && pairs[j].second==bg) return (short)(P0+j);
+        if ((int)pairs.size() < p_budget) {
+            const short id = (short)(P0 + pairs.size());
+            init_pair(id, fg, bg);
+            pairs.push_back({fg,bg});
+            return id;
+        }
+        // Budget spent (only if a pane were huge): reuse the closest fg's pair.
+        return (short)P0;
+    };
+
+    for (size_t i=0;i<art.cells.size();++i) {
+        const auto& c = art.cells[i];
+        out_pairs[i] = pairFor(colorFor(c.r_top,c.g_top,c.b_top),
+                               colorFor(c.r_bot,c.g_bot,c.b_bot));
+    }
+    return true;
+}
+
+// Small MRU cache of decoded covers, keyed on "path|box". Look-up never reorders
+// (so the returned pointer stays valid until the next put); FIFO eviction at cap.
+const cover::Rendered* UIManager::artCacheGet(const std::string& key) {
+    for (auto& e : info_art_cache_) if (e.key == key) return &e.art;
+    return nullptr;
+}
+void UIManager::artCachePut(const std::string& key, const cover::Rendered& r) {
+    for (auto& e : info_art_cache_) if (e.key == key) { e.art = r; return; }
+    info_art_cache_.push_back({ key, r });
+    if (info_art_cache_.size() > kInfoArtCacheMax) info_art_cache_.erase(info_art_cache_.begin());
+}
+
+// Commit a decoded grid as the shown art: allocate its colour pairs (UI thread -
+// curses palette) and mark the key. r.ok==false is a valid "no art" verdict.
+void UIManager::commitInfoArt(const std::string& key, const cover::Rendered& r) {
+    info_art_key_ = key;
+    info_art_ = r;
+    info_art_pairs_.clear();
+    if (info_art_.ok) allocArtColorPairs(info_art_, info_art_pairs_);
+}
+
+// Spawn the one-shot decode worker (file read + stb decode, both curses-free).
+// Single in-flight (guarded by info_art_active_); the result is picked up by
+// refreshInfoArt on the UI thread, which does the colour allocation.
+void UIManager::startInfoArtDecode(const std::string& path, const std::string& key,
+                                   int box_cols, int box_rows) {
+    if (info_art_active_.load()) return;
+    info_art_active_.store(true);
+    info_art_done_.store(false);
+    { std::lock_guard<std::mutex> lk(info_art_mtx_);
+      info_art_want_key_ = key; info_art_result_ = cover::Rendered{}; }
+    if (info_art_thread_.joinable()) info_art_thread_.join();   // prior worker already done
+    std::string p = path; int bc = box_cols, br = box_rows;
+    info_art_thread_ = std::thread([this, p, bc, br]() {
+        std::vector<uint8_t> bytes = extractEmbeddedArt(p);
+        cover::Rendered r;
+        if (!bytes.empty()) r = cover::render(bytes, bc, br);   // r.ok stays false if no art
+        { std::lock_guard<std::mutex> lk(info_art_mtx_); info_art_result_ = std::move(r); }
+        info_art_done_.store(true);
+    });
+}
+
+// Ensure the shown cover matches (path, box). Same key -> already committed, no
+// work. Cached decode -> commit instantly (colour-alloc only). Otherwise decode
+// off the UI thread and fill it in when it lands, so the pane never blocks. Never
+// throws. First open / track-change briefly shows no art, then the cover fills in.
+void UIManager::refreshInfoArt(const std::string& path, int box_cols, int box_rows) {
+    const std::string key = path + "|" + std::to_string(box_cols) + "x" + std::to_string(box_rows);
+
+    // Pick up a finished background decode: cache it, and show it if still current.
+    if (info_art_done_.exchange(false)) {
+        cover::Rendered r; std::string forkey;
+        { std::lock_guard<std::mutex> lk(info_art_mtx_);
+          r = std::move(info_art_result_); forkey = info_art_want_key_; }
+        if (info_art_thread_.joinable()) info_art_thread_.join();
+        info_art_active_.store(false);
+        artCachePut(forkey, r);
+        if (forkey == key) { commitInfoArt(forkey, r); requestRedraw(); }
+    }
+
+    if (key == info_art_key_) return;                 // already committed & drawn
+
+    if (const cover::Rendered* c = artCacheGet(key)) { commitInfoArt(key, *c); return; }
+
+    // Not decoded yet: clear the stale cover (don't show the wrong one) and kick
+    // off the decode. Leave info_art_key_ on the old key so we keep retrying the
+    // spawn until this key's decode lands and commits it.
+    if (!info_art_.cells.empty() || !info_art_pairs_.empty()) {
+        info_art_ = cover::Rendered{};
+        info_art_pairs_.clear();
+    }
+    if (path.empty() || isCDTrackPath(path) || box_cols < 4 || box_rows < 2) {
+        artCachePut(key, cover::Rendered{});          // cache the "no art" verdict
+        commitInfoArt(key, cover::Rendered{});
+        return;
+    }
+    startInfoArtDecode(path, key, box_cols, box_rows);
+}
+
+// Lazy-load the bundled RE-MOCT logo (the radio-art floor). Tried once; if the
+// asset isn't found the floor is simply blank (metadata reflows full width, same
+// as a local file with no embedded cover). Copied beside the exe at build time
+// (remoct_logo.jpg); a couple of source-tree relatives cover in-place dev runs.
+const std::vector<uint8_t>& UIManager::logoBytes() {
+    if (logo_load_tried_) return logo_bytes_;
+    logo_load_tried_ = true;
+    const fs::path exe = fs::path(port::exeDir());
+    for (const fs::path& p : { exe / "remoct_logo.jpg",
+                               exe / "icon" / "remoct_logo.jpg",
+                               exe / ".." / "icon" / "remoct_logo.jpg",
+                               exe / ".." / ".." / "icon" / "remoct_logo.jpg" }) {
+        std::error_code ec;
+        if (!fs::exists(p, ec)) continue;
+        std::ifstream f(p, std::ios::binary | std::ios::ate);
+        if (!f) continue;
+        std::streamoff n = f.tellg();
+        if (n <= 0) continue;
+        logo_bytes_.resize((size_t)n);
+        f.seekg(0);
+        if (f.read((char*)logo_bytes_.data(), n)) break;
+        logo_bytes_.clear();   // short read -> treat as absent
+    }
+    return logo_bytes_;
+}
+
+// Spawn the one-shot radio-art fetch worker: resolve the cover URL (station-
+// supplied iHeart cover if given, else a song-entity urlBySong lookup) and GET
+// the bytes, all off the UI thread. Single in-flight (guarded by radio_art_active_).
+void UIManager::startRadioArtFetch(const std::string& artist, const std::string& title,
+                                   const std::string& station_art) {
+    if (radio_art_active_.load()) return;
+    radio_art_active_.store(true);
+    radio_art_done_.store(false);
+    radio_fetch_station_ = !station_art.empty();
+    { std::lock_guard<std::mutex> lk(radio_art_mtx_);
+      radio_art_want_key_ = artist + "\t" + title; radio_art_result_.clear(); }
+    if (radio_art_thread_.joinable()) radio_art_thread_.join();   // prior worker already done
+    std::string a = artist, t = title, sa = station_art;
+    radio_art_thread_ = std::thread([this, a, t, sa]() {
+        std::string url = sa.empty() ? CoverArt::urlBySong(a, t) : sa;
+        std::vector<uint8_t> bytes = CoverArt::bytesByUrl(url);   // {} when url empty or not an image
+        { std::lock_guard<std::mutex> lk(radio_art_mtx_); radio_art_result_ = std::move(bytes); }
+        radio_art_done_.store(true);
+    });
+}
+
+// Resolve + decode the cover for the currently-committed radio song into the
+// Info-pane art box. Mirrors the Discord committed-song decision but runs
+// independently (so the pane's art works with Discord presence off). UI thread.
+void UIManager::refreshRadioArt(int box_cols, int box_rows) {
+    // Committed-song identity — same parse as updateScrobbler's radio branch.
+    std::string song_key, artist, title;
+    {
+        std::string np = audio_.streamNowPlaying();      // "Artist - Title"
+        auto dash = np.find(" - ");
+        if (dash != std::string::npos) {
+            artist = np.substr(0, dash);
+            title  = np.substr(dash + 3);
+            auto trim = [](std::string& x){
+                while (!x.empty() && (x.front()==' '||x.front()=='\t')) x.erase(x.begin());
+                while (!x.empty() && (x.back()==' '||x.back()=='\t')) x.pop_back();
+            };
+            trim(artist); trim(title);
+            if (!artist.empty() && !title.empty()) song_key = artist + "\t" + title;
+        }
+    }
+    const std::string station_art = audio_.streamArtUrl();   // iHeart digital cover ("" -> logo/lookup)
+
+    // Pick up a finished fetch for the still-current song. A confirmed miss on a
+    // urlBySong lookup is remembered in the shared negative cache so the same song
+    // returning in rotation keeps the logo without re-querying (station-art misses
+    // are NOT neg-cached: a late-landing station cover should still get a chance).
+    if (radio_art_done_.exchange(false)) {
+        std::vector<uint8_t> bytes; std::string forkey; bool was_station = radio_fetch_station_;
+        { std::lock_guard<std::mutex> lk(radio_art_mtx_);
+          bytes = std::move(radio_art_result_); forkey = radio_art_want_key_; }
+        if (radio_art_thread_.joinable()) radio_art_thread_.join();
+        radio_art_active_.store(false);
+        if (forkey == song_key) {
+            radio_bytes_ = std::move(bytes);
+            radio_bytes_key_ = song_key;
+            radio_bytes_resolved_ = true;
+            radio_render_key_.clear();                       // force a re-decode
+            if (radio_bytes_.empty() && !was_station)
+                discord_art_neg_.insert(song_key);
+            requestRedraw();                                 // cover landed -> repaint
+        }
+        // else: the song moved on mid-fetch; the (re)trigger below handles the new one.
+    }
+
+    // (Re)start resolution on a committed song-change, or when the station supplies
+    // a new non-empty cover URL for the same song (iHeart digital art can land a
+    // tick after the title commits). While a fetch is in flight we hold off so the
+    // in-flight result isn't discarded; once it clears we re-evaluate and catch up.
+    if (!song_key.empty()) {
+        const bool song_changed    = (song_key != radio_bytes_key_);
+        const bool station_changed = (!station_art.empty() && station_art != radio_last_station_art_);
+        if ((song_changed || station_changed) && !radio_art_active_.load()) {
+            radio_last_station_art_ = station_art;
+            radio_bytes_key_        = song_key;
+            radio_bytes_resolved_   = false;                 // show the logo floor while we fetch
+            radio_render_key_.clear();
+            if (!station_art.empty())
+                startRadioArtFetch(artist, title, station_art);
+            else if (discord_art_neg_.find(song_key) == discord_art_neg_.end())
+                startRadioArtFetch(artist, title, "");       // song-entity lookup
+            else { radio_bytes_.clear(); radio_bytes_resolved_ = true; }   // known miss -> floor
+        }
+    } else if (song_key != radio_bytes_key_) {
+        // No parseable now-playing (ad break / LIVE / pre-title): float on the logo.
+        radio_bytes_key_ = song_key;   // ""
+        radio_bytes_.clear();
+        radio_bytes_resolved_ = true;
+        radio_render_key_.clear();
+    }
+
+    // Decode step: real cover if we have one, else the logo floor. Cached on
+    // (source | box), so no per-frame re-decode and the logo doesn't thrash.
+    const bool use_logo = !(radio_bytes_resolved_ && !radio_bytes_.empty());
+    const std::vector<uint8_t>& src = use_logo ? logoBytes() : radio_bytes_;
+    std::string rkey = (use_logo ? std::string("\x01logo") : song_key)
+                     + "|" + std::to_string(box_cols) + "x" + std::to_string(box_rows);
+    if (rkey == radio_render_key_) return;
+    radio_render_key_ = rkey;
+    radio_art_ = cover::Rendered{};
+    radio_art_pairs_.clear();
+    if (src.empty() || box_cols < 4 || box_rows < 2) return;
+    cover::Rendered r = cover::render(src, box_cols, box_rows);
+    if (!r.ok) return;
+    if (!allocArtColorPairs(r, radio_art_pairs_)) return;
+    radio_art_ = std::move(r);
+}
+
 void UIManager::drawTrackInfo() {
     WINDOW* w = win_playlist_;
     werase(w);
@@ -2573,6 +3355,36 @@ void UIManager::drawTrackInfo() {
             }
         }
 
+        // ── Cover art (top-left half-block box) + metadata reflow ──
+        // Box ~22 cols wide (square-ish given the 2:1 cell aspect), clamped so the
+        // metadata keeps room beside it; skipped on a too-small pane or in tag-edit
+        // mode. Rendered + colour-allocated once per (track, box) - cached.
+        const int art_x = 1, art_y = 2;
+        const int box_cols = std::clamp(22, 4, cols - 26);
+        const int box_rows = std::clamp(11, 2, rows - 4);
+        // Live-stream item shown while it's the playing stream: resolve radio art
+        // (station cover / song lookup / logo floor). Everything else: local-file
+        // embedded art. Both feed the same half-block box below.
+        const bool radio_item = audio_.streamMode() && path == audio_.streamUrl();
+        if (radio_item) refreshRadioArt(box_cols, box_rows);
+        else            refreshInfoArt(path, box_cols, box_rows);
+        const cover::Rendered&    art_r  = radio_item ? radio_art_       : info_art_;
+        const std::vector<short>& art_pr = radio_item ? radio_art_pairs_ : info_art_pairs_;
+        const bool has_art    = art_r.ok && !tag_edit_mode_;
+        const int  art_cols   = has_art ? art_r.cols : 0;
+        const int  art_rows   = has_art ? art_r.rows : 0;
+        const int  art_bottom = art_y + art_rows;      // first row below the art band
+        if (has_art) {
+            for (int cy = 0; cy < art_rows; ++cy)
+                for (int cx = 0; cx < art_cols; ++cx) {
+                    cchar_t cc; wchar_t s[2] = { (wchar_t)0x2580, 0 };   // ▀ UPPER HALF BLOCK
+                    setcchar(&cc, s, A_NORMAL,
+                             art_pr[(size_t)cy * art_cols + cx], nullptr);
+                    mvwadd_wch(w, art_y + cy, art_x + cx, &cc);
+                }
+        }
+        const int meta_right_x = has_art ? (art_x + art_cols + 2) : 0;
+
         // Render label: value pairs
         // Editable fields: Title(0) Artist(1) Album(2) Genre(3) Year(4)
         static const char* editable[] = {"Title","Artist","Album","Genre","Year"};
@@ -2580,6 +3392,10 @@ void UIManager::drawTrackInfo() {
         int row = 2;
         for (const auto& f : fields) {
             if (row >= rows - 1) break;
+
+            // Position: right of the art within its vertical band, then full-width
+            // below it (or from col 0 when there's no art).
+            const int base_x = (has_art && row < art_bottom) ? meta_right_x : 0;
 
             // Check if this field is editable
             int edit_idx = -1;
@@ -2594,12 +3410,13 @@ void UIManager::drawTrackInfo() {
                                    : (COLOR_PAIR(CP_TITLE)|A_BOLD));
             std::string lbl = "  " + f.label + ": ";
             lbl.resize((size_t)(label_w + 2), ' ');
-            mvwaddnstr(w, row, 0, lbl.c_str(), label_w + 2);
+            mvwaddnstr(w, row, base_x, lbl.c_str(), label_w + 2);
             wattroff(w, is_selected ? (COLOR_PAIR(CP_SELECTED)|A_BOLD)
                                     : (COLOR_PAIR(CP_TITLE)|A_BOLD));
 
             // Value
-            int val_w = cols - label_w - 3;
+            const int val_x = base_x + label_w + 2;
+            int val_w = cols - val_x - 1;
             if (val_w > 0) {
                 std::string val;
                 if (tag_edit_mode_ && edit_idx >= 0)
@@ -2615,21 +3432,22 @@ void UIManager::drawTrackInfo() {
                     std::string disp = val;
                     if (dispWidth(disp) > val_w - 1) disp = truncateToWidthRight(disp, val_w - 1);
                     std::wstring wdisp = utf8_to_wide(padToWidth(disp, val_w));
-                    mvwaddnwstr(w, row, label_w + 2, wdisp.c_str(), (int)wdisp.size());
+                    mvwaddnwstr(w, row, val_x, wdisp.c_str(), (int)wdisp.size());
                     // Blink cursor position
                     int cur_col = std::min(dispWidth(val), val_w - 1);
-                    mvwaddch(w, row, label_w + 2 + cur_col, '_');
+                    mvwaddch(w, row, val_x + cur_col, '_');
                     wattroff(w, COLOR_PAIR(CP_SELECTED) | A_BOLD);
                 } else {
                     wattron(w, edit_idx >= 0 && !tag_edit_mode_
                               ? (COLOR_PAIR(CP_DIM)|A_BOLD) : COLOR_PAIR(CP_DIM));
                     std::wstring wval = utf8_to_wide(scrollToWidth(val, val_w, text_scroll_offset_));
-                    mvwaddnwstr(w, row, label_w + 2, wval.c_str(), (int)wval.size());
+                    mvwaddnwstr(w, row, val_x, wval.c_str(), (int)wval.size());
                     wattroff(w, edit_idx >= 0 && !tag_edit_mode_
                                ? (COLOR_PAIR(CP_DIM)|A_BOLD) : COLOR_PAIR(CP_DIM));
                 }
             }
             ++row;
+            if (has_art && row == art_bottom) ++row;   // 1-row gap below the art band
         }
 
         // Hint when not in edit mode and file is editable
@@ -2738,18 +3556,76 @@ void UIManager::drawProgress() {
     }
     if (audio_.streamMode()) {
         // Live stream: no position/duration. Repurpose this row for the ICY
-        // now-playing title, with a [LIVE]/[BUFFERING] marker and volume.
+        // now-playing title, a [LIVE]/[BUFFERING] marker + volume, and a KITT
+        // scanner sweeping the idle gap between them. It all draws in this single
+        // stream-bar pass (one wnoutrefresh by the caller), so the scanner and the
+        // title can never fight for the region -> no flicker.
         std::string title = audio_.streamNowPlaying();
         std::string right = audio_.streamBuffering() ? "[BUFFERING]" : "[LIVE]";
         right += "  vol:" + std::to_string((int)(audio_.volume()*100.0f+0.5f)) + "%";
         std::string left = title.empty() ? "(live stream)" : title;
-        int avail = cols - (int)right.size() - 3;
-        if (avail < 1) avail = 1;
-        if ((int)left.size() > avail) left = left.substr(0, (size_t)avail);
+
+        const int right_w = (int)right.size();          // ASCII -> byte width == display width
+        const int right_x = cols - right_w - 1;         // first col of the right block
+        int left_cap = right_x - 2;                     // keep >=1 blank col before the right block
+        if (left_cap < 0) left_cap = 0;
+        if (dispWidth(left) > left_cap) left = truncateToWidth(left, left_cap);   // keep the head
+        const int left_w   = dispWidth(left);
+        const int left_end = 1 + left_w;                // first free col past the title
+
         wattron(win_progress_, COLOR_PAIR(CP_TITLE));
-        mvwaddstr(win_progress_, 0, 1, left.c_str());
-        mvwaddstr(win_progress_, 0, cols - (int)right.size() - 1, right.c_str());
+        if (left_w > 0) {
+            std::wstring wl = utf8_to_wide(left);
+            mvwaddnwstr(win_progress_, 0, 1, wl.c_str(), (int)wl.size());
+        }
+        if (right_x >= left_end)
+            mvwaddstr(win_progress_, 0, right_x, right.c_str());
         wattroff(win_progress_, COLOR_PAIR(CP_TITLE));
+
+        // Scanner track = free cells between the title and the right block, 1-col
+        // padded each side so the bright head never touches text/tag. If the title
+        // fills the gap (long song, narrow window) there's no room -> draw nothing,
+        // exactly the graceful-collapse the spectrum strip uses.
+        const int track_x0 = left_end + 1;
+        const int track_x1 = right_x - 2;               // inclusive
+        const int track_w  = track_x1 - track_x0 + 1;
+        if (track_w >= 4) {
+            // Advance on a wall-clock step so the sweep speed is independent of the
+            // draw cadence / keypress jitter (rides the ~80ms heartbeat; ~1 cell/tick).
+            using namespace std::chrono;
+            auto now = steady_clock::now();
+            if (scanner_last_.time_since_epoch().count() == 0) scanner_last_ = now;
+            long steps = (long)(duration_cast<milliseconds>(now - scanner_last_).count()
+                                / kScannerStepMs);
+            if (scanner_pos_ >= track_w) { scanner_pos_ = track_w - 1; scanner_dir_ = -1; }
+            for (long s = 0; s < steps; ++s) {
+                scanner_pos_ += scanner_dir_;
+                if      (scanner_pos_ >= track_w - 1) { scanner_pos_ = track_w - 1; scanner_dir_ = -1; }
+                else if (scanner_pos_ <= 0)           { scanner_pos_ = 0;           scanner_dir_ =  1; }
+            }
+            if (steps > 0) scanner_last_ = now;
+            if (scanner_pos_ < 0) scanner_pos_ = 0;      // window shrank since last frame
+
+            // Bright head (viz_peak) + a long gradient tail (viz_high -> mid -> low)
+            // trailing kScannerTail cells in the travel direction. viz pairs paint
+            // solid theme-coloured cells, so each palette gets its own scanner and it
+            // rhymes with the spectrum.
+            for (int i = 0; i < track_w; ++i) {
+                const int behind = (scanner_dir_ > 0) ? (scanner_pos_ - i) : (i - scanner_pos_);
+                if (behind < 0 || behind > kScannerTail) continue;   // ahead of head / past the tail
+                wchar_t g; short pair;
+                if (behind == 0) { g = 0x2588; pair = CP_VIZ_PEAK; }             // █ head
+                else {
+                    const float f = (float)behind / (kScannerTail + 1);          // 0..1 down the tail
+                    if      (f < 0.34f) { g = 0x2593; pair = CP_VIZ_HIGH; }      // ▓ near
+                    else if (f < 0.67f) { g = 0x2592; pair = CP_VIZ_MID;  }      // ▒ mid
+                    else                { g = 0x2591; pair = CP_VIZ_LOW;  }      // ░ far
+                }
+                cchar_t cc; wchar_t s[2] = { g, 0 };
+                setcchar(&cc, s, A_NORMAL, pair, nullptr);
+                mvwadd_wch(win_progress_, 0, track_x0 + i, &cc);
+            }
+        }
         return;
     }
     wattron(win_progress_, COLOR_PAIR(CP_PROGRESS));
@@ -3584,12 +4460,17 @@ void UIManager::handleInput(int ch) {
     // Dismiss help with any non-? key too (just re-route to normal handling)
     // Actually let ? be the only toggle — other keys pass through below
 
-    // v toggles visualizer (not from help)
+    // v: Awesome -> show/hide the full-width Spectrum strip; Classic -> the
+    // right-pane visualizer overlay (unchanged MOC-style toggle).
     if (ch == 'v' || ch == 'V') {
-        if (right_pane_ == RightPane::Visualizer)
-            right_pane_ = RightPane::Playlist;
-        else
-            right_pane_ = RightPane::Visualizer;
+        if (config_.awesome_mode) {
+            awesome_viz_strip_ = !awesome_viz_strip_;
+            resizeWindows();              // rebuild panes with/without the strip
+            redraw_needed_.store(true);
+        } else {
+            right_pane_ = (right_pane_ == RightPane::Visualizer)
+                              ? RightPane::Playlist : RightPane::Visualizer;
+        }
         return;
     }
 
@@ -3859,10 +4740,19 @@ void UIManager::handleInput(int ch) {
         case 20:  // Ctrl+T — toggle Classic / Awesome theme
             config_.awesome_mode = !config_.awesome_mode;
             config_.save();
+            // Awesome has no right-pane visualizer (the spectrum is the bottom
+            // strip); if Classic left the right pane in viz mode, reset it so the
+            // pane doesn't come up blank after the switch.
+            if (config_.awesome_mode && right_pane_ == RightPane::Visualizer)
+                right_pane_ = RightPane::Playlist;
+            // Re-init colour pairs for the new mode BEFORE rebuilding windows: Awesome
+            // gives CP_DIM a solid base bg, so createWindows()'s wbkgd(CP_DIM) then fills
+            // every pane (and the title/cwd/cmdline strips) with the themed base; Classic
+            // restores the transparent -1 defaults so it re-inherits the terminal bg.
+            initColours();
             resizeWindows();        // rebuild panes with theme-aware geometry +
             redraw_needed_.store(true);   // full shrink-safe screen wipe
-            showTrackToast(config_.awesome_mode ? "Theme: Awesome"
-                                               : "Theme: Classic", "", "");
+            theme_tag_ticks_ = 0;   // flash [THEME:<name>] on the cwd line for ~10s
             break;
         case 14:  // Ctrl+N — toggle Nerd Font title icons (needs a Nerd Font)
             config_.nerd_icons = !config_.nerd_icons;
@@ -3871,6 +4761,49 @@ void UIManager::handleInput(int ch) {
             showTrackToast(config_.nerd_icons ? "Nerd icons: ON (needs Nerd Font)"
                                               : "Nerd icons: OFF", "", "");
             break;
+        case KEY_F(2):    // toggle spectrum style: classic solid bars <-> 80s LED
+            config_.viz_led = !config_.viz_led;
+            config_.save();
+            redraw_needed_.store(true);
+#ifndef _WIN32
+            status_msg_ = config_.viz_led ? "Spectrum: 80s LED" : "Spectrum: classic bars";
+            status_msg_ticks_ = 0;
+#else
+            showTrackToast(config_.viz_led ? "Spectrum: 80s LED" : "Spectrum: classic bars", "", "");
+#endif
+            break;
+        case KEY_F(7):    // previous Awesome named palette (F7)
+        case KEY_F(8): {  // next Awesome named palette (F8)
+            if (!config_.awesome_mode) {
+                // F7/F8 only cycle in Awesome mode; hint otherwise (Classic keeps its
+                // theme.conf colours; named palettes are an Awesome feature).
+#ifndef _WIN32
+                status_msg_ = "Themes live in Awesome mode (Ctrl+T)";
+                status_msg_ticks_ = 0;
+                redraw_needed_.store(true);
+#else
+                showTrackToast("Themes live in Awesome mode (Ctrl+T)", "", "");
+#endif
+                break;
+            }
+            // F7 steps back, F8 steps forward - a smooth forward/back cycle.
+            const int step = (ch == KEY_F(7)) ? (kNumAwesomeThemes - 1) : 1;
+            config_.awesome_theme = (config_.awesome_theme + step) % kNumAwesomeThemes;
+            config_.save();
+            applyAwesomeTheme();          // recolour in place — pairs are global, no rebuild
+            clearok(stdscr, TRUE);
+            redraw_needed_.store(true);
+            theme_tag_ticks_ = 0;   // flash [THEME:<name>] on the cwd line for ~10s
+            break;
+        }
+#ifdef PDCURSES
+        case ALT_ENTER:      // Alt+Enter — wingui borderless-fullscreen toggle
+        case ALT_PADENTER:   // (numpad Enter variant)
+            toggleWinguiFullscreen();
+            clearok(stdscr, TRUE);
+            redraw_needed_.store(true);
+            break;
+#endif
         // Per-case Windows gates below (slice-2 fix): a single #ifdef here
         // used to span ^D/^B/^F/^G/^U/^Y/^R, silently deleting the portable
         // scrobbler-login and radio-URL keys from the Linux build (Dos-found:

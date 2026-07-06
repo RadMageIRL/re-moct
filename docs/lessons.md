@@ -295,6 +295,17 @@
   config replaced hint sniffing (the slice-8 "don't migrate garbage" rule);
   (4) setDevice's file-restart now primes the decoder and re-reads tags into
   the source's private info_ (current_track_ untouched) - inert warm-up.
+- **Varispeed is linear interpolation BY CHOICE, not by laziness.** The playback-
+  speed resampler uses linear interp deliberately - it's cheap, zero-latency, and
+  the slight top-end softening is the right feel for a scrub/speed control (you're
+  changing pitch anyway). What keeps it CLICK-FREE is discipline, not filter order:
+  RESET the interpolator residual (the fractional read position / last-sample carry)
+  on every seek, track-swap, and stop, so a fresh stream never interpolates against
+  a stale tail. Don't "upgrade" to sinc/polyphase without a concrete reason - it buys
+  inaudible quality here at real latency + complexity cost, and a sinc kernel that
+  forgets to flush its history on the same three events reintroduces exactly the
+  clicks the reset already prevents. If varispeed ever clicks, look at residual reset
+  on those boundaries FIRST, not at the interpolation math.
 
 ## Replay-net / test-fixture lessons (Phase 2 slice 0)
 - **"A few quiet reads" is NOT end-of-stream when legitimate in-stream silence
@@ -555,3 +566,123 @@
      with `DRAIN < PREBUFFER`: the ring can't empty during the drain → no silence-fill → the
      head is fixed decoded audio whatever the producer thread does (the slice-0 "static buffer,
      drain flat out" lesson, applied to byte-identity).
+
+## Windows static single-exe (Option C - Phase 0 gate)
+Probe on `experimental/win-pdcurses`, MSYS2 UCRT64, against the CURRENT ncursesw (PDCurses
+not yet swapped - this deliberately isolates the codec question from the curses question).
+
+- **Static archives exist for everything except libebur128.** UCRT64 ships `libFLAC.a`,
+  `libFLAC++.a`, `libmp3lame.a`, `libfdk-aac.a`, `libtag.a` (+`libtag_c.a`), `libogg.a`,
+  `libncursesw.a`, `libpanelw.a`, plus the GCC runtime trio (`libstdc++.a`, `libwinpthread.a`,
+  `libgcc.a`). **libebur128 is DLL-only** - only a `libebur128.dll.a` import stub + the DLL, no
+  `.a` anywhere in ucrt64. fdk-aac and TagLib (the plan's predicted problem children)
+  static-link CLEAN; the lone holdout is ebur128 (ReplayGain / EBU R128).
+- **`find_library` resolves to the `.dll.a` import stub by default**, so the stock build is
+  fully dynamic even though the `.a` files sit right beside them. `-DCMAKE_FIND_LIBRARY_SUFFIXES=".a;.dll.a"`
+  passed at configure time does NOT stick - MSYS2's Windows-GNU platform module resets that
+  variable during `project()`. It must be set inside CMakeLists (after `project()`, before the
+  `find_library` calls) to take effect.
+- **Every dllimport-decorated lib needs its "I am static" define at COMPILE time**, else the
+  objects reference `__imp_<sym>` that the static `.a` lacks (link fails: undefined reference to
+  `` `__imp_...' ``). Compile-side fix, not link-side:
+  - ncurses -> `NCURSES_STATIC` (already in the tree)
+  - TagLib  -> `TAGLIB_STATIC`
+  - FLAC    -> `FLAC__NO_DLL`
+  The C codecs with no dllimport decoration (mp3lame, fdk-aac) needed nothing.
+- **Static libFLAC needs libogg linked explicitly.** The dynamic build pulled ogg in
+  transitively via the FLAC DLL; the static `libFLAC.a` exposes the dependency, so
+  `${MSYS2_PREFIX}/lib/libogg.a` must be added to the link line.
+- **Result:** `-static -static-libgcc -static-libstdc++` + the three defines + libogg ->
+  `re-moct.exe` (10.9 MB) links, and `ldd` shows ONLY Windows system DLLs plus the one
+  documented exception `libebur128.dll`. No `libgcc_s` / `libstdc++` / `libwinpthread` / codec /
+  curses DLLs. **Phase 0 gate = PASS**, single-DLL exception. Gated behind a
+  `-DREMOCT_STATIC_PROBE=ON` CMake option so the default dynamic build is untouched.
+### Decisions locked post-probe (the shipping package is a COHERENT set, not one file)
+- **fdk-aac stays DYNAMIC on purpose - it static-links clean, but we choose not to.** The exe
+  AND the `remoct_stream` plugin both use fdk-aac. Static-linking it into the exe while the
+  plugin links its own copy would put TWO independent fdk-aac states in one process (aliasing /
+  dual-decoder-state -> the classic "works 99%, glitches inexplicably 1%" trap). Keeping one
+  shared `libfdk-aac.dll` = one codec, one state, one copy in the address space. This DISSOLVES
+  the plugin-codec double-linkage question rather than probing it. **Do NOT convert fdk-aac to
+  static later - that reintroduces the exact dual-state bug this avoids.** Contrast: FLAC / LAME
+  / TagLib are exe-only, so they static-link with no such risk.
+- **ebur128 stays DYNAMIC by necessity** - no `.a` published in UCRT64 (ReplayGain / loudness).
+- **Shipping shape:** `re-moct.exe` (static: PDCurses, GCC runtime, FLAC+LAME+TagLib+ogg) +
+  `libfdk-aac.dll` (shared exe/plugin, by design) + `libebur128.dll` (holdout) + `plugins/`
+  (dynamic, unchanged). Every DLL has a stated reason.
+- **Graduation gate (corrected from "single DLL exception"):** the Phase-5 `ldd` / Dependencies
+  check passes IFF the ONLY non-system DLLs are EXACTLY `libfdk-aac-2.dll` and `libebur128.dll`
+  (note the fdk-aac soname carries a `-2` version suffix - the exe's `ldd` shows
+  `libfdk-aac-2.dll`, not `libfdk-aac.dll`). Any third non-system DLL fails the gate. The CI
+  dependents-check must assert that explicit two-name allowlist so nothing new sneaks in later
+  and gets waved through as "expected."
+- **Plugin drags the GCC-runtime DLLs (OPEN packaging question).** `remoct_stream.dll` builds
+  dynamic (correct - it must stay a loadable module) and links the SHARED `libfdk-aac-2.dll`
+  (good - one codec state), but it also pulls `libgcc_s_seh-1.dll` / `libstdc++-6.dll` /
+  `libwinpthread-1.dll` that the STATIC exe does not carry. So the shipping package would need
+  those 3 GCC-runtime DLLs too, unless the plugin target gets `-static-libgcc -static-libstdc++`
+  (folds the C++ runtime into the plugin DLL; safe because the plugin boundary is a C ABI - no
+  C++ objects cross it, proven byte-identical in Phase 4 slice d). That is NOT the same as
+  `-static` on the plugin (which would break the loadable module). DECISION for Dos before Phase
+  5: static-libgcc/stdc++ the plugin (keeps the 2-DLL package) vs ship the 3 runtime DLLs.
+- **Static libwinpthread needs `--whole-archive`, not just `-static-libstdc++`.** libwinpthread
+  is pulled by `libstdc++.a`'s pthread refs at the driver's IMPLICIT tail, and `-static-libstdc++`
+  emits a `-Bdynamic` right after libstdc++, so a plain `-lwinpthread` (before the objects) is
+  discarded and a trailing `-Bstatic` is undone -> the DLL stays dynamic. `-Wl,-Bstatic,--whole-archive
+  -lwinpthread -Wl,--no-whole-archive,-Bdynamic` forces the whole archive in regardless of ref
+  position. Verified by `ldd` showing no libwinpthread-1.dll.
+
+## PDCursesMod wingui (Option C - the Windows GUI port)
+The wingui port draws its OWN GDI window - it is NOT a console. Almost every failure here is
+runtime-discoverable, not compile-discoverable; a green build proves nothing about the window.
+
+- **The seam header must NOT be named `Curses.h`.** On Windows's case-insensitive filesystem,
+  with `include/` ahead of the vendored dir on the search path, `#include <curses.h>` (from the
+  seam's own PDCurses branch) matches the seam itself, and `#pragma once` then expands it to
+  nothing -> every curses symbol undeclared. Named it `CursesSeam.h`. (Symptom: `WINDOW` undefined,
+  "did you mean WINDOWPOS" - windows.h is all that's visible.)
+- **wingui owns the font; the registry overrides a pre-initscr set.** The face is the extern
+  global `PDC_font_name` (`wchar_t[128]` under the forced-UNICODE build; no public setter), set
+  BEFORE initscr (wingui measures the font during screen open). BUT wingui restores the last
+  font+size from `HKCU\SOFTWARE\PDCurses\<exeBaseName>` INSIDE initscr, which clobbers your set -
+  a stale "Courier New" saved by a pre-fix run stays sticky forever. Clear that value first
+  (`RegDeleteKeyValueW`) so your choice wins. Bundle a glyph-complete Nerd Font via
+  `AddFontResourceExW(FR_PRIVATE)` from `<exeDir>/fonts/` so it need not be installed. Default
+  "Courier New" lacks rounded box corners / sub-blocks / Nerd icons -> tofu.
+- **Resize: use `resize_term(0,0)`, never the console APIs.** `GetConsoleWindow`/`CONOUT$` report
+  nothing meaningful on a console-less GDI app and drive `resize_term` to a mismatched size (no
+  reflow + crash from drawing into a stale cell buffer). wingui already stored the new window
+  size and queued KEY_RESIZE; `resize_term(0,0)` adopts it and refreshes LINES/COLS/stdscr - the
+  canonical PDCurses idiom (its own getch.c does the same).
+- **Live repaint during a drag needs `PDC_set_window_resized_callback`.** Windows runs a MODAL
+  message loop while the user drags the frame, so the app's getch()/draw loop is blocked and the
+  window blanks until release. wingui invokes the registered callback from its WM_SIZE handler
+  INSIDE that modal loop - repaint from there. Skip the intermediate blank-frame `doupdate()` in
+  resizeWindows for wingui or every WM_SIZE flashes (wingui double-buffers WM_PAINT, so one clean
+  composed frame per tick is flicker-free).
+- **THE ordering trap: register that callback LAST.** Any window op that fires WM_SIZE
+  SYNCHRONOUSLY (SetWindowPos with SWP_FRAMECHANGED, SetMenu, ...) re-enters the resize callback
+  the instant it is registered - and in the CONSTRUCTOR that runs `resizeWindows()` (drawAll,
+  createWindows) on a HALF-BUILT UIManager -> crash / garbage launch. Do ALL ctor-time window
+  manipulation FIRST, then register `PDC_set_window_resized_callback` as the last wingui step.
+  (Cost us a black launch that looked like a font/resize bug but was pure reentrancy.)
+- **Hide the menu with wingui's OWN toggle, not raw SetMenu.** A raw `SetMenu(hwnd, NULL)` grows
+  the client area and desyncs the curses grid; trying to fix that with a hand-computed
+  `resize_term` mis-sized/relocated the window (title bar shoved off-screen, unresizable). wingui's
+  `WM_TOGGLE_MENU` (`WM_USER+4`, sent via `WM_COMMAND`) is built for this: it removes the menu,
+  KEEPS the curses grid unchanged, and shrinks the window to match - no desync, and because the
+  grid doesn't change it can't re-enter the resize callback. `menu_shown` starts at 1 (we clear
+  the registry each launch), so one toggle hides it.
+- **DWM dark mode does not cover the menu bar.** `DwmSetWindowAttribute(hwnd,
+  DWMWA_USE_IMMERSIVE_DARK_MODE=20, ...)` (19 on older Win10) darkens the title bar/border to
+  match the OS (read `HKCU ...\Personalize\AppsUseLightTheme`, 0=dark) - but a standard Win32 menu
+  bar stays light regardless. Dark-theming the menu bar itself needs owner-draw / undocumented
+  uxtheme; hiding it (above) was the clean answer once the font moved to config.
+- **Spectrum in a short strip: gamma-lift + a floor, and DFT bins are ~free.** A 5-row strip
+  crushes dynamics that fill a 40-row pane, so in Awesome only lift values (`pow(val,0.65)`) and
+  raise the floor so bars fill and do not collapse to a nub. Spread bars by interpolating each
+  bar's column span (`x0..x1 = b*cols/n_bars`) so they fill the FULL width and integer rounding
+  never drops one. More `VIZ_BINS` is nearly free: the DFT cost is dominated by the per-k
+  frequency sweep (bins just partition the same k's). A low band whose log-spaced range collapses
+  onto a single FFT bin (`k_lo==k_hi`) must use that k, not hit the above-Nyquist "empty" skip, or
+  low bands drop out.

@@ -157,6 +157,12 @@ int PDC_choose_a_new_font( void);                     /* pdcdisp.c */
 #define KEY_QUEUE_SIZE    30
 
 int PDC_n_rows, PDC_n_cols;
+/* RE-MOCT patch: when set, WM_SIZE won't snap the window back down to a whole
+   cell multiple. Borderless-fullscreen needs the window to stay EXACTLY the
+   monitor rect (so Windows hides the taskbar); the snap was shrinking it under
+   the monitor and re-exposing the taskbar / clipping an edge. Default 0 = stock
+   behaviour, so normal drag-resize still snaps. */
+int PDC_skip_size_snap = 0;
 int PDC_cxChar, PDC_cyChar, PDC_key_queue_low = 0, PDC_key_queue_high = 0;
 int PDC_key_queue[KEY_QUEUE_SIZE];
 
@@ -1271,7 +1277,7 @@ static void HandleSize( const WPARAM wParam, const LPARAM lParam)
         return;
 
     add_resize_key = 1;
-    if( wParam == SIZE_RESTORED &&
+    if( !PDC_skip_size_snap && wParam == SIZE_RESTORED &&
         ( n_xpixels % PDC_cxChar || n_ypixels % PDC_cyChar))
     {
         int new_xpixels = PDC_cxChar * PDC_n_cols;

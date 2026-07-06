@@ -37,6 +37,9 @@ struct DigiConfig {
     // UI theme toggle (Ctrl+T): false = Classic, true = Awesome (rounded panels)
     bool  awesome_mode = false;
     int   awesome_theme = 0;   // index into kAwesomeThemes (Ctrl+T Awesome look; F8 cycles)
+    // Spectrum style (F2): false = classic solid bars (default), true = 80s segmented
+    // "LED" bars (stacked half-block segments, colour-by-height).
+    bool  viz_led = false;
     bool  prefer_digital_stream = false;   // iHeart: try web-player (ad-reduced) rendition; raw broadcast otherwise
     bool  iheart_probe_minted   = false;   // probe: use a minted anonymous profileId on the digital handshake (deep-log A/B only)
 

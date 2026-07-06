@@ -99,6 +99,8 @@ extern "C" TCHAR PDC_font_name[];
 // inside Windows' modal resize-drag loop where our getch() loop is blocked.
 extern "C" void PDC_set_window_resized_callback(void (*)(void));
 extern "C" HWND PDC_hWnd;   // wingui's GDI window handle (pdcscrn.c)
+extern "C" int PDC_cxChar, PDC_cyChar;   // wingui glyph cell size in px (pdcscrn.c)
+extern "C" int PDC_skip_size_snap;       // wingui: suppress the WM_SIZE cell-snap (pdcscrn.c)
 
 namespace {
 // Trampoline for the C resize callback -> the live UIManager (single UI instance).
@@ -338,6 +340,7 @@ void UIManager::toggleWinguiFullscreen() {
     if (!PDC_hWnd) return;
     static bool             fs = false;
     static LONG_PTR         saved_style = 0;
+    static LONG_PTR         saved_exstyle = 0;
     static WINDOWPLACEMENT  saved_wp = { sizeof(WINDOWPLACEMENT) };
     HWND h = PDC_hWnd;
     if (!fs) {
@@ -345,19 +348,36 @@ void UIManager::toggleWinguiFullscreen() {
         if (!GetWindowPlacement(h, &saved_wp) ||
             !GetMonitorInfo(MonitorFromWindow(h, MONITOR_DEFAULTTONEAREST), &mi))
             return;
-        saved_style = GetWindowLongPtr(h, GWL_STYLE);
-        SetWindowLongPtr(h, GWL_STYLE, saved_style & ~(LONG_PTR)WS_OVERLAPPEDWINDOW);
-        SetWindowPos(h, HWND_TOP, mi.rcMonitor.left, mi.rcMonitor.top,
+        saved_style   = GetWindowLongPtr(h, GWL_STYLE);
+        saved_exstyle = GetWindowLongPtr(h, GWL_EXSTYLE);
+        // Use the EXACT monitor rect - not rounded to a cell multiple. wingui would
+        // normally snap a non-multiple window down to a multiple (shrinking it under
+        // the monitor: taskbar re-exposed / an edge clipped, worst on 4K where the
+        // remainder is biggest), so suppress that snap for the duration. The curses
+        // grid just uses the whole cells that fit; the <1-cell strip at the far edge
+        // is harmless window background, and NOTHING is clipped off-screen.
+        PDC_skip_size_snap = 1;
+        // Strip BOTH the frame (WS_OVERLAPPEDWINDOW) AND the extended client edge that
+        // wingui creates the window with (WS_EX_CLIENTEDGE). Leaving the client edge on
+        // kept the client area inset from the window, so the window never read as a true
+        // fullscreen app - which is what makes Windows auto-hide the taskbar.
+        SetWindowLongPtr(h, GWL_STYLE,   saved_style   & ~(LONG_PTR)WS_OVERLAPPEDWINDOW);
+        SetWindowLongPtr(h, GWL_EXSTYLE, saved_exstyle & ~(LONG_PTR)WS_EX_CLIENTEDGE);
+        SetWindowPos(h, HWND_TOPMOST, mi.rcMonitor.left, mi.rcMonitor.top,
                      mi.rcMonitor.right - mi.rcMonitor.left,
                      mi.rcMonitor.bottom - mi.rcMonitor.top,
                      SWP_NOOWNERZORDER | SWP_FRAMECHANGED);
+        BringWindowToTop(h);
+        SetForegroundWindow(h);   // ensure we're the active fullscreen window over the taskbar
         fs = true;
     } else {
-        SetWindowLongPtr(h, GWL_STYLE, saved_style);
+        PDC_skip_size_snap = 0;   // restore stock drag-resize snapping
+        SetWindowLongPtr(h, GWL_STYLE,   saved_style);
+        SetWindowLongPtr(h, GWL_EXSTYLE, saved_exstyle);
+        // Drop topmost, then restore the saved framed placement.
+        SetWindowPos(h, HWND_NOTOPMOST, 0, 0, 0, 0,
+                     SWP_NOMOVE | SWP_NOSIZE | SWP_NOOWNERZORDER | SWP_FRAMECHANGED);
         SetWindowPlacement(h, &saved_wp);
-        SetWindowPos(h, nullptr, 0, 0, 0, 0,
-                     SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER |
-                     SWP_NOOWNERZORDER | SWP_FRAMECHANGED);
         fs = false;
     }
     // The style change can drop the dark chrome; re-apply so windowed mode matches
@@ -483,6 +503,11 @@ void UIManager::initColours() {
     // themed viz pairs are fg==bg solid fills (a partial block would be invisible),
     // so the sub-cell lower-block glyphs (▁..▇) need a real bg to show their height.
     init_pair(CP_VIZ_TIP, fg[CP_VIZ_PEAK], -1);
+    // Segmented-LED band colours on the default bg (see header). Same fg as the
+    // solid viz pairs, but a real bg so the half-block glyph shows its gap.
+    init_pair(CP_VIZ_LOW_B,  fg[CP_VIZ_LOW],  -1);
+    init_pair(CP_VIZ_MID_B,  fg[CP_VIZ_MID],  -1);
+    init_pair(CP_VIZ_HIGH_B, fg[CP_VIZ_HIGH], -1);
 
     // Reset the root screen to transparent so Classic re-inherits the terminal bg
     // (undoes the Awesome stdscr base fill above). Pair 0 = terminal default under
@@ -517,6 +542,9 @@ void UIManager::applyAwesomeTheme() {
         { CP_VIZ_PEAK,           t.viz_peak, t.viz_peak },
         { CP_SELECTED_UNFOCUSED, t.text,     t.border   },
         { CP_VIZ_TIP,            t.viz_peak, t.base     },
+        { CP_VIZ_LOW_B,          t.viz_low,  t.base     },   // segmented-LED band colours
+        { CP_VIZ_MID_B,          t.viz_mid,  t.base     },   // on the base bg (gap above
+        { CP_VIZ_HIGH_B,         t.viz_high, t.base     },   // each half-block segment)
     };
 
     if (COLORS >= 256 && can_change_color()) {
@@ -1989,61 +2017,79 @@ void UIManager::drawVisualizer() {
     const int bar_area_cols = cols - 2;  // -1 each side border
     if (bar_area_rows < 2 || bar_area_cols < 4) return;
 
-    // Bars are spread EVENLY across the full bar area (no left-clumping) by
-    // interpolating each bar's column span, so every column is covered and no bar
-    // is dropped by integer rounding at odd widths. Each bar keeps a 1-col gap.
-    // n_bars fills the width up to VIZ_BINS, at >= 2 cols per bar.
-    const int gap    = 1;
-    const int n_bars = std::clamp(bar_area_cols / 2, 1, VIZ_BINS);
+    // Thin, uniform bars that fill the width. Each bar is a SINGLE column with a
+    // SINGLE-column gap (slot 2); the count grows to fill the strip rather than the
+    // bars getting wider. A 1-col bar can't show a seam down its middle (a 2-col one
+    // does, on many fonts) and 1-on/1-off never clumps. Since that's usually MORE
+    // than the 64 DSP bins, each bar's level is linearly INTERPOLATED across the bins,
+    // so every bar is distinct; the sub-slot remainder is a tiny centred margin.
+    const int bar_w = 1, gap = 1, slot = bar_w + gap;
+    const int n_bars  = std::clamp(bar_area_cols / slot, 1, 4 * VIZ_BINS);
+    const int x_start = 1 + std::max(0, (bar_area_cols - n_bars * slot) / 2);
 
     for (int b = 0; b < n_bars; ++b) {
-        int x0 = 1 + (b       * bar_area_cols) / n_bars;
-        int x1 = 1 + ((b + 1) * bar_area_cols) / n_bars;
-        int bw = (x1 - x0) - gap;
-        if (bw < 1) bw = 1;
+        const int x0 = x_start + b * slot;
 
-        float val = viz_smoothed_[b * VIZ_BINS / n_bars];
-        // The short Awesome strip (~5 bar rows) crushes dynamics, so lift the
-        // values with an extra gamma and use a taller floor: bars fill the strip
-        // and don't collapse to a bare nub between beats. Classic's tall pane keeps
-        // the raw response (its floor is fine as-is).
+        float val;
+        if (n_bars <= 1) {
+            val = viz_smoothed_[0];
+        } else {
+            const double fb  = (double)b * (VIZ_BINS - 1) / (n_bars - 1);  // bin position
+            const int    i0  = (int)fb;
+            const int    i1  = std::min(i0 + 1, VIZ_BINS - 1);
+            const float  frac = (float)(fb - i0);
+            val = viz_smoothed_[i0] * (1.0f - frac) + viz_smoothed_[i1] * frac;
+        }
+        // Short Awesome strip crushes dynamics -> lift with a gamma + gain and a
+        // taller floor so bars fill the strip; Classic's tall pane keeps the raw
+        // response.
         float floor = kVizFloorCells;
-        if (aw) { val = std::pow(val, 0.65f) * 1.10f; floor = kVizStripFloorCells; }  // +10% gain
-        // Fractional bar height in eighths for smooth motion; floor keeps a
-        // low-activity band visible instead of vanishing.
+        if (aw) { val = std::pow(val, 0.65f) * 1.10f; floor = kVizStripFloorCells; }
         float exact = std::clamp(val, 0.0f, 1.0f) * bar_area_rows;
         if (exact < floor) exact = floor;
-        int   full    = (int)exact;
-        int   eighths = (int)((exact - full) * 8.0f + 0.5f);
-        if (eighths >= 8) { ++full; eighths = 0; }
-        full = std::clamp(full, 0, bar_area_rows);
 
-        // Colour by frequency position
-        short pair;
-        float pos = (float)b / n_bars;
-        if      (pos < 0.33f) pair = CP_VIZ_LOW;
-        else if (pos < 0.66f) pair = CP_VIZ_MID;
-        else                  pair = CP_VIZ_HIGH;
-
-        // Draw bar from bottom up, bw cols wide.
-        for (int r = 0; r < bar_area_rows; ++r) {
-            int screen_row = rows - 1 - r;
-            if (r < full) {
-                // Solid cell (space + background colour). Topmost full cell takes the
-                // peak colour only when no fractional cell rides above it.
-                short draw_pair = (r == full - 1 && eighths == 0) ? CP_VIZ_PEAK : pair;
-                wattron(win_viz_, COLOR_PAIR(draw_pair));
-                for (int w = 0; w < bw && x0 + w < cols - 1; ++w)
-                    mvwaddch(win_viz_, screen_row, x0 + w, ' ');
-                wattroff(win_viz_, COLOR_PAIR(draw_pair));
-            } else if (r == full && eighths > 0) {
-                // Fractional top: a lower-block glyph (▁..▇) in the tip colour on the
-                // default background, giving 8× sub-cell vertical resolution.
-                cchar_t cc;
-                wchar_t s[2] = { (wchar_t)(0x2580 + eighths), 0 };  // U+2581..U+2587
-                setcchar(&cc, s, A_NORMAL, CP_VIZ_TIP, nullptr);
-                for (int w = 0; w < bw && x0 + w < cols - 1; ++w)
-                    mvwadd_wch(win_viz_, screen_row, x0 + w, &cc);
+        if (config_.viz_led) {
+            // 80s graphic-EQ (F2 on): stacked LED segments, colour by HEIGHT in FIXED
+            // zones - base band at the bottom rising to the peak colour at the top
+            // (idle bars sit green; only loud ones reach red). Each lit cell is a lower
+            // half-block on the base bg, so a dark gap sits above it => discrete LEDs.
+            // >=1 keeps a lit baseline LED while playing (EQ resting row).
+            const int full = std::clamp((int)(exact + 0.5f), 1, bar_area_rows);
+            for (int r = 0; r < full; ++r) {
+                const int   screen_row = rows - 1 - r;
+                const float fr = (bar_area_rows > 1) ? (float)r / (bar_area_rows - 1) : 1.0f;
+                const short pair = (fr < 0.50f) ? CP_VIZ_LOW_B
+                                 : (fr < 0.78f) ? CP_VIZ_MID_B
+                                 : (fr < 0.92f) ? CP_VIZ_HIGH_B : CP_VIZ_TIP;
+                cchar_t cc; wchar_t s[2] = { (wchar_t)0x2584, 0 };   // ▄ LOWER HALF BLOCK
+                setcchar(&cc, s, A_NORMAL, pair, nullptr);
+                for (int c = 0; c < bar_w && x0 + c < cols - 1; ++c)
+                    mvwadd_wch(win_viz_, screen_row, x0 + c, &cc);
+            }
+        } else {
+            // Classic solid bars (default): colour by FREQUENCY position, peak-tipped,
+            // with an 8x sub-cell fractional top (▁..▇) for smooth motion.
+            int full    = (int)exact;
+            int eighths = (int)((exact - full) * 8.0f + 0.5f);
+            if (eighths >= 8) { ++full; eighths = 0; }
+            full = std::clamp(full, 0, bar_area_rows);
+            const float pos  = (float)b / n_bars;
+            const short pair = (pos < 0.33f) ? CP_VIZ_LOW
+                             : (pos < 0.66f) ? CP_VIZ_MID : CP_VIZ_HIGH;
+            for (int r = 0; r < bar_area_rows; ++r) {
+                const int screen_row = rows - 1 - r;
+                if (r < full) {
+                    const short dp = (r == full - 1 && eighths == 0) ? CP_VIZ_PEAK : pair;
+                    wattron(win_viz_, COLOR_PAIR(dp));
+                    for (int c = 0; c < bar_w && x0 + c < cols - 1; ++c)
+                        mvwaddch(win_viz_, screen_row, x0 + c, ' ');
+                    wattroff(win_viz_, COLOR_PAIR(dp));
+                } else if (r == full && eighths > 0) {
+                    cchar_t cc; wchar_t s[2] = { (wchar_t)(0x2580 + eighths), 0 };
+                    setcchar(&cc, s, A_NORMAL, CP_VIZ_TIP, nullptr);
+                    for (int c = 0; c < bar_w && x0 + c < cols - 1; ++c)
+                        mvwadd_wch(win_viz_, screen_row, x0 + c, &cc);
+                }
             }
         }
     }
@@ -2125,6 +2171,7 @@ void UIManager::drawHelp() {
         { "Ctrl+Y",         "Rip CD  (A=AccurateRip  C=CUETools  Y=Local  B=Local 2-pass)" },
         { "Ctrl+D",         "Toggle Discord Rich Presence" },
         { "Ctrl+T",         "Toggle Classic / Awesome theme" },
+        { "F2",             "Spectrum style: classic / 80s LED"   },
         { "F7  /  F8",      "Awesome theme: previous / next" },
 #ifdef PDCURSES
         { "Alt+Enter",      "Toggle fullscreen (borderless)"      },
@@ -4717,6 +4764,17 @@ void UIManager::handleInput(int ch) {
             redraw_needed_.store(true);
             showTrackToast(config_.nerd_icons ? "Nerd icons: ON (needs Nerd Font)"
                                               : "Nerd icons: OFF", "", "");
+            break;
+        case KEY_F(2):    // toggle spectrum style: classic solid bars <-> 80s LED
+            config_.viz_led = !config_.viz_led;
+            config_.save();
+            redraw_needed_.store(true);
+#ifndef _WIN32
+            status_msg_ = config_.viz_led ? "Spectrum: 80s LED" : "Spectrum: classic bars";
+            status_msg_ticks_ = 0;
+#else
+            showTrackToast(config_.viz_led ? "Spectrum: 80s LED" : "Spectrum: classic bars", "", "");
+#endif
             break;
         case KEY_F(7):    // previous Awesome named palette (F7)
         case KEY_F(8): {  // next Awesome named palette (F8)

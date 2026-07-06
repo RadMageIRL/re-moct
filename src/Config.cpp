@@ -187,6 +187,7 @@ void DigiConfig::load() {
         else if (key == "eq_enabled")       eq_enabled        = (val == "1");
         else if (key == "discord_presence") discord_presence  = (val == "1");
         else if (key == "awesome_mode")      awesome_mode       = (val == "1");
+        else if (key == "viz_led")            viz_led            = (val == "1");
         else if (key == "awesome_theme")     try { awesome_theme = std::stoi(val); } catch (...) {}
         else if (key == "prefer_digital_stream") prefer_digital_stream = (val == "1");
         else if (key == "iheart_probe_minted")   iheart_probe_minted   = (val == "1");
@@ -299,6 +300,7 @@ void DigiConfig::save() const {
         f << "eq_enabled="       << (eq_enabled ? "1" : "0") << "\n";
         f << "discord_presence=" << (discord_presence ? "1" : "0") << "\n";
         f << "awesome_mode="      << (awesome_mode ? "1" : "0") << "\n";
+        f << "viz_led="           << (viz_led ? "1" : "0") << "\n";
         f << "awesome_theme="     << awesome_theme << "\n";
         f << "prefer_digital_stream=" << (prefer_digital_stream ? "1" : "0") << "\n";
         f << "iheart_probe_minted="   << (iheart_probe_minted ? "1" : "0") << "\n";

@@ -476,6 +476,12 @@ private:
     static constexpr short CP_VIZ_PEAK   = 12;
     static constexpr short CP_SELECTED_UNFOCUSED = 13;
     static constexpr short CP_VIZ_TIP    = 14;  // viz fractional tip: peak fg on default bg
+    // Segmented "LED" spectrum: the viz band colours on the base/dark bg (like the
+    // tip). A lower half-block (▄) drawn in these leaves a dark gap above each cell,
+    // so a bar reads as stacked LEDs. Peak band reuses CP_VIZ_TIP.
+    static constexpr short CP_VIZ_LOW_B  = 15;
+    static constexpr short CP_VIZ_MID_B  = 16;
+    static constexpr short CP_VIZ_HIGH_B = 17;
 
     void initColours();
     void loadTheme(short* fg, short* bg);   // overrides defaults from theme.conf

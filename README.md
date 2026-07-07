@@ -12,7 +12,7 @@ breathing animations. The mode toggle is the whole point.
 <br>
 <img width="1278" height="646" alt="image" src="https://github.com/user-attachments/assets/8ae162e9-750d-427a-a96d-136287046bef" />
 <br><br>
-<img width="1279" height="616" alt="image" src="https://github.com/user-attachments/assets/03bf66f0-f62e-46d2-8a41-176393a48b3d" />
+<img width="1920" height="1070" alt="image" src="https://github.com/user-attachments/assets/df91dc4a-27e1-475a-b207-4e8bb85140c6" />
 <br>
 
 ## Screenshots

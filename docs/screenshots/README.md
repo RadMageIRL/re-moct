@@ -6,7 +6,7 @@
 - `playlist.png` - the two-pane browser + playlist view during playback.
 - `ripping.png` - the CD rip panel / AccurateRip status (optional third shot).
 
-<img width="1064" height="1100" alt="image" src="https://github.com/user-attachments/assets/90f8933d-44b8-4613-8f1b-3f4dc5babb78" />
+<img width="1913" height="1080" alt="image" src="https://github.com/user-attachments/assets/a11b25ce-dd10-4633-af74-a762443f0786" />
 <br><br>
 <img width="1911" height="1078" alt="image" src="https://github.com/user-attachments/assets/63c3ff1c-7186-41a4-ad84-49ed5d7a131a" />
 <br><br>

@@ -30,6 +30,22 @@
   standing between a new visualizer colour role and art cells being silently repainted
   on every theme apply. If you add an LED role and it fires, raise `kArtPairBase` and
   re-check `p_budget` in `allocArtColorPairs()`.
+- **The Ctrl+Y / Ctrl+F overlays already called `panelFrame` but passed an empty title
+  and hand-drew a centered one, so Awesome never themed them.** `panelFrame` draws its
+  inset themed title only in the Awesome branch; the Classic path is an early
+  `box(w,0,0); return;` with no title. So the fix passes the real title to `panelFrame`
+  (Awesome themes it) AND keeps the manual centered draw guarded on `!awesome_mode`
+  (Classic still needs it). Chose 2b (pass-title + guarded-manual) over 2a (teach
+  `panelFrame` a Classic title) because every pane draws its OWN Classic header (a
+  full-width bar, not via `panelFrame`), so a Classic title in `panelFrame` would
+  double them. Second bug (what the frame styling actually hinged on): the overlays are
+  `newwin` modals with NO `wbkgd`, and on wingui a fresh window needs its background set
+  for `COLOR_PAIR()` to render - so the themed frame colours AND the wide-char rounded
+  corners silently dropped, leaving a plain square box even after the title was routed
+  correctly. The panes never hit this because `createWindows` gives every pane
+  `wbkgd(CP_DIM)` ("so colors render correctly"), and in Awesome `CP_DIM` carries the
+  themed base fill. Fix: give the overlays the same `wbkgd(CP_DIM)` in Awesome (plain
+  default in Classic). Passing the title was necessary but not sufficient. (Slice 9+10.)
 - **`allocArtColorPairs`' pair-budget fallback must find the nearest existing pair, not
   return `P0`.** The 22x11 art box (242 cells) exceeds the 236-pair budget, so busy
   covers overflow on real art (Probe A2: 6 of 116 covers). The old fallback returned pair

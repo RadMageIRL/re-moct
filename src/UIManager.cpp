@@ -1438,12 +1438,20 @@ void UIManager::drawRipConfirm() {   // slice 6: common (ncurses + portable CDSo
 
     WINDOW* w = newwin(BOX_H, BOX_W, y0, x0);
     if (!w) return;
+    // Match the panes' background so Awesome's frame colours and the wide-char
+    // rounded corners actually render on this newwin - wingui needs the window bkgd
+    // set for COLOR_PAIR() to take on a fresh window, and CP_DIM carries the themed
+    // base fill (same wbkgd the panes get in createWindows). Classic: plain default.
+    wbkgd(w, config_.awesome_mode ? COLOR_PAIR(CP_DIM) : COLOR_PAIR(0));
     werase(w);
 
-    // Plain border + title — no wbkgd so no background color bleed
-    panelFrame(w, "", true);
+    // Frame + title. Route the title through panelFrame so Awesome themes it (rounded
+    // cyan frame + inset label); panelFrame draws no title in Classic, so keep the
+    // manual centered one there.
     const char* title = " SECURE AUDIO EXTRACTION ";
-    mvwaddstr(w, 0, (BOX_W - (int)strlen(title)) / 2, title);
+    panelFrame(w, title, true);
+    if (!config_.awesome_mode)
+        mvwaddstr(w, 0, (BOX_W - (int)strlen(title)) / 2, title);
 
     // Drive / disc info
     const auto& cd = audio_.cdSource();
@@ -6541,12 +6549,19 @@ void UIManager::drawMBSearch() {
     }
     WINDOW* w = mb_search_win_;
     if (!w) return;
+    // Themed base bg (Awesome) like the panes so frame colours + rounded corners
+    // render on this reused window; set each draw so a theme toggle updates it.
+    // Classic: plain default (see drawRipConfirm for the wingui rationale).
+    wbkgd(w, config_.awesome_mode ? COLOR_PAIR(CP_DIM) : COLOR_PAIR(0));
     werase(w);
 
-    // Plain border + title (rounded in Awesome mode)
-    panelFrame(w, "", true);
+    // Frame + title. Route the title through panelFrame so Awesome themes it
+    // (rounded cyan frame + inset label); panelFrame draws no title in Classic,
+    // so keep the manual centered one there.
     const char* title = " MUSICBRAINZ SEARCH ";
-    mvwaddstr(w, 0, (BOX_W - (int)strlen(title)) / 2, title);
+    panelFrame(w, title, true);
+    if (!config_.awesome_mode)
+        mvwaddstr(w, 0, (BOX_W - (int)strlen(title)) / 2, title);
 
     // Artist field
     mvwaddstr(w, 2, 3, "Artist :");

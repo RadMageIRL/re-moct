@@ -102,7 +102,7 @@ private:
     void drawEq();
     void drawQueue();
     void drawFavs();
-    void saveTagEdits();
+    bool saveTagEdits();   // true only if the file was actually written; UI updates gated on it
     void maybePreloadNext();
     void drawRipConfirm();
     void drawMBSearch();
@@ -240,6 +240,11 @@ private:
     int         tag_edit_field_  = 0;
     std::string tag_edit_values_[5];
     std::string tag_edit_path_;
+
+    // Whether a playlist row's tags can be edited, and why not if not. One source of
+    // truth shared by the 'e' entry guard and saveTagEdits's reasoning about locking.
+    enum class TagEditability { Editable, PlayingLocked, NotAFile, Empty };
+    TagEditability tagEditability(const std::string& path) const;
 
     // Track info cache — avoids TagLib re-read on every drawTrackInfo call
     std::string info_cached_path_;

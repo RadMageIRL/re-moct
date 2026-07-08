@@ -2564,8 +2564,25 @@ void UIManager::drawLyrics() {
 }
 
 // ── About pane ────────────────────────────────────────────────────────────────
-void UIManager::saveTagEdits() {
-    if (tag_edit_path_.empty()) return;
+UIManager::TagEditability UIManager::tagEditability(const std::string& path) const {
+    if (path.empty())            return TagEditability::Empty;
+    if (isCDTrackPath(path))     return TagEditability::NotAFile;   // CD track
+    if (isStreamPath(path))      return TagEditability::NotAFile;   // radio URL
+    // Locked iff this exact file is the one actively playing.
+    if (!audio_.streamMode() && !audio_.cdMode() &&
+        path == audio_.currentTrack().path &&
+        audio_.state() != PlaybackState::Stopped)
+        return TagEditability::PlayingLocked;
+    return TagEditability::Editable;
+}
+
+// Write the edited tags to disk. Returns true ONLY if the file was actually written:
+// TagLib::FileRef::save() returns bool and on Windows a locked (playing) file fails
+// with false, no throw. On failure we touch NOTHING in the UI - the pane and playlist
+// must reflect the unchanged disk, not the attempted edit.
+bool UIManager::saveTagEdits() {
+    if (tag_edit_path_.empty()) return false;
+    bool ok = false;
     try {
 #ifdef _WIN32
         auto wp = utf8_to_wide(tag_edit_path_);
@@ -2573,7 +2590,7 @@ void UIManager::saveTagEdits() {
 #else
         TagLib::FileRef ref(tag_edit_path_.c_str(), false, TagLib::AudioProperties::Fast);
 #endif
-        if (ref.isNull() || !ref.tag()) return;
+        if (ref.isNull() || !ref.tag()) return false;
         auto* tag = ref.tag();
         tag->setTitle (TagLib::String(tag_edit_values_[0], TagLib::String::UTF8));
         tag->setArtist(TagLib::String(tag_edit_values_[1], TagLib::String::UTF8));
@@ -2583,22 +2600,27 @@ void UIManager::saveTagEdits() {
             try { tag->setYear((unsigned int)std::stoi(tag_edit_values_[4])); }
             catch (...) {}
         }
-        ref.save();
-        info_cached_path_.clear();  // invalidate so drawTrackInfo re-reads on next open
+        ok = ref.save();                       // capture it - false = write refused
+    } catch (...) {
+        return false;
+    }
+    if (!ok) return false;                      // disk unchanged: do NOT lie to the UI
 
-        // Update playlist display title so it reflects immediately
-        for (std::size_t i = 0; i < playlist_.size(); ++i) {
-            if (playlist_.at(i).path == tag_edit_path_) {
-                // Rebuild display title as "Artist - Title"
-                std::string dt;
-                if (!tag_edit_values_[1].empty())
-                    dt = sanitizeForDisplay(tag_edit_values_[1]) + " - ";
-                dt += sanitizeForDisplay(tag_edit_values_[0]);
-                playlist_.setDisplayTitle(i, dt);
-                break;
-            }
+    info_cached_path_.clear();  // invalidate so drawTrackInfo re-reads on next open
+
+    // Update playlist display title so it reflects immediately (only on a real write)
+    for (std::size_t i = 0; i < playlist_.size(); ++i) {
+        if (playlist_.at(i).path == tag_edit_path_) {
+            // Rebuild display title as "Artist - Title"
+            std::string dt;
+            if (!tag_edit_values_[1].empty())
+                dt = sanitizeForDisplay(tag_edit_values_[1]) + " - ";
+            dt += sanitizeForDisplay(tag_edit_values_[0]);
+            playlist_.setDisplayTitle(i, dt);
+            break;
         }
-    } catch (...) {}
+    }
+    return true;
 }
 
 void UIManager::drawQueue() {
@@ -4657,7 +4679,15 @@ void UIManager::handleInput(int ch) {
                     tag_edit_mode_ = false;
                     break;
                 case '\n': case KEY_ENTER: case '\r':  // Enter — save
-                    saveTagEdits();
+                    if (!saveTagEdits()) {
+                        // Write refused (file locked/read-only). Exit edit mode anyway -
+                        // staying would trap the user (s = stop isn't reachable from
+                        // inside edit mode). Warn persistently; the display title was NOT
+                        // updated, so the UI still shows the unchanged disk.
+                        warn_msg_ = "Tag save failed - file locked or read-only";
+                        warn_msg_ticks_ = 0;
+                        redraw_needed_.store(true);
+                    }
                     tag_edit_mode_ = false;
                     break;
                 case KEY_UP: case 'k':
@@ -4702,16 +4732,18 @@ void UIManager::handleInput(int ch) {
                 }
                 if (idx < playlist_.size()) {
                     const std::string& path = playlist_.at(idx).path;
-                    if (isCDTrackPath(path) || path.empty()) {
-                        return;  // CD track — silently ignore
-                    }
-                    if (path == audio_.currentTrack().path &&
-                        audio_.state() != PlaybackState::Stopped) {
-                        // Currently playing — warn in the cmdline bar (persists ~5s)
-                        warn_msg_ = "Stop playback first to edit tags  (s = stop)";
-                        warn_msg_ticks_ = 0;
-                        redraw_needed_.store(true);
-                        return;
+                    switch (tagEditability(path)) {
+                        case TagEditability::NotAFile:      // CD track / radio stream
+                        case TagEditability::Empty:
+                            return;                          // silently ignore, as today
+                        case TagEditability::PlayingLocked:
+                            // Currently playing — warn in the cmdline bar (persists ~5s)
+                            warn_msg_ = "Stop playback first to edit tags  (s = stop)";
+                            warn_msg_ticks_ = 0;
+                            redraw_needed_.store(true);
+                            return;
+                        case TagEditability::Editable:
+                            break;                           // fall through to enter edit mode
                     }
                     // All checks passed — enter edit mode
                     tag_edit_path_ = path;

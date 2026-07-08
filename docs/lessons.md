@@ -97,6 +97,16 @@
   EVERY track-change cursor move must respect the toggle, not just auto-advance: the
   manual n/p (next/prev) handlers also gate their `pl_cursor_ = current()` on
   `follow_playing`, or OFF looks identical to ON when you change tracks by hand. (Slice 6.)
+- **`TagLib::FileRef::save()` returns bool; on Windows a locked-file write returns false
+  without throwing.** The old `saveTagEdits()` discarded the return inside a `catch(...)`
+  and then updated the playlist title + cleared the info cache unconditionally - so a
+  failed save (e.g. the file is the playing track, decoder holds the handle) silently
+  showed as success while the disk was unchanged. Always check `save()`, and update UI
+  state ONLY on true; on false, touch nothing and warn. Editability (playing-locked / CD
+  track / radio stream / empty) is now one predicate, `tagEditability()`, shared by the
+  `e` entry guard and the save. Note: on a failed save we exit edit mode rather than
+  stay - staying would trap the user, since `s` (stop) is captured as text inside edit
+  mode. (Slice 7.)
 
 ## MP3 seek (bit reservoir)
 - MP3 frames borrow main_data from up to ~511 bytes of preceding frames (the bit

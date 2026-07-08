@@ -3,9 +3,80 @@
 **Type:** instrumentation + static verification. No production behaviour changed.
 **Verified against:** `experimental/win-pdcurses` (our tree; diverged from the brief's
 2026-07-07 snapshot - line anchors re-verified locally, divergences noted).
-**Status:** static verification COMPLETE. Runtime measurements (Probe A renders,
-Probe B latency) are instrumented and ready but NOT yet collected - they need the
-interactive TUI and real CD hardware. See "Run instructions" at the bottom.
+**Status:** static verification COMPLETE. Runtime measurements COLLECTED on
+2026-07-08 (Windows wingui + Linux ncursesw + the GHD3N USB drive); see the
+"Collected data" section. Remaining gaps: Windows-ncursesw caps, the Linux CD
+latency run (needs usbipd attach), and the audible-spin-up confirmation.
+
+---
+
+## Collected data (2026-07-08)
+
+### Probe A - caps (both truecolor -> same clamped budgets)
+
+| build | COLORS | COLOR_PAIRS | has_colors | can_change_color | TERM | c_budget | p_budget |
+|---|---|---|---|---|---|---|---|
+| Linux ncursesw | 256 | 65536 | 1 | 1 | xterm-256color | 192 | 236 |
+| Windows wingui | 16777472 | 1048576 | 1 | 1 | (wingui/n-a) | 192 | 236 |
+| Windows ncursesw | (not captured) | | | | | 192* | 236* |
+
+`*` The code clamps `min(COLORS,256)` / `min(COLOR_PAIRS,256)`, so ANY truecolor
+build (`COLORS>=256 && can_change_color`) yields c_budget=192 / p_budget=236 - the
+render->count is **build-independent**. A non-truecolor build would take the
+nearest-of-16 path (fewer distinct colours) => LESS pair pressure, not more. So the
+truecolor budget is the worst case and it is identical on wingui and Linux.
+
+### Probe A - render costs (offline harness over 116 real album covers)
+
+The in-TUI A2 counter is live (validated: Color Me Badd = 213 pairs in both the TUI
+and the harness). For breadth, an offline harness replicated the EXACT extract ->
+cover::render(22x11) -> allocArtColorPairs counting over one cover per album:
+
+| metric | value |
+|---|---|
+| albums with embedded art | 116 |
+| art box (fixed max) | 22x11 = **242 cells** (never larger - see finding below) |
+| distinct pairs range | 213 .. 236 |
+| covers hitting p_budget (236) | 8 |
+| **covers overflowing -> pair_fallback > 0** | **6** (Beck *One Foot in the Grave* fb=3, Garbage *Supervixen* fb=5, Sugar Ray *RPM* fb=3, Yes *Survival* fb=2, + 2 dup copies) |
+| colour budget (192) | saturated on nearly all covers (colour_fallback ~266-291) |
+
+**Probe A3 verdict: the pair-budget fallback FIRES on real covers (6 of 116, ~5%).
+Slice 8's premise HOLDS** - and the exhausted path returns `P0` (pair 20), NOT the
+nearest pair (confirmed in §7), so those overflow cells are visibly miscoloured on
+busy covers. The colour budget (192) also saturates on most covers, but that path
+degrades gracefully to nearest-existing.
+
+**Finding (divergence from the brief's A2 step 2):** the art box does NOT grow with a
+larger terminal - `box_cols = clamp(22,4,cols-26)`, `box_rows = clamp(11,2,rows-4)`
+cap at **22x11**. A bigger terminal yields the same 242-cell box; only a *smaller*
+terminal shrinks it. So "resize larger -> more cells" is not reproducible; 242 is the
+hard max, and 6 covers still overflow the pair budget at that size.
+
+### Probe B - CD idle latency (GHD3N USB DVD, Windows)
+
+| run | platform | tray | median us | max us | call#1 us | audible spin-up? |
+|---|---|---|---|---|---|---|
+| 1 | Windows (IOCTL) | loaded | 1459 | 6187 | 984 | **YES (heard)** |
+| 2 | Windows | empty | ~2000 (3-sample sanity) | ~2043 | ~2002 | n/a (no disc) |
+| 3 | Linux (SG_IO) | loaded | 1878 | 4414 | 1891 | likely (same drive; not listened) |
+| 4 | Linux | empty | not run (needs tray eject) | | | |
+
+**Probe B verdict: FAIL.** Timing alone would PASS (median 1.46/1.88ms, max
+6.19/4.41ms, call#1 not an outlier on either platform) - BUT the GHD3N **audibly
+spun up** during the Windows loaded run. This is exactly the case the brief flagged:
+`IOCTL_CDROM_CHECK_VERIFY` / SG_IO `TEST UNIT READY` return in ~2ms (before the motor
+reaches speed), so the timing does NOT show the spin, yet the disc physically spins.
+Per §B3, "the drive audibly spins" is a FAIL condition regardless of latency. Linux
+was the same physical drive and almost certainly behaves the same (not listened to
+during Run #3).
+
+**=> Slice 3 must RESHAPE (do NOT keep `dev_` open and poll it).** Keeping the handle
+open and polling `mediaPresent()` every 2s while stopped would spin the idle drive up
+on every poll - audible and wearing. The §B3 FAIL path: keep the TOC, playlist rows,
+and MusicBrainz metadata cached; **close the handle on `stop()`; reopen lazily on
+Enter / Ctrl+R / Ctrl+Y.** Same user-visible behaviour, different code. (The vestigial
+poll from §B1 is a separate Slice-3 fix.)
 
 ---
 

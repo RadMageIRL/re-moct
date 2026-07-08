@@ -2211,7 +2211,7 @@ void UIManager::drawHelp() {
         { "Playlist",       "",                             true  },
         { "a",              "Add selection to playlist (recursive)"},
         { "d",              "Delete selected track"               },
-        { "u  /  D",        "Move track up / down"                },
+        { "K  /  J",        "Move track up / down"                },
         { "c",              "Clear entire playlist"               },
         { "S  (Shift+S)",   "Save playlist as M3U file"           },
         { "l",              "Load / append M3U playlist file"     },
@@ -5472,7 +5472,7 @@ void UIManager::handleInput(int ch) {
             audio_.setBalance(std::clamp(audio_.balance() + 0.1f, -1.0f, 1.0f)); break;
         case '`':
             audio_.setBalance(0.0f); break;
-        case 'u': case 'U':
+        case 'K':   // move track up (was u/U)
             if (focus_ == Pane::Playlist && pl_cursor_ < (int)playlist_.size()) {
                 playlist_.moveUp((std::size_t)pl_cursor_);
                 if (pl_cursor_ > 0) --pl_cursor_;   // scroll follows via the draw-time invariant
@@ -5480,7 +5480,7 @@ void UIManager::handleInput(int ch) {
                 last_playlist_current_for_sync_ = (int)playlist_.current();
             }
             break;
-        case 'D':
+        case 'J':   // move track down (was D)
             if (focus_ == Pane::Playlist && pl_cursor_ < (int)playlist_.size()) {
                 playlist_.moveDown((std::size_t)pl_cursor_);
                 if (pl_cursor_ + 1 < (int)playlist_.size()) ++pl_cursor_;   // scroll follows via the invariant
@@ -5534,8 +5534,8 @@ void UIManager::handleInput(int ch) {
                     playlist_.addDirectoryAsync(full.string());
             }
             break;
-        case KEY_DOWN: case 'j': case 'J': navigateDown(); break;
-        case KEY_UP:   case 'k': case 'K': navigateUp();   break;
+        case KEY_DOWN: case 'j': navigateDown(); break;   // J freed for move-down
+        case KEY_UP:   case 'k': navigateUp();   break;   // K freed for move-up
         case KEY_LEFT:
             if (focus_ == Pane::DirBrowser) {
                 if (in_drive_list_) break;

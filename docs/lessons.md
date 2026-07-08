@@ -30,6 +30,15 @@
   standing between a new visualizer colour role and art cells being silently repainted
   on every theme apply. If you add an LED role and it fires, raise `kArtPairBase` and
   re-check `p_budget` in `allocArtColorPairs()`.
+- **Playlist move rebound `u`/`D` -> `K`/`J`.** `J`/`K` were freed from main-handler
+  navigation (they were pure dupes of `j`/`k`) and repurposed to move-down / move-up;
+  `j`/`k` + arrows still navigate. Sub-pane `J`/`K` scroll aliases (help, device picker,
+  EQ, bookmarks) are left alone - no move command there to collide, stripping them is
+  pointless churn (per-pane key meaning is already the design). `u`/`U`/`D` dropped with
+  NO alias (no-dupe policy). `d` stays delete (MOC homage). This kills the confusing
+  `d`/`D` adjacency (capital-D move-down next to lowercase-d delete). **Slice 13 TODO:**
+  the public keybind reference `docs/index.html` still says "u / D" at lines 479 and 713
+  - update both to "K / J". The in-app help table (UIManager.cpp) is already updated. (Slice 11.)
 - **The Ctrl+Y / Ctrl+F overlays already called `panelFrame` but passed an empty title
   and hand-drew a centered one, so Awesome never themed them.** `panelFrame` draws its
   inset themed title only in the Awesome branch; the Classic path is an early

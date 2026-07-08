@@ -1,11 +1,13 @@
 # Build output
 build/
+build*/
 cache/
 cache_art.jpg
 .vscode/
 
 # Compiled artifacts (sources are tracked; binaries are built, never committed)
 *.o
+*.obj
 *.a
 *.exe
 *.dll

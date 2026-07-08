@@ -88,6 +88,15 @@
   `current()`.** `current()` is the stale file index in stream mode, so the old test could
   `stop()` a stream when deleting an unrelated row (or fail to stop when deleting the
   actually-playing file). (Slice 5.)
+- **Follow-the-playing-row (F3, `follow_playing`, default ON) keys off `nowPlayingRow()`,
+  not `current()`.** `current()` is the stale file index in stream mode, so a file->radio
+  switch would snap the cursor to the old file row. Only the cursor move is gated by
+  `follow_playing`; track announcement (toast, `recordPlay`, the `last_playlist_current_for_sync_`
+  marker) is unconditional - those announce the track, they don't chase it. A
+  queue-launched station returns nullopt, so the cursor stays put (no row to follow).
+  EVERY track-change cursor move must respect the toggle, not just auto-advance: the
+  manual n/p (next/prev) handlers also gate their `pl_cursor_ = current()` on
+  `follow_playing`, or OFF looks identical to ON when you change tracks by hand. (Slice 6.)
 
 ## MP3 seek (bit reservoir)
 - MP3 frames borrow main_data from up to ~511 bytes of preceding frames (the bit

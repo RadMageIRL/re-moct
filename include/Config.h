@@ -46,6 +46,10 @@ struct DigiConfig {
     // Nerd Font pane-title icons (Ctrl+N). Requires a Nerd Font terminal font.
     bool  nerd_icons = false;
 
+    // Follow the playing track: auto-move the playlist cursor to the playing row on
+    // track change (F3). false = cursor stays where you left it (browse undisturbed).
+    bool  follow_playing = true;
+
     // Windows PDCursesMod wingui build ONLY: the GDI window owns its font (unlike
     // a terminal, where the font is the terminal's). This names the face used, so
     // box-drawing corners + viz blocks + Nerd icons render. Empty => the built-in

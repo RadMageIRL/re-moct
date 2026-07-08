@@ -1171,9 +1171,16 @@ void UIManager::run() {
                     if (config_.toast_enabled)
                         showTrackToast(track.title, track.artist, track.album);
                 }
-                if (pl_cursor_ != cur) {
-                    pl_cursor_ = cur;             // scroll follows via the draw-time invariant
-                    redraw_needed_.store(true);
+                // Follow-the-playing-row (F3). Keyed off nowPlayingRow(), NOT cur:
+                // cur is playlist_.current(), the stale file index in stream mode, so a
+                // file->radio switch would snap to the old file row. nullopt (queue-
+                // launched station, nothing playing) => cursor stays put. Only the
+                // cursor move is gated; the sync marker + toast above run regardless.
+                if (config_.follow_playing) {
+                    if (auto row = nowPlayingRow(); row && pl_cursor_ != (int)*row) {
+                        pl_cursor_ = (int)*row;   // scroll follows via the draw-time invariant (slice 5)
+                        redraw_needed_.store(true);
+                    }
                 }
             }
         }
@@ -2220,6 +2227,7 @@ void UIManager::drawHelp() {
         { "Ctrl+D",         "Toggle Discord Rich Presence" },
         { "Ctrl+T",         "Toggle Classic / Awesome theme" },
         { "F2",             "Spectrum style: classic / 80s LED"   },
+        { "F3",             "Follow the playing track (cursor tracks the song)" },
         { "F7  /  F8",      "Awesome theme: previous / next" },
 #ifdef PDCURSES
         { "Alt+Enter",      "Toggle fullscreen (borderless)"      },
@@ -4865,6 +4873,17 @@ void UIManager::handleInput(int ch) {
             showTrackToast(config_.viz_led ? "Spectrum: 80s LED" : "Spectrum: classic bars", "", "");
 #endif
             break;
+        case KEY_F(3):    // toggle follow-the-playing-row (persisted)
+            config_.follow_playing = !config_.follow_playing;
+            config_.save();
+            if (config_.follow_playing) {   // snap to the playing row now, not next track change
+                if (auto row = nowPlayingRow()) pl_cursor_ = (int)*row;
+                last_playlist_current_for_sync_ = (int)playlist_.current();  // keep the sync marker coherent
+            }
+            redraw_needed_.store(true);
+            showTrackToast(config_.follow_playing ? "Follow playing: ON"
+                                                  : "Follow playing: OFF", "", "");
+            break;
         case KEY_F(7):    // previous Awesome named palette (F7)
         case KEY_F(8): {  // next Awesome named palette (F8)
             if (!config_.awesome_mode) {
@@ -5315,7 +5334,9 @@ void UIManager::handleInput(int ch) {
             playlist_.toggleShuffle(); break;
         case 'n': case 'N': {
             auto play_next = [&](const std::string& path, bool from_queue = false) {
-                if (!from_queue) pl_cursor_ = (int)playlist_.current();
+                // Follow-mode gates the cursor move (like the auto-advance sync block):
+                // OFF => manual next plays the track but leaves the cursor browsing.
+                if (!from_queue && config_.follow_playing) pl_cursor_ = (int)playlist_.current();
                 std::string drive; int track_num;
                 if (parseCDPath(path, drive, track_num)) {
                     if (!audio_.cdMode()) audio_.openCD(drive);
@@ -5349,7 +5370,7 @@ void UIManager::handleInput(int ch) {
         }
         case 'p': case 'P': {
             auto play_prev = [&](const std::string& path) {
-                pl_cursor_ = (int)playlist_.current();
+                if (config_.follow_playing) pl_cursor_ = (int)playlist_.current();   // gated like manual next
                 std::string drive; int track_num;
                 if (parseCDPath(path, drive, track_num)) {
                     if (!audio_.cdMode()) audio_.openCD(drive);

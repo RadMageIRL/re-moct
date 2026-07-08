@@ -192,6 +192,7 @@ void DigiConfig::load() {
         else if (key == "prefer_digital_stream") prefer_digital_stream = (val == "1");
         else if (key == "iheart_probe_minted")   iheart_probe_minted   = (val == "1");
         else if (key == "nerd_icons")         nerd_icons         = (val == "1");
+        else if (key == "follow_playing")     follow_playing     = (val == "1");
         else if (key == "wingui_font")        wingui_font        = val;
         else if (key == "wingui_cols")        try { wingui_cols = std::stoi(val); } catch (...) {}
         else if (key == "wingui_rows")        try { wingui_rows = std::stoi(val); } catch (...) {}
@@ -305,6 +306,7 @@ void DigiConfig::save() const {
         f << "prefer_digital_stream=" << (prefer_digital_stream ? "1" : "0") << "\n";
         f << "iheart_probe_minted="   << (iheart_probe_minted ? "1" : "0") << "\n";
         f << "nerd_icons="        << (nerd_icons ? "1" : "0") << "\n";
+        f << "follow_playing="    << (follow_playing ? "1" : "0") << "\n";
         if (!wingui_font.empty()) f << "wingui_font="    << wingui_font << "\n";
         if (wingui_cols > 0)      f << "wingui_cols="    << wingui_cols << "\n";
         if (wingui_rows > 0)      f << "wingui_rows="    << wingui_rows << "\n";

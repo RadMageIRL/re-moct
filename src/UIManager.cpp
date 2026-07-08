@@ -1049,8 +1049,7 @@ void UIManager::run() {
                         cd_fail_count_ = 0;
                         cd_poll_ticks_ = 0;
                         pl_cursor_ = std::min(pl_cursor_, std::max(0, (int)playlist_.size() - 1));
-                        pl_scroll_ = 0;
-                        redraw_needed_.store(true);
+                        redraw_needed_.store(true);   // scroll: invariant reveals the clamped cursor
                     }
                 } else {
                     cd_fail_count_ = 0;
@@ -1083,8 +1082,7 @@ void UIManager::run() {
             cd_ripper_.cancel();
             ui_overlay_ = UIOverlay::None;
             pl_cursor_ = std::min(pl_cursor_, std::max(0, (int)playlist_.size() - 1));
-            pl_scroll_ = 0;
-            redraw_needed_.store(true);
+            redraw_needed_.store(true);   // scroll: invariant reveals the clamped cursor
         }
         if (playlist_.drainPending())
             redraw_needed_.store(true);
@@ -1174,12 +1172,7 @@ void UIManager::run() {
                         showTrackToast(track.title, track.artist, track.album);
                 }
                 if (pl_cursor_ != cur) {
-                    pl_cursor_ = cur;
-                    int visible = paneVisibleRows(win_playlist_);
-                    if (pl_cursor_ < pl_scroll_)
-                        pl_scroll_ = pl_cursor_;
-                    else if (pl_cursor_ >= pl_scroll_ + visible)
-                        pl_scroll_ = pl_cursor_ - visible + 1;
+                    pl_cursor_ = cur;             // scroll follows via the draw-time invariant
                     redraw_needed_.store(true);
                 }
             }
@@ -1935,6 +1928,17 @@ const TrackInfo* UIManager::nowPlayingTrack() const {
     return &audio_.currentTrack();
 }
 
+void UIManager::ensurePlaylistCursorVisible() {
+    const int n = (int)playlist_.size();
+    if (n == 0) { pl_cursor_ = 0; pl_scroll_ = 0; return; }
+    pl_cursor_ = std::clamp(pl_cursor_, 0, n - 1);
+    const int visible = win_playlist_ ? paneVisibleRows(win_playlist_) : 0;
+    if (visible <= 0) return;                       // pane not built yet
+    if (pl_cursor_ < pl_scroll_)                    pl_scroll_ = pl_cursor_;
+    else if (pl_cursor_ >= pl_scroll_ + visible)    pl_scroll_ = pl_cursor_ - visible + 1;
+    pl_scroll_ = std::clamp(pl_scroll_, 0, std::max(0, n - visible));
+}
+
 void UIManager::drawPlaylist() {
     werase(win_playlist_);
     int rows, cols;
@@ -1982,6 +1986,7 @@ void UIManager::drawPlaylist() {
     if (pl_scroll_ >= (int)playlist_.size())
         pl_scroll_ = std::max(0, (int)playlist_.size() - 1);
     if (pl_scroll_ < 0) pl_scroll_ = 0;
+    ensurePlaylistCursorVisible();   // the invariant: every offscreen-cursor path self-heals here
     // Lit row = nowPlayingRow(); see the accessor for why current() can't be used
     // here (stale in stream mode; queue-launched stations light no row). Computed
     // once before the loop - the accessor scans the playlist, so a per-row call
@@ -5386,10 +5391,7 @@ void UIManager::handleInput(int ch) {
         case 'u': case 'U':
             if (focus_ == Pane::Playlist && pl_cursor_ < (int)playlist_.size()) {
                 playlist_.moveUp((std::size_t)pl_cursor_);
-                if (pl_cursor_ > 0) {
-                    --pl_cursor_;
-                    if (pl_cursor_ < pl_scroll_) --pl_scroll_;
-                }
+                if (pl_cursor_ > 0) --pl_cursor_;   // scroll follows via the draw-time invariant
                 // Prevent cursor sync from snapping us away
                 last_playlist_current_for_sync_ = (int)playlist_.current();
             }
@@ -5397,27 +5399,22 @@ void UIManager::handleInput(int ch) {
         case 'D':
             if (focus_ == Pane::Playlist && pl_cursor_ < (int)playlist_.size()) {
                 playlist_.moveDown((std::size_t)pl_cursor_);
-                if (pl_cursor_ + 1 < (int)playlist_.size()) {
-                    ++pl_cursor_;
-                    if (pl_cursor_ >= pl_scroll_ + paneVisibleRows(win_playlist_)) ++pl_scroll_;
-                }
+                if (pl_cursor_ + 1 < (int)playlist_.size()) ++pl_cursor_;   // scroll follows via the invariant
                 last_playlist_current_for_sync_ = (int)playlist_.current();
             }
             break;
         case 'd':
             if (focus_ == Pane::Playlist && pl_cursor_ < (int)playlist_.size()) {
-                bool was_playing = ((size_t)pl_cursor_ == playlist_.current()
-                                    && audio_.state() != PlaybackState::Stopped);
+                // Stream-aware "is the cursor on the playing row" - nowPlayingRow()
+                // folds in the state()!=Stopped check and is not stale in stream mode,
+                // so deleting an unrelated row under a stream no longer stops it.
+                auto now = nowPlayingRow();
+                bool was_playing = now && (size_t)pl_cursor_ == *now;
                 playlist_.removeAt((size_t)pl_cursor_);
                 if (was_playing) audio_.stop();
-                // Keep cursor in bounds
+                // Keep cursor in bounds; scroll re-clamps via the draw-time invariant.
                 if (pl_cursor_ >= (int)playlist_.size() && pl_cursor_ > 0)
                     --pl_cursor_;
-                // Keep scroll in bounds so cursor doesn't appear to jump
-                int visible = win_playlist_ ? paneVisibleRows(win_playlist_) : 0;
-                int max_scroll = std::max(0, (int)playlist_.size() - visible);
-                if (pl_scroll_ > max_scroll) pl_scroll_ = max_scroll;
-                if (pl_scroll_ > pl_cursor_) pl_scroll_ = pl_cursor_;
                 // Deleting an entry above the playing track shifts current()'s
                 // index; resync the marker so the follow logic doesn't read it as
                 // a track change and snap the cursor to the playing row.
@@ -5527,8 +5524,7 @@ void UIManager::gotoClose(bool commit) {
                     if (after > before) {
                         // Jump to the first genuinely-new entry (trust the size
                         // delta, not the line count — dedup may drop duplicates).
-                        pl_cursor_ = (int)before;
-                        pl_scroll_ = (int)before;
+                        pl_cursor_ = (int)before;   // scroll placed by the draw-time invariant
                         if (audio_.state() == PlaybackState::Stopped) {
                             playlist_.selectAt(before);
                             if (auto path = playlist_.currentPath(); path.has_value()) {
@@ -5539,7 +5535,6 @@ void UIManager::gotoClose(bool commit) {
                     } else {
                         // All duplicates / none on disk — keep the view valid.
                         if (pl_cursor_ >= (int)after) pl_cursor_ = std::max(0, (int)after - 1);
-                        if (pl_scroll_ >= (int)after) pl_scroll_ = 0;
                     }
                 } else if (fs::exists(target) && fs::is_directory(target)) {
                     current_dir_   = target;
@@ -5569,8 +5564,7 @@ void UIManager::gotoClose(bool commit) {
                     // Jump to the first genuinely-new entry. Dedup may have
                     // dropped some lines, so trust the size delta rather than
                     // the raw line count returned by loadPlaylist().
-                    pl_cursor_ = (int)before;
-                    pl_scroll_ = (int)before;
+                    pl_cursor_ = (int)before;   // scroll placed by the draw-time invariant
                     if (audio_.state() == PlaybackState::Stopped) {
                         playlist_.selectAt(before);
                         if (auto path = playlist_.currentPath(); path.has_value()) {
@@ -5583,7 +5577,6 @@ void UIManager::gotoClose(bool commit) {
                     // or none existed on disk). Keep the view on-screen instead
                     // of scrolling past the end and blanking the pane.
                     if (pl_cursor_ >= (int)after) pl_cursor_ = std::max(0, (int)after - 1);
-                    if (pl_scroll_ >= (int)after) pl_scroll_ = 0;
                 }
                 break;
             }
@@ -5629,8 +5622,7 @@ void UIManager::gotoClose(bool commit) {
                     // jump to it, reveal the playlist pane, then play. Coexists with
                     // existing file/CD entries; addStream dedups by URL.
                     std::size_t idx = playlist_.addStream(url, label);
-                    pl_cursor_  = (int)idx;
-                    pl_scroll_  = 0;
+                    pl_cursor_  = (int)idx;   // scroll placed by the draw-time invariant
                     right_pane_ = RightPane::Playlist;
                     playlist_.selectAt(idx);
                     audio_.beginStream(url);   // non-blocking; connects on a worker thread
@@ -5839,11 +5831,7 @@ void UIManager::navigateDown() {
             if (dir_cursor_ >= dir_scroll_+v) ++dir_scroll_;
         }
     } else {
-        int v = paneVisibleRows(win_playlist_);
-        if (pl_cursor_+1 < (int)playlist_.size()) {
-            ++pl_cursor_;
-            if (pl_cursor_ >= pl_scroll_+v) ++pl_scroll_;
-        }
+        if (pl_cursor_+1 < (int)playlist_.size()) ++pl_cursor_;   // scroll follows via the invariant
     }
 }
 
@@ -5851,7 +5839,7 @@ void UIManager::navigateUp() {
     if (focus_ == Pane::DirBrowser) {
         if (dir_cursor_ > 0) { --dir_cursor_; if (dir_cursor_ < dir_scroll_) dir_scroll_ = dir_cursor_; }
     } else {
-        if (pl_cursor_ > 0) { --pl_cursor_; if (pl_cursor_ < pl_scroll_) pl_scroll_ = pl_cursor_; }
+        if (pl_cursor_ > 0) --pl_cursor_;   // scroll follows via the invariant
     }
 }
 
@@ -5980,7 +5968,7 @@ void UIManager::activateSelection() {
             // entries (delete from the playlist to remove). addStream dedups by
             // URL, so re-selecting a station just jumps to its existing row.
             std::size_t idx = playlist_.addStream(url, label);
-            pl_cursor_ = (int)idx; pl_scroll_ = 0;
+            pl_cursor_ = (int)idx;   // reported bug fix: scroll placed by the draw-time invariant
             playlist_.selectAt(idx);
             right_pane_ = RightPane::Playlist;
             in_radio_search_ = false;

@@ -75,6 +75,19 @@
   canonical "which row is lit / shown" test (stream-aware; nullopt when nothing plays
   or the stream matches no row). Do NOT merge them - a UI fix must not silently change
   auto-advance's notion of the current index. (Slice 4.)
+- **`pl_scroll_` has exactly one owner: `ensurePlaylistCursorVisible()`.** The playlist
+  scroll offset used to be maintained by a dozen hand-rolled "if cursor < scroll, nudge"
+  fragments plus cursor-blind `pl_scroll_ = 0` resets; any path that moved the cursor
+  without a matching nudge (radio-add, CD-eject) left the cursor lit but offscreen. The
+  invariant clamps cursor-into-range then scrolls the minimum to reveal it, enforced once
+  at the top of `drawPlaylist()`. Do not reintroduce per-handler scroll math - move the
+  cursor, let the draw reveal it. (There is no PgUp/PgDn/wheel path that moves scroll
+  independent of the cursor, so draw-time enforcement is sufficient; if one is ever added,
+  it must call the invariant on the cursor mutation.) (Slice 5.)
+- **The `d`-delete "was this the playing row" test must use `nowPlayingRow()`, not
+  `current()`.** `current()` is the stale file index in stream mode, so the old test could
+  `stop()` a stream when deleting an unrelated row (or fail to stop when deleting the
+  actually-playing file). (Slice 5.)
 
 ## MP3 seek (bit reservoir)
 - MP3 frames borrow main_data from up to ~511 bytes of preceding frames (the bit

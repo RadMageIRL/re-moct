@@ -173,6 +173,13 @@ private:
     // stream has no TrackInfo; callers show stream metadata separately). File/CD only.
     const TrackInfo* nowPlayingTrack() const;
 
+    // The single owner of pl_scroll_'s relationship to pl_cursor_: clamps the cursor
+    // into range, then scrolls the minimum needed to bring it inside the visible
+    // window. Enforced once at the top of drawPlaylist(); every path that moves the
+    // cursor just lets the next draw reveal it. Idempotent. See lessons.md - do NOT
+    // reintroduce per-handler "if cursor < scroll then nudge" math.
+    void ensurePlaylistCursorVisible();
+
     // Screen dims
     int screen_rows_ = 0;
     int screen_cols_ = 0;

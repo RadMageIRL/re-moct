@@ -67,6 +67,14 @@
   this way during the slice-4 ICY regression gate (a missed update on one transition,
   station-side). Related parked items: ICY metadata improvement is a structural
   protocol limit; ICY ingest sanitization (station-ID stripping) - see `roadmap.md`.
+- **`current()` is an index identity; `nowPlayingRow()` is a display target - they
+  are deliberately NOT the same function.** `playlist_.current()` goes stale in
+  stream mode (`currentTrack()` holds the last file; a queue-launched station has no
+  row) but is still the correct anchor for seek-stamp and auto-advance, which reason
+  about index identity, not what's on screen. `UIManager::nowPlayingRow()` is the
+  canonical "which row is lit / shown" test (stream-aware; nullopt when nothing plays
+  or the stream matches no row). Do NOT merge them - a UI fix must not silently change
+  auto-advance's notion of the current index. (Slice 4.)
 
 ## MP3 seek (bit reservoir)
 - MP3 frames borrow main_data from up to ~511 bytes of preceding frames (the bit

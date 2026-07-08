@@ -87,6 +87,7 @@ public:
     // Query
     std::size_t size()    const { return entries_.size(); }
     bool        empty()   const { return entries_.empty(); }
+    // index identity for seek/auto-advance; UI "playing row" is UIManager::nowPlayingRow().
     std::size_t current() const { return current_; }
     const PlaylistEntry&              at(std::size_t i) const { return entries_.at(i); }
     const std::vector<PlaylistEntry>& entries()         const { return entries_; }

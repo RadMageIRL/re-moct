@@ -1912,6 +1912,23 @@ void UIManager::drawDirBrowser() {
     }
 }
 
+std::optional<std::size_t> UIManager::nowPlayingRow() const {
+    if (audio_.state() == PlaybackState::Stopped) return std::nullopt;
+    const bool stream = audio_.streamMode();
+    const std::string want = stream ? audio_.streamUrl()
+                                    : audio_.currentTrack().path;
+    if (want.empty()) return std::nullopt;
+    for (std::size_t i = 0; i < playlist_.size(); ++i)
+        if (playlist_.at(i).path == want) return i;
+    return std::nullopt;   // queue-launched station: no row, lights nothing
+}
+
+const TrackInfo* UIManager::nowPlayingTrack() const {
+    if (audio_.streamMode()) return nullptr;
+    if (audio_.state() == PlaybackState::Stopped) return nullptr;
+    return &audio_.currentTrack();
+}
+
 void UIManager::drawPlaylist() {
     werase(win_playlist_);
     int rows, cols;
@@ -1959,22 +1976,17 @@ void UIManager::drawPlaylist() {
     if (pl_scroll_ >= (int)playlist_.size())
         pl_scroll_ = std::max(0, (int)playlist_.size() - 1);
     if (pl_scroll_ < 0) pl_scroll_ = 0;
+    // Lit row = nowPlayingRow(); see the accessor for why current() can't be used
+    // here (stale in stream mode; queue-launched stations light no row). Computed
+    // once before the loop - the accessor scans the playlist, so a per-row call
+    // would be O(n^2) on the draw path.
+    const std::optional<std::size_t> now_row = nowPlayingRow();
     for (int i = 0; i < visible; ++i) {
         size_t idx = (size_t)(pl_scroll_ + i);
         if (idx >= playlist_.size()) break;
         const auto& e  = playlist_.at(idx);
         bool cursor  = ((int)idx == pl_cursor_);
-        // The lit ("playing") row. In radio mode audio_.currentTrack() still holds
-        // the last file, so a stale file row would stay lit after switching to
-        // radio. Key off the URL actually streaming, NOT playlist_.current(): a
-        // station launched from the override queue has no playlist row, so
-        // current() is stale. A playlist-launched station's row path == streamUrl
-        // and lights; a queue-launched station matches no row and lights nothing
-        // (it shows on the now-playing line instead). In file mode, match the file.
-        bool playing = (audio_.state() != PlaybackState::Stopped) &&
-                       (audio_.streamMode()
-                          ? (e.path == audio_.streamUrl())
-                          : (e.path == audio_.currentTrack().path));
+        bool playing = now_row && *now_row == idx;
         short rpair = CP_DIM; attr_t rattr = A_BOLD;
         if      (cursor && focused) { rpair = CP_SELECTED;  rattr = A_BOLD; }
         else if (cursor)            { rpair = CP_SELECTED_UNFOCUSED; rattr = A_BOLD; }
@@ -3244,10 +3256,16 @@ void UIManager::drawTrackInfo() {
     int rows, cols;
     getmaxyx(w, rows, cols);
 
-    // Which track to show: highlighted in playlist if focused there, else current
-    std::size_t idx = (focus_ == Pane::Playlist && pl_cursor_ < (int)playlist_.size())
-                    ? (std::size_t)pl_cursor_
-                    : playlist_.current();
+    // Which track to show: cursored row if browsing the playlist, else the playing
+    // row (stream-aware), else the last-known index for the nothing-playing floor.
+    std::size_t idx;
+    if (focus_ == Pane::Playlist && pl_cursor_ < (int)playlist_.size()) {
+        idx = (std::size_t)pl_cursor_;
+    } else if (auto r = nowPlayingRow()) {
+        idx = *r;
+    } else {
+        idx = playlist_.current();   // nothing playing / queue-launched stream: last-known index
+    }
 
     // Header
     std::string hdr = tag_edit_mode_
@@ -4647,8 +4665,14 @@ void UIManager::handleInput(int ch) {
                 return;
             case 'e': case 'E': {
                 // Enter edit mode — only for real files, not CD tracks, not currently playing
-                std::size_t idx = (focus_ == Pane::Playlist && pl_cursor_ < (int)playlist_.size())
-                                ? (std::size_t)pl_cursor_ : playlist_.current();
+                std::size_t idx;
+                if (focus_ == Pane::Playlist && pl_cursor_ < (int)playlist_.size()) {
+                    idx = (std::size_t)pl_cursor_;
+                } else if (auto r = nowPlayingRow()) {
+                    idx = *r;
+                } else {
+                    idx = playlist_.current();   // nothing playing / queue-launched stream: last-known index
+                }
                 if (idx < playlist_.size()) {
                     const std::string& path = playlist_.at(idx).path;
                     if (isCDTrackPath(path) || path.empty()) {

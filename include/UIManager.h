@@ -9,6 +9,7 @@
 #include <atomic>
 #include <thread>
 #include <unordered_set>
+#include <optional>
 #include "MBLookup.h"
 #include "CDRipper.h"
 #include "RadioBrowser.h"
@@ -157,6 +158,20 @@ private:
     int pl_scroll_ = 0;
     int pl_cursor_ = 0;
     int last_playlist_current_for_sync_ = 0;  // for move-up/down cursor fix
+
+    // The playlist row currently PLAYING, stream-aware - unlike playlist_.current(),
+    // which is a raw index and goes stale in stream mode (audio_.currentTrack() still
+    // holds the last file; a queue-launched station has no row at all). Returns
+    // nullopt when nothing plays, when stopped, or when the playing stream matches no
+    // row (queue-launched station - it shows on the now-playing line, lights no row).
+    // This is the canonical "which row is lit" test; drawPlaylist() and the info/tag
+    // panes route through it. It deliberately does NOT replace current(); current()
+    // keeps its index-identity meaning for seek-stamp and auto-advance. See lessons.md.
+    std::optional<std::size_t> nowPlayingRow() const;
+
+    // The TrackInfo to display for the playing item, or nullptr in stream mode (a
+    // stream has no TrackInfo; callers show stream metadata separately). File/CD only.
+    const TrackInfo* nowPlayingTrack() const;
 
     // Screen dims
     int screen_rows_ = 0;

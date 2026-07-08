@@ -362,6 +362,14 @@ private:
     int         status_msg_ticks_ = 0;
 #endif
 
+    // Transient warning on the cmdline bar (both platforms), e.g. "stop playback
+    // first to edit tags". Rendered red in drawCmdLine() and expired after ~5s in
+    // the main loop - a persistent replacement for a one-shot paint the next
+    // repaint would clobber before it could be read. Not a toast: a warning is an
+    // in-place status, not a notification.
+    std::string warn_msg_;
+    int         warn_msg_ticks_ = 0;
+
     // Recently played virtual dir state
     bool in_recent_      = false;
     bool in_favs_        = false;

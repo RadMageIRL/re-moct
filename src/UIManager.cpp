@@ -1142,6 +1142,12 @@ void UIManager::run() {
                 theme_tag_ticks_ == kThemeTagGoneTick)
                 redraw_needed_.store(true);
         }
+        // Expire the transient cmdline warning after ~5s (63 ticks * 80ms).
+        if (!warn_msg_.empty() && ++warn_msg_ticks_ > 62) {
+            warn_msg_.clear();
+            warn_msg_ticks_ = 0;
+            redraw_needed_.store(true);
+        }
 #ifndef _WIN32
         // Expire the toast-fallback status line (same cadence as rip_status_).
         if (!status_msg_.empty() && ++status_msg_ticks_ > 60) {
@@ -3755,6 +3761,14 @@ void UIManager::drawProgress() {
 void UIManager::drawCmdLine() {
     if (goto_active_) { drawGotoBar(); return; }
     werase(win_cmdline_);
+    // Transient warning takes the bar for its ~5s lifetime (both platforms).
+    if (!warn_msg_.empty()) {
+        wattron(win_cmdline_, COLOR_PAIR(CP_STATUS_ERR) | A_BOLD);
+        mvwaddnstr(win_cmdline_, 0, 1, warn_msg_.c_str(), screen_cols_ - 2);
+        wattroff(win_cmdline_, COLOR_PAIR(CP_STATUS_ERR) | A_BOLD);
+        wnoutrefresh(win_cmdline_);
+        return;
+    }
 #ifndef _WIN32
     // Toast fallback (see UIManager.h) — drawn exactly like rip_status_.
     if (!status_msg_.empty()) {
@@ -4680,13 +4694,10 @@ void UIManager::handleInput(int ch) {
                     }
                     if (path == audio_.currentTrack().path &&
                         audio_.state() != PlaybackState::Stopped) {
-                        // Currently playing — warn in cmdline bar
-                        werase(win_cmdline_);
-                        wattron(win_cmdline_, COLOR_PAIR(CP_STATUS_OK) | A_BOLD);
-                        mvwaddnstr(win_cmdline_, 0, 1,
-                            "Stop playback first to edit tags  (s = stop)", screen_cols_ - 2);
-                        wattroff(win_cmdline_, COLOR_PAIR(CP_STATUS_OK) | A_BOLD);
-                        wrefresh(win_cmdline_);
+                        // Currently playing — warn in the cmdline bar (persists ~5s)
+                        warn_msg_ = "Stop playback first to edit tags  (s = stop)";
+                        warn_msg_ticks_ = 0;
+                        redraw_needed_.store(true);
                         return;
                     }
                     // All checks passed — enter edit mode

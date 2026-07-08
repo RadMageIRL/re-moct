@@ -3012,7 +3012,7 @@ bool UIManager::allocArtColorPairs(const cover::Rendered& art,
 #ifdef REMOCT_PROBE
     // Slice-1 Probe A2 counters (instrumentation only; allocation logic unchanged).
     int probe_colour_fallback = 0;   // times the colour budget was spent (nearest-existing)
-    int probe_pair_fallback   = 0;   // times the PAIR budget was spent (returns P0)
+    int probe_pair_fallback   = 0;   // times the PAIR budget was spent (nearest-existing)
 #endif
 
     static const int kBasic16[16][3] = {
@@ -3059,11 +3059,34 @@ bool UIManager::allocArtColorPairs(const cover::Rendered& art,
             pairs.push_back({fg,bg});
             return id;
         }
-        // Budget spent (only if a pane were huge): reuse the closest fg's pair.
+        // Budget spent: reuse the existing pair nearest in colour to the wanted fg/bg
+        // (the pair analogue of colorFor's nearest-existing fallback). The 22x11 art box
+        // is 242 cells vs a 236-pair budget, so a busy cover reaches this on real art -
+        // Probe A2 measured it on 6 of 116 covers. P0 is only the seed for the search.
+        // fg/bg are slot IDs, not RGB: map back via pal (truecolor, slot = C0+i) or
+        // kBasic16 (non-truecolor, slot = 0..15), then score by summed fg+bg distance.
+        auto slotRGB = [&](short slot, int& r, int& g, int& b) {
+            if (truecolor) {
+                const int i = slot - C0;
+                if (i >= 0 && i < (int)pal.size()) { r=pal[i][0]; g=pal[i][1]; b=pal[i][2]; return; }
+            }
+            if (slot >= 0 && slot < 16) { r=kBasic16[slot][0]; g=kBasic16[slot][1]; b=kBasic16[slot][2]; return; }
+            r=g=b=0;
+        };
+        int wfr,wfg,wfb, wbr,wbg,wbb;
+        slotRGB(fg,wfr,wfg,wfb); slotRGB(bg,wbr,wbg,wbb);
+        long best=-1; short bi=(short)P0;
+        for (size_t j=0;j<pairs.size();++j) {
+            int pfr,pfg,pfb, pbr,pbg,pbb;
+            slotRGB(pairs[j].first,  pfr,pfg,pfb);
+            slotRGB(pairs[j].second, pbr,pbg,pbb);
+            long d = dist(wfr,wfg,wfb, pfr,pfg,pfb) + dist(wbr,wbg,wbb, pbr,pbg,pbb);
+            if (best<0 || d<best) { best=d; bi=(short)(P0+j); }
+        }
 #ifdef REMOCT_PROBE
         ++probe_pair_fallback;
 #endif
-        return (short)P0;
+        return bi;
     };
 
     for (size_t i=0;i<art.cells.size();++i) {

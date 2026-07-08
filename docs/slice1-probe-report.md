@@ -229,3 +229,9 @@ can settle**, and both are now instrumented and ready.
   pairs-1-17 divergence became the `static_assert(CP_VIZ_HIGH_B < kArtPairBase)` in
   `UIManager.h`. The F8/`applyAwesomeTheme` "art slots survive a theme cycle"
   assumption is confirmed only by the Slice 2 runtime gate (step 8).
+- **Probe A2's predicted pair overflow acted on in Slice 8.** A2 measured the pair
+  budget spent on 6 of 116 covers (Garbage Supervixen fb=5, Sugar Ray RPM fb=3, Beck,
+  Yes, ...). `pairFor`'s overflow fallback no longer returns pair 20 flat; it now scans
+  for the existing pair nearest in colour (mapping slot IDs back through `pal`/`kBasic16`),
+  mirroring `colorFor`. The `probe_pair_fallback` counter still increments there, so A2
+  can confirm the fix ran on the same covers.

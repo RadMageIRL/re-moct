@@ -30,6 +30,13 @@
   standing between a new visualizer colour role and art cells being silently repainted
   on every theme apply. If you add an LED role and it fires, raise `kArtPairBase` and
   re-check `p_budget` in `allocArtColorPairs()`.
+- **`allocArtColorPairs`' pair-budget fallback must find the nearest existing pair, not
+  return `P0`.** The 22x11 art box (242 cells) exceeds the 236-pair budget, so busy
+  covers overflow on real art (Probe A2: 6 of 116 covers). The old fallback returned pair
+  20 flat, speckling overflow cells with one wrong hue. It now mirrors `colorFor`'s
+  nearest-existing search. The catch: `fg`/`bg` reaching `pairFor` are slot IDs, not RGB -
+  map back through `pal` (truecolor, slot = `C0+i`) or `kBasic16` (non-truecolor, slot =
+  0..15) to score by colour distance. (Slice 8.)
 
 ## AccurateRip / CD ripping
 - **The 150-sector physical preamble is correct BY DESIGN** (a property of how

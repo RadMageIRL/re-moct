@@ -16,6 +16,20 @@
   init_pair'd after the loop. Viz pairs are fg==bg solid space-fills, so a partial
   block needs a real bg - that's why the sub-cell tip uses `CP_VIZ_TIP`. Theme reload
   re-runs `initColours()`, so new pairs added there survive `~` live-reload.
+- **A curses pair index is a handle into a global table, not a colour.** `init_pair()`
+  mutates process-global state. Caching pair indices per art source (`info_art_pairs_`
+  and `radio_art_pairs_`) produced two vectors of identical integers pointing at one
+  table; whichever source allocated last owned the colours, and the other silently
+  rendered someone else's image (station art -> file art -> back to station showed the
+  file's cover). Cache the RGB grid; allocate at the blit; record who owns the table
+  (`art_pairs_key_`). Do NOT "optimise" this back into a per-source pair cache - that
+  is the bug. (Slice 2.)
+- **The art pair base (`kArtPairBase = 20`) sits directly above the theme's CP_* pairs,
+  which have grown 13 -> 17** (`CP_VIZ_LOW_B/MID_B/HIGH_B` = 15/16/17). The gap is two.
+  The `static_assert(CP_VIZ_HIGH_B < kArtPairBase)` in `UIManager.h` is the only thing
+  standing between a new visualizer colour role and art cells being silently repainted
+  on every theme apply. If you add an LED role and it fires, raise `kArtPairBase` and
+  re-check `p_budget` in `allocArtColorPairs()`.
 
 ## AccurateRip / CD ripping
 - **The 150-sector physical preamble is correct BY DESIGN** (a property of how

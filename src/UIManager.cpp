@@ -488,6 +488,12 @@ void UIManager::initColours() {
     start_color();
     use_default_colors();
 
+    // start_color()/use_default_colors() reset the whole palette, art slots 64+ and
+    // pairs 20+ included. Any pair indices we handed out are now stale, so disown the
+    // art pair table; the next blit reallocates. One line here covers every caller
+    // (startup, Ctrl+T, ~ reload, and whatever site is added next).
+    art_pairs_key_.clear();
+
     // Split by mode (design spec section 6.5): theme.conf governs Classic; the named
     // truecolor palettes fully own Awesome. No layering, no 8-colour degradation of a
     // truecolor palette. Awesome sets its own pairs (incl. solid base bg) and returns.
@@ -2945,9 +2951,9 @@ bool UIManager::allocArtColorPairs(const cover::Rendered& art,
     if (!has_colors() || art.cells.empty()) return false;
 
     const bool truecolor = (COLORS >= 256 && can_change_color());
-    const short C0 = 64;
+    const short C0 = kArtColourBase;
     const int   c_budget = truecolor ? std::min((int)COLORS, 256) - C0 : 0;   // art colour slots
-    const short P0 = 20;
+    const short P0 = kArtPairBase;
     const int   p_budget = std::min(COLOR_PAIRS, 256) - P0;                    // art pair slots
     if (p_budget < 1) return false;
 #ifdef REMOCT_PROBE
@@ -3034,13 +3040,13 @@ void UIManager::artCachePut(const std::string& key, const cover::Rendered& r) {
     if (info_art_cache_.size() > kInfoArtCacheMax) info_art_cache_.erase(info_art_cache_.begin());
 }
 
-// Commit a decoded grid as the shown art: allocate its colour pairs (UI thread -
-// curses palette) and mark the key. r.ok==false is a valid "no art" verdict.
+// Commit a decoded grid as the shown art: store the grid and mark its key. Colour
+// pairs are allocated later, at the blit. r.ok==false is a valid "no art" verdict.
 void UIManager::commitInfoArt(const std::string& key, const cover::Rendered& r) {
     info_art_key_ = key;
     info_art_ = r;
-    info_art_pairs_.clear();
-    if (info_art_.ok) allocArtColorPairs(info_art_, info_art_pairs_);
+    // Colour-pair allocation happens at the blit (drawTrackInfo), when we know
+    // which art source owns the shared global pair table. See art_pairs_key_.
 }
 
 // Spawn the one-shot decode worker (file read + stb decode, both curses-free).
@@ -3089,9 +3095,8 @@ void UIManager::refreshInfoArt(const std::string& path, int box_cols, int box_ro
     // Not decoded yet: clear the stale cover (don't show the wrong one) and kick
     // off the decode. Leave info_art_key_ on the old key so we keep retrying the
     // spawn until this key's decode lands and commits it.
-    if (!info_art_.cells.empty() || !info_art_pairs_.empty()) {
+    if (!info_art_.cells.empty()) {
         info_art_ = cover::Rendered{};
-        info_art_pairs_.clear();
     }
     if (path.empty() || isCDTrackPath(path) || box_cols < 4 || box_rows < 2) {
         artCachePut(key, cover::Rendered{});          // cache the "no art" verdict
@@ -3227,11 +3232,9 @@ void UIManager::refreshRadioArt(int box_cols, int box_rows) {
     if (rkey == radio_render_key_) return;
     radio_render_key_ = rkey;
     radio_art_ = cover::Rendered{};
-    radio_art_pairs_.clear();
     if (src.empty() || box_cols < 4 || box_rows < 2) return;
     cover::Rendered r = cover::render(src, box_cols, box_rows);
-    if (!r.ok) return;
-    if (!allocArtColorPairs(r, radio_art_pairs_)) return;
+    if (!r.ok) return;   // failed render -> radio_art_ stays {} (no art); colours alloc at the blit
     radio_art_ = std::move(r);
 }
 
@@ -3409,9 +3412,18 @@ void UIManager::drawTrackInfo() {
         const bool radio_item = audio_.streamMode() && path == audio_.streamUrl();
         if (radio_item) refreshRadioArt(box_cols, box_rows);
         else            refreshInfoArt(path, box_cols, box_rows);
-        const cover::Rendered&    art_r  = radio_item ? radio_art_       : info_art_;
-        const std::vector<short>& art_pr = radio_item ? radio_art_pairs_ : info_art_pairs_;
-        const bool has_art    = art_r.ok && !tag_edit_mode_;
+        const cover::Rendered&    art_r = radio_item ? radio_art_       : info_art_;
+        const std::string&        key   = radio_item ? radio_render_key_ : info_art_key_;
+
+        // Allocate curses pairs only when the global table doesn't already hold this
+        // image's colours. A pair index is valid only while the palette holds the
+        // colours it was allocated for; art_pairs_key_ records who owns it now.
+        if (art_r.ok && key != art_pairs_key_) {
+            art_pairs_.clear();
+            if (allocArtColorPairs(art_r, art_pairs_)) art_pairs_key_ = key;
+            else                                       art_pairs_key_.clear();
+        }
+        const bool has_art    = art_r.ok && !tag_edit_mode_ && !art_pairs_.empty();
         const int  art_cols   = has_art ? art_r.cols : 0;
         const int  art_rows   = has_art ? art_r.rows : 0;
         const int  art_bottom = art_y + art_rows;      // first row below the art band
@@ -3420,7 +3432,7 @@ void UIManager::drawTrackInfo() {
                 for (int cx = 0; cx < art_cols; ++cx) {
                     cchar_t cc; wchar_t s[2] = { (wchar_t)0x2580, 0 };   // ▀ UPPER HALF BLOCK
                     setcchar(&cc, s, A_NORMAL,
-                             art_pr[(size_t)cy * art_cols + cx], nullptr);
+                             art_pairs_[(size_t)cy * art_cols + cx], nullptr);
                     mvwadd_wch(w, art_y + cy, art_x + cx, &cc);
                 }
         }

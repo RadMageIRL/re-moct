@@ -228,7 +228,13 @@ private:
     // refreshInfoArt / drawArt in UIManager.cpp.
     std::string        info_art_key_;    // "<path>|<cols>x<rows>" the COMMITTED art reflects
     cover::Rendered    info_art_;        // decoded half-block grid (info_art_.ok gates drawing)
-    std::vector<short> info_art_pairs_;  // curses colour-pair per cell (parallel to info_art_.cells)
+    // The curses pair table is global. Only one art image's colours can occupy
+    // slots kArtColourBase.. / pairs kArtPairBase.. at a time, so exactly one
+    // variable may hold those indices - and it must record whose they are. Shared
+    // by info (file) and radio art: whichever the Info pane is drawing owns it,
+    // reallocated at the blit when the key changes (see drawTrackInfo).
+    std::string        art_pairs_key_;   // render key whose colours currently occupy the table
+    std::vector<short> art_pairs_;       // pair index per cell, parallel to the owning grid
     void refreshInfoArt(const std::string& path, int box_cols, int box_rows);
     bool allocArtColorPairs(const cover::Rendered& art, std::vector<short>& out_pairs);
 
@@ -275,8 +281,7 @@ private:
     std::string          radio_last_station_art_;    // station art URL a resolution was based on
     // Decoded-block cache (keyed on song + box + logo-vs-cover), parallel to info_art_.
     std::string          radio_render_key_;
-    cover::Rendered      radio_art_;
-    std::vector<short>   radio_art_pairs_;
+    cover::Rendered      radio_art_;      // pair indices live in the shared art_pairs_ (see above)
     // Bundled RE-MOCT logo, decoded once and reused as the floor (own cache key).
     std::vector<uint8_t> logo_bytes_;                // loaded lazily from remoct_logo.jpg
     bool                 logo_load_tried_ = false;
@@ -482,6 +487,16 @@ private:
     static constexpr short CP_VIZ_LOW_B  = 15;
     static constexpr short CP_VIZ_MID_B  = 16;
     static constexpr short CP_VIZ_HIGH_B = 17;
+
+    // Art half-block cells allocate curses colours and pairs above the theme's
+    // fixed CP_* range. The pair table is global; a collision here would let a
+    // theme apply silently repaint art cells. Keep this assertion loud.
+    static constexpr short kArtColourBase = 64;   // theme truecolour slots run 16..~31
+    static constexpr short kArtPairBase   = 20;   // theme pairs run 1..CP_VIZ_HIGH_B
+
+    static_assert(CP_VIZ_HIGH_B < kArtPairBase,
+                  "theme colour pairs have grown into the art pair range; "
+                  "raise kArtPairBase and re-check p_budget in allocArtColorPairs()");
 
     void initColours();
     void loadTheme(short* fg, short* bg);   // overrides defaults from theme.conf

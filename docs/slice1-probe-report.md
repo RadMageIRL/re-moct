@@ -222,3 +222,10 @@ behaviour either way.
 The brief's B1 and C mechanisms all hold (with the pairs-1-17 divergence noted), so
 the premises for Slices 2/3/8 stand - **except A3 and B2, which only runtime data
 can settle**, and both are now instrumented and ready.
+
+## Follow-up
+- **Probe C acted on in Slice 2.** `initColours()` now clears the art pair owner
+  (`art_pairs_key_`) on every palette reset, covering all three call sites; the
+  pairs-1-17 divergence became the `static_assert(CP_VIZ_HIGH_B < kArtPairBase)` in
+  `UIManager.h`. The F8/`applyAwesomeTheme` "art slots survive a theme cycle"
+  assumption is confirmed only by the Slice 2 runtime gate (step 8).

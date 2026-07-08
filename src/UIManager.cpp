@@ -468,6 +468,21 @@ void UIManager::resizeWindows() {
     doupdate();  // extra flush to guarantee frame hits the terminal
 }
 
+#ifdef REMOCT_PROBE
+// Slice-1 Probe A1: dump the curses colour budget once colour init completes, on
+// BOTH the Awesome and Classic paths. Temporary; removed when the slice closes.
+static void probeLogCaps(const char* mode) {
+#ifdef _WIN32
+    const char* term = "(wingui/n-a)";
+#else
+    const char* term = std::getenv("TERM") ? std::getenv("TERM") : "(null)";
+#endif
+    Log::writef("probe",
+        "A1 caps mode=%s COLORS=%d COLOR_PAIRS=%d has_colors=%d can_change_color=%d TERM=%s",
+        mode, COLORS, COLOR_PAIRS, (int)has_colors(), (int)can_change_color(), term);
+}
+#endif
+
 void UIManager::initColours() {
     if (!has_colors()) return;
     start_color();
@@ -478,6 +493,9 @@ void UIManager::initColours() {
     // truecolor palette. Awesome sets its own pairs (incl. solid base bg) and returns.
     if (config_.awesome_mode) {
         applyAwesomeTheme();
+#ifdef REMOCT_PROBE
+        probeLogCaps("awesome");
+#endif
         return;
     }
 
@@ -508,6 +526,9 @@ void UIManager::initColours() {
     init_pair(CP_VIZ_LOW_B,  fg[CP_VIZ_LOW],  -1);
     init_pair(CP_VIZ_MID_B,  fg[CP_VIZ_MID],  -1);
     init_pair(CP_VIZ_HIGH_B, fg[CP_VIZ_HIGH], -1);
+#ifdef REMOCT_PROBE
+    probeLogCaps("classic");
+#endif
 
     // Reset the root screen to transparent so Classic re-inherits the terminal bg
     // (undoes the Awesome stdscr base fill above). Pair 0 = terminal default under
@@ -2929,6 +2950,11 @@ bool UIManager::allocArtColorPairs(const cover::Rendered& art,
     const short P0 = 20;
     const int   p_budget = std::min(COLOR_PAIRS, 256) - P0;                    // art pair slots
     if (p_budget < 1) return false;
+#ifdef REMOCT_PROBE
+    // Slice-1 Probe A2 counters (instrumentation only; allocation logic unchanged).
+    int probe_colour_fallback = 0;   // times the colour budget was spent (nearest-existing)
+    int probe_pair_fallback   = 0;   // times the PAIR budget was spent (returns P0)
+#endif
 
     static const int kBasic16[16][3] = {
         {0,0,0},{128,0,0},{0,128,0},{128,128,0},{0,0,128},{128,0,128},{0,128,128},{192,192,192},
@@ -2956,6 +2982,9 @@ bool UIManager::allocArtColorPairs(const cover::Rendered& art,
             return id;
         }
         long best=-1; short bi=C0;        // budget spent: nearest existing
+#ifdef REMOCT_PROBE
+        ++probe_colour_fallback;
+#endif
         for (size_t i=0;i<pal.size();++i){ long d=dist(r,g,b,pal[i][0],pal[i][1],pal[i][2]);
                                            if(best<0||d<best){best=d;bi=(short)(C0+i);} }
         return bi;
@@ -2972,6 +3001,9 @@ bool UIManager::allocArtColorPairs(const cover::Rendered& art,
             return id;
         }
         // Budget spent (only if a pane were huge): reuse the closest fg's pair.
+#ifdef REMOCT_PROBE
+        ++probe_pair_fallback;
+#endif
         return (short)P0;
     };
 
@@ -2980,6 +3012,13 @@ bool UIManager::allocArtColorPairs(const cover::Rendered& art,
         out_pairs[i] = pairFor(colorFor(c.r_top,c.g_top,c.b_top),
                                colorFor(c.r_bot,c.g_bot,c.b_bot));
     }
+#ifdef REMOCT_PROBE
+    Log::writef("probe",
+        "A2 alloc grid=%dx%d cells=%zu truecolor=%d colours=%zu pairs=%zu "
+        "c_budget=%d p_budget=%d colour_fallback=%d pair_fallback=%d ret=1",
+        art.cols, art.rows, art.cells.size(), (int)truecolor, pal.size(), pairs.size(),
+        c_budget, p_budget, probe_colour_fallback, probe_pair_fallback);
+#endif
     return true;
 }
 

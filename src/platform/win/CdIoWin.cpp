@@ -117,6 +117,29 @@ public:
                                nullptr, 0, nullptr, 0, &dummy, nullptr) != 0;
     }
 
+    bool eject() override {
+        // Sequence: unlock -> eject -> on FAILURE unlock again. Invariant
+        // (HL-DT regression, found on hardware): a failed
+        // IOCTL_STORAGE_EJECT_MEDIA must never leave the tray locked - on this
+        // family the failed eject itself leaves the soft lock ASSERTED, and the
+        // physical button goes dead. The destructor's unconditional unlock still
+        // runs at close as the last line of defence. On this firmware even that
+        // may not release a post-failed-eject wedge (only a real play->stop
+        // cycle does); recovery attempts beyond the unlocks were tried and
+        // reverted - see ejectDrive in UIManager.cpp for the history.
+        PREVENT_MEDIA_REMOVAL pmr {};
+        pmr.PreventMediaRemoval = FALSE;
+        DWORD bytes = 0;
+        DeviceIoControl(h_, IOCTL_STORAGE_MEDIA_REMOVAL,
+                        &pmr, sizeof(pmr), nullptr, 0, &bytes, nullptr);
+        bool ok = DeviceIoControl(h_, IOCTL_STORAGE_EJECT_MEDIA,
+                                  nullptr, 0, nullptr, 0, &bytes, nullptr) != 0;
+        if (!ok)
+            DeviceIoControl(h_, IOCTL_STORAGE_MEDIA_REMOVAL,
+                            &pmr, sizeof(pmr), nullptr, 0, &bytes, nullptr);
+        return ok;
+    }
+
     std::string model() override {
         // Moved byte-identical from CDSource::queryDriveModel (the
         // STORAGE_DEVICE_DESCRIPTOR parse is Windows shape; the offset-table

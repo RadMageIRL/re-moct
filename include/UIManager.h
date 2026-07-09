@@ -1,5 +1,6 @@
 #pragma once
 #include "CursesSeam.h"
+#include <algorithm>
 #include <string>
 #include <vector>
 #include <array>
@@ -345,6 +346,24 @@ private:
     // Remove all playlist + queue rows for a CD drive letter (shared by the
     // reopen-eject path and the reader-thread eject path).
     void purgeCDRows(const std::string& drive);
+
+    // Shift+E in [Drives]: eject the highlighted CD drive. Stops + fully unloads
+    // first when it's the loaded disc (slice-3 teardown, incl. the media-removal
+    // unlock on close); a drive RE-MOCT never loaded gets a bare seam handle just
+    // to send the eject. Refuses while a rip is active on the loaded disc.
+    void ejectDrive(const std::string& drive_entry);
+
+    // Drive entries (as listed in dir_entries_, e.g. "F:\" / "/dev/sr0") that are
+    // CD drives with media PRESENT AT ENUMERATION TIME. Computed once per
+    // enterDriveList() (entry / F12) - never polled (probe B2: repeated media
+    // checks spin an idle drive up audibly). Insert a disc while sitting in
+    // [Drives] and the eject hint appears only after F12 - by design.
+    std::vector<std::string> cd_drives_with_media_;
+    bool driveHasMedia(const std::string& entry) const {
+        return std::find(cd_drives_with_media_.begin(),
+                         cd_drives_with_media_.end(), entry)
+               != cd_drives_with_media_.end();
+    }
     MBLookup    mb_lookup_;
     std::atomic<bool> mb_fetching_ { false };
     std::string mb_error_;    // protected by mb_mutex_

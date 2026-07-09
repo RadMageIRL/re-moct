@@ -905,6 +905,70 @@ void UIManager::purgeCDRows(const std::string& drive) {
     pl_cursor_ = std::min(pl_cursor_, std::max(0, (int)playlist_.size() - 1));
 }
 
+// Shift+E in [Drives]: eject the highlighted CD drive. See UIManager.h for the
+// contract. drive_entry is the dir_entries_ value ("F:\" / "/dev/sr0").
+void UIManager::ejectDrive(const std::string& drive_entry) {
+#ifdef _WIN32
+    const std::string spec = drive_entry.substr(0, 1);      // "F"
+#else
+    const std::string spec = drive_entry.rfind("/dev/", 0) == 0
+                                 ? drive_entry.substr(5)    // "sr0"
+                                 : drive_entry;
+#endif
+    const bool is_loaded = !cd_drive_letter_.empty() && cd_drive_letter_ == spec;
+
+    // A rip owns the disc - ejecting mid-rip would yank the platter out from
+    // under CDRipper's reads. Refuse; the user cancels the rip first (Ctrl+Y).
+    if (is_loaded && cd_ripper_.isActive()) {
+        showTrackToast("Rip in progress", "Cancel it first (Ctrl+Y)", "");
+        redraw_needed_.store(true);
+        return;
+    }
+
+    if (is_loaded) {
+        // Stop-first (strict drives like the HL-DT require it), then the full
+        // slice-3 unload so no stale "loaded" state survives the eject: handle
+        // closed (the media-removal unlock runs in the device destructor), rows
+        // purged, letter + MB metadata cleared - the same cleanup as the
+        // reader-thread eject path.
+        audio_.stop();          // CD branch closes the handle + tears down the device
+        audio_.closeCD();       // idempotent after stop(); covers the stopped case
+        audio_.clearTrackEnd();
+        purgeCDRows(spec);
+        cd_drive_letter_.clear();
+        mb_lookup_.cancel();
+        mb_fetching_.store(false);
+        {
+            std::lock_guard<std::mutex> lk(mb_mutex_);
+            mb_album_.clear();
+            mb_error_.clear();
+            mb_release_ = {};
+        }
+    }
+    // Send the physical eject on a fresh seam handle - for a drive RE-MOCT never
+    // loaded this is the only device access (no TOC parse, open + eject + close).
+    bool ok = false;
+    if (auto dev = core::cdio().open(spec)) ok = dev->eject();
+    // On failure, do NOTHING but toast. A "wedge-breaker" that re-read the
+    // platter on the failure path was tried and REVERTED (hardware-tested): on
+    // the HL-DT family raw reads RE-ASSERT the soft media-removal lock - the
+    // very lock a failed eject leaves stuck - so the recovery deepened the
+    // wedge and poisoned the play->stop release too. The honest state: on this
+    // firmware a failed software eject leaves the button dead until the next
+    // real play->stop cycle (its settle-time is what actually releases the
+    // drive; reads alone reproduce the lock, not the release).
+
+    // Clear the hint immediately - the disc is gone (or the user is about to take
+    // it via the button after a failed command); F12 re-scans either way.
+    cd_drives_with_media_.erase(
+        std::remove(cd_drives_with_media_.begin(), cd_drives_with_media_.end(),
+                    drive_entry),
+        cd_drives_with_media_.end());
+    showTrackToast(ok ? ("Ejected " + drive_entry)
+                      : "This drive won't eject by software - stop playback and use the drive button", "", "");
+    redraw_needed_.store(true);
+}
+
 // Ensure the CD handle is open & ready before a play / rip / MB action on a
 // stopped-but-loaded disc. See the declaration in UIManager.h for the full
 // contract. Returns true iff ready; on false (empty tray) the disc has been
@@ -1946,7 +2010,7 @@ void UIManager::drawDirBrowser() {
     const int  cx = aw ? 1 : 0;             // content left column (inside frame)
     const int  cw = aw ? cols - 2 : cols;   // content width
     std::string hdr;
-    if (in_drive_list_)   hdr = " [Drives] ";
+    if (in_drive_list_)   hdr = " [Drives] (Enter:open  F12:refresh  E:eject) ";
     else if (in_recent_)  hdr = " [Recently Played] ";
     else if (in_favs_)    hdr = " [FAVs] (f:fav/unfav  Enter:play  Del:remove) ";
     else if (in_radio_)   hdr = " [Radio] (Enter:play  d/Del:remove) ";
@@ -1971,9 +2035,14 @@ void UIManager::drawDirBrowser() {
         int idx = dir_scroll_ + i;
         if (idx >= (int)dir_entries_.size()) break;
         const auto& name    = dir_entries_[(size_t)idx];
-        const auto& display = (idx < (int)dir_display_.size())
+        std::string display = (idx < (int)dir_display_.size())
                             ? dir_display_[(size_t)idx] : name;
         bool cursor = (idx == dir_cursor_);
+        // Inline eject hint: highlighted row only, only for a CD drive with media
+        // (cached at enumeration - see enterDriveList). Rows go through the wide
+        // path (utf8_to_wide -> mvwaddnwstr), so the eject glyph renders for real.
+        if (in_drive_list_ && cursor && driveHasMedia(name))
+            display += "  ⏏ Shift+E";
         bool is_dir = in_drive_list_
                     || name == ".." || name == "[Drives]" || name == "[Recent]"
                     || name == "[FAVs]" || name == "[Bookmarks]" || name == "[Back]"
@@ -2354,6 +2423,7 @@ void UIManager::drawHelp() {
         { "F3",             "Follow the playing track (cursor tracks the song)" },
         { "F7  /  F8",      "Awesome theme: previous / next" },
         { "F12",            "Refresh the [Drives] list (pick up hot-plugged drives)" },
+        { "E  (Shift+E)",   "Eject highlighted CD drive (in [Drives])" },
 #ifdef PDCURSES
         { "Alt+Enter",      "Toggle fullscreen (borderless)"      },
 #endif
@@ -4610,7 +4680,7 @@ void UIManager::handleInput(int ch) {
     // EQ pane
     if (right_pane_ == RightPane::EQ) {
         switch (ch) {
-            case 'e': case 'E': case 27:
+            case 'e': case 27:   // E freed for eject (was a pure dupe of e)
                 right_pane_ = RightPane::Playlist; return;
             case 17: audio_.stop(); running_ = false; return;
             case ' ': audio_.togglePause(); return;
@@ -4886,7 +4956,7 @@ void UIManager::handleInput(int ch) {
                 right_pane_ = RightPane::Playlist;
                 info_cached_path_.clear();
                 return;
-            case 'e': case 'E': {
+            case 'e': {   // E freed for eject (was a pure dupe of e)
                 // Enter edit mode — only for real files, not CD tracks, not currently playing
                 std::size_t idx;
                 if (focus_ == Pane::Playlist && pl_cursor_ < (int)playlist_.size()) {
@@ -5134,6 +5204,17 @@ void UIManager::handleInput(int ch) {
                 }
                 showTrackToast("Drives refreshed", "", "");
                 redraw_needed_.store(true);
+            }
+            break;
+        case 'E':   // Shift+E — eject the highlighted CD drive ([Drives] only)
+            // Per-pane key meaning (like d / K / J): e stays EQ / tag-edit
+            // everywhere; E acts only in [Drives], and only on a row the eject
+            // hint is shown for (CD drive with media at last enumeration).
+            if (in_drive_list_ && dir_cursor_ >= 0
+                && dir_cursor_ < (int)dir_entries_.size()) {
+                const std::string& drv = dir_entries_[(size_t)dir_cursor_];
+                if (driveHasMedia(drv)) ejectDrive(drv);
+                // else: no hint was shown - silent no-op
             }
             break;
 #ifdef PDCURSES
@@ -5390,7 +5471,7 @@ void UIManager::handleInput(int ch) {
                 right_pane_ = RightPane::Devices;
             }
             break;
-        case 'e': case 'E':
+        case 'e':   // E freed for eject in [Drives] (was a pure dupe of e)
             if (right_pane_ == RightPane::EQ)
                 right_pane_ = RightPane::Playlist;
             else
@@ -6504,6 +6585,27 @@ void UIManager::enterDriveList() {
     dir_display_.insert(dir_display_.begin(), "[Recent]");
     dir_cursor_    = 0;
     dir_scroll_    = 0;
+
+    // Media detection for the Shift+E eject hint - ONCE, here, at enumeration
+    // time (entering [Drives] or F12), NEVER polled: a CHECK_VERIFY-class probe
+    // repeated on an idle drive spins it up audibly (probe B2 / slice 1). Each
+    // CD drive gets one seam open + one mediaPresent, both user-triggered.
+    // Concurrent opens of a drive CDSource holds are contract (see CdIoWin).
+    cd_drives_with_media_.clear();
+    for (const auto& e : dir_entries_) {
+        std::string spec;
+#ifdef _WIN32
+        if (e.size() >= 2 && e[1] == ':') {
+            std::wstring w(e.begin(), e.end());
+            if (GetDriveTypeW(w.c_str()) == DRIVE_CDROM) spec = e.substr(0, 1);
+        }
+#else
+        if (e.rfind("/dev/sr", 0) == 0) spec = e.substr(5);   // "sr0"
+#endif
+        if (spec.empty()) continue;
+        if (auto dev = core::cdio().open(spec); dev && dev->mediaPresent())
+            cd_drives_with_media_.push_back(e);
+    }
 }
 
 void UIManager::activateDrive(const std::string& drive_entry) {

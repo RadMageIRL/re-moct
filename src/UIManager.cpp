@@ -5587,6 +5587,13 @@ void UIManager::handleInput(int ch) {
                 if (pl_cursor_ > 0) --pl_cursor_;   // scroll follows via the draw-time invariant
                 // Prevent cursor sync from snapping us away
                 last_playlist_current_for_sync_ = (int)playlist_.current();
+                // Keep the follow-sync from stealing the cursor onto the playing
+                // track when the move shifts its row index - we are deliberately
+                // moving pl_cursor_ ourselves. Refreshing the marker means the
+                // follow-sync sees the new position as already accounted for; if
+                // the moved track IS the playing one, cursor and marker move
+                // together, so it still rides.
+                if (auto npr = nowPlayingRow()) last_now_playing_row_ = (int)*npr;
             }
             break;
         case 'J':   // move track down (was D)
@@ -5594,6 +5601,8 @@ void UIManager::handleInput(int ch) {
                 playlist_.moveDown((std::size_t)pl_cursor_);
                 if (pl_cursor_ + 1 < (int)playlist_.size()) ++pl_cursor_;   // scroll follows via the invariant
                 last_playlist_current_for_sync_ = (int)playlist_.current();
+                // Same follow-sync marker refresh as K above.
+                if (auto npr = nowPlayingRow()) last_now_playing_row_ = (int)*npr;
             }
             break;
         case 'd':
@@ -5612,6 +5621,9 @@ void UIManager::handleInput(int ch) {
                 // index; resync the marker so the follow logic doesn't read it as
                 // a track change and snap the cursor to the playing row.
                 last_playlist_current_for_sync_ = (int)playlist_.current();
+                // Same for the follow-sync marker (same family as the K/J fix):
+                // the deletion shifted the playing row's index, not the track.
+                if (auto npr = nowPlayingRow()) last_now_playing_row_ = (int)*npr;
             }
             else if (focus_ == Pane::DirBrowser && in_radio_
                      && dir_cursor_ < (int)dir_entries_.size()) {

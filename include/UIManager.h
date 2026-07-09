@@ -158,6 +158,11 @@ private:
     int pl_scroll_ = 0;
     int pl_cursor_ = 0;
     int last_playlist_current_for_sync_ = 0;  // for move-up/down cursor fix
+    // Last nowPlayingRow() seen by the run-loop follow-sync (-1 = none). The
+    // F3 cursor snap triggers on a CHANGE in this, not in playlist_.current():
+    // starting a stream never moves current(), so song->radio / CD->radio were
+    // invisible to a current()-gated snap. -1 resets when nothing is playing.
+    int last_now_playing_row_ = -1;
 
     // The playlist row currently PLAYING, stream-aware - unlike playlist_.current(),
     // which is a raw index and goes stale in stream mode (audio_.currentTrack() still

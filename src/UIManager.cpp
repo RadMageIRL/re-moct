@@ -1245,17 +1245,29 @@ void UIManager::run() {
                     if (config_.toast_enabled)
                         showTrackToast(track.title, track.artist, track.album);
                 }
-                // Follow-the-playing-row (F3). Keyed off nowPlayingRow(), NOT cur:
-                // cur is playlist_.current(), the stale file index in stream mode, so a
-                // file->radio switch would snap to the old file row. nullopt (queue-
-                // launched station, nothing playing) => cursor stays put. Only the
-                // cursor move is gated; the sync marker + toast above run regardless.
-                if (config_.follow_playing) {
-                    if (auto row = nowPlayingRow(); row && pl_cursor_ != (int)*row) {
-                        pl_cursor_ = (int)*row;   // scroll follows via the draw-time invariant (slice 5)
+            }
+        }
+
+        // Follow-the-playing-row (F3): snap the cursor on ANY now-playing change
+        // (file, CD, stream), not just playlist_.current() changes - starting a
+        // stream never moves current(), so a song->radio or CD->radio transition
+        // was invisible to the cur-gated block above (launch sites set pl_cursor_
+        // directly, which is why launching a station worked). Keyed off
+        // nowPlayingRow() as before: nullopt (queue-launched station, nothing
+        // playing) resets the marker and leaves the cursor put. Runs every tick;
+        // nowPlayingRow() is one playlist scan. The cursor snap has exactly one
+        // owner - this block; scroll follows via the draw-time invariant (slice 5).
+        if (config_.follow_playing) {
+            if (auto row = nowPlayingRow(); row) {
+                if ((int)*row != last_now_playing_row_) {
+                    last_now_playing_row_ = (int)*row;
+                    if (pl_cursor_ != (int)*row) {
+                        pl_cursor_ = (int)*row;
                         redraw_needed_.store(true);
                     }
                 }
+            } else {
+                last_now_playing_row_ = -1;
             }
         }
 

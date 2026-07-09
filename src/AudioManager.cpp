@@ -1110,6 +1110,13 @@ bool AudioManager::openCD(const std::string& drive_letter) {
     teardown();
     teardownNext();
     track_ended_flag_.store(false);
+    // Entering CD mode means no file is the current track. Clear it so a stale
+    // file identity can't leak into the UI while a CD plays - nowPlayingRow()
+    // would resolve the old file's playlist row and the F3 follow-sync would
+    // yank the cursor there on every CD track change (seen on CD->file->CD
+    // round-trips once Slice 3 made mixed CD+file playlists persistent). Same
+    // rationale, same fix as the radio path (startStreamConnectLocked).
+    current_track_ = {};
     if (!cd_source_.open(drive_letter)) return false;
     cd_mode_.store(true);
     // Live-BPM accumulation window (mono, 44100 Hz) — sized once per CD session.

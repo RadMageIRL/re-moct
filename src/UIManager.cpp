@@ -2005,6 +2005,18 @@ void UIManager::drawDirBrowser() {
 
 std::optional<std::size_t> UIManager::nowPlayingRow() const {
     if (audio_.state() == PlaybackState::Stopped) return std::nullopt;
+    // CD mode: currentTrack() carries no CD identity (openCD clears it), so map
+    // the playing track number to its playlist row directly - the same
+    // cdTrackNumber(path) match drawTitleBar uses for the CD title. This is what
+    // lets the lit row and the F3 follow-sync track CD playback (including CD
+    // auto-advance and file->CD returns) like every other source.
+    if (audio_.cdMode()) {
+        int t = audio_.cdCurrentTrack();
+        if (t <= 0) return std::nullopt;
+        for (std::size_t i = 0; i < playlist_.size(); ++i)
+            if (cdTrackNumber(playlist_.at(i).path) == t) return i;
+        return std::nullopt;   // queue-launched CD track: no row, lights nothing
+    }
     const bool stream = audio_.streamMode();
     const std::string want = stream ? audio_.streamUrl()
                                     : audio_.currentTrack().path;

@@ -136,14 +136,32 @@
   this way during the slice-4 ICY regression gate (a missed update on one transition,
   station-side). Related parked items: ICY metadata improvement is a structural
   protocol limit; ICY ingest sanitization (station-ID stripping) - see `roadmap.md`.
+
+## Playlist cursor / follow / tag edits (the fix-plan queue)
+- **Follow the now-playing answer, never a proxy for it.** Three separate cursor bugs -
+  the lit row and cursor yanking to a stale FILE row while a CD played, file->CD not
+  following because `nowPlayingRow()` had no CD branch (7dbb662), and song/CD->radio
+  never snapping because the follow-sync watched `playlist_.current()`, a raw index
+  that starting a stream never moves (91817b8) - were all the same mistake: inferring
+  "which row is playing" from `current()` or a stale `currentTrack().path` instead of
+  asking `nowPlayingRow()`, the one function that answers it correctly for every
+  source (file by path, stream by URL, CD by track number). The fix in each case was
+  to route through `nowPlayingRow()`. Derived state beats event plumbing: the
+  follow-sync now does one per-tick comparison of `nowPlayingRow()` against a
+  `last_now_playing_row_` marker, so any future source gets follow behaviour for free
+  the moment `nowPlayingRow()` understands it - no transition path has to notify the
+  cursor. When a follow/display behaviour works for some sources and not others,
+  suspect a missing per-source branch or a proxy variable; do NOT rationalise it as a
+  "display nuance" - it was mistaken for exactly that twice before the third head
+  surfaced the family.
 - **`current()` is an index identity; `nowPlayingRow()` is a display target - they
   are deliberately NOT the same function.** `playlist_.current()` goes stale in
   stream mode (`currentTrack()` holds the last file; a queue-launched station has no
   row) but is still the correct anchor for seek-stamp and auto-advance, which reason
   about index identity, not what's on screen. `UIManager::nowPlayingRow()` is the
-  canonical "which row is lit / shown" test (stream-aware; nullopt when nothing plays
-  or the stream matches no row). Do NOT merge them - a UI fix must not silently change
-  auto-advance's notion of the current index. (Slice 4.)
+  canonical "which row is lit / shown" test (source-aware; nullopt when nothing plays
+  or the playing source matches no row). Do NOT merge them - a UI fix must not silently
+  change auto-advance's notion of the current index. (Slice 4.)
 - **`pl_scroll_` has exactly one owner: `ensurePlaylistCursorVisible()`.** The playlist
   scroll offset used to be maintained by a dozen hand-rolled "if cursor < scroll, nudge"
   fragments plus cursor-blind `pl_scroll_ = 0` resets; any path that moved the cursor
@@ -152,20 +170,24 @@
   at the top of `drawPlaylist()`. Do not reintroduce per-handler scroll math - move the
   cursor, let the draw reveal it. (There is no PgUp/PgDn/wheel path that moves scroll
   independent of the cursor, so draw-time enforcement is sufficient; if one is ever added,
-  it must call the invariant on the cursor mutation.) (Slice 5.)
+  it must call the invariant on the cursor mutation.) (Slice 5.) The same one-owner
+  discipline now covers the follow snap on `pl_cursor_`: the every-tick follow-sync
+  block is its single owner (91817b8).
 - **The `d`-delete "was this the playing row" test must use `nowPlayingRow()`, not
   `current()`.** `current()` is the stale file index in stream mode, so the old test could
   `stop()` a stream when deleting an unrelated row (or fail to stop when deleting the
   actually-playing file). (Slice 5.)
-- **Follow-the-playing-row (F3, `follow_playing`, default ON) keys off `nowPlayingRow()`,
-  not `current()`.** `current()` is the stale file index in stream mode, so a file->radio
-  switch would snap the cursor to the old file row. Only the cursor move is gated by
-  `follow_playing`; track announcement (toast, `recordPlay`, the `last_playlist_current_for_sync_`
-  marker) is unconditional - those announce the track, they don't chase it. A
-  queue-launched station returns nullopt, so the cursor stays put (no row to follow).
-  EVERY track-change cursor move must respect the toggle, not just auto-advance: the
-  manual n/p (next/prev) handlers also gate their `pl_cursor_ = current()` on
-  `follow_playing`, or OFF looks identical to ON when you change tracks by hand. (Slice 6.)
+- **Follow-the-playing-row (F3, `follow_playing`, default ON) snaps on a CHANGE in
+  `nowPlayingRow()`, observed every tick - never on a change in `current()`.** Starting
+  a stream doesn't move `current()`, so a `current()`-gated snap is blind to song->radio
+  and CD->radio transitions (launch sites setting `pl_cursor_` directly masked this for
+  years). Only the cursor move is gated by `follow_playing`; track announcement (toast,
+  `recordPlay`, the `last_playlist_current_for_sync_` marker) stays `current()`-keyed and
+  unconditional - those announce the track, they don't chase it. A queue-launched station
+  returns nullopt, which resets the follow marker and leaves the cursor put. EVERY
+  track-change cursor move must respect the toggle, not just auto-advance: the manual n/p
+  handlers also gate their cursor set on `follow_playing`, or OFF looks identical to ON
+  when you change tracks by hand. (Slice 6; mechanism finalized in 91817b8.)
 - **`TagLib::FileRef::save()` returns bool; on Windows a locked-file write returns false
   without throwing.** The old `saveTagEdits()` discarded the return inside a `catch(...)`
   and then updated the playlist title + cleared the info cache unconditionally - so a
@@ -201,6 +223,16 @@
   (Discord URLs). httpGet caps body at 10MB and rejects truncated-on-cap bodies.
 
 ## Process / workflow lessons
+- **The disconfirmation discipline pays for itself.** Briefs assert mechanisms at
+  file:line anchors; the implementer reads the tree and confirms each before coding,
+  and a mechanism divergence is a full stop, not a footnote. In the fix-plan queue it
+  caught a placebo fix before it shipped (a prescribed closeCD->stop swap at the
+  file-switch sites traced to functions that were already behaviourally identical -
+  the real bug was a transient openCD failure escalating into the eject purge) and
+  turned Slice 3's prescribed `cd_loaded_` atomic into the leaner reuse of
+  `cd_drive_letter_` (one source of truth instead of two that can desync). "The brief
+  is wrong" is a valid, expected outcome; where the tree and the brief disagree, the
+  tree wins.
 - **Additive-only.** Full-file replacements built on a stale baseline silently drop
   prior work. Build on the files Dos uploads in the same turn; prefer tight diffs when
   the base isn't re-uploaded.

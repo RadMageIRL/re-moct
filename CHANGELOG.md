@@ -5,6 +5,58 @@ All notable changes to RE-MOCT are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.1] - 2026-07-08
+
+Fix release: the playlist keymap change (move-track is now **K** / **J**), a
+follow-the-playing-track toggle (**F3**), and a batch of fixes - a stopped CD no
+longer unloads, the cursor follows the playing track across every source, tag
+saves are honest about failure, and cover art keeps its colours across theme
+changes.
+
+### Changed
+
+- **Move-track keys are now K / J** (was u / D); **u**, **U**, and **D** are no
+  longer bound. **d** still deletes. Frees the lowercase keys and matches the
+  j/k movement family.
+- The title-bar **[CD]** tag and album name now persist while a disc is loaded
+  but stopped - a stopped disc is still a loaded disc.
+
+### Added
+
+- **F3 - follow the playing track** (default on): the playlist cursor tracks the
+  now-playing row on every track change - manual, auto-advance, file, CD, or
+  radio. Turn it off to browse freely while music plays; announcements and
+  scrobbling are unaffected by the toggle.
+
+### Fixed
+
+- **Stopping a CD no longer unloads it.** The track list and MusicBrainz titles
+  survive a stop (they used to vanish ~6 seconds later); play, **Ctrl+R** lookup,
+  and **Ctrl+Y** rip all work on a stopped disc by reopening the drive on demand.
+  The drive is left untouched while stopped, so it never spins up idle; a
+  transient drive hiccup on reopen retries instead of unloading the disc, and a
+  disc ejected while stopped is detected (and the list cleared) on the next
+  action.
+- **The playlist cursor and lit-row indicator now follow the playing track across
+  every source transition** - song->radio, CD->radio, file<->CD, and both
+  auto-advance paths. Previously the indicator could stick to (or the cursor
+  snap back to) a stale row after switching source; three related bugs, one
+  root cause, all fixed.
+- **Cover art keeps its colours.** Art no longer discolours after a theme change
+  or reload (Ctrl+T / ~ / F7 / F8), and on covers too busy for the colour-pair
+  budget the overflow now picks the nearest existing colour instead of a wrong
+  one.
+- **Tag saves are honest.** A failed save (e.g. the file is locked by playback)
+  now warns and leaves the UI unchanged instead of showing success while the
+  disk kept the old tags.
+- The **Ctrl+Y** rip and **Ctrl+F** search overlays are themed in Awesome mode
+  (they rendered unthemed/plain before).
+- The playlist cursor can no longer end up highlighted but scrolled offscreen
+  (radio-add, CD-eject, and similar paths); **d**-delete on an unrelated row no
+  longer stops a playing stream.
+
+[1.1.1]: https://github.com/RadMageIRL/re-moct/releases/tag/1.1.1
+
 ## [1.1.0] - 2026-07-05
 
 Feature release: cover art in the Info pane, a segmented "80s LED" spectrum mode,

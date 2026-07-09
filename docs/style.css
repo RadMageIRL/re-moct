@@ -1,0 +1,469 @@
+/* ===========================================================================
+   RE-MOCT shared stylesheet
+   Single source of truth for index.html and docs/RE-MOCT-doc.html.
+   Edit here once; both pages update. Placed at web repo root; linked as
+   <link rel="stylesheet" href="/style.css">.
+   =========================================================================== */
+
+  :root {
+    --bg:        #0d0d0d;
+    --surface:   #141414;
+    --border:    #222;
+    --accent:    #00d4aa;
+    --accent2:   #005f4e;
+    --dim:       #444;
+    --muted:     #666;
+    --text:      #ccc;
+    --bright:    #eee;
+    --warn:      #e6a817;
+    --danger:    #c0392b;
+    --mono:      'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace;
+    --sans:      'Inter', 'Segoe UI', system-ui, sans-serif;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--sans);
+    font-size: 14px;
+    line-height: 1.65;
+  }
+
+  /* ── Layout ── */
+  .layout { display: flex; min-height: 100vh; }
+
+  nav {
+    width: 220px;
+    flex-shrink: 0;
+    background: var(--surface);
+    border-right: 1px solid var(--border);
+    position: sticky;
+    top: 0;
+    height: 100vh;
+    overflow-y: auto;
+    padding: 24px 0 48px;
+  }
+
+  nav .logo {
+    font-family: var(--mono);
+    font-size: 15px;
+    color: var(--accent);
+    padding: 0 20px 24px;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 16px;
+    letter-spacing: 0.08em;
+  }
+  nav .logo span { color: var(--muted); font-size: 11px; display: block; margin-top: 2px; letter-spacing: 0; }
+
+  nav a {
+    display: block;
+    padding: 6px 20px;
+    color: var(--muted);
+    text-decoration: none;
+    font-size: 13px;
+    transition: color 0.15s;
+  }
+  nav a:hover { color: var(--accent); }
+  nav .nav-section {
+    font-size: 10px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--dim);
+    padding: 16px 20px 4px;
+  }
+
+  main {
+    flex: 1;
+    max-width: 860px;
+    padding: 48px 48px 96px;
+  }
+
+  /* ── Typography ── */
+  h1 {
+    font-family: var(--mono);
+    font-size: 28px;
+    color: var(--accent);
+    letter-spacing: 0.04em;
+    margin-bottom: 8px;
+  }
+  h1 .version {
+    font-size: 13px;
+    color: var(--muted);
+    margin-left: 12px;
+    letter-spacing: 0;
+    font-weight: 400;
+  }
+
+  h2 {
+    font-family: var(--mono);
+    font-size: 16px;
+    color: var(--bright);
+    margin: 48px 0 16px;
+    padding-bottom: 8px;
+    border-bottom: 1px solid var(--border);
+    letter-spacing: 0.04em;
+  }
+
+  h3 {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--accent);
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    margin: 28px 0 10px;
+  }
+
+  p { margin-bottom: 12px; color: var(--text); }
+
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+
+  /* ── Components ── */
+  .hero {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--accent);
+    padding: 20px 24px;
+    margin-bottom: 32px;
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--muted);
+    line-height: 1.6;
+    overflow: hidden;
+    white-space: nowrap;
+  }
+  .hero-line {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    overflow: hidden;
+  }
+  .hero-line .left  { flex-shrink: 0; }
+  .hero-line .right { color: var(--bright); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .hero .hl  { color: var(--accent); }
+  .hero .hi  { color: var(--bright); }
+  .hero .dim { color: var(--dim); }
+  .hero .sep { display: block; height: 4px; }
+
+  .tag {
+    display: inline-block;
+    background: var(--accent2);
+    color: var(--accent);
+    font-family: var(--mono);
+    font-size: 10px;
+    padding: 2px 7px;
+    border-radius: 3px;
+    letter-spacing: 0.06em;
+    vertical-align: middle;
+  }
+
+  .badge-row { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 20px; }
+  .badge {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    color: var(--muted);
+    font-family: var(--mono);
+    font-size: 11px;
+    padding: 3px 10px;
+    border-radius: 3px;
+  }
+  .badge b { color: var(--bright); }
+
+  /* Key binding tables */
+  .kb-section { margin-bottom: 8px; }
+
+  .kb-group {
+    font-size: 10px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin: 20px 0 6px;
+    font-weight: 600;
+  }
+
+  .kb {
+    display: grid;
+    grid-template-columns: 160px 1fr;
+    gap: 0;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    overflow: hidden;
+  }
+  .kb-row {
+    display: contents;
+  }
+  .kb-row:nth-child(even) .kb-key,
+  .kb-row:nth-child(even) .kb-desc {
+    background: #111;
+  }
+  .kb-key {
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--bright);
+    padding: 6px 12px;
+    border-right: 1px solid var(--border);
+    white-space: nowrap;
+  }
+  .kb-desc {
+    font-size: 12px;
+    color: var(--text);
+    padding: 6px 12px;
+  }
+
+  /* Feature cards */
+  .card-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+    gap: 12px;
+    margin-top: 12px;
+  }
+  .card {
+    background: #161616;
+    border: 1px solid #2c2c2c;
+    border-radius: 4px;
+    padding: 14px 16px;
+  }
+  .card-title {
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--accent);
+    margin-bottom: 6px;
+  }
+  .card p { font-size: 12px; color: var(--text); margin: 0; }
+
+  /* Format pills */
+  .format-list { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+  .fmt {
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--bright);
+    background: #1a1a1a;
+    border: 1px solid var(--border);
+    padding: 2px 8px;
+    border-radius: 3px;
+  }
+  .fmt.theme { color: var(--accent); }
+
+  /* Notes / warnings */
+  .note {
+    background: #111a18;
+    border-left: 3px solid var(--accent);
+    padding: 10px 14px;
+    font-size: 12px;
+    color: var(--text);
+    margin: 12px 0;
+    border-radius: 0 3px 3px 0;
+  }
+  .warn {
+    background: #1a1600;
+    border-left: 3px solid var(--warn);
+    padding: 10px 14px;
+    font-size: 12px;
+    color: var(--text);
+    margin: 12px 0;
+    border-radius: 0 3px 3px 0;
+  }
+
+  code {
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--accent);
+    background: #111;
+    padding: 1px 5px;
+    border-radius: 3px;
+  }
+
+  pre {
+    font-family: var(--mono);
+    font-size: 12px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    padding: 16px;
+    border-radius: 4px;
+    overflow-x: auto;
+    color: var(--text);
+    margin: 12px 0;
+    line-height: 1.6;
+  }
+
+  .section-anchor { scroll-margin-top: 24px; }
+
+  hr {
+    border: none;
+    border-top: 1px solid var(--border);
+    margin: 40px 0;
+  }
+
+/* ===========================================================================
+   Landing-page-only components (top nav bar, hero terminal, CTA buttons,
+   two-mode split panels, badges). Harmless/unused on the docs page.
+   =========================================================================== */
+
+  .bar {
+    max-width: 940px;
+    margin: 0 auto;
+    padding: 14px 24px;
+    display: flex;
+    align-items: center;
+    gap: 20px;
+  }
+  .bar .brand {
+    font-family: var(--mono);
+    font-size: 15px;
+    color: var(--accent);
+    letter-spacing: 0.08em;
+    margin-right: auto;
+    text-decoration: none;
+  }
+  .bar .brand .v { color: var(--muted); font-size: 11px; letter-spacing: 0; margin-left: 8px; }
+  .bar a.nav {
+    color: var(--muted);
+    text-decoration: none;
+    font-size: 13px;
+    transition: color 0.15s;
+  }
+  .bar a.nav:hover { color: var(--accent); }
+
+  /* ── Layout ── */
+  .wrap { max-width: 940px; margin: 0 auto; padding: 56px 24px 96px; }
+  section { scroll-margin-top: 72px; }
+
+  /* ── Typography ── */
+  h1 {
+    font-family: var(--mono);
+    font-size: 34px;
+    color: var(--accent);
+    letter-spacing: 0.04em;
+    margin-bottom: 10px;
+  }
+  h1 .version {
+    font-size: 13px;
+    color: var(--muted);
+    margin-left: 12px;
+    letter-spacing: 0;
+    font-weight: 400;
+  }
+  .tagline {
+    font-family: var(--mono);
+    font-size: 13px;
+    color: var(--muted);
+    margin-bottom: 20px;
+  }
+  h2 {
+    font-family: var(--mono);
+    font-size: 16px;
+    color: var(--bright);
+    margin: 56px 0 16px;
+    padding-bottom: 8px;
+    border-bottom: 1px solid var(--border);
+    letter-spacing: 0.04em;
+  }
+  h3 {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--accent);
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    margin: 28px 0 10px;
+  }
+  p { margin-bottom: 12px; color: var(--text); }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  .lede { font-size: 15px; max-width: 68ch; }
+  .badge-row { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 24px; }
+  .badge {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    color: var(--muted);
+    font-family: var(--mono);
+    font-size: 11px;
+    padding: 3px 10px;
+    border-radius: 3px;
+  }
+  .badge b { color: var(--bright); }
+
+  /* ── Hero terminal ── */
+  .hero {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--accent);
+    padding: 20px 24px;
+    margin-bottom: 32px;
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--muted);
+    line-height: 1.6;
+    overflow: hidden;
+    white-space: nowrap;
+  }
+  .hero-line {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    overflow: hidden;
+  }
+  .hero-line .left  { flex-shrink: 0; }
+  .hero-line .right { color: var(--bright); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .hero .hl  { color: var(--accent); }
+  .hero .hi  { color: var(--bright); }
+  .hero .dim { color: var(--dim); }
+  .hero .sep { display: block; height: 4px; }
+  .caret {
+    display: inline-block;
+    width: 7px;
+    height: 12px;
+    background: var(--accent);
+    vertical-align: -1px;
+    animation: blink 1.1s steps(1) infinite;
+  }
+  @keyframes blink { 0%,49% { opacity: 1; } 50%,100% { opacity: 0; } }
+  @media (prefers-reduced-motion: reduce) { .caret { animation: none; } }
+
+  /* ── CTA ── */
+  .cta-row { display: flex; gap: 10px; flex-wrap: wrap; margin: 24px 0 8px; }
+  .btn {
+    font-family: var(--mono);
+    font-size: 12px;
+    letter-spacing: 0.06em;
+    padding: 9px 18px;
+    border-radius: 3px;
+    border: 1px solid var(--border);
+    background: var(--surface);
+    color: var(--text);
+    text-decoration: none;
+    transition: border-color 0.15s, color 0.15s, background 0.15s;
+  }
+  .btn:hover { text-decoration: none; border-color: var(--accent); color: var(--accent); }
+  .btn.primary {
+    background: var(--accent2);
+    border-color: var(--accent2);
+    color: var(--accent);
+  }
+  .btn.primary:hover { background: #00776180; border-color: var(--accent); }
+  .cta-note { font-size: 11px; color: var(--dim); font-family: var(--mono); margin-top: 4px; }
+  .split {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+    margin-top: 12px;
+  }
+  @media (max-width: 720px) { .split { grid-template-columns: 1fr; } }
+  .panel {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 18px 20px;
+  }
+  .panel.left-accent  { border-left: 3px solid var(--muted); }
+  .panel.left-accent2 { border-left: 3px solid var(--accent); }
+  .panel h4 {
+    font-family: var(--mono);
+    font-size: 13px;
+    color: var(--bright);
+    margin-bottom: 4px;
+    letter-spacing: 0.04em;
+  }
+  .panel .sub { font-family: var(--mono); font-size: 10px; color: var(--dim); letter-spacing: 0.12em; text-transform: uppercase; margin-bottom: 10px; }
+  .panel p { font-size: 12px; color: var(--muted); margin: 0; }

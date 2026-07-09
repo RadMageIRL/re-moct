@@ -74,6 +74,54 @@
 - `AR_SKIP = 2940` (not 2941). CRCv2 = `csum_lo + csum_hi`.
 - The negative drive-offset OOB read is real but BLOCKED on testing (Dos's drive is
   +6); needs a synthetic negative-offset vector. Don't patch blind.
+- **The HL-DT-ST/LG/HLDS drive family holds a soft media-removal lock after raw
+  reads that a bare `CloseHandle` does not clear** - the physical eject button
+  stays dead for several seconds after stop ("push it repeatedly"); an Asus
+  SDRW-08U7M-U releases cleanly from the identical code path, which is what
+  localized the difference to drive firmware, not our close logic. Fix: clear the
+  lock explicitly before closing - `IOCTL_STORAGE_MEDIA_REMOVAL` with
+  `PreventMediaRemoval = FALSE` in `~WinCdDevice()`, return value ignored
+  (best-effort; harmless on drives that don't need it). The destructor runs on
+  every `dev_.reset()`, so the tray is handed back whenever RE-MOCT lets go of
+  the drive. Windows-only semantics; the SG_IO path has no such lock.
+  Hardware-confirmed 2026-07-09: the GHD3N releases promptly after stop with the
+  unlock (it was error-1-locked to even software eject before). Deliberate
+  non-goal: the drives differ on eject DURING playback (the Asus allows it, the
+  HL-DT requires stop first) - that is firmware behaviour, not a defect; do not
+  try to normalize it.
+- **Shift+E eject: E was a pure dupe of e (same case line at all three sites -
+  EQ toggle x2, tag-edit entry), so freeing it cost nothing** - e alone still
+  does EQ and tag-edit everywhere; E acts only in [Drives], per-pane key meaning
+  like d / K / J. Media detection for the eject hint is computed ONCE per drive
+  enumeration (entering [Drives] / F12) and cached in cd_drives_with_media_ -
+  NEVER polled, or the CHECK_VERIFY-class probe reintroduces the slice-1 idle
+  drive spin-up. Consequence, by design: insert a disc while sitting in [Drives]
+  and the hint waits for F12. Eject goes through the seam (`ICdDevice::eject()`,
+  defaulted virtual so test fakes keep compiling): IOCTL_STORAGE_EJECT_MEDIA on
+  Windows (allow-removal first, same as the destructor unlock), START STOP UNIT
+  0x1B LoEj on Linux. Ejecting the loaded disc stop-first + full slice-3 unload;
+  ejecting mid-rip is REFUSED (the rip owns the platter).
+- **On a lock-on-read drive, never "recover" a failed eject with reads.** The
+  HL-DT refuses software eject (firmware) AND its failed eject wedges the
+  physical button. A wedge-breaker that reproduced the play->stop shape with a
+  fresh handle + TOC + raw read made it WORSE: raw reads RE-ASSERT the soft
+  media-removal lock on this family, so the "recovery" deepened the wedge and
+  poisoned the real play->stop release too (hardware-tested, reverted). What
+  play->stop actually provides is settle-time around the reads, not the reads.
+  The shipped behaviour: eject() does unlock -> eject -> unlock-on-fail, the
+  destructor unlock stays unconditional, the failure path does NOTHING else,
+  and the toast tells the truth ("This drive won't eject by software - stop
+  playback and use the drive button"). Asus-class drives never hit any of
+  this - their eject succeeds.
+- **Drive hot-plug is not auto-detected - F12 is the manual refresh.** `[Drives]`
+  only rebuilds on entry (`enterDriveList()`), and the periodic dir re-scan
+  deliberately skips the drive list, so a USB drive plugged in mid-session never
+  appears until re-entry. F12 just re-runs the existing `enterDriveList()`
+  rebuild (idempotent - flags + list + cursor reset), restoring the cursor onto
+  the previously-selected entry when it survives the refresh. Note the browser
+  pane has NO draw-time scroll invariant (unlike the playlist's slice-5 one):
+  j/k nudge `dir_scroll_` per-handler, so anything that moves `dir_cursor_`
+  behind the draw's back must re-clamp `dir_scroll_` itself.
 - **Stopping a transport is not unmounting a device. (Slice 3)** `cd_mode_` means "CD is
   the active audio source." `stop()` correctly closes the drive handle - probe B2: holding
   it open idle spins the drive up audibly, and the syscall returns before the motor is at
@@ -188,6 +236,16 @@
   track-change cursor move must respect the toggle, not just auto-advance: the manual n/p
   handlers also gate their cursor set on `follow_playing`, or OFF looks identical to ON
   when you change tracks by hand. (Slice 6; mechanism finalized in 91817b8.)
+- **Playlist search (\) is pick-to-jump, deliberately NOT a filter.** The results
+  overlay holds REAL playlist indices; picking one is a single `pl_cursor_`
+  assignment (scroll = the slice-5 invariant, follow = untouched since nothing
+  about what's playing changes). Narrowing the list instead would create a
+  display-index/real-index duality across every playlist system (move, delete,
+  lit-row, follow) - the exact proxy-vs-direct class the three cursor bugs came
+  from. Both halves reuse existing machinery: the goto InputMode line (one enum
+  value + one prompt + one confirm case) and the Bookmarks-popup results
+  pattern. Match against `display_title` - the text the row actually shows -
+  never re-derived tags, or search finds things the user can't see.
 - **`TagLib::FileRef::save()` returns bool; on Windows a locked-file write returns false
   without throwing.** The old `saveTagEdits()` discarded the return inside a `catch(...)`
   and then updated the playlist title + cleared the info cache unconditionally - so a

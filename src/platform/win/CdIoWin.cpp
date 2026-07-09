@@ -27,7 +27,23 @@ class WinCdDevice final : public core::ICdDevice {
 public:
     explicit WinCdDevice(HANDLE h) : h_(h) {}
     ~WinCdDevice() override {
-        if (h_ != INVALID_HANDLE_VALUE) CloseHandle(h_);
+        if (h_ != INVALID_HANDLE_VALUE) {
+            // Explicitly clear any soft media-removal lock before closing. Some
+            // drives (HL-DT-ST/LG/HLDS family) hold the tray after raw reads
+            // until told to release; a bare CloseHandle leaves the physical
+            // eject button dead for several seconds ("push it repeatedly").
+            // Best-effort by design: the return value is ignored - a drive that
+            // doesn't need or support this errors harmlessly, and we are closing
+            // either way. Fires on every dev_.reset() (stop/closeCD/eject), i.e.
+            // whenever RE-MOCT lets go of the drive - exactly when the tray
+            // should become the user's again.
+            PREVENT_MEDIA_REMOVAL pmr {};
+            pmr.PreventMediaRemoval = FALSE;
+            DWORD bytes = 0;
+            DeviceIoControl(h_, IOCTL_STORAGE_MEDIA_REMOVAL,
+                            &pmr, sizeof(pmr), nullptr, 0, &bytes, nullptr);
+            CloseHandle(h_);
+        }
     }
 
     bool readToc(core::CdToc& out) override {
@@ -99,6 +115,29 @@ public:
         DWORD dummy = 0;
         return DeviceIoControl(h_, IOCTL_CDROM_CHECK_VERIFY,
                                nullptr, 0, nullptr, 0, &dummy, nullptr) != 0;
+    }
+
+    bool eject() override {
+        // Sequence: unlock -> eject -> on FAILURE unlock again. Invariant
+        // (HL-DT regression, found on hardware): a failed
+        // IOCTL_STORAGE_EJECT_MEDIA must never leave the tray locked - on this
+        // family the failed eject itself leaves the soft lock ASSERTED, and the
+        // physical button goes dead. The destructor's unconditional unlock still
+        // runs at close as the last line of defence. On this firmware even that
+        // may not release a post-failed-eject wedge (only a real play->stop
+        // cycle does); recovery attempts beyond the unlocks were tried and
+        // reverted - see ejectDrive in UIManager.cpp for the history.
+        PREVENT_MEDIA_REMOVAL pmr {};
+        pmr.PreventMediaRemoval = FALSE;
+        DWORD bytes = 0;
+        DeviceIoControl(h_, IOCTL_STORAGE_MEDIA_REMOVAL,
+                        &pmr, sizeof(pmr), nullptr, 0, &bytes, nullptr);
+        bool ok = DeviceIoControl(h_, IOCTL_STORAGE_EJECT_MEDIA,
+                                  nullptr, 0, nullptr, 0, &bytes, nullptr) != 0;
+        if (!ok)
+            DeviceIoControl(h_, IOCTL_STORAGE_MEDIA_REMOVAL,
+                            &pmr, sizeof(pmr), nullptr, 0, &bytes, nullptr);
+        return ok;
     }
 
     std::string model() override {

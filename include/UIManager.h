@@ -1,5 +1,6 @@
 #pragma once
 #include "CursesSeam.h"
+#include <algorithm>
 #include <string>
 #include <vector>
 #include <array>
@@ -28,7 +29,7 @@ class PlaylistManager;
 struct DigiConfig;
 
 enum class Pane      { DirBrowser, Playlist };
-enum class RightPane { Playlist, Visualizer, Help, TrackInfo, Bookmarks, Lyrics, About, Devices, EQ, Queue, Chapters };
+enum class RightPane { Playlist, Visualizer, Help, TrackInfo, Bookmarks, Lyrics, About, Devices, EQ, Queue, Chapters, SearchResults };
 
 // Modal overlays drawn on top of the normal layout
 enum class UIOverlay { None, RipConfirm, MBSearch };
@@ -197,7 +198,7 @@ private:
     void computeVizBins();
 
     // Input bar state (goto dir / save M3U / load M3U)
-    enum class InputMode { Goto, SaveM3U, LoadM3U, StreamURL, StreamName, RadioSearch, LastfmKey, LastfmSecret, ListenBrainzToken };
+    enum class InputMode { Goto, SaveM3U, LoadM3U, StreamURL, StreamName, RadioSearch, LastfmKey, LastfmSecret, ListenBrainzToken, PlaylistSearch };
     bool        goto_active_  = false;
     InputMode   input_mode_   = InputMode::Goto;
     std::string goto_input_;
@@ -327,6 +328,18 @@ private:
     int         cd_poll_ticks_   = 0;
     int         cd_fail_count_   = 0;
 
+    // Playlist search (\): pick-to-jump, deliberately NOT a filter. The results
+    // overlay lists matches; picking one moves pl_cursor_ to the track's REAL
+    // playlist index and closes - the list is never narrowed or reordered, so
+    // there is no display-index/real-index duality (the proxy-vs-direct bug
+    // class the three cursor bugs came from). Matching is a case-insensitive
+    // substring over display_title - exactly the text each row shows.
+    std::vector<std::size_t> search_results_;   // real playlist indices
+    int         search_cursor_ = 0;             // cursor within search_results_
+    std::string search_query_;                  // shown in the results header
+    void drawSearchResults();
+    void jumpToPlaylistIndex(std::size_t idx);
+
     // Slice 3: lazily reopen the CD handle for an action (play / rip / MB) on a
     // stopped-but-loaded disc — stop() closes the handle (probe B2: holding it
     // open idle spins the drive up audibly), so any action must reopen first.
@@ -345,6 +358,24 @@ private:
     // Remove all playlist + queue rows for a CD drive letter (shared by the
     // reopen-eject path and the reader-thread eject path).
     void purgeCDRows(const std::string& drive);
+
+    // Shift+E in [Drives]: eject the highlighted CD drive. Stops + fully unloads
+    // first when it's the loaded disc (slice-3 teardown, incl. the media-removal
+    // unlock on close); a drive RE-MOCT never loaded gets a bare seam handle just
+    // to send the eject. Refuses while a rip is active on the loaded disc.
+    void ejectDrive(const std::string& drive_entry);
+
+    // Drive entries (as listed in dir_entries_, e.g. "F:\" / "/dev/sr0") that are
+    // CD drives with media PRESENT AT ENUMERATION TIME. Computed once per
+    // enterDriveList() (entry / F12) - never polled (probe B2: repeated media
+    // checks spin an idle drive up audibly). Insert a disc while sitting in
+    // [Drives] and the eject hint appears only after F12 - by design.
+    std::vector<std::string> cd_drives_with_media_;
+    bool driveHasMedia(const std::string& entry) const {
+        return std::find(cd_drives_with_media_.begin(),
+                         cd_drives_with_media_.end(), entry)
+               != cd_drives_with_media_.end();
+    }
     MBLookup    mb_lookup_;
     std::atomic<bool> mb_fetching_ { false };
     std::string mb_error_;    // protected by mb_mutex_

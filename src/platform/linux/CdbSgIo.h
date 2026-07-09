@@ -118,4 +118,11 @@ inline std::array<uint8_t,6> cdbTestUnitReady() {
     return {{ 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 }};
 }
 
+// ── START STOP UNIT (0x1B) — eject ────────────────────────────────────────────
+// Twins IOCTL_STORAGE_EJECT_MEDIA for eject(). Byte 4 = LoEj|Start bits: 0x02 =
+// LoEj set, Start clear -> stop the disc and open the tray. No data transfer.
+inline std::array<uint8_t,6> cdbEject() {
+    return {{ 0x1B, 0x00, 0x00, 0x00, 0x02, 0x00 }};
+}
+
 } // namespace platform::lnx

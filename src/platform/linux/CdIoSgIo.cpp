@@ -122,6 +122,15 @@ public:
                       nullptr, 0, &got, kTimeoutMiscMs);
     }
 
+    bool eject() override {
+        // START STOP UNIT 0x1B (LoEj set, Start clear) — the
+        // IOCTL_STORAGE_EJECT_MEDIA twin: stop the disc, open the tray.
+        auto cdb = cdbEject();
+        std::size_t got = 0;
+        return doScsi(cdb.data(), (unsigned)cdb.size(), SG_DXFER_NONE,
+                      nullptr, 0, &got, kTimeoutMiscMs);
+    }
+
     std::string model() override {
         // INQUIRY 0x12 — the IOCTL_STORAGE_QUERY_PROPERTY twin. Standard data:
         // bytes 8-15 = Vendor ID, 16-31 = Product ID; trim + join "VENDOR PRODUCT"

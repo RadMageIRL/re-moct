@@ -5,6 +5,34 @@ All notable changes to RE-MOCT are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.3] - 2026-07-09
+
+Feature release: playlist search, CD eject from the TUI, drive-list refresh,
+and a fix for CD drives that held the tray locked after playback.
+
+### Added
+
+- **Playlist search** (**\\**): type a query and jump to a matching track.
+  Matches artist + title as shown, case-insensitive. A single match jumps
+  directly; multiple matches open a pick list (**Enter** to jump, **Esc** to
+  close). Cursor-jump only - the playlist is never filtered or reordered.
+- **CD eject from the TUI** (**Shift+E**): in **[Drives]**, a highlighted CD
+  drive with a disc shows a ⏏ hint; **Shift+E** ejects it - stopping playback
+  and cleaning up its playlist rows first if that disc is loaded. Ejecting
+  during an active rip is refused. Drives whose firmware refuses software
+  eject report so honestly (stop playback and use the drive button).
+- **F12 refreshes the drive list**: hot-plugged USB/optical drives appear
+  without a restart; the cursor stays on the entry it was on.
+
+### Fixed
+
+- CD drives that hold a soft media-removal lock after reads (the
+  HL-DT-ST/LG/HLDS family) now release the tray for physical-button eject
+  after stop, instead of needing repeated presses - the lock is explicitly
+  cleared before every drive-handle close.
+
+[1.1.3]: https://github.com/RadMageIRL/re-moct/releases/tag/1.1.3
+
 ## [1.1.2] - 2026-07-09
 
 Fix release: two follow-playing / playlist interaction bugs found in real use.

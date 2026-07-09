@@ -82,6 +82,11 @@ public:
     // Non-blocking media-present check (drive door / disc gone detection).
     virtual bool mediaPresent() = 0;
 
+    // Eject the tray (TUI Shift+E). Best-effort: true = the drive accepted the
+    // command. Defaulted (not pure) so existing test fakes keep compiling — a
+    // fake that never ejects is the correct default.
+    virtual bool eject() { return false; }
+
     // Drive identification, "VENDOR PRODUCT" (feeds the AccurateRip offset table
     // lookup, which stays consumer-side). Empty string = unknown.
     virtual std::string model() = 0;

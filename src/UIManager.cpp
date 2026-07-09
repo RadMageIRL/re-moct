@@ -905,6 +905,70 @@ void UIManager::purgeCDRows(const std::string& drive) {
     pl_cursor_ = std::min(pl_cursor_, std::max(0, (int)playlist_.size() - 1));
 }
 
+// Shift+E in [Drives]: eject the highlighted CD drive. See UIManager.h for the
+// contract. drive_entry is the dir_entries_ value ("F:\" / "/dev/sr0").
+void UIManager::ejectDrive(const std::string& drive_entry) {
+#ifdef _WIN32
+    const std::string spec = drive_entry.substr(0, 1);      // "F"
+#else
+    const std::string spec = drive_entry.rfind("/dev/", 0) == 0
+                                 ? drive_entry.substr(5)    // "sr0"
+                                 : drive_entry;
+#endif
+    const bool is_loaded = !cd_drive_letter_.empty() && cd_drive_letter_ == spec;
+
+    // A rip owns the disc - ejecting mid-rip would yank the platter out from
+    // under CDRipper's reads. Refuse; the user cancels the rip first (Ctrl+Y).
+    if (is_loaded && cd_ripper_.isActive()) {
+        showTrackToast("Rip in progress", "Cancel it first (Ctrl+Y)", "");
+        redraw_needed_.store(true);
+        return;
+    }
+
+    if (is_loaded) {
+        // Stop-first (strict drives like the HL-DT require it), then the full
+        // slice-3 unload so no stale "loaded" state survives the eject: handle
+        // closed (the media-removal unlock runs in the device destructor), rows
+        // purged, letter + MB metadata cleared - the same cleanup as the
+        // reader-thread eject path.
+        audio_.stop();          // CD branch closes the handle + tears down the device
+        audio_.closeCD();       // idempotent after stop(); covers the stopped case
+        audio_.clearTrackEnd();
+        purgeCDRows(spec);
+        cd_drive_letter_.clear();
+        mb_lookup_.cancel();
+        mb_fetching_.store(false);
+        {
+            std::lock_guard<std::mutex> lk(mb_mutex_);
+            mb_album_.clear();
+            mb_error_.clear();
+            mb_release_ = {};
+        }
+    }
+    // Send the physical eject on a fresh seam handle - for a drive RE-MOCT never
+    // loaded this is the only device access (no TOC parse, open + eject + close).
+    bool ok = false;
+    if (auto dev = core::cdio().open(spec)) ok = dev->eject();
+    // On failure, do NOTHING but toast. A "wedge-breaker" that re-read the
+    // platter on the failure path was tried and REVERTED (hardware-tested): on
+    // the HL-DT family raw reads RE-ASSERT the soft media-removal lock - the
+    // very lock a failed eject leaves stuck - so the recovery deepened the
+    // wedge and poisoned the play->stop release too. The honest state: on this
+    // firmware a failed software eject leaves the button dead until the next
+    // real play->stop cycle (its settle-time is what actually releases the
+    // drive; reads alone reproduce the lock, not the release).
+
+    // Clear the hint immediately - the disc is gone (or the user is about to take
+    // it via the button after a failed command); F12 re-scans either way.
+    cd_drives_with_media_.erase(
+        std::remove(cd_drives_with_media_.begin(), cd_drives_with_media_.end(),
+                    drive_entry),
+        cd_drives_with_media_.end());
+    showTrackToast(ok ? ("Ejected " + drive_entry)
+                      : "This drive won't eject by software - stop playback and use the drive button", "", "");
+    redraw_needed_.store(true);
+}
+
 // Ensure the CD handle is open & ready before a play / rip / MB action on a
 // stopped-but-loaded disc. See the declaration in UIManager.h for the full
 // contract. Returns true iff ready; on false (empty tray) the disc has been
@@ -1484,6 +1548,7 @@ void UIManager::drawAll() {
     else if (right_pane_ == RightPane::Visualizer)  drawVisualizer();
     else if (right_pane_ == RightPane::TrackInfo)   drawTrackInfo();
     else if (right_pane_ == RightPane::Bookmarks)   drawBookmarks();
+    else if (right_pane_ == RightPane::SearchResults) drawSearchResults();
     else if (right_pane_ == RightPane::Lyrics)      drawLyrics();
     else if (right_pane_ == RightPane::About)       drawAbout();
     else if (right_pane_ == RightPane::Devices)     drawDevices();
@@ -1946,7 +2011,7 @@ void UIManager::drawDirBrowser() {
     const int  cx = aw ? 1 : 0;             // content left column (inside frame)
     const int  cw = aw ? cols - 2 : cols;   // content width
     std::string hdr;
-    if (in_drive_list_)   hdr = " [Drives] ";
+    if (in_drive_list_)   hdr = " [Drives] (Enter:open  F12:refresh  E:eject) ";
     else if (in_recent_)  hdr = " [Recently Played] ";
     else if (in_favs_)    hdr = " [FAVs] (f:fav/unfav  Enter:play  Del:remove) ";
     else if (in_radio_)   hdr = " [Radio] (Enter:play  d/Del:remove) ";
@@ -1971,9 +2036,14 @@ void UIManager::drawDirBrowser() {
         int idx = dir_scroll_ + i;
         if (idx >= (int)dir_entries_.size()) break;
         const auto& name    = dir_entries_[(size_t)idx];
-        const auto& display = (idx < (int)dir_display_.size())
+        std::string display = (idx < (int)dir_display_.size())
                             ? dir_display_[(size_t)idx] : name;
         bool cursor = (idx == dir_cursor_);
+        // Inline eject hint: highlighted row only, only for a CD drive with media
+        // (cached at enumeration - see enterDriveList). Rows go through the wide
+        // path (utf8_to_wide -> mvwaddnwstr), so the eject glyph renders for real.
+        if (in_drive_list_ && cursor && driveHasMedia(name))
+            display += "  ⏏ Shift+E";
         bool is_dir = in_drive_list_
                     || name == ".." || name == "[Drives]" || name == "[Recent]"
                     || name == "[FAVs]" || name == "[Bookmarks]" || name == "[Back]"
@@ -2353,6 +2423,9 @@ void UIManager::drawHelp() {
         { "F2",             "Spectrum style: classic / 80s LED"   },
         { "F3",             "Follow the playing track (cursor tracks the song)" },
         { "F7  /  F8",      "Awesome theme: previous / next" },
+        { "F12",            "Refresh the [Drives] list (pick up hot-plugged drives)" },
+        { "E  (Shift+E)",   "Eject highlighted CD drive (in [Drives])" },
+        { "\\",             "Search playlist (jump to a track)" },
 #ifdef PDCURSES
         { "Alt+Enter",      "Toggle fullscreen (borderless)"      },
 #endif
@@ -2497,6 +2570,79 @@ void UIManager::drawBookmarks() {
         mvwaddnstr(w, 0, 0, hdr.c_str(), cols);
         wattroff(w, COLOR_PAIR(CP_FOCUSED) | A_BOLD);
     }
+}
+
+// ── Playlist-search results pane ─────────────────────────────────────────────
+// Pick-to-jump results for \ (mirrors drawBookmarks). Lists matches by their
+// display_title; Enter jumps pl_cursor_ to the match's REAL playlist index.
+// The playlist itself is never filtered - see the UIManager.h contract.
+void UIManager::drawSearchResults() {
+    WINDOW* w = win_playlist_;
+    werase(w);
+    int rows, cols;
+    getmaxyx(w, rows, cols);
+
+    std::string hdr = " Search: " + search_query_ + "  ["
+                    + std::to_string(search_results_.size())
+                    + " matches  Enter:jump  Esc:close] ";
+    hdr.resize((size_t)cols, ' ');
+    wattron(w, COLOR_PAIR(CP_FOCUSED) | A_BOLD);
+    mvwaddnstr(w, 0, 0, hdr.c_str(), cols);
+    wattroff(w, COLOR_PAIR(CP_FOCUSED) | A_BOLD);
+
+    if (search_results_.empty()) {
+        wattron(w, COLOR_PAIR(CP_DIM));
+        mvwaddstr(w, rows/2, 2, "No matches.");
+        wattroff(w, COLOR_PAIR(CP_DIM));
+    } else {
+        search_cursor_ = std::clamp(search_cursor_, 0, (int)search_results_.size()-1);
+        int visible = rows - 2;
+        int scroll  = std::max(0, search_cursor_ - visible/2);
+        scroll      = std::min(scroll, std::max(0, (int)search_results_.size() - visible));
+
+        for (int i = 0; i < visible; ++i) {
+            int ri = scroll + i;
+            if (ri >= (int)search_results_.size()) break;
+            std::size_t pi = search_results_[(size_t)ri];
+            if (pi >= playlist_.size()) continue;   // list shrank since search
+            bool cursor = (ri == search_cursor_);
+            if (cursor) wattron(w, COLOR_PAIR(CP_SELECTED)|A_BOLD);
+            else        wattron(w, COLOR_PAIR(CP_DIM)|A_BOLD);
+
+            // Column-aware UTF-8 (the drawBookmarks shape): marquee + pad in
+            // display columns, draw via the wide API.
+            std::string body = " " + scrollToWidth(playlist_.at(pi).display_title,
+                                                   cols - 2, text_scroll_offset_);
+            std::wstring wline = utf8_to_wide(padToWidth(body, cols));
+            mvwaddnwstr(w, i+1, 0, wline.c_str(), (int)wline.size());
+
+            if (cursor) wattroff(w, COLOR_PAIR(CP_SELECTED)|A_BOLD);
+            else        wattroff(w, COLOR_PAIR(CP_DIM)|A_BOLD);
+        }
+    }
+
+    if (config_.awesome_mode) {
+        panelFrame(w, hdr, focus_ == Pane::Playlist, L'\uf002');   // search glyph
+    } else {
+        wattron(w, COLOR_PAIR(CP_BORDER));
+        box(w, 0, 0);
+        wattroff(w, COLOR_PAIR(CP_BORDER));
+        wattron(w, COLOR_PAIR(CP_FOCUSED) | A_BOLD);
+        mvwaddnstr(w, 0, 0, hdr.c_str(), cols);
+        wattroff(w, COLOR_PAIR(CP_FOCUSED) | A_BOLD);
+    }
+}
+
+// Jump the playlist cursor to a real playlist index and return to the playlist
+// view. One pl_cursor_ assignment is the whole jump: scroll-to-visible is the
+// slice-5 draw-time invariant's job (never touch pl_scroll_ here), and the
+// slice-6 follow-sync is unaffected (nothing about what's PLAYING changes).
+void UIManager::jumpToPlaylistIndex(std::size_t idx) {
+    if (idx >= playlist_.size()) return;
+    pl_cursor_ = (int)idx;
+    focus_ = Pane::Playlist;      // put the user's eyes where the cursor landed
+    right_pane_ = RightPane::Playlist;
+    redraw_needed_.store(true);
 }
 
 // ── Lyrics pane ───────────────────────────────────────────────────────────────
@@ -4064,6 +4210,7 @@ void UIManager::drawGotoBar() {
         case InputMode::LastfmKey:    prompt = " last.fm API key: "; break;
         case InputMode::LastfmSecret: prompt = " last.fm secret: ";  break;
         case InputMode::ListenBrainzToken: prompt = " listenbrainz token: "; break;
+        case InputMode::PlaylistSearch: prompt = " search playlist: "; break;
     }
     wattron(win_cmdline_, COLOR_PAIR(CP_TITLE) | A_BOLD);
     mvwaddstr(win_cmdline_, 0, 0, prompt.c_str());
@@ -4609,7 +4756,7 @@ void UIManager::handleInput(int ch) {
     // EQ pane
     if (right_pane_ == RightPane::EQ) {
         switch (ch) {
-            case 'e': case 'E': case 27:
+            case 'e': case 27:   // E freed for eject (was a pure dupe of e)
                 right_pane_ = RightPane::Playlist; return;
             case 17: audio_.stop(); running_ = false; return;
             case ' ': audio_.togglePause(); return;
@@ -4796,6 +4943,29 @@ void UIManager::handleInput(int ch) {
         }
     }
 
+    // Playlist-search results — pick-to-jump (mirrors the Bookmarks popup)
+    if (right_pane_ == RightPane::SearchResults) {
+        switch (ch) {
+            case 17: audio_.stop(); running_ = false; return;
+            case 27: case '\\':   // Esc / \ close without jumping
+                right_pane_ = RightPane::Playlist;
+                redraw_needed_.store(true);
+                return;
+            case 'j': case 'J': case KEY_DOWN:
+                ++search_cursor_; redraw_needed_.store(true); return;
+            case 'k': case 'K': case KEY_UP:
+                --search_cursor_; redraw_needed_.store(true); return;
+            case '\n': case KEY_ENTER: case '\r':
+                if (!search_results_.empty()) {
+                    search_cursor_ = std::clamp(search_cursor_, 0,
+                                       (int)search_results_.size()-1);
+                    jumpToPlaylistIndex(search_results_[(size_t)search_cursor_]);
+                }
+                return;
+            default: return;
+        }
+    }
+
     if (right_pane_ == RightPane::Bookmarks) {
         switch (ch) {
             case 17: audio_.stop(); running_ = false; return;
@@ -4885,7 +5055,7 @@ void UIManager::handleInput(int ch) {
                 right_pane_ = RightPane::Playlist;
                 info_cached_path_.clear();
                 return;
-            case 'e': case 'E': {
+            case 'e': {   // E freed for eject (was a pure dupe of e)
                 // Enter edit mode — only for real files, not CD tracks, not currently playing
                 std::size_t idx;
                 if (focus_ == Pane::Playlist && pl_cursor_ < (int)playlist_.size()) {
@@ -5105,6 +5275,47 @@ void UIManager::handleInput(int ch) {
             theme_tag_ticks_ = 0;   // flash [THEME:<name>] on the cwd line for ~10s
             break;
         }
+        case KEY_F(12):   // refresh the drive list (pick up hot-plugged drives)
+            // Hot-plug isn't auto-detected ([Drives] only rebuilds on entry, and
+            // the periodic dir re-scan skips the drive list); F12 is the manual
+            // trigger, re-running the same enterDriveList() rebuild. No-op
+            // outside [Drives].
+            if (in_drive_list_) {
+                // enterDriveList() resets the cursor to the top; restore it onto
+                // the previously-selected entry if it still exists so a refresh
+                // isn't disruptive. Gone entry (drive removed) -> top is correct.
+                const std::string sel =
+                    (dir_cursor_ >= 0 && dir_cursor_ < (int)dir_entries_.size())
+                        ? dir_entries_[(size_t)dir_cursor_] : "";
+                enterDriveList();
+                if (!sel.empty()) {
+                    for (std::size_t i = 0; i < dir_entries_.size(); ++i)
+                        if (dir_entries_[i] == sel) { dir_cursor_ = (int)i; break; }
+                }
+                // The dir browser has no draw-time scroll invariant (j/k nudge
+                // per-handler), so re-clamp scroll to keep the restored cursor
+                // visible ourselves.
+                {
+                    int v = paneVisibleRows(win_dir_);
+                    if (dir_cursor_ < dir_scroll_) dir_scroll_ = dir_cursor_;
+                    else if (v > 0 && dir_cursor_ >= dir_scroll_ + v)
+                        dir_scroll_ = dir_cursor_ - v + 1;
+                }
+                showTrackToast("Drives refreshed", "", "");
+                redraw_needed_.store(true);
+            }
+            break;
+        case 'E':   // Shift+E — eject the highlighted CD drive ([Drives] only)
+            // Per-pane key meaning (like d / K / J): e stays EQ / tag-edit
+            // everywhere; E acts only in [Drives], and only on a row the eject
+            // hint is shown for (CD drive with media at last enumeration).
+            if (in_drive_list_ && dir_cursor_ >= 0
+                && dir_cursor_ < (int)dir_entries_.size()) {
+                const std::string& drv = dir_entries_[(size_t)dir_cursor_];
+                if (driveHasMedia(drv)) ejectDrive(drv);
+                // else: no hint was shown - silent no-op
+            }
+            break;
 #ifdef PDCURSES
         case ALT_ENTER:      // Alt+Enter — wingui borderless-fullscreen toggle
         case ALT_PADENTER:   // (numpad Enter variant)
@@ -5359,7 +5570,7 @@ void UIManager::handleInput(int ch) {
                 right_pane_ = RightPane::Devices;
             }
             break;
-        case 'e': case 'E':
+        case 'e':   // E freed for eject in [Drives] (was a pure dupe of e)
             if (right_pane_ == RightPane::EQ)
                 right_pane_ = RightPane::Playlist;
             else
@@ -5508,6 +5719,12 @@ void UIManager::handleInput(int ch) {
             break;
         case 'g': case 'G':
             gotoOpen(); break;
+        case '\\':   // playlist search - pick-to-jump (never a filter)
+            // Same modal guard as the other input-bar keys; the goto machinery
+            // supplies the input line, cursor, backspace, and Esc for free.
+            if (ui_overlay_ == UIOverlay::None)
+                openInputBar(InputMode::PlaylistSearch, "");
+            break;
         case 's':
             audio_.stop(); break;
         case 'S':
@@ -5934,6 +6151,34 @@ void UIManager::gotoClose(bool commit) {
                 if (!tok.empty()) {
                     showTrackToast("ListenBrainz: validating token...", "", "");
                     startListenBrainzValidate(tok);   // async; result applied on next tick (never blocks UI)
+                }
+                break;
+            }
+            case InputMode::PlaylistSearch: {
+                // Use goto_input_ raw, NOT the separator-stripped `target` - the
+                // stripping above is path-mode behaviour and would mangle a
+                // query ending in '/' or '\'. Match case-insensitively against
+                // display_title: exactly the text each playlist row shows.
+                std::string q = goto_input_;
+                for (char& c : q) c = (char)std::tolower((unsigned char)c);
+                search_results_.clear();
+                search_query_ = goto_input_;
+                if (!q.empty()) {
+                    for (std::size_t i = 0; i < playlist_.size(); ++i) {
+                        std::string disp = playlist_.at(i).display_title;
+                        for (char& c : disp) c = (char)std::tolower((unsigned char)c);
+                        if (disp.find(q) != std::string::npos)
+                            search_results_.push_back(i);
+                    }
+                }
+                if (search_results_.empty()) {
+                    showTrackToast("No matches for: " + goto_input_, "", "");
+                } else if (search_results_.size() == 1) {
+                    // Single hit: jump straight, skip the overlay.
+                    jumpToPlaylistIndex(search_results_[0]);
+                } else {
+                    search_cursor_ = 0;
+                    right_pane_ = RightPane::SearchResults;
                 }
                 break;
             }
@@ -6473,6 +6718,27 @@ void UIManager::enterDriveList() {
     dir_display_.insert(dir_display_.begin(), "[Recent]");
     dir_cursor_    = 0;
     dir_scroll_    = 0;
+
+    // Media detection for the Shift+E eject hint - ONCE, here, at enumeration
+    // time (entering [Drives] or F12), NEVER polled: a CHECK_VERIFY-class probe
+    // repeated on an idle drive spins it up audibly (probe B2 / slice 1). Each
+    // CD drive gets one seam open + one mediaPresent, both user-triggered.
+    // Concurrent opens of a drive CDSource holds are contract (see CdIoWin).
+    cd_drives_with_media_.clear();
+    for (const auto& e : dir_entries_) {
+        std::string spec;
+#ifdef _WIN32
+        if (e.size() >= 2 && e[1] == ':') {
+            std::wstring w(e.begin(), e.end());
+            if (GetDriveTypeW(w.c_str()) == DRIVE_CDROM) spec = e.substr(0, 1);
+        }
+#else
+        if (e.rfind("/dev/sr", 0) == 0) spec = e.substr(5);   // "sr0"
+#endif
+        if (spec.empty()) continue;
+        if (auto dev = core::cdio().open(spec); dev && dev->mediaPresent())
+            cd_drives_with_media_.push_back(e);
+    }
 }
 
 void UIManager::activateDrive(const std::string& drive_entry) {

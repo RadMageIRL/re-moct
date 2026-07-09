@@ -2353,6 +2353,7 @@ void UIManager::drawHelp() {
         { "F2",             "Spectrum style: classic / 80s LED"   },
         { "F3",             "Follow the playing track (cursor tracks the song)" },
         { "F7  /  F8",      "Awesome theme: previous / next" },
+        { "F12",            "Refresh the [Drives] list (pick up hot-plugged drives)" },
 #ifdef PDCURSES
         { "Alt+Enter",      "Toggle fullscreen (borderless)"      },
 #endif
@@ -5105,6 +5106,36 @@ void UIManager::handleInput(int ch) {
             theme_tag_ticks_ = 0;   // flash [THEME:<name>] on the cwd line for ~10s
             break;
         }
+        case KEY_F(12):   // refresh the drive list (pick up hot-plugged drives)
+            // Hot-plug isn't auto-detected ([Drives] only rebuilds on entry, and
+            // the periodic dir re-scan skips the drive list); F12 is the manual
+            // trigger, re-running the same enterDriveList() rebuild. No-op
+            // outside [Drives].
+            if (in_drive_list_) {
+                // enterDriveList() resets the cursor to the top; restore it onto
+                // the previously-selected entry if it still exists so a refresh
+                // isn't disruptive. Gone entry (drive removed) -> top is correct.
+                const std::string sel =
+                    (dir_cursor_ >= 0 && dir_cursor_ < (int)dir_entries_.size())
+                        ? dir_entries_[(size_t)dir_cursor_] : "";
+                enterDriveList();
+                if (!sel.empty()) {
+                    for (std::size_t i = 0; i < dir_entries_.size(); ++i)
+                        if (dir_entries_[i] == sel) { dir_cursor_ = (int)i; break; }
+                }
+                // The dir browser has no draw-time scroll invariant (j/k nudge
+                // per-handler), so re-clamp scroll to keep the restored cursor
+                // visible ourselves.
+                {
+                    int v = paneVisibleRows(win_dir_);
+                    if (dir_cursor_ < dir_scroll_) dir_scroll_ = dir_cursor_;
+                    else if (v > 0 && dir_cursor_ >= dir_scroll_ + v)
+                        dir_scroll_ = dir_cursor_ - v + 1;
+                }
+                showTrackToast("Drives refreshed", "", "");
+                redraw_needed_.store(true);
+            }
+            break;
 #ifdef PDCURSES
         case ALT_ENTER:      // Alt+Enter — wingui borderless-fullscreen toggle
         case ALT_PADENTER:   // (numpad Enter variant)

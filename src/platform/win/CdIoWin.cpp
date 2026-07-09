@@ -27,7 +27,23 @@ class WinCdDevice final : public core::ICdDevice {
 public:
     explicit WinCdDevice(HANDLE h) : h_(h) {}
     ~WinCdDevice() override {
-        if (h_ != INVALID_HANDLE_VALUE) CloseHandle(h_);
+        if (h_ != INVALID_HANDLE_VALUE) {
+            // Explicitly clear any soft media-removal lock before closing. Some
+            // drives (HL-DT-ST/LG/HLDS family) hold the tray after raw reads
+            // until told to release; a bare CloseHandle leaves the physical
+            // eject button dead for several seconds ("push it repeatedly").
+            // Best-effort by design: the return value is ignored - a drive that
+            // doesn't need or support this errors harmlessly, and we are closing
+            // either way. Fires on every dev_.reset() (stop/closeCD/eject), i.e.
+            // whenever RE-MOCT lets go of the drive - exactly when the tray
+            // should become the user's again.
+            PREVENT_MEDIA_REMOVAL pmr {};
+            pmr.PreventMediaRemoval = FALSE;
+            DWORD bytes = 0;
+            DeviceIoControl(h_, IOCTL_STORAGE_MEDIA_REMOVAL,
+                            &pmr, sizeof(pmr), nullptr, 0, &bytes, nullptr);
+            CloseHandle(h_);
+        }
     }
 
     bool readToc(core::CdToc& out) override {

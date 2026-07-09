@@ -74,6 +74,30 @@
 - `AR_SKIP = 2940` (not 2941). CRCv2 = `csum_lo + csum_hi`.
 - The negative drive-offset OOB read is real but BLOCKED on testing (Dos's drive is
   +6); needs a synthetic negative-offset vector. Don't patch blind.
+- **The HL-DT-ST/LG/HLDS drive family holds a soft media-removal lock after raw
+  reads that a bare `CloseHandle` does not clear** - the physical eject button
+  stays dead for several seconds after stop ("push it repeatedly"); an Asus
+  SDRW-08U7M-U releases cleanly from the identical code path, which is what
+  localized the difference to drive firmware, not our close logic. Fix: clear the
+  lock explicitly before closing - `IOCTL_STORAGE_MEDIA_REMOVAL` with
+  `PreventMediaRemoval = FALSE` in `~WinCdDevice()`, return value ignored
+  (best-effort; harmless on drives that don't need it). The destructor runs on
+  every `dev_.reset()`, so the tray is handed back whenever RE-MOCT lets go of
+  the drive. Windows-only semantics; the SG_IO path has no such lock.
+  Hardware-confirmed 2026-07-09: the GHD3N releases promptly after stop with the
+  unlock (it was error-1-locked to even software eject before). Deliberate
+  non-goal: the drives differ on eject DURING playback (the Asus allows it, the
+  HL-DT requires stop first) - that is firmware behaviour, not a defect; do not
+  try to normalize it.
+- **Drive hot-plug is not auto-detected - F12 is the manual refresh.** `[Drives]`
+  only rebuilds on entry (`enterDriveList()`), and the periodic dir re-scan
+  deliberately skips the drive list, so a USB drive plugged in mid-session never
+  appears until re-entry. F12 just re-runs the existing `enterDriveList()`
+  rebuild (idempotent - flags + list + cursor reset), restoring the cursor onto
+  the previously-selected entry when it survives the refresh. Note the browser
+  pane has NO draw-time scroll invariant (unlike the playlist's slice-5 one):
+  j/k nudge `dir_scroll_` per-handler, so anything that moves `dir_cursor_`
+  behind the draw's back must re-clamp `dir_scroll_` itself.
 - **Stopping a transport is not unmounting a device. (Slice 3)** `cd_mode_` means "CD is
   the active audio source." `stop()` correctly closes the drive handle - probe B2: holding
   it open idle spins the drive up audibly, and the syscall returns before the motor is at

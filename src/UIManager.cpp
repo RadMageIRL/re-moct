@@ -1646,7 +1646,12 @@ int UIManager::currentChapterIndex() const {
 }
 
 void UIManager::jumpChapter(int dir) {
-    if (current_chapters_.empty()) {               // not chaptered -> plain +/-5s seek
+    // ,/. jump by the PLAYING track's chapters. current_chapters_ may hold a
+    // browsed (not playing) book's list while the Chapters pane is open; foreign
+    // chapter boundaries must not seek the playing file, so treat that - and a
+    // genuinely unchaptered file - as a plain +/-5s seek.
+    if (current_chapters_.empty() ||
+        chapters_for_path_ != audio_.currentTrack().path) {
         audio_.seekBy(dir < 0 ? -5.0 : 5.0);
         redraw_needed_.store(true);
         return;
@@ -1744,9 +1749,19 @@ void UIManager::drawTitleBar() {
     if (audio_.state() != PlaybackState::Stopped && !track.path.empty()) {
         np = track.artist.empty() ? track.title : track.artist + " - " + track.title;
         if (np.empty()) np = fs::path(track.path).filename().string();
-        refreshChaptersIfNeeded(track.path);
-        int ci = currentChapterIndex();
-        if (ci >= 0) np += "  |  " + current_chapters_[(size_t)ci].title;
+        // Don't clobber a manually-browsed chapter list (a highlighted, not-playing
+        // book) while the Chapters pane is open - this draw runs every tick, so an
+        // ungated refresh would replace the browsed list on the next frame. Re-syncs
+        // to the playing track the moment the pane closes; when the pane shows the
+        // playing book anyway, the same-path refresh is a no-op.
+        if (right_pane_ != RightPane::Chapters || chapters_for_path_ == track.path)
+            refreshChaptersIfNeeded(track.path);
+        // The chapter suffix trusts current_chapters_ only when it belongs to the
+        // playing track (it may hold a browsed book's list while the pane is open).
+        if (chapters_for_path_ == track.path) {
+            int ci = currentChapterIndex();
+            if (ci >= 0) np += "  |  " + current_chapters_[(size_t)ci].title;
+        }
     }
     std::string badge;
     if (audio_.cdMode()) {
@@ -4751,6 +4766,24 @@ void UIManager::handleInput(int ch) {
                 if (!current_chapters_.empty()) {
                     chapter_cursor_ = std::clamp(chapter_cursor_, 0,
                                        (int)current_chapters_.size()-1);
+                    // Browsed book (chapters belong to a file that isn't playing):
+                    // start playing it at the chosen chapter. Select its playlist
+                    // row first so current()/auto-advance stay coherent - the same
+                    // bookkeeping as a normal playlist play. Seek-only (the original
+                    // behaviour) would seek the WRONG file's timeline.
+                    if (chapters_for_path_ != audio_.currentTrack().path) {
+                        for (std::size_t i = 0; i < playlist_.size(); ++i)
+                            if (playlist_.at(i).path == chapters_for_path_) {
+                                playlist_.selectAt(i);
+                                break;
+                            }
+                        if (!audio_.play(chapters_for_path_)) {
+                            showTrackToast("Cannot play file", "", "");
+                            return;
+                        }
+                        config_.addRecentTrack(chapters_for_path_);
+                        maybePreloadNext();
+                    }
                     audio_.seekTo(current_chapters_[(size_t)chapter_cursor_].start_sec);
                     redraw_needed_.store(true);
                 }
@@ -5561,14 +5594,26 @@ void UIManager::handleInput(int ch) {
         case ',': jumpChapter(-1); break;
         case '.': jumpChapter(+1); break;
         case ';':
-            // Toggle the chapter list (only opens if the file has chapters)
+            // Toggle the chapter list. Loads chapters for the HIGHLIGHTED playlist
+            // row (not just the playing track), so a book's chapters can be browsed
+            // before playing it. (Browser-pane highlight is out of scope - playlist
+            // rows only; with nothing relevant highlighted the playing track's list,
+            // kept fresh by the title-bar draw, is what opens.)
             if (right_pane_ == RightPane::Chapters) {
                 right_pane_ = RightPane::Playlist;
-            } else if (!current_chapters_.empty()) {
-                chapter_cursor_ = std::max(0, currentChapterIndex());
-                right_pane_ = RightPane::Chapters;
             } else {
-                showTrackToast("No chapters in this track", "", "");
+                if (focus_ == Pane::Playlist && pl_cursor_ < (int)playlist_.size())
+                    refreshChaptersIfNeeded(playlist_.at((size_t)pl_cursor_).path);
+                if (!current_chapters_.empty()) {
+                    // Playing book: open on the chapter under the playhead. Browsed
+                    // (not playing) book: the playhead is another file's position -
+                    // meaningless here - so open on chapter 1.
+                    chapter_cursor_ = (chapters_for_path_ == audio_.currentTrack().path)
+                                          ? std::max(0, currentChapterIndex()) : 0;
+                    right_pane_ = RightPane::Chapters;
+                } else {
+                    showTrackToast("No chapters in this track", "", "");
+                }
             }
             break;
         case '-': case '_':

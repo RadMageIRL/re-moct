@@ -29,7 +29,7 @@ class PlaylistManager;
 struct DigiConfig;
 
 enum class Pane      { DirBrowser, Playlist };
-enum class RightPane { Playlist, Visualizer, Help, TrackInfo, Bookmarks, Lyrics, About, Devices, EQ, Queue, Chapters };
+enum class RightPane { Playlist, Visualizer, Help, TrackInfo, Bookmarks, Lyrics, About, Devices, EQ, Queue, Chapters, SearchResults };
 
 // Modal overlays drawn on top of the normal layout
 enum class UIOverlay { None, RipConfirm, MBSearch };
@@ -198,7 +198,7 @@ private:
     void computeVizBins();
 
     // Input bar state (goto dir / save M3U / load M3U)
-    enum class InputMode { Goto, SaveM3U, LoadM3U, StreamURL, StreamName, RadioSearch, LastfmKey, LastfmSecret, ListenBrainzToken };
+    enum class InputMode { Goto, SaveM3U, LoadM3U, StreamURL, StreamName, RadioSearch, LastfmKey, LastfmSecret, ListenBrainzToken, PlaylistSearch };
     bool        goto_active_  = false;
     InputMode   input_mode_   = InputMode::Goto;
     std::string goto_input_;
@@ -327,6 +327,18 @@ private:
     std::string cd_drive_letter_;
     int         cd_poll_ticks_   = 0;
     int         cd_fail_count_   = 0;
+
+    // Playlist search (\): pick-to-jump, deliberately NOT a filter. The results
+    // overlay lists matches; picking one moves pl_cursor_ to the track's REAL
+    // playlist index and closes - the list is never narrowed or reordered, so
+    // there is no display-index/real-index duality (the proxy-vs-direct bug
+    // class the three cursor bugs came from). Matching is a case-insensitive
+    // substring over display_title - exactly the text each row shows.
+    std::vector<std::size_t> search_results_;   // real playlist indices
+    int         search_cursor_ = 0;             // cursor within search_results_
+    std::string search_query_;                  // shown in the results header
+    void drawSearchResults();
+    void jumpToPlaylistIndex(std::size_t idx);
 
     // Slice 3: lazily reopen the CD handle for an action (play / rip / MB) on a
     // stopped-but-loaded disc — stop() closes the handle (probe B2: holding it

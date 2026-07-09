@@ -1548,6 +1548,7 @@ void UIManager::drawAll() {
     else if (right_pane_ == RightPane::Visualizer)  drawVisualizer();
     else if (right_pane_ == RightPane::TrackInfo)   drawTrackInfo();
     else if (right_pane_ == RightPane::Bookmarks)   drawBookmarks();
+    else if (right_pane_ == RightPane::SearchResults) drawSearchResults();
     else if (right_pane_ == RightPane::Lyrics)      drawLyrics();
     else if (right_pane_ == RightPane::About)       drawAbout();
     else if (right_pane_ == RightPane::Devices)     drawDevices();
@@ -2424,6 +2425,7 @@ void UIManager::drawHelp() {
         { "F7  /  F8",      "Awesome theme: previous / next" },
         { "F12",            "Refresh the [Drives] list (pick up hot-plugged drives)" },
         { "E  (Shift+E)",   "Eject highlighted CD drive (in [Drives])" },
+        { "\\",             "Search playlist (jump to a track)" },
 #ifdef PDCURSES
         { "Alt+Enter",      "Toggle fullscreen (borderless)"      },
 #endif
@@ -2568,6 +2570,79 @@ void UIManager::drawBookmarks() {
         mvwaddnstr(w, 0, 0, hdr.c_str(), cols);
         wattroff(w, COLOR_PAIR(CP_FOCUSED) | A_BOLD);
     }
+}
+
+// ── Playlist-search results pane ─────────────────────────────────────────────
+// Pick-to-jump results for \ (mirrors drawBookmarks). Lists matches by their
+// display_title; Enter jumps pl_cursor_ to the match's REAL playlist index.
+// The playlist itself is never filtered - see the UIManager.h contract.
+void UIManager::drawSearchResults() {
+    WINDOW* w = win_playlist_;
+    werase(w);
+    int rows, cols;
+    getmaxyx(w, rows, cols);
+
+    std::string hdr = " Search: " + search_query_ + "  ["
+                    + std::to_string(search_results_.size())
+                    + " matches  Enter:jump  Esc:close] ";
+    hdr.resize((size_t)cols, ' ');
+    wattron(w, COLOR_PAIR(CP_FOCUSED) | A_BOLD);
+    mvwaddnstr(w, 0, 0, hdr.c_str(), cols);
+    wattroff(w, COLOR_PAIR(CP_FOCUSED) | A_BOLD);
+
+    if (search_results_.empty()) {
+        wattron(w, COLOR_PAIR(CP_DIM));
+        mvwaddstr(w, rows/2, 2, "No matches.");
+        wattroff(w, COLOR_PAIR(CP_DIM));
+    } else {
+        search_cursor_ = std::clamp(search_cursor_, 0, (int)search_results_.size()-1);
+        int visible = rows - 2;
+        int scroll  = std::max(0, search_cursor_ - visible/2);
+        scroll      = std::min(scroll, std::max(0, (int)search_results_.size() - visible));
+
+        for (int i = 0; i < visible; ++i) {
+            int ri = scroll + i;
+            if (ri >= (int)search_results_.size()) break;
+            std::size_t pi = search_results_[(size_t)ri];
+            if (pi >= playlist_.size()) continue;   // list shrank since search
+            bool cursor = (ri == search_cursor_);
+            if (cursor) wattron(w, COLOR_PAIR(CP_SELECTED)|A_BOLD);
+            else        wattron(w, COLOR_PAIR(CP_DIM)|A_BOLD);
+
+            // Column-aware UTF-8 (the drawBookmarks shape): marquee + pad in
+            // display columns, draw via the wide API.
+            std::string body = " " + scrollToWidth(playlist_.at(pi).display_title,
+                                                   cols - 2, text_scroll_offset_);
+            std::wstring wline = utf8_to_wide(padToWidth(body, cols));
+            mvwaddnwstr(w, i+1, 0, wline.c_str(), (int)wline.size());
+
+            if (cursor) wattroff(w, COLOR_PAIR(CP_SELECTED)|A_BOLD);
+            else        wattroff(w, COLOR_PAIR(CP_DIM)|A_BOLD);
+        }
+    }
+
+    if (config_.awesome_mode) {
+        panelFrame(w, hdr, focus_ == Pane::Playlist, L'\uf002');   // search glyph
+    } else {
+        wattron(w, COLOR_PAIR(CP_BORDER));
+        box(w, 0, 0);
+        wattroff(w, COLOR_PAIR(CP_BORDER));
+        wattron(w, COLOR_PAIR(CP_FOCUSED) | A_BOLD);
+        mvwaddnstr(w, 0, 0, hdr.c_str(), cols);
+        wattroff(w, COLOR_PAIR(CP_FOCUSED) | A_BOLD);
+    }
+}
+
+// Jump the playlist cursor to a real playlist index and return to the playlist
+// view. One pl_cursor_ assignment is the whole jump: scroll-to-visible is the
+// slice-5 draw-time invariant's job (never touch pl_scroll_ here), and the
+// slice-6 follow-sync is unaffected (nothing about what's PLAYING changes).
+void UIManager::jumpToPlaylistIndex(std::size_t idx) {
+    if (idx >= playlist_.size()) return;
+    pl_cursor_ = (int)idx;
+    focus_ = Pane::Playlist;      // put the user's eyes where the cursor landed
+    right_pane_ = RightPane::Playlist;
+    redraw_needed_.store(true);
 }
 
 // ── Lyrics pane ───────────────────────────────────────────────────────────────
@@ -4135,6 +4210,7 @@ void UIManager::drawGotoBar() {
         case InputMode::LastfmKey:    prompt = " last.fm API key: "; break;
         case InputMode::LastfmSecret: prompt = " last.fm secret: ";  break;
         case InputMode::ListenBrainzToken: prompt = " listenbrainz token: "; break;
+        case InputMode::PlaylistSearch: prompt = " search playlist: "; break;
     }
     wattron(win_cmdline_, COLOR_PAIR(CP_TITLE) | A_BOLD);
     mvwaddstr(win_cmdline_, 0, 0, prompt.c_str());
@@ -4863,6 +4939,29 @@ void UIManager::handleInput(int ch) {
             case '.': jumpChapter(+1); return;
             case ' ': audio_.togglePause(); return;
             case 's': audio_.stop(); return;
+            default: return;
+        }
+    }
+
+    // Playlist-search results — pick-to-jump (mirrors the Bookmarks popup)
+    if (right_pane_ == RightPane::SearchResults) {
+        switch (ch) {
+            case 17: audio_.stop(); running_ = false; return;
+            case 27: case '\\':   // Esc / \ close without jumping
+                right_pane_ = RightPane::Playlist;
+                redraw_needed_.store(true);
+                return;
+            case 'j': case 'J': case KEY_DOWN:
+                ++search_cursor_; redraw_needed_.store(true); return;
+            case 'k': case 'K': case KEY_UP:
+                --search_cursor_; redraw_needed_.store(true); return;
+            case '\n': case KEY_ENTER: case '\r':
+                if (!search_results_.empty()) {
+                    search_cursor_ = std::clamp(search_cursor_, 0,
+                                       (int)search_results_.size()-1);
+                    jumpToPlaylistIndex(search_results_[(size_t)search_cursor_]);
+                }
+                return;
             default: return;
         }
     }
@@ -5620,6 +5719,12 @@ void UIManager::handleInput(int ch) {
             break;
         case 'g': case 'G':
             gotoOpen(); break;
+        case '\\':   // playlist search - pick-to-jump (never a filter)
+            // Same modal guard as the other input-bar keys; the goto machinery
+            // supplies the input line, cursor, backspace, and Esc for free.
+            if (ui_overlay_ == UIOverlay::None)
+                openInputBar(InputMode::PlaylistSearch, "");
+            break;
         case 's':
             audio_.stop(); break;
         case 'S':
@@ -6046,6 +6151,34 @@ void UIManager::gotoClose(bool commit) {
                 if (!tok.empty()) {
                     showTrackToast("ListenBrainz: validating token...", "", "");
                     startListenBrainzValidate(tok);   // async; result applied on next tick (never blocks UI)
+                }
+                break;
+            }
+            case InputMode::PlaylistSearch: {
+                // Use goto_input_ raw, NOT the separator-stripped `target` - the
+                // stripping above is path-mode behaviour and would mangle a
+                // query ending in '/' or '\'. Match case-insensitively against
+                // display_title: exactly the text each playlist row shows.
+                std::string q = goto_input_;
+                for (char& c : q) c = (char)std::tolower((unsigned char)c);
+                search_results_.clear();
+                search_query_ = goto_input_;
+                if (!q.empty()) {
+                    for (std::size_t i = 0; i < playlist_.size(); ++i) {
+                        std::string disp = playlist_.at(i).display_title;
+                        for (char& c : disp) c = (char)std::tolower((unsigned char)c);
+                        if (disp.find(q) != std::string::npos)
+                            search_results_.push_back(i);
+                    }
+                }
+                if (search_results_.empty()) {
+                    showTrackToast("No matches for: " + goto_input_, "", "");
+                } else if (search_results_.size() == 1) {
+                    // Single hit: jump straight, skip the overlay.
+                    jumpToPlaylistIndex(search_results_[0]);
+                } else {
+                    search_cursor_ = 0;
+                    right_pane_ = RightPane::SearchResults;
                 }
                 break;
             }

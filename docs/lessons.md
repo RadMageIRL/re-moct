@@ -236,6 +236,16 @@
   track-change cursor move must respect the toggle, not just auto-advance: the manual n/p
   handlers also gate their cursor set on `follow_playing`, or OFF looks identical to ON
   when you change tracks by hand. (Slice 6; mechanism finalized in 91817b8.)
+- **Playlist search (\) is pick-to-jump, deliberately NOT a filter.** The results
+  overlay holds REAL playlist indices; picking one is a single `pl_cursor_`
+  assignment (scroll = the slice-5 invariant, follow = untouched since nothing
+  about what's playing changes). Narrowing the list instead would create a
+  display-index/real-index duality across every playlist system (move, delete,
+  lit-row, follow) - the exact proxy-vs-direct class the three cursor bugs came
+  from. Both halves reuse existing machinery: the goto InputMode line (one enum
+  value + one prompt + one confirm case) and the Bookmarks-popup results
+  pattern. Match against `display_title` - the text the row actually shows -
+  never re-derived tags, or search finds things the user can't see.
 - **`TagLib::FileRef::save()` returns bool; on Windows a locked-file write returns false
   without throwing.** The old `saveTagEdits()` discarded the return inside a `catch(...)`
   and then updated the playlist title + cleared the info cache unconditionally - so a

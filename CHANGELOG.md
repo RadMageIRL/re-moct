@@ -5,6 +5,24 @@ All notable changes to RE-MOCT are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.2] - 2026-07-09
+
+Fix release: two follow-playing / playlist interaction bugs found in real use.
+
+### Fixed
+
+- Moving a playlist track (**K** / **J**) across the playing track's position no
+  longer steals the cursor onto the playing track mid-move; deleting a row above
+  the playing track no longer snaps the cursor either. Moving the playing track
+  itself still carries the cursor along.
+- The chapter list (**;**) now opens for a highlighted book in the playlist, not
+  only the currently-playing file - browse a book's chapters before playing it.
+  **Enter** on a chapter of a browsed book starts playing that book at that
+  chapter; the title bar and **,** / **.** chapter jumps stay keyed to the
+  playing track's own chapters.
+
+[1.1.2]: https://github.com/RadMageIRL/re-moct/releases/tag/1.1.2
+
 ## [1.1.1] - 2026-07-08
 
 Fix release: the playlist keymap change (move-track is now **K** / **J**), a

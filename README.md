@@ -95,6 +95,7 @@ truecolor + Alt+Enter fullscreen); see [BUILD.md](BUILD.md).
 | `Ctrl+Q` | Quit | `Ctrl+K` | Stream mode: Web Player / Raw broadcast |
 | `i` / `e` | Track info / 10-band EQ | `Shift+L` / `Shift+A` / `Shift+X` | Lyrics / About / Output device picker |
 | `F2` | Spectrum: classic / 80s LED | `F7` / `F8` | Awesome theme: previous / next |
+| `K` / `J` | Move track up / down | `F3` | Follow the playing track (default on) |
 | `Alt+Enter` | Fullscreen (Windows wingui build) | | |
 
 ## Configuration

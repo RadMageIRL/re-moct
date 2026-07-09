@@ -321,6 +321,25 @@ private:
     std::string cd_drive_letter_;
     int         cd_poll_ticks_   = 0;
     int         cd_fail_count_   = 0;
+
+    // Slice 3: lazily reopen the CD handle for an action (play / rip / MB) on a
+    // stopped-but-loaded disc — stop() closes the handle (probe B2: holding it
+    // open idle spins the drive up audibly), so any action must reopen first.
+    // Routes through audio_.openCD(), which re-reads the TOC + re-inits the
+    // device. openCD can fail TRANSIENTLY right after file playback (WASAPI
+    // uninit->init settling), so failure is handled non-destructively: bounded
+    // retry (3 attempts, ~200 ms apart), each failure logged with its failure
+    // point (CDSource::lastOpenFail). Purge + clear cd_drive_letter_ + toast
+    // ONLY on a confirmed empty tray (drive answered: TocRead/NoAudioTracks) -
+    // that is the eject-while-stopped detection point now that the poll purge
+    // is gone. A DeviceOpen (busy) failure keeps the disc state and just toasts
+    // "drive busy" - a stale row self-heals on the next action; unloading a
+    // present disc does not. Returns true iff the handle is open & ready;
+    // callers bail on false.
+    bool reopenCDForAction(const std::string& drive);
+    // Remove all playlist + queue rows for a CD drive letter (shared by the
+    // reopen-eject path and the reader-thread eject path).
+    void purgeCDRows(const std::string& drive);
     MBLookup    mb_lookup_;
     std::atomic<bool> mb_fetching_ { false };
     std::string mb_error_;    // protected by mb_mutex_

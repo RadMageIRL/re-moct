@@ -891,6 +891,106 @@ void UIManager::requestSeek(double delta) {
         flushPendingSeek();
 }
 
+// Remove every playlist + queued row for a CD drive letter and keep the cursor
+// in range. Shared by the reader-thread eject path (playback) and the lazy-
+// reopen eject path (stopped). (Slice 3)
+void UIManager::purgeCDRows(const std::string& drive) {
+    std::string prefix = drive + ":CD Track ";
+    playlist_.removeIf([&](const PlaylistEntry& e) {
+        return e.path.substr(0, prefix.size()) == prefix;
+    });
+    playlist_.queueRemoveIf([&](const PlaylistEntry& e) {
+        return e.path.substr(0, prefix.size()) == prefix;
+    });
+    pl_cursor_ = std::min(pl_cursor_, std::max(0, (int)playlist_.size() - 1));
+}
+
+// Ensure the CD handle is open & ready before a play / rip / MB action on a
+// stopped-but-loaded disc. See the declaration in UIManager.h for the full
+// contract. Returns true iff ready; on false (empty tray) the disc has been
+// fully unloaded and the caller must bail. (Slice 3)
+bool UIManager::reopenCDForAction(const std::string& drive) {
+    if (audio_.cdMode()) return true;          // handle already open & active
+    if (drive.empty())   return false;         // no disc known to reopen
+
+    // Bounded retry + failure discrimination (Slice 3 re-gate): a reopen right
+    // after file playback can hit a TRANSIENT openCD failure (WASAPI uninit->init
+    // settling). A bare single attempt escalated that blip into the destructive
+    // eject purge below, which unloaded a physically-present disc on a
+    // CD->file->CD round-trip. checkMedia() cannot discriminate here - after a
+    // failed open() dev_ is null, so it short-circuits false without asking the
+    // drive. Two discriminators instead:
+    //   1) retry: a transient busy clears within an attempt or two; a real empty
+    //      tray fails every attempt. 3 attempts / ~200 ms apart, only inside an
+    //      explicit user action (never a poll) - two brief retries cannot become
+    //      an audible seek-storm. Do not grow these bounds.
+    //   2) failure point: CDSource::lastOpenFail(). DeviceOpen = the OS handle
+    //      couldn't be acquired (busy/contention - NOT proof of an empty tray);
+    //      TocRead/NoAudioTracks = the drive answered and there is no readable
+    //      audio disc (confirmed empty).
+    // Purge only on a CONFIRMED empty tray. When in doubt, leave the rows alone:
+    // a stale row self-heals on the next action; nuking a loaded disc does not.
+    // Every failed attempt is logged so a misbehaving drive is diagnosed from
+    // the log, not from catching a flashing toast by eye.
+    bool confirmed_no_disc = false;
+    for (int attempt = 1; attempt <= 3; ++attempt) {
+        if (attempt > 1)
+            std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        if (audio_.openCD(drive)) {          // reopened: TOC re-read, device re-init'd
+            if (attempt > 1)
+                Log::writef("cd", "reopen %s: recovered on attempt %d/3 (transient)",
+                            drive.c_str(), attempt);
+            return true;
+        }
+        auto fail = audio_.cdSource().lastOpenFail();
+        const char* why =
+            (fail == CDSource::OpenFail::DeviceOpen)    ? "io.open (device handle)" :
+            (fail == CDSource::OpenFail::TocRead)       ? "readToc"                 :
+            (fail == CDSource::OpenFail::NoAudioTracks) ? "no audio tracks"         :
+                                                          "unknown";
+        Log::writef("cd", "reopen %s: attempt %d/3 failed at %s",
+                    drive.c_str(), attempt, why);
+        // Latest attempt wins: only a drive that ANSWERED (handle ok, no TOC /
+        // no audio) confirms an empty tray. A DeviceOpen failure leaves it
+        // unconfirmed even if an earlier attempt said otherwise.
+        confirmed_no_disc = (fail == CDSource::OpenFail::TocRead ||
+                             fail == CDSource::OpenFail::NoAudioTracks);
+    }
+
+    if (!confirmed_no_disc) {
+        // Device busy / handle contention - not proof the disc is gone. Keep the
+        // rows, keep cd_drive_letter_, tell the user, and let the next action
+        // retry. (Pre-Slice-3 behaviour for a failed openCD was exactly this
+        // benign: playCDTrack returned false and nothing was destroyed.)
+        Log::writef("cd", "reopen %s: all attempts busy - disc state kept", drive.c_str());
+        showTrackToast("CD drive busy", "Try again", "");
+        redraw_needed_.store(true);
+        return false;
+    }
+
+    // Confirmed empty tray -> ejected while stopped. This is the only
+    // eject-while-stopped detection point now that the poll purge is gone.
+    // Unload fully so no stale "loaded" state (rows / [CD] tag / album /
+    // cached release) survives for a disc that is physically gone.
+    Log::writef("cd", "reopen %s: confirmed no disc - unloading", drive.c_str());
+    purgeCDRows(drive);
+    cd_drive_letter_.clear();
+    cd_poll_ticks_ = 0;
+    cd_fail_count_ = 0;
+    mb_lookup_.cancel();
+    mb_fetching_.store(false);
+    {
+        std::lock_guard<std::mutex> lk(mb_mutex_);
+        mb_album_.clear();
+        mb_error_.clear();
+        mb_release_ = {};
+    }
+    cd_ripper_.cancel();
+    showTrackToast("CD ejected", "Disc removed", "");
+    redraw_needed_.store(true);
+    return false;
+}
+
 void UIManager::run() {
     last_playlist_current_for_sync_ = (int)playlist_.current();
     // Directory watch — poll every ~2s for changes
@@ -1026,46 +1126,20 @@ void UIManager::run() {
             }
         }
 
-        // CD media check — only poll when nothing else is playing
-        // Skip entirely during file playback: drive may sleep, that's fine
-        // (slice 6: common — the CD path is live on Linux via SG_IO too).
-        if (!cd_drive_letter_.empty() && !audio_.cdMode()
-            && audio_.state() == PlaybackState::Stopped) {
-            ++cd_poll_ticks_;
-            if (cd_poll_ticks_ >= 25) {  // 25 * 80ms = 2 seconds
-                cd_poll_ticks_ = 0;
-                if (!audio_.cdSource().checkMedia()) {
-                    ++cd_fail_count_;
-                    if (cd_fail_count_ >= 3) {
-                        std::string prefix = cd_drive_letter_ + ":CD Track ";
-                        playlist_.removeIf([&](const PlaylistEntry& e) {
-                            return e.path.substr(0, prefix.size()) == prefix;
-                        });
-                        // Also remove any queued CD tracks for this drive
-                        playlist_.queueRemoveIf([&](const PlaylistEntry& e) {
-                            return e.path.substr(0, prefix.size()) == prefix;
-                        });
-                        cd_drive_letter_.clear();
-                        cd_fail_count_ = 0;
-                        cd_poll_ticks_ = 0;
-                        pl_cursor_ = std::min(pl_cursor_, std::max(0, (int)playlist_.size() - 1));
-                        redraw_needed_.store(true);   // scroll: invariant reveals the clamped cursor
-                    }
-                } else {
-                    cd_fail_count_ = 0;
-                }
-            }
-        }
+        // Slice 3: the old stopped-state media poll here was removed. Slice 1
+        // proved it never checked real media — stop() closes the handle, so it
+        // only ever ran checkMedia() on a null handle (always false) and became a
+        // 6-second timer that purged the CD rows + MB metadata of a stopped-but-
+        // loaded disc. A stopped-but-loaded disc is now a normal, persistent state
+        // (rows survive; [CD] tag + album key off cd_drive_letter_). We cannot
+        // poll an open idle drive either (probe B2: it spins the drive up audibly,
+        // and the syscall returns before the motor is at speed so latency can't
+        // see it). Eject-while-stopped is instead detected on the next lazy reopen
+        // (reopenCDForAction -> openCD fails on an empty tray).
+
         // When CD is playing, use the reader thread's media_removed_ flag
         if (audio_.cdMode() && audio_.cdSource().mediaRemoved()) {
-            std::string prefix = cd_drive_letter_ + ":CD Track ";
-            playlist_.removeIf([&](const PlaylistEntry& e) {
-                return e.path.substr(0, prefix.size()) == prefix;
-            });
-            // Also remove any queued CD tracks — they're dangling after eject
-            playlist_.queueRemoveIf([&](const PlaylistEntry& e) {
-                return e.path.substr(0, prefix.size()) == prefix;
-            });
+            purgeCDRows(cd_drive_letter_);
             audio_.closeCD();
             audio_.clearTrackEnd();
             cd_drive_letter_.clear();
@@ -1690,11 +1764,14 @@ void UIManager::drawTitleBar() {
         modes += spdbuf;
     }
     if (audio_.muted())      modes += " [MUTE]";
-    if (audio_.cdMode())     modes += " [CD]";
+    // Slice 3: the [CD] tag and MB album track "a disc is loaded" (cd_drive_letter_),
+    // not "CD is the active source" (cdMode). A stopped-but-loaded disc keeps its
+    // tag + album so stop() no longer visibly forgets the disc.
+    if (!cd_drive_letter_.empty()) modes += " [CD]";
     if (mb_fetching_.load())  modes += " [MB...]";
     else {
         std::lock_guard<std::mutex> lk(mb_mutex_);
-        if (!mb_album_.empty() && audio_.cdMode())
+        if (!mb_album_.empty() && !cd_drive_letter_.empty())
             modes += " [" + mb_album_ + "]";
     }
     if (sleep_minutes_ > 0) {
@@ -5063,18 +5140,22 @@ void UIManager::handleInput(int ch) {
             break;
         case 25:  // Ctrl+Y — CD rip  (slice 6: common — CD path live on Linux)
             if (ui_overlay_ != UIOverlay::None) break;  // already showing modal
-            if (audio_.cdMode() && !cd_ripper_.isActive()) {
-                const auto& cd = audio_.cdSource();
-                if (!cd.tracks().empty()) {
-                    ui_overlay_ = UIOverlay::RipConfirm;
-                    redraw_needed_.store(true);
-                }
-            } else if (audio_.cdMode() && cd_ripper_.isActive()) {
+            if (cd_ripper_.isActive()) {
                 // Already ripping — Ctrl+Y cancels
                 cd_ripper_.cancel();
                 rip_status_    = "Rip cancelled by user.";
                 rip_msg_ticks_ = 0;
                 redraw_needed_.store(true);
+            } else if (!cd_drive_letter_.empty()) {
+                // Slice 3: rip works on a stopped-but-loaded disc. Gate on loaded
+                // (cd_drive_letter_), not cdMode — stop() closed the handle, so
+                // reopen it first. reopenCDForAction handles an empty tray (eject
+                // while stopped): purge + toast + false, and we bail.
+                if (!reopenCDForAction(cd_drive_letter_)) break;
+                if (!audio_.cdSource().tracks().empty()) {
+                    ui_overlay_ = UIOverlay::RipConfirm;
+                    redraw_needed_.store(true);
+                }
             } else {
                 rip_status_    = "Ctrl+Y: Insert a CD and load it from [Drives] first.";
                 rip_msg_ticks_ = 0;
@@ -5082,8 +5163,12 @@ void UIManager::handleInput(int ch) {
             }
             break;
         case 18:  // Ctrl+R — MusicBrainz CD lookup
-            if (audio_.cdMode() && !mb_fetching_.load()) {
+            if (!cd_drive_letter_.empty() && !mb_fetching_.load()) {
                 if (mb_lookup_.isActive()) break;  // already in progress
+                // Slice 3: look up a stopped-but-loaded disc. Gate on loaded, not
+                // cdMode — reopen the handle first (stop() closed it); bail on an
+                // empty tray (reopenCDForAction purges + toasts).
+                if (!reopenCDForAction(cd_drive_letter_)) break;
                 const auto& cd = audio_.cdSource();
                 if (cd.tracks().empty()) break;
                 mb_fetching_.store(true);
@@ -5112,8 +5197,8 @@ void UIManager::handleInput(int ch) {
                                        ? " (" + rel.date.substr(0,4) + ")" : "");
                         redraw_needed_.store(true);
                     });
-            } else if (!audio_.cdMode()) {
-                // Not in CD mode — silently ignore
+            } else if (cd_drive_letter_.empty()) {
+                // No disc loaded — silently ignore
             }
             break;
         case 'Q':
@@ -5402,7 +5487,7 @@ void UIManager::handleInput(int ch) {
                 if (!from_queue && config_.follow_playing) pl_cursor_ = (int)playlist_.current();
                 std::string drive; int track_num;
                 if (parseCDPath(path, drive, track_num)) {
-                    if (!audio_.cdMode()) audio_.openCD(drive);
+                    if (!reopenCDForAction(drive)) return;   // ejected while stopped
                     audio_.playCDTrack(track_num);
                     return;
                 }
@@ -5417,7 +5502,7 @@ void UIManager::handleInput(int ch) {
                     const std::string& qpath = qe->path;
                     std::string drive; int track_num;
                     if (parseCDPath(qpath, drive, track_num)) {
-                        if (!audio_.cdMode()) audio_.openCD(drive);
+                        if (!reopenCDForAction(drive)) break;   // ejected while stopped
                         audio_.playCDTrack(track_num);
                         // pl_cursor_ stays where it is — queue item has no playlist row
                         break;
@@ -5436,7 +5521,7 @@ void UIManager::handleInput(int ch) {
                 if (config_.follow_playing) pl_cursor_ = (int)playlist_.current();   // gated like manual next
                 std::string drive; int track_num;
                 if (parseCDPath(path, drive, track_num)) {
-                    if (!audio_.cdMode()) audio_.openCD(drive);
+                    if (!reopenCDForAction(drive)) return;   // ejected while stopped
                     audio_.playCDTrack(track_num);
                     return;
                 }
@@ -6203,7 +6288,7 @@ void UIManager::activateSelection() {
                 const std::string& path = p.value();
                 std::string drive; int track_num;
                 if (parseCDPath(path, drive, track_num)) {
-                    if (!audio_.cdMode()) audio_.openCD(drive);
+                    if (!reopenCDForAction(drive)) return;   // ejected while stopped
                     audio_.playCDTrack(track_num);
                     return;
                 }

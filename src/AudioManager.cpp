@@ -1118,7 +1118,19 @@ bool AudioManager::openCD(const std::string& drive_letter) {
     cd_bpm_ready_.store(false);
     cd_bpm_reset_.store(false);
     cd_bpm_track_ = -1;
-    // Init device for 44100Hz stereo float (Red Book format)
+    // Init device for 44100Hz stereo float (Red Book format). Extracted to
+    // initCDDevice() (Slice 3) so lazy reopen re-inits it identically.
+    if (!initCDDevice()) {
+        cd_source_.close();
+        cd_mode_.store(false);
+        return false;
+    }
+    return true;
+}
+
+// Init the CD playback device. Caller holds state_mutex_ and owns cd_mode_ +
+// failure cleanup (see openCD). Returns false on ma_device_init failure.
+bool AudioManager::initCDDevice() {
     ma_device_config cfg = ma_device_config_init(ma_device_type_playback);
     cfg.playback.format   = ma_format_f32;
     cfg.playback.channels = 2;
@@ -1127,11 +1139,7 @@ bool AudioManager::openCD(const std::string& drive_letter) {
     cfg.stopCallback      = &AudioManager::maStopCallback;
     cfg.pUserData         = this;
     if (has_selected_device_) cfg.playback.pDeviceID = &selected_device_id_;
-    if (ma_device_init(nullptr, &cfg, &device_) != MA_SUCCESS) {
-        cd_source_.close();
-        cd_mode_.store(false);
-        return false;
-    }
+    if (ma_device_init(nullptr, &cfg, &device_) != MA_SUCCESS) return false;
     device_initialised_ = true;
     ma_device_set_master_volume(&device_, volume_.load());
     ma_device_start(&device_);

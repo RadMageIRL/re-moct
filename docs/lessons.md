@@ -74,6 +74,43 @@
 - `AR_SKIP = 2940` (not 2941). CRCv2 = `csum_lo + csum_hi`.
 - The negative drive-offset OOB read is real but BLOCKED on testing (Dos's drive is
   +6); needs a synthetic negative-offset vector. Don't patch blind.
+- **Stopping a transport is not unmounting a device. (Slice 3)** `cd_mode_` means "CD is
+  the active audio source." `stop()` correctly closes the drive handle - probe B2: holding
+  it open idle spins the drive up audibly, and the syscall returns before the motor is at
+  speed so latency can't see it, you have to LISTEN - but a vestigial 6-second poll then
+  purged the CD rows + MusicBrainz metadata of the just-stopped disc. That poll never checked
+  real media (Slice 1: it only ran `checkMedia()` on the now-null handle, always false) - a
+  pure destruction timer. The rows + MB metadata live in **UIManager**, not the handle, and
+  `cd_drive_letter_` already survives `stop()` as the faithful "a disc is loaded" signal, so
+  NO new flag was needed (a `cd_loaded_` atomic would just be a second source of truth to
+  desync). Fix: delete the poll purge; key the `[CD]` tag + album off `cd_drive_letter_` so
+  they persist while stopped-but-loaded; reopen the handle lazily on the next Enter / Ctrl+R /
+  Ctrl+Y via `reopenCDForAction()` -> `openCD()`, which re-reads the TOC and re-inits the
+  device (`initCDDevice()`, extracted so no reopen path skips `ma_device_` setup). `openCD()`
+  returns false cleanly on an empty tray, so it doubles as the eject-while-stopped presence
+  check (the ONLY detection point once the poll is gone): on failure, purge rows + clear
+  `cd_drive_letter_` + toast. Route reopen through `openCD()`, NOT a self-reopening
+  `playCDTrack()` - keeps `playCDTrack()` lock-free and unchanged, and every reopen goes
+  through the one function that already does open + `initCDDevice` + failure-cleanup.
+- **A failed reopen is not proof of an empty tray - discriminate, and when unsure keep the
+  disc. (Slice 3 re-gate)** The first hardware gate caught it: a reopen right after file
+  playback can hit a TRANSIENT `openCD()` failure (WASAPI uninit->init settling), and a bare
+  single attempt escalated that blip into the destructive eject purge - a CD->file->CD
+  round-trip unloaded a physically-present disc. `checkMedia()` cannot discriminate
+  transient-vs-ejected: after a failed `open()` `dev_` is null, so it short-circuits false
+  without ever asking the drive. Two discriminators instead: (1) bounded retry - 3 attempts,
+  ~200 ms apart, inside `reopenCDForAction()` only (an explicit user action; never a poll, so
+  no spin-up, no seek-storm); (2) the failure POINT - `CDSource::lastOpenFail()` records
+  where `open()` died: `DeviceOpen` (OS handle couldn't be acquired - busy/contention, NOT
+  proof of an empty tray) vs `TocRead`/`NoAudioTracks` (the drive ANSWERED and there is no
+  readable audio disc - confirmed empty). Purge only on confirmed-empty; on busy, keep the
+  rows + `cd_drive_letter_` and toast "drive busy" - a stale row self-heals on the next
+  action, a nuked loaded disc does not (this is exactly pre-Slice-3 behaviour for a failed
+  `openCD`: benign false, nothing destroyed). Every failed attempt is LOGGED (`Log "cd"`:
+  drive, failure point, attempt) so a misbehaving drive is diagnosed from the log, never by
+  asking someone to catch a flashing toast by eye. Don't put the retry inside `openCD()`
+  itself: it also serves genuine first-loads, where a slow real failure shouldn't stall the
+  UI.
 
 ## Streaming ring buffer / re-pin
 - **An iHeart hole where iHeart's own trackHistory/ctm reports no current song

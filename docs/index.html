@@ -1,342 +1,52 @@
 <!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
+<!-- saved from url=(0037)https://radmageirl.github.io/re-moct/ -->
+<html lang="en"><head><meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>RE-MOCT - Documentation</title>
-<style>
-  :root {
-    --bg:        #0d0d0d;
-    --surface:   #141414;
-    --border:    #222;
-    --accent:    #00d4aa;
-    --accent2:   #005f4e;
-    --dim:       #444;
-    --muted:     #666;
-    --text:      #ccc;
-    --bright:    #eee;
-    --warn:      #e6a817;
-    --danger:    #c0392b;
-    --mono:      'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace;
-    --sans:      'Inter', 'Segoe UI', system-ui, sans-serif;
-  }
-
-  * { box-sizing: border-box; margin: 0; padding: 0; }
-
-  body {
-    background: var(--bg);
-    color: var(--text);
-    font-family: var(--sans);
-    font-size: 14px;
-    line-height: 1.65;
-  }
-
-  /* ── Layout ── */
-  .layout { display: flex; min-height: 100vh; }
-
-  nav {
-    width: 220px;
-    flex-shrink: 0;
-    background: var(--surface);
-    border-right: 1px solid var(--border);
-    position: sticky;
-    top: 0;
-    height: 100vh;
-    overflow-y: auto;
-    padding: 24px 0 48px;
-  }
-
-  nav .logo {
-    font-family: var(--mono);
-    font-size: 15px;
-    color: var(--accent);
-    padding: 0 20px 24px;
-    border-bottom: 1px solid var(--border);
-    margin-bottom: 16px;
-    letter-spacing: 0.08em;
-  }
-  nav .logo span { color: var(--muted); font-size: 11px; display: block; margin-top: 2px; letter-spacing: 0; }
-
-  nav a {
-    display: block;
-    padding: 6px 20px;
-    color: var(--muted);
-    text-decoration: none;
-    font-size: 13px;
-    transition: color 0.15s;
-  }
-  nav a:hover { color: var(--accent); }
-  nav .nav-section {
-    font-size: 10px;
-    letter-spacing: 0.12em;
-    text-transform: uppercase;
-    color: var(--dim);
-    padding: 16px 20px 4px;
-  }
-
-  main {
-    flex: 1;
-    max-width: 860px;
-    padding: 48px 48px 96px;
-  }
-
-  /* ── Typography ── */
-  h1 {
-    font-family: var(--mono);
-    font-size: 28px;
-    color: var(--accent);
-    letter-spacing: 0.04em;
-    margin-bottom: 8px;
-  }
-  h1 .version {
-    font-size: 13px;
-    color: var(--muted);
-    margin-left: 12px;
-    letter-spacing: 0;
-    font-weight: 400;
-  }
-
-  h2 {
-    font-family: var(--mono);
-    font-size: 16px;
-    color: var(--bright);
-    margin: 48px 0 16px;
-    padding-bottom: 8px;
-    border-bottom: 1px solid var(--border);
-    letter-spacing: 0.04em;
-  }
-
-  h3 {
-    font-size: 13px;
-    font-weight: 600;
-    color: var(--accent);
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
-    margin: 28px 0 10px;
-  }
-
-  p { margin-bottom: 12px; color: var(--text); }
-
-  a { color: var(--accent); text-decoration: none; }
-  a:hover { text-decoration: underline; }
-
-  /* ── Components ── */
-  .hero {
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-left: 3px solid var(--accent);
-    padding: 20px 24px;
-    margin-bottom: 32px;
-    font-family: var(--mono);
-    font-size: 12px;
-    color: var(--muted);
-    line-height: 1.6;
-    overflow: hidden;
-    white-space: nowrap;
-  }
-  .hero-line {
-    display: flex;
-    justify-content: space-between;
-    gap: 12px;
-    overflow: hidden;
-  }
-  .hero-line .left  { flex-shrink: 0; }
-  .hero-line .right { color: var(--bright); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .hero .hl  { color: var(--accent); }
-  .hero .hi  { color: var(--bright); }
-  .hero .dim { color: var(--dim); }
-  .hero .sep { display: block; height: 4px; }
-
-  .tag {
-    display: inline-block;
-    background: var(--accent2);
-    color: var(--accent);
-    font-family: var(--mono);
-    font-size: 10px;
-    padding: 2px 7px;
-    border-radius: 3px;
-    letter-spacing: 0.06em;
-    vertical-align: middle;
-  }
-
-  .badge-row { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 20px; }
-  .badge {
-    background: var(--surface);
-    border: 1px solid var(--border);
-    color: var(--muted);
-    font-family: var(--mono);
-    font-size: 11px;
-    padding: 3px 10px;
-    border-radius: 3px;
-  }
-  .badge b { color: var(--bright); }
-
-  /* Key binding tables */
-  .kb-section { margin-bottom: 8px; }
-
-  .kb-group {
-    font-size: 10px;
-    letter-spacing: 0.12em;
-    text-transform: uppercase;
-    color: var(--accent);
-    margin: 20px 0 6px;
-    font-weight: 600;
-  }
-
-  .kb {
-    display: grid;
-    grid-template-columns: 160px 1fr;
-    gap: 0;
-    border: 1px solid var(--border);
-    border-radius: 4px;
-    overflow: hidden;
-  }
-  .kb-row {
-    display: contents;
-  }
-  .kb-row:nth-child(even) .kb-key,
-  .kb-row:nth-child(even) .kb-desc {
-    background: #111;
-  }
-  .kb-key {
-    font-family: var(--mono);
-    font-size: 12px;
-    color: var(--bright);
-    padding: 6px 12px;
-    border-right: 1px solid var(--border);
-    white-space: nowrap;
-  }
-  .kb-desc {
-    font-size: 12px;
-    color: var(--text);
-    padding: 6px 12px;
-  }
-
-  /* Feature cards */
-  .card-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
-    gap: 12px;
-    margin-top: 12px;
-  }
-  .card {
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: 4px;
-    padding: 14px 16px;
-  }
-  .card-title {
-    font-family: var(--mono);
-    font-size: 12px;
-    color: var(--accent);
-    margin-bottom: 6px;
-  }
-  .card p { font-size: 12px; color: var(--muted); margin: 0; }
-
-  /* Format pills */
-  .format-list { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
-  .fmt {
-    font-family: var(--mono);
-    font-size: 11px;
-    color: var(--bright);
-    background: #1a1a1a;
-    border: 1px solid var(--border);
-    padding: 2px 8px;
-    border-radius: 3px;
-  }
-
-  /* Notes / warnings */
-  .note {
-    background: #111a18;
-    border-left: 3px solid var(--accent);
-    padding: 10px 14px;
-    font-size: 12px;
-    color: var(--text);
-    margin: 12px 0;
-    border-radius: 0 3px 3px 0;
-  }
-  .warn {
-    background: #1a1600;
-    border-left: 3px solid var(--warn);
-    padding: 10px 14px;
-    font-size: 12px;
-    color: var(--text);
-    margin: 12px 0;
-    border-radius: 0 3px 3px 0;
-  }
-
-  code {
-    font-family: var(--mono);
-    font-size: 12px;
-    color: var(--accent);
-    background: #111;
-    padding: 1px 5px;
-    border-radius: 3px;
-  }
-
-  pre {
-    font-family: var(--mono);
-    font-size: 12px;
-    background: var(--surface);
-    border: 1px solid var(--border);
-    padding: 16px;
-    border-radius: 4px;
-    overflow-x: auto;
-    color: var(--text);
-    margin: 12px 0;
-    line-height: 1.6;
-  }
-
-  .section-anchor { scroll-margin-top: 24px; }
-
-  hr {
-    border: none;
-    border-top: 1px solid var(--border);
-    margin: 40px 0;
-  }
-</style>
+<link rel="stylesheet" href="/style.css">
 </head>
 <body>
 <div class="layout">
 
 <!-- ── Sidebar ── -->
 <nav>
-  <div class="logo">RE-MOCT<span>v1.1.0</span></div>
+  <div class="logo">RE-MOCT<span>v1.1.3</span></div>
   <div class="nav-section">Overview</div>
-  <a href="#intro">Introduction</a>
-  <a href="#formats">Formats</a>
-  <a href="#layout">Interface Layout</a>
+  <a href="https://radmageirl.github.io/re-moct/#intro">Introduction</a>
+  <a href="https://radmageirl.github.io/re-moct/#formats">Formats</a>
+  <a href="https://radmageirl.github.io/re-moct/#layout">Interface Layout</a>
   <div class="nav-section">Features</div>
-  <a href="#playback">Playback</a>
-  <a href="#playlist">Playlist</a>
-  <a href="#browser">File Browser</a>
-  <a href="#queue">Play Queue</a>
-  <a href="#favs">Favourites</a>
-  <a href="#cd">CD Audio</a>
-  <a href="#ripping">CD Ripping</a>
-  <a href="#eq">Equalizer</a>
-  <a href="#visualizer">Visualizer</a>
-  <a href="#lyrics">Lyrics</a>
-  <a href="#tags">Tag Editor</a>
-  <a href="#radio">Internet Radio</a>
-  <a href="#scrobble">Scrobbling &amp; Discord</a>
+  <a href="https://radmageirl.github.io/re-moct/#playback">Playback</a>
+  <a href="https://radmageirl.github.io/re-moct/#playlist">Playlist</a>
+  <a href="https://radmageirl.github.io/re-moct/#browser">File Browser</a>
+  <a href="https://radmageirl.github.io/re-moct/#queue">Play Queue</a>
+  <a href="https://radmageirl.github.io/re-moct/#favs">Favourites</a>
+  <a href="https://radmageirl.github.io/re-moct/#cd">CD Audio</a>
+  <a href="https://radmageirl.github.io/re-moct/#ripping">CD Ripping</a>
+  <a href="https://radmageirl.github.io/re-moct/#eq">Equalizer</a>
+  <a href="https://radmageirl.github.io/re-moct/#visualizer">Visualizer</a>
+  <a href="https://radmageirl.github.io/re-moct/#lyrics">Lyrics</a>
+  <a href="https://radmageirl.github.io/re-moct/#tags">Tag Editor</a>
+  <a href="https://radmageirl.github.io/re-moct/#radio">Internet Radio</a>
+  <a href="https://radmageirl.github.io/re-moct/#scrobble">Scrobbling &amp; Discord</a>
   <div class="nav-section">Reference</div>
-  <a href="#keybindings">Key Bindings</a>
-  <a href="#config">Configuration</a>
-  <a href="#plugin">Plugin Architecture</a>
-  <a href="#build">Build</a>
+  <a href="https://radmageirl.github.io/re-moct/#keybindings">Key Bindings</a>
+  <a href="https://radmageirl.github.io/re-moct/#config">Configuration</a>
+  <a href="https://radmageirl.github.io/re-moct/#plugin">Plugin Architecture</a>
+  <a href="https://radmageirl.github.io/re-moct/#build">Build</a>
 </nav>
 
 <!-- ── Main ── -->
 <main>
 
-<h1>RE-MOCT <span class="version">v1.1.0</span></h1>
+<h1>RE-MOCT <span class="version">v1.1.3</span></h1>
 
 <div class="note" style="margin-bottom:24px">
-  <strong>1.1.0 released.</strong>
+  <strong>v1.1.3 released.</strong>
   RE-MOCT runs on <strong>Windows</strong> and <strong>Linux</strong>. Grab a build from the
   <a href="https://github.com/RadMageIRL/re-moct/releases">GitHub Releases page</a>, or build
-  from source - see <a href="#build">Build</a>. Its streaming source ships as a loadable
+  from source - see <a href="https://radmageirl.github.io/re-moct/#build">Build</a>. Its streaming source ships as a loadable
   plugin, so an internet-radio fix can arrive as a rebuilt plugin with no host rebuild.
 </div>
 
@@ -352,22 +62,22 @@
 <div class="hero">
   <div class="hero-line">
     <span class="left hl">CD Track 02 [F:]</span>
-    <span class="right">[REPEAT ALL] [SHUFFLE] [CD] [New Miserable Experience (1992)] [EQ] RE-MOCT v1.1.0</span>
+    <span class="right">[REPEAT ALL] [SHUFFLE] [CD] [New Miserable Experience (1992)] [EQ] RE-MOCT v1.1.3</span>
   </div>
   <div class="hero-line" style="margin-top:2px">
     <span class="left dim">Playlist [12]&nbsp;&nbsp;46m 8s</span>
     <span class="right"></span>
   </div>
   <div class="hero-line" style="margin-top:4px">
-    <span class="left hl">Gin Blossoms &#8211; Hey Jealousy</span>
+    <span class="left hl">Gin Blossoms – Hey Jealousy</span>
     <span class="right dim">3:56</span>
   </div>
   <div class="hero-line">
-    <span class="left dim">Gin Blossoms &#8211; Mrs. Rita</span>
+    <span class="left dim">Gin Blossoms – Mrs. Rita</span>
     <span class="right dim">4:25</span>
   </div>
   <div class="hero-line">
-    <span class="left dim">Gin Blossoms &#8211; Until I Fall Away</span>
+    <span class="left dim">Gin Blossoms – Until I Fall Away</span>
     <span class="right dim">3:52</span>
   </div>
   <span class="sep"></span>
@@ -386,7 +96,7 @@
 
 <p>RE-MOCT (<em>Music On Console Terminal</em>) is a keyboard-driven terminal music player, CD ripper, and internet-radio client for <strong>Windows and Linux</strong>, inspired by MOC. It runs in a standard console window with a two-pane layout - file browser on the left, playlist on the right - and is designed for continuous, uninterrupted playback with minimal resource overhead.</p>
 
-<p>It has two faces. <strong>Classic mode</strong> is a faithful, minimal MOC homage. Press <code>Ctrl+T</code> for <strong>Awesome mode</strong> - the remix, with a comet progress bar, a sub-cell block visualizer, and breathing animations (the 256-color visuals shine on a Linux terminal).</p>
+<p>It has two faces. <strong>Classic mode</strong> is a faithful, minimal MOC homage. Press <code>Ctrl+T</code> for <strong>Awesome mode</strong> - the remix, with a comet progress bar, a sub-cell block visualizer, breathing animations, and 18 named truecolor palettes cycled with <code>F7</code> / <code>F8</code> (the 256-color visuals shine on a Linux terminal).</p>
 
 <p>Key design goals: zero UI stutter (all heavy I/O off the main thread), no silent data races (every shared state is explicitly protected), and no volatile CD or hardware paths leaking into persistent config.</p>
 
@@ -410,7 +120,7 @@
 <h2 id="layout" class="section-anchor">Interface Layout</h2>
 
 <pre>┌─ RE-MOCT ─────────────────────────────────────────────────────────────────┐
-│  ► Artist - Title        [REPEAT ALL] [SHUFFLE] [CD] Album (Year)  v1.0  │
+│  ► Artist - Title        [REPEAT ALL] [SHUFFLE] [CD] Album (Year)  v1.1│
 ├─ File Browser ───────────────────┬─ Playlist ─────────────────────────────┤
 │  [Drives]                        │  Playlist [14]  39m 40s                │
 │  [Recent]                        │  ► Green Day - Burnout           2:08  │
@@ -448,7 +158,7 @@
   </div>
   <div class="card">
     <div class="card-title">Speed Control</div>
-    <p>Playback speed adjustable from 50% to 200% in 2% steps via <code>{</code> / <code>}</code>. Varispeed: speed and pitch are coupled, tape-style, by design.</p>
+    <p>Playback speed adjustable from 50% to 200% in 2% steps via <code>{</code> / <code>}</code>. Varispeed - speed and pitch move together, tape-style, the way a turntable does. This is deliberate, not a limitation.</p>
   </div>
   <div class="card">
     <div class="card-title">Balance</div>
@@ -476,11 +186,12 @@
 <div class="kb">
   <div class="kb-row"><div class="kb-key">a</div><div class="kb-desc">Add highlighted file or directory (recursive) to playlist</div></div>
   <div class="kb-row"><div class="kb-key">d</div><div class="kb-desc">Delete selected track from playlist</div></div>
-  <div class="kb-row"><div class="kb-key">K / J</div><div class="kb-desc">Move selected track up / down</div></div>
+  <div class="kb-row"><div class="kb-key">K / J</div><div class="kb-desc">Move selected track up / down (d still deletes)</div></div>
   <div class="kb-row"><div class="kb-key">c</div><div class="kb-desc">Clear entire playlist</div></div>
   <div class="kb-row"><div class="kb-key">S</div><div class="kb-desc">Save playlist (M3U / M3U8 / PLS / XSPF)</div></div>
   <div class="kb-row"><div class="kb-key">l</div><div class="kb-desc">Load / append playlist file - autoplays if stopped</div></div>
   <div class="kb-row"><div class="kb-key">o</div><div class="kb-desc">Cycle sort: none / title / artist / duration / filename</div></div>
+  <div class="kb-row"><div class="kb-key">F3</div><div class="kb-desc">Follow-playing: cursor tracks the playing track (on by default)</div></div>
 </div>
 
 <div class="note">Loading a playlist via <code>l</code> or the goto bar appends to any existing tracks and jumps the cursor to the first newly added entry. If nothing is playing, it autoplays immediately.</div>
@@ -545,7 +256,11 @@
   </div>
   <div class="card">
     <div class="card-title">Eject detection</div>
-    <p>Non-blocking media check polls every ~2 seconds. On eject, all CD entries are removed from playlist and queue, MusicBrainz state is cleared, and playback stops cleanly.</p>
+    <p>Stopping a CD stops playback but keeps the disc loaded - the track list, titles, and MusicBrainz metadata all survive, and pressing Enter, <code>Ctrl+R</code>, or <code>Ctrl+Y</code> reopens the drive on demand. Stopping does not spin the drive: the handle is closed and reopened lazily. A real eject (during playback, or on the next action against an empty tray) removes all CD entries from playlist and queue, clears MusicBrainz state, and stops cleanly.</p>
+
+    <p>To eject from the keyboard, highlight a CD drive in <code>[Drives]</code> (a <code>&#9167; Shift+E</code> hint appears on drives with a disc) and press <code>Shift+E</code>. If that disc is playing, playback stops first. Drives that support software eject open the tray immediately; drives that do not report so honestly and you can use the physical button. The drive list can be refreshed for hot-plugged drives with <code>F12</code>.</p>
+
+    <div class="note">Some optical drives take a moment to spin down after stop before their physical eject button responds - that is the drive settling, not RE-MOCT. Give it a second and the button works.</div>
   </div>
   <div class="card">
     <div class="card-title">MusicBrainz lookup</div>
@@ -599,7 +314,6 @@
   <div class="kb-row"><div class="kb-key">A</div><div class="kb-desc">AccurateRip - network CRC verify + drive offset correction</div></div>
   <div class="kb-row"><div class="kb-key">C</div><div class="kb-desc">CUETools - disc-wide CRC32, offset-immune, no network required</div></div>
   <div class="kb-row"><div class="kb-key">Y</div><div class="kb-desc">Local - best-effort rip, no verification</div></div>
-  <div class="kb-row"><div class="kb-key">B</div><div class="kb-desc">Local 2-pass - best-effort + read-twice determinism check</div></div>
   <div class="kb-row"><div class="kb-key">N / Esc</div><div class="kb-desc">Cancel - return to CD mode without ripping</div></div>
 </div>
 
@@ -641,7 +355,7 @@
   <div class="kb-row"><div class="kb-key">Esc</div><div class="kb-desc">Cancel - discard all changes</div></div>
 </div>
 
-<div class="warn">Tag editing is blocked while a track is playing - stop playback first with <code>s</code>. CD tracks cannot be edited. Files with no existing tags show empty editable fields.</div>
+<div class="warn">Tag editing is blocked while a track is playing - stop playback first with <code>s</code> (the warning stays on screen so you can read it). CD tracks and radio streams cannot be edited. Files with no existing tags show empty editable fields. If a save fails - for example a read-only or locked file - RE-MOCT reports it and leaves the on-disk tags and the displayed title unchanged, rather than silently pretending it worked.</div>
 
 <!-- ── Internet Radio ── -->
 <h2 id="radio" class="section-anchor">Internet Radio &amp; Streaming</h2>
@@ -692,14 +406,18 @@
 <div class="kb">
   <div class="kb-row"><div class="kb-key">r</div><div class="kb-desc">Cycle repeat: off / one / all</div></div>
   <div class="kb-row"><div class="kb-key">z</div><div class="kb-desc">Toggle shuffle</div></div>
-  <div class="kb-row"><div class="kb-key">F3</div><div class="kb-desc">Follow the playing track (cursor tracks the song; default on)</div></div>
-  <div class="kb-row"><div class="kb-key">Ctrl+T</div><div class="kb-desc">Toggle Classic / Awesome theme</div></div>
-  <div class="kb-row"><div class="kb-key">F2</div><div class="kb-desc">Spectrum style: classic / 80s LED</div></div>
-  <div class="kb-row"><div class="kb-key">F7 / F8</div><div class="kb-desc">Awesome theme: previous / next</div></div>
   <div class="kb-row"><div class="kb-key">Z</div><div class="kb-desc">Sleep timer: cycle 15 / 30 / 45 / 60 / 90 min / off</div></div>
   <div class="kb-row"><div class="kb-key">t</div><div class="kb-desc">Toggle elapsed / remaining time display</div></div>
   <div class="kb-row"><div class="kb-key">w</div><div class="kb-desc">Toggle clock in title bar</div></div>
+  <div class="kb-row"><div class="kb-key">F3</div><div class="kb-desc">Toggle follow-playing (cursor tracks the playing track; on by default)</div></div>
   <div class="kb-row"><div class="kb-key">!</div><div class="kb-desc">Toggle Windows toast notifications</div></div>
+</div>
+
+<div class="kb-group">Appearance</div>
+<div class="kb">
+  <div class="kb-row"><div class="kb-key">Ctrl+T</div><div class="kb-desc">Toggle Classic / Awesome mode</div></div>
+  <div class="kb-row"><div class="kb-key">F8 / F7</div><div class="kb-desc">Cycle Awesome-mode theme forward / back (18 named palettes)</div></div>
+  <div class="kb-row"><div class="kb-key">v</div><div class="kb-desc">Toggle the block visualizer</div></div>
 </div>
 
 <div class="kb-group">Navigation</div>
@@ -720,6 +438,7 @@
   <div class="kb-row"><div class="kb-key">S</div><div class="kb-desc">Save playlist as M3U / M3U8 / PLS / XSPF</div></div>
   <div class="kb-row"><div class="kb-key">l</div><div class="kb-desc">Load / append playlist file</div></div>
   <div class="kb-row"><div class="kb-key">o</div><div class="kb-desc">Cycle sort: none / title / artist / duration / filename</div></div>
+  <div class="kb-row"><div class="kb-key">\</div><div class="kb-desc">Search the playlist and jump to a track (single match jumps directly; several open a pick list)</div></div>
   <div class="kb-row"><div class="kb-key">q</div><div class="kb-desc">Add to play queue</div></div>
   <div class="kb-row"><div class="kb-key">Q</div><div class="kb-desc">Show / hide queue pane</div></div>
 </div>
@@ -730,6 +449,7 @@
   <div class="kb-row"><div class="kb-key">H</div><div class="kb-desc">Toggle hidden files</div></div>
   <div class="kb-row"><div class="kb-key">b</div><div class="kb-desc">Bookmark current directory</div></div>
   <div class="kb-row"><div class="kb-key">B</div><div class="kb-desc">Show bookmarks (Enter: jump, x: delete)</div></div>
+  <div class="kb-row"><div class="kb-key">F12</div><div class="kb-desc">Refresh the drive list (pick up hot-plugged drives without restarting)</div></div>
   <div class="kb-row"><div class="kb-key">Del</div><div class="kb-desc">Remove entry (in FAVs pane)</div></div>
 </div>
 
@@ -748,7 +468,8 @@
 <div class="kb">
   <div class="kb-row"><div class="kb-key">Ctrl+R</div><div class="kb-desc">Fetch CD metadata from MusicBrainz via DiscID (CD mode only)</div></div>
   <div class="kb-row"><div class="kb-key">Ctrl+F</div><div class="kb-desc">Manual MusicBrainz / Discogs search (artist + album text search)</div></div>
-  <div class="kb-row"><div class="kb-key">Ctrl+Y</div><div class="kb-desc">Open rip dialog (A=AccurateRip  C=CUETools  Y=Local  B=Local 2-pass  N=cancel)</div></div>
+  <div class="kb-row"><div class="kb-key">Ctrl+Y</div><div class="kb-desc">Open rip dialog (A=AccurateRip  C=CUETools  Y=Local  N=cancel)</div></div>
+  <div class="kb-row"><div class="kb-key">Shift+E</div><div class="kb-desc">Eject the highlighted CD drive from [Drives] (stops playback first if that disc is playing)</div></div>
 </div>
 
 <div class="kb-group">Global</div>
@@ -804,9 +525,10 @@ ctest --test-dir build --output-on-failure</pre>
 <p>The single-header dependencies (miniaudio, nlohmann/json) and the vendored MD5 are checked into the repo - no separate download step. Binary output: <code>build/bin/remoct</code> (or <code>remoct.exe</code>), with the streaming plugin beside it in <code>build/bin/plugins/</code>.</p>
 
 <hr>
-<p style="font-size:11px; color:var(--muted); text-align:center">RE-MOCT v1.1.0 &nbsp;·&nbsp; C++20 &nbsp;·&nbsp; Built with ncurses, miniaudio, TagLib &nbsp;·&nbsp; <a href="https://github.com/RadMageIRL/re-moct" style="color:var(--accent)">github.com/RadMageIRL/re-moct</a></p>
+<p style="font-size:11px; color:var(--muted); text-align:center">RE-MOCT v1.1.3 &nbsp;·&nbsp; C++20 &nbsp;·&nbsp; Built with ncurses, miniaudio, TagLib &nbsp;·&nbsp; <a href="https://github.com/RadMageIRL/re-moct" style="color:var(--accent)">github.com/RadMageIRL/re-moct</a></p>
 
 </main>
 </div>
-</body>
-</html>
+
+
+</body></html>

@@ -16,12 +16,13 @@
 bool CDSource::open(const std::string& drive_letter) {
     close();
     drive_letter_ = drive_letter;
+    last_open_fail_ = OpenFail::None;   // records WHY open fails (Slice 3 re-gate)
 
     // Open raw device via the seam (production default: core::cdio() — Windows
     // IOCTL transport; tests inject a fake through the ctor)
     core::ICdIo& io = io_ ? *io_ : core::cdio();
     dev_ = io.open(drive_letter);
-    if (!dev_) return false;
+    if (!dev_) { last_open_fail_ = OpenFail::DeviceOpen; return false; }
 
     // Query drive model and look up AccurateRip read offset
     drive_model_          = dev_->model();
@@ -31,6 +32,7 @@ bool CDSource::open(const std::string& drive_letter) {
     core::CdToc toc;
     if (!dev_->readToc(toc)) {
         dev_.reset();
+        last_open_fail_ = OpenFail::TocRead;
         return false;
     }
 
@@ -48,6 +50,7 @@ bool CDSource::open(const std::string& drive_letter) {
     if (last  > 99) last  = 99;
     if (last < first) {
         dev_.reset();
+        last_open_fail_ = OpenFail::TocRead;   // malformed TOC = no readable disc
         return false;
     }
 
@@ -90,6 +93,7 @@ bool CDSource::open(const std::string& drive_letter) {
 
     if (tracks_.empty()) {
         dev_.reset();
+        last_open_fail_ = OpenFail::NoAudioTracks;
         return false;
     }
 

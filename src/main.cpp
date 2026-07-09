@@ -104,6 +104,11 @@ int main(int argc, char* argv[]) {
 #ifdef _WIN32
                 std::string drive; int track_num;
                 if (parseCDPath(p, drive, track_num)) {
+                    // Slice 3: auto-advance reopen (mid-playback) - fails silently by
+                    // design on an empty tray (openCD no-ops, playCDTrack returns false,
+                    // advance ends). An ejected disc here is already caught by the reader-
+                    // thread detector -> UIManager playing-eject purge; see the queue-pop
+                    // reopen below. reopenCDForAction (UIManager) isn't reachable from here.
                     if (!audio.cdMode()) audio.openCD(drive);
                     audio.playCDTrack(track_num);
                     return;
@@ -127,6 +132,15 @@ int main(int argc, char* argv[]) {
 #ifdef _WIN32
                 std::string drive; int track_num;
                 if (parseCDPath(qpath, drive, track_num)) {
+                    // Slice 3: this auto-advance queue-pop is a second reopen shape
+                    // (openCD on the !cdMode branch). It fails SILENTLY BY DESIGN on
+                    // an empty tray (continue, no row-purge/toast) — unlike the UI
+                    // paths' reopenCDForAction. That helper lives in UIManager and
+                    // isn't reachable here, and it isn't needed: this runs mid-
+                    // playback (a track just ended), so an ejected disc is already
+                    // caught by the reader-thread detector (CDSource media_removed_
+                    // -> UIManager's playing-eject purge). This path only skips the
+                    // dead queue entry and advances.
                     if (audio.cdMode()) {
                         if (track_num > (int)audio.cdTracks().size()) continue;
                         audio.playCDTrack(track_num);

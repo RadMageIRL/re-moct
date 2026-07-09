@@ -301,7 +301,7 @@
 
 <!-- ── Sidebar ── -->
 <nav>
-  <div class="logo">RE-MOCT<span>v1.0.0</span></div>
+  <div class="logo">RE-MOCT<span>v1.1.0</span></div>
   <div class="nav-section">Overview</div>
   <a href="#intro">Introduction</a>
   <a href="#formats">Formats</a>
@@ -330,10 +330,10 @@
 <!-- ── Main ── -->
 <main>
 
-<h1>RE-MOCT <span class="version">v1.0.0</span></h1>
+<h1>RE-MOCT <span class="version">v1.1.0</span></h1>
 
 <div class="note" style="margin-bottom:24px">
-  <strong>1.0.0 released.</strong>
+  <strong>1.1.0 released.</strong>
   RE-MOCT runs on <strong>Windows</strong> and <strong>Linux</strong>. Grab a build from the
   <a href="https://github.com/RadMageIRL/re-moct/releases">GitHub Releases page</a>, or build
   from source - see <a href="#build">Build</a>. Its streaming source ships as a loadable
@@ -352,7 +352,7 @@
 <div class="hero">
   <div class="hero-line">
     <span class="left hl">CD Track 02 [F:]</span>
-    <span class="right">[REPEAT ALL] [SHUFFLE] [CD] [New Miserable Experience (1992)] [EQ] RE-MOCT v1.0.0</span>
+    <span class="right">[REPEAT ALL] [SHUFFLE] [CD] [New Miserable Experience (1992)] [EQ] RE-MOCT v1.1.0</span>
   </div>
   <div class="hero-line" style="margin-top:2px">
     <span class="left dim">Playlist [12]&nbsp;&nbsp;46m 8s</span>
@@ -448,7 +448,7 @@
   </div>
   <div class="card">
     <div class="card-title">Speed Control</div>
-    <p>Playback speed adjustable from 50% to 200% in 2% steps via <code>{</code> / <code>}</code>. Pitch-corrected.</p>
+    <p>Playback speed adjustable from 50% to 200% in 2% steps via <code>{</code> / <code>}</code>. Varispeed: speed and pitch are coupled, tape-style, by design.</p>
   </div>
   <div class="card">
     <div class="card-title">Balance</div>
@@ -476,7 +476,7 @@
 <div class="kb">
   <div class="kb-row"><div class="kb-key">a</div><div class="kb-desc">Add highlighted file or directory (recursive) to playlist</div></div>
   <div class="kb-row"><div class="kb-key">d</div><div class="kb-desc">Delete selected track from playlist</div></div>
-  <div class="kb-row"><div class="kb-key">u / D</div><div class="kb-desc">Move selected track up / down</div></div>
+  <div class="kb-row"><div class="kb-key">K / J</div><div class="kb-desc">Move selected track up / down</div></div>
   <div class="kb-row"><div class="kb-key">c</div><div class="kb-desc">Clear entire playlist</div></div>
   <div class="kb-row"><div class="kb-key">S</div><div class="kb-desc">Save playlist (M3U / M3U8 / PLS / XSPF)</div></div>
   <div class="kb-row"><div class="kb-key">l</div><div class="kb-desc">Load / append playlist file - autoplays if stopped</div></div>
@@ -599,6 +599,7 @@
   <div class="kb-row"><div class="kb-key">A</div><div class="kb-desc">AccurateRip - network CRC verify + drive offset correction</div></div>
   <div class="kb-row"><div class="kb-key">C</div><div class="kb-desc">CUETools - disc-wide CRC32, offset-immune, no network required</div></div>
   <div class="kb-row"><div class="kb-key">Y</div><div class="kb-desc">Local - best-effort rip, no verification</div></div>
+  <div class="kb-row"><div class="kb-key">B</div><div class="kb-desc">Local 2-pass - best-effort + read-twice determinism check</div></div>
   <div class="kb-row"><div class="kb-key">N / Esc</div><div class="kb-desc">Cancel - return to CD mode without ripping</div></div>
 </div>
 
@@ -691,6 +692,10 @@
 <div class="kb">
   <div class="kb-row"><div class="kb-key">r</div><div class="kb-desc">Cycle repeat: off / one / all</div></div>
   <div class="kb-row"><div class="kb-key">z</div><div class="kb-desc">Toggle shuffle</div></div>
+  <div class="kb-row"><div class="kb-key">F3</div><div class="kb-desc">Follow the playing track (cursor tracks the song; default on)</div></div>
+  <div class="kb-row"><div class="kb-key">Ctrl+T</div><div class="kb-desc">Toggle Classic / Awesome theme</div></div>
+  <div class="kb-row"><div class="kb-key">F2</div><div class="kb-desc">Spectrum style: classic / 80s LED</div></div>
+  <div class="kb-row"><div class="kb-key">F7 / F8</div><div class="kb-desc">Awesome theme: previous / next</div></div>
   <div class="kb-row"><div class="kb-key">Z</div><div class="kb-desc">Sleep timer: cycle 15 / 30 / 45 / 60 / 90 min / off</div></div>
   <div class="kb-row"><div class="kb-key">t</div><div class="kb-desc">Toggle elapsed / remaining time display</div></div>
   <div class="kb-row"><div class="kb-key">w</div><div class="kb-desc">Toggle clock in title bar</div></div>
@@ -710,7 +715,7 @@
 <div class="kb">
   <div class="kb-row"><div class="kb-key">a</div><div class="kb-desc">Add selection to playlist (recursive for directories)</div></div>
   <div class="kb-row"><div class="kb-key">d</div><div class="kb-desc">Delete selected track</div></div>
-  <div class="kb-row"><div class="kb-key">u / D</div><div class="kb-desc">Move track up / down</div></div>
+  <div class="kb-row"><div class="kb-key">K / J</div><div class="kb-desc">Move track up / down</div></div>
   <div class="kb-row"><div class="kb-key">c</div><div class="kb-desc">Clear entire playlist</div></div>
   <div class="kb-row"><div class="kb-key">S</div><div class="kb-desc">Save playlist as M3U / M3U8 / PLS / XSPF</div></div>
   <div class="kb-row"><div class="kb-key">l</div><div class="kb-desc">Load / append playlist file</div></div>
@@ -743,7 +748,7 @@
 <div class="kb">
   <div class="kb-row"><div class="kb-key">Ctrl+R</div><div class="kb-desc">Fetch CD metadata from MusicBrainz via DiscID (CD mode only)</div></div>
   <div class="kb-row"><div class="kb-key">Ctrl+F</div><div class="kb-desc">Manual MusicBrainz / Discogs search (artist + album text search)</div></div>
-  <div class="kb-row"><div class="kb-key">Ctrl+Y</div><div class="kb-desc">Open rip dialog (A=AccurateRip  C=CUETools  Y=Local  N=cancel)</div></div>
+  <div class="kb-row"><div class="kb-key">Ctrl+Y</div><div class="kb-desc">Open rip dialog (A=AccurateRip  C=CUETools  Y=Local  B=Local 2-pass  N=cancel)</div></div>
 </div>
 
 <div class="kb-group">Global</div>
@@ -799,7 +804,7 @@ ctest --test-dir build --output-on-failure</pre>
 <p>The single-header dependencies (miniaudio, nlohmann/json) and the vendored MD5 are checked into the repo - no separate download step. Binary output: <code>build/bin/remoct</code> (or <code>remoct.exe</code>), with the streaming plugin beside it in <code>build/bin/plugins/</code>.</p>
 
 <hr>
-<p style="font-size:11px; color:var(--muted); text-align:center">RE-MOCT v1.0.0 &nbsp;·&nbsp; C++20 &nbsp;·&nbsp; Built with ncurses, miniaudio, TagLib &nbsp;·&nbsp; <a href="https://github.com/RadMageIRL/re-moct" style="color:var(--accent)">github.com/RadMageIRL/re-moct</a></p>
+<p style="font-size:11px; color:var(--muted); text-align:center">RE-MOCT v1.1.0 &nbsp;·&nbsp; C++20 &nbsp;·&nbsp; Built with ncurses, miniaudio, TagLib &nbsp;·&nbsp; <a href="https://github.com/RadMageIRL/re-moct" style="color:var(--accent)">github.com/RadMageIRL/re-moct</a></p>
 
 </main>
 </div>

@@ -9,6 +9,7 @@
 #include <atomic>
 #include <thread>
 #include <unordered_set>
+#include <optional>
 #include "MBLookup.h"
 #include "CDRipper.h"
 #include "RadioBrowser.h"
@@ -101,7 +102,7 @@ private:
     void drawEq();
     void drawQueue();
     void drawFavs();
-    void saveTagEdits();
+    bool saveTagEdits();   // true only if the file was actually written; UI updates gated on it
     void maybePreloadNext();
     void drawRipConfirm();
     void drawMBSearch();
@@ -157,6 +158,32 @@ private:
     int pl_scroll_ = 0;
     int pl_cursor_ = 0;
     int last_playlist_current_for_sync_ = 0;  // for move-up/down cursor fix
+    // Last nowPlayingRow() seen by the run-loop follow-sync (-1 = none). The
+    // F3 cursor snap triggers on a CHANGE in this, not in playlist_.current():
+    // starting a stream never moves current(), so song->radio / CD->radio were
+    // invisible to a current()-gated snap. -1 resets when nothing is playing.
+    int last_now_playing_row_ = -1;
+
+    // The playlist row currently PLAYING, stream-aware - unlike playlist_.current(),
+    // which is a raw index and goes stale in stream mode (audio_.currentTrack() still
+    // holds the last file; a queue-launched station has no row at all). Returns
+    // nullopt when nothing plays, when stopped, or when the playing stream matches no
+    // row (queue-launched station - it shows on the now-playing line, lights no row).
+    // This is the canonical "which row is lit" test; drawPlaylist() and the info/tag
+    // panes route through it. It deliberately does NOT replace current(); current()
+    // keeps its index-identity meaning for seek-stamp and auto-advance. See lessons.md.
+    std::optional<std::size_t> nowPlayingRow() const;
+
+    // The TrackInfo to display for the playing item, or nullptr in stream mode (a
+    // stream has no TrackInfo; callers show stream metadata separately). File/CD only.
+    const TrackInfo* nowPlayingTrack() const;
+
+    // The single owner of pl_scroll_'s relationship to pl_cursor_: clamps the cursor
+    // into range, then scrolls the minimum needed to bring it inside the visible
+    // window. Enforced once at the top of drawPlaylist(); every path that moves the
+    // cursor just lets the next draw reveal it. Idempotent. See lessons.md - do NOT
+    // reintroduce per-handler "if cursor < scroll then nudge" math.
+    void ensurePlaylistCursorVisible();
 
     // Screen dims
     int screen_rows_ = 0;
@@ -219,6 +246,11 @@ private:
     std::string tag_edit_values_[5];
     std::string tag_edit_path_;
 
+    // Whether a playlist row's tags can be edited, and why not if not. One source of
+    // truth shared by the 'e' entry guard and saveTagEdits's reasoning about locking.
+    enum class TagEditability { Editable, PlayingLocked, NotAFile, Empty };
+    TagEditability tagEditability(const std::string& path) const;
+
     // Track info cache — avoids TagLib re-read on every drawTrackInfo call
     std::string info_cached_path_;
     TrackInfo   info_cached_track_;
@@ -228,7 +260,13 @@ private:
     // refreshInfoArt / drawArt in UIManager.cpp.
     std::string        info_art_key_;    // "<path>|<cols>x<rows>" the COMMITTED art reflects
     cover::Rendered    info_art_;        // decoded half-block grid (info_art_.ok gates drawing)
-    std::vector<short> info_art_pairs_;  // curses colour-pair per cell (parallel to info_art_.cells)
+    // The curses pair table is global. Only one art image's colours can occupy
+    // slots kArtColourBase.. / pairs kArtPairBase.. at a time, so exactly one
+    // variable may hold those indices - and it must record whose they are. Shared
+    // by info (file) and radio art: whichever the Info pane is drawing owns it,
+    // reallocated at the blit when the key changes (see drawTrackInfo).
+    std::string        art_pairs_key_;   // render key whose colours currently occupy the table
+    std::vector<short> art_pairs_;       // pair index per cell, parallel to the owning grid
     void refreshInfoArt(const std::string& path, int box_cols, int box_rows);
     bool allocArtColorPairs(const cover::Rendered& art, std::vector<short>& out_pairs);
 
@@ -275,8 +313,7 @@ private:
     std::string          radio_last_station_art_;    // station art URL a resolution was based on
     // Decoded-block cache (keyed on song + box + logo-vs-cover), parallel to info_art_.
     std::string          radio_render_key_;
-    cover::Rendered      radio_art_;
-    std::vector<short>   radio_art_pairs_;
+    cover::Rendered      radio_art_;      // pair indices live in the shared art_pairs_ (see above)
     // Bundled RE-MOCT logo, decoded once and reused as the floor (own cache key).
     std::vector<uint8_t> logo_bytes_;                // loaded lazily from remoct_logo.jpg
     bool                 logo_load_tried_ = false;
@@ -289,6 +326,25 @@ private:
     std::string cd_drive_letter_;
     int         cd_poll_ticks_   = 0;
     int         cd_fail_count_   = 0;
+
+    // Slice 3: lazily reopen the CD handle for an action (play / rip / MB) on a
+    // stopped-but-loaded disc — stop() closes the handle (probe B2: holding it
+    // open idle spins the drive up audibly), so any action must reopen first.
+    // Routes through audio_.openCD(), which re-reads the TOC + re-inits the
+    // device. openCD can fail TRANSIENTLY right after file playback (WASAPI
+    // uninit->init settling), so failure is handled non-destructively: bounded
+    // retry (3 attempts, ~200 ms apart), each failure logged with its failure
+    // point (CDSource::lastOpenFail). Purge + clear cd_drive_letter_ + toast
+    // ONLY on a confirmed empty tray (drive answered: TocRead/NoAudioTracks) -
+    // that is the eject-while-stopped detection point now that the poll purge
+    // is gone. A DeviceOpen (busy) failure keeps the disc state and just toasts
+    // "drive busy" - a stale row self-heals on the next action; unloading a
+    // present disc does not. Returns true iff the handle is open & ready;
+    // callers bail on false.
+    bool reopenCDForAction(const std::string& drive);
+    // Remove all playlist + queue rows for a CD drive letter (shared by the
+    // reopen-eject path and the reader-thread eject path).
+    void purgeCDRows(const std::string& drive);
     MBLookup    mb_lookup_;
     std::atomic<bool> mb_fetching_ { false };
     std::string mb_error_;    // protected by mb_mutex_
@@ -341,6 +397,14 @@ private:
     std::string status_msg_;
     int         status_msg_ticks_ = 0;
 #endif
+
+    // Transient warning on the cmdline bar (both platforms), e.g. "stop playback
+    // first to edit tags". Rendered red in drawCmdLine() and expired after ~5s in
+    // the main loop - a persistent replacement for a one-shot paint the next
+    // repaint would clobber before it could be read. Not a toast: a warning is an
+    // in-place status, not a notification.
+    std::string warn_msg_;
+    int         warn_msg_ticks_ = 0;
 
     // Recently played virtual dir state
     bool in_recent_      = false;
@@ -482,6 +546,16 @@ private:
     static constexpr short CP_VIZ_LOW_B  = 15;
     static constexpr short CP_VIZ_MID_B  = 16;
     static constexpr short CP_VIZ_HIGH_B = 17;
+
+    // Art half-block cells allocate curses colours and pairs above the theme's
+    // fixed CP_* range. The pair table is global; a collision here would let a
+    // theme apply silently repaint art cells. Keep this assertion loud.
+    static constexpr short kArtColourBase = 64;   // theme truecolour slots run 16..~31
+    static constexpr short kArtPairBase   = 20;   // theme pairs run 1..CP_VIZ_HIGH_B
+
+    static_assert(CP_VIZ_HIGH_B < kArtPairBase,
+                  "theme colour pairs have grown into the art pair range; "
+                  "raise kArtPairBase and re-check p_budget in allocArtColorPairs()");
 
     void initColours();
     void loadTheme(short* fg, short* bg);   // overrides defaults from theme.conf

@@ -48,6 +48,18 @@ public:
     bool open(const std::string& drive_letter);
     void close() override;
 
+    // Why the last open() failed (Slice 3 re-gate). Lets callers discriminate a
+    // transient device blip from a confirmed no-disc condition:
+    //   DeviceOpen    - the OS device handle couldn't be acquired (busy /
+    //                   contention, e.g. right after WASAPI uninit->init). NOT
+    //                   proof the tray is empty.
+    //   TocRead       - handle opened but the TOC was unreadable/malformed: the
+    //                   drive answered and there is no readable disc.
+    //   NoAudioTracks - TOC read fine but held no audio tracks (data-only disc).
+    // TocRead/NoAudioTracks = confirmed "no audio disc present".
+    enum class OpenFail { None, DeviceOpen, TocRead, NoAudioTracks };
+    OpenFail lastOpenFail() const { return last_open_fail_; }
+
     bool isOpen()  const { return dev_ != nullptr; }
     bool isPlaying() const { return playing_.load(); }
 
@@ -130,6 +142,7 @@ private:
     uint32_t                full_leadout_lba_     = 0;  // includes all sessions
     std::vector<uint32_t>   data_track_lbas_;              // data tracks for CDDB
     bool                    offset_known_         = false;
+    OpenFail                last_open_fail_       = OpenFail::None;
     std::vector<CDTrack>    tracks_;
 
     // Playback state

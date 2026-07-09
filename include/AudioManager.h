@@ -167,6 +167,13 @@ private:
     ma_device   device_  {};
     bool device_initialised_  = false;
 
+    // Init the ma_device_ for CD playback (44100Hz stereo f32, Red Book). Returns
+    // false on ma_device_init failure. Extracted from openCD() (Slice 3) so the
+    // lazy-reopen path — which goes through openCD() after stop() tore the device
+    // down — always re-inits it and never skips ma_device_ setup. Caller must hold
+    // state_mutex_ and owns cd_mode_ / cleanup on failure.
+    bool initCDDevice();
+
     // ── Crossfade / gapless second source ─────────────────────────────────
     // next_src_ is loaded while current track is still playing.
     // When crossfade begins (or track ends for gapless), we swap them.

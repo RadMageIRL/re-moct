@@ -35,6 +35,12 @@ endif()
 # compile definition on the remoct target.
 option(REMOCT_PDCURSES "Windows: render via vendored PDCursesMod wingui instead of ncursesw" OFF)
 
+# ── Slice-1 instrumentation probe (TEMPORARY) ──────────────────────────────
+# Toggle with -DREMOCT_PROBE=ON. Compiles the #ifdef REMOCT_PROBE colour-budget
+# (Probe A1) and cover-art-render (Probe A2) logging. OFF by default -> the
+# shipped path carries zero probe code. Removed when Slice 1 closes.
+option(REMOCT_PROBE "Slice-1: compile temporary curses/cover-art probe logging" OFF)
+
 # ── Sources ────────────────────────────────────────────────────────────────
 set(REMOCT_SOURCES
     src/main.cpp
@@ -145,6 +151,11 @@ target_compile_definitions(remoct PRIVATE
     UNICODE
     _UNICODE
 )
+
+if(REMOCT_PROBE)
+    target_compile_definitions(remoct PRIVATE REMOCT_PROBE)
+    message(STATUS "REMOCT_PROBE: Slice-1 instrumentation ENABLED (temporary)")
+endif()
 
 # ── libFLAC ────────────────────────────────────────────────────────────────
 find_library(FLAC_LIB NAMES FLAC

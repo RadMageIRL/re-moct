@@ -16,6 +16,52 @@
   init_pair'd after the loop. Viz pairs are fg==bg solid space-fills, so a partial
   block needs a real bg - that's why the sub-cell tip uses `CP_VIZ_TIP`. Theme reload
   re-runs `initColours()`, so new pairs added there survive `~` live-reload.
+- **A curses pair index is a handle into a global table, not a colour.** `init_pair()`
+  mutates process-global state. Caching pair indices per art source (`info_art_pairs_`
+  and `radio_art_pairs_`) produced two vectors of identical integers pointing at one
+  table; whichever source allocated last owned the colours, and the other silently
+  rendered someone else's image (station art -> file art -> back to station showed the
+  file's cover). Cache the RGB grid; allocate at the blit; record who owns the table
+  (`art_pairs_key_`). Do NOT "optimise" this back into a per-source pair cache - that
+  is the bug. (Slice 2.)
+- **The art pair base (`kArtPairBase = 20`) sits directly above the theme's CP_* pairs,
+  which have grown 13 -> 17** (`CP_VIZ_LOW_B/MID_B/HIGH_B` = 15/16/17). The gap is two.
+  The `static_assert(CP_VIZ_HIGH_B < kArtPairBase)` in `UIManager.h` is the only thing
+  standing between a new visualizer colour role and art cells being silently repainted
+  on every theme apply. If you add an LED role and it fires, raise `kArtPairBase` and
+  re-check `p_budget` in `allocArtColorPairs()`.
+- **Playlist move rebound `u`/`D` -> `K`/`J`.** `J`/`K` were freed from main-handler
+  navigation (they were pure dupes of `j`/`k`) and repurposed to move-down / move-up;
+  `j`/`k` + arrows still navigate. Sub-pane `J`/`K` scroll aliases (help, device picker,
+  EQ, bookmarks) are left alone - no move command there to collide, stripping them is
+  pointless churn (per-pane key meaning is already the design). `u`/`U`/`D` dropped with
+  NO alias (no-dupe policy). `d` stays delete (MOC homage). This kills the confusing
+  `d`/`D` adjacency (capital-D move-down next to lowercase-d delete). **Slice 13 TODO:**
+  the public keybind reference `docs/index.html` still says "u / D" at lines 479 and 713
+  - update both to "K / J". The in-app help table (UIManager.cpp) is already updated. (Slice 11.)
+- **The Ctrl+Y / Ctrl+F overlays already called `panelFrame` but passed an empty title
+  and hand-drew a centered one, so Awesome never themed them.** `panelFrame` draws its
+  inset themed title only in the Awesome branch; the Classic path is an early
+  `box(w,0,0); return;` with no title. So the fix passes the real title to `panelFrame`
+  (Awesome themes it) AND keeps the manual centered draw guarded on `!awesome_mode`
+  (Classic still needs it). Chose 2b (pass-title + guarded-manual) over 2a (teach
+  `panelFrame` a Classic title) because every pane draws its OWN Classic header (a
+  full-width bar, not via `panelFrame`), so a Classic title in `panelFrame` would
+  double them. Second bug (what the frame styling actually hinged on): the overlays are
+  `newwin` modals with NO `wbkgd`, and on wingui a fresh window needs its background set
+  for `COLOR_PAIR()` to render - so the themed frame colours AND the wide-char rounded
+  corners silently dropped, leaving a plain square box even after the title was routed
+  correctly. The panes never hit this because `createWindows` gives every pane
+  `wbkgd(CP_DIM)` ("so colors render correctly"), and in Awesome `CP_DIM` carries the
+  themed base fill. Fix: give the overlays the same `wbkgd(CP_DIM)` in Awesome (plain
+  default in Classic). Passing the title was necessary but not sufficient. (Slice 9+10.)
+- **`allocArtColorPairs`' pair-budget fallback must find the nearest existing pair, not
+  return `P0`.** The 22x11 art box (242 cells) exceeds the 236-pair budget, so busy
+  covers overflow on real art (Probe A2: 6 of 116 covers). The old fallback returned pair
+  20 flat, speckling overflow cells with one wrong hue. It now mirrors `colorFor`'s
+  nearest-existing search. The catch: `fg`/`bg` reaching `pairFor` are slot IDs, not RGB -
+  map back through `pal` (truecolor, slot = `C0+i`) or `kBasic16` (non-truecolor, slot =
+  0..15) to score by colour distance. (Slice 8.)
 
 ## AccurateRip / CD ripping
 - **The 150-sector physical preamble is correct BY DESIGN** (a property of how
@@ -28,6 +74,43 @@
 - `AR_SKIP = 2940` (not 2941). CRCv2 = `csum_lo + csum_hi`.
 - The negative drive-offset OOB read is real but BLOCKED on testing (Dos's drive is
   +6); needs a synthetic negative-offset vector. Don't patch blind.
+- **Stopping a transport is not unmounting a device. (Slice 3)** `cd_mode_` means "CD is
+  the active audio source." `stop()` correctly closes the drive handle - probe B2: holding
+  it open idle spins the drive up audibly, and the syscall returns before the motor is at
+  speed so latency can't see it, you have to LISTEN - but a vestigial 6-second poll then
+  purged the CD rows + MusicBrainz metadata of the just-stopped disc. That poll never checked
+  real media (Slice 1: it only ran `checkMedia()` on the now-null handle, always false) - a
+  pure destruction timer. The rows + MB metadata live in **UIManager**, not the handle, and
+  `cd_drive_letter_` already survives `stop()` as the faithful "a disc is loaded" signal, so
+  NO new flag was needed (a `cd_loaded_` atomic would just be a second source of truth to
+  desync). Fix: delete the poll purge; key the `[CD]` tag + album off `cd_drive_letter_` so
+  they persist while stopped-but-loaded; reopen the handle lazily on the next Enter / Ctrl+R /
+  Ctrl+Y via `reopenCDForAction()` -> `openCD()`, which re-reads the TOC and re-inits the
+  device (`initCDDevice()`, extracted so no reopen path skips `ma_device_` setup). `openCD()`
+  returns false cleanly on an empty tray, so it doubles as the eject-while-stopped presence
+  check (the ONLY detection point once the poll is gone): on failure, purge rows + clear
+  `cd_drive_letter_` + toast. Route reopen through `openCD()`, NOT a self-reopening
+  `playCDTrack()` - keeps `playCDTrack()` lock-free and unchanged, and every reopen goes
+  through the one function that already does open + `initCDDevice` + failure-cleanup.
+- **A failed reopen is not proof of an empty tray - discriminate, and when unsure keep the
+  disc. (Slice 3 re-gate)** The first hardware gate caught it: a reopen right after file
+  playback can hit a TRANSIENT `openCD()` failure (WASAPI uninit->init settling), and a bare
+  single attempt escalated that blip into the destructive eject purge - a CD->file->CD
+  round-trip unloaded a physically-present disc. `checkMedia()` cannot discriminate
+  transient-vs-ejected: after a failed `open()` `dev_` is null, so it short-circuits false
+  without ever asking the drive. Two discriminators instead: (1) bounded retry - 3 attempts,
+  ~200 ms apart, inside `reopenCDForAction()` only (an explicit user action; never a poll, so
+  no spin-up, no seek-storm); (2) the failure POINT - `CDSource::lastOpenFail()` records
+  where `open()` died: `DeviceOpen` (OS handle couldn't be acquired - busy/contention, NOT
+  proof of an empty tray) vs `TocRead`/`NoAudioTracks` (the drive ANSWERED and there is no
+  readable audio disc - confirmed empty). Purge only on confirmed-empty; on busy, keep the
+  rows + `cd_drive_letter_` and toast "drive busy" - a stale row self-heals on the next
+  action, a nuked loaded disc does not (this is exactly pre-Slice-3 behaviour for a failed
+  `openCD`: benign false, nothing destroyed). Every failed attempt is LOGGED (`Log "cd"`:
+  drive, failure point, attempt) so a misbehaving drive is diagnosed from the log, never by
+  asking someone to catch a flashing toast by eye. Don't put the retry inside `openCD()`
+  itself: it also serves genuine first-loads, where a slow real failure shouldn't stall the
+  UI.
 
 ## Streaming ring buffer / re-pin
 - **An iHeart hole where iHeart's own trackHistory/ctm reports no current song
@@ -54,6 +137,68 @@
   station-side). Related parked items: ICY metadata improvement is a structural
   protocol limit; ICY ingest sanitization (station-ID stripping) - see `roadmap.md`.
 
+## Playlist cursor / follow / tag edits (the fix-plan queue)
+- **Follow the now-playing answer, never a proxy for it.** Three separate cursor bugs -
+  the lit row and cursor yanking to a stale FILE row while a CD played, file->CD not
+  following because `nowPlayingRow()` had no CD branch (7dbb662), and song/CD->radio
+  never snapping because the follow-sync watched `playlist_.current()`, a raw index
+  that starting a stream never moves (91817b8) - were all the same mistake: inferring
+  "which row is playing" from `current()` or a stale `currentTrack().path` instead of
+  asking `nowPlayingRow()`, the one function that answers it correctly for every
+  source (file by path, stream by URL, CD by track number). The fix in each case was
+  to route through `nowPlayingRow()`. Derived state beats event plumbing: the
+  follow-sync now does one per-tick comparison of `nowPlayingRow()` against a
+  `last_now_playing_row_` marker, so any future source gets follow behaviour for free
+  the moment `nowPlayingRow()` understands it - no transition path has to notify the
+  cursor. When a follow/display behaviour works for some sources and not others,
+  suspect a missing per-source branch or a proxy variable; do NOT rationalise it as a
+  "display nuance" - it was mistaken for exactly that twice before the third head
+  surfaced the family.
+- **`current()` is an index identity; `nowPlayingRow()` is a display target - they
+  are deliberately NOT the same function.** `playlist_.current()` goes stale in
+  stream mode (`currentTrack()` holds the last file; a queue-launched station has no
+  row) but is still the correct anchor for seek-stamp and auto-advance, which reason
+  about index identity, not what's on screen. `UIManager::nowPlayingRow()` is the
+  canonical "which row is lit / shown" test (source-aware; nullopt when nothing plays
+  or the playing source matches no row). Do NOT merge them - a UI fix must not silently
+  change auto-advance's notion of the current index. (Slice 4.)
+- **`pl_scroll_` has exactly one owner: `ensurePlaylistCursorVisible()`.** The playlist
+  scroll offset used to be maintained by a dozen hand-rolled "if cursor < scroll, nudge"
+  fragments plus cursor-blind `pl_scroll_ = 0` resets; any path that moved the cursor
+  without a matching nudge (radio-add, CD-eject) left the cursor lit but offscreen. The
+  invariant clamps cursor-into-range then scrolls the minimum to reveal it, enforced once
+  at the top of `drawPlaylist()`. Do not reintroduce per-handler scroll math - move the
+  cursor, let the draw reveal it. (There is no PgUp/PgDn/wheel path that moves scroll
+  independent of the cursor, so draw-time enforcement is sufficient; if one is ever added,
+  it must call the invariant on the cursor mutation.) (Slice 5.) The same one-owner
+  discipline now covers the follow snap on `pl_cursor_`: the every-tick follow-sync
+  block is its single owner (91817b8).
+- **The `d`-delete "was this the playing row" test must use `nowPlayingRow()`, not
+  `current()`.** `current()` is the stale file index in stream mode, so the old test could
+  `stop()` a stream when deleting an unrelated row (or fail to stop when deleting the
+  actually-playing file). (Slice 5.)
+- **Follow-the-playing-row (F3, `follow_playing`, default ON) snaps on a CHANGE in
+  `nowPlayingRow()`, observed every tick - never on a change in `current()`.** Starting
+  a stream doesn't move `current()`, so a `current()`-gated snap is blind to song->radio
+  and CD->radio transitions (launch sites setting `pl_cursor_` directly masked this for
+  years). Only the cursor move is gated by `follow_playing`; track announcement (toast,
+  `recordPlay`, the `last_playlist_current_for_sync_` marker) stays `current()`-keyed and
+  unconditional - those announce the track, they don't chase it. A queue-launched station
+  returns nullopt, which resets the follow marker and leaves the cursor put. EVERY
+  track-change cursor move must respect the toggle, not just auto-advance: the manual n/p
+  handlers also gate their cursor set on `follow_playing`, or OFF looks identical to ON
+  when you change tracks by hand. (Slice 6; mechanism finalized in 91817b8.)
+- **`TagLib::FileRef::save()` returns bool; on Windows a locked-file write returns false
+  without throwing.** The old `saveTagEdits()` discarded the return inside a `catch(...)`
+  and then updated the playlist title + cleared the info cache unconditionally - so a
+  failed save (e.g. the file is the playing track, decoder holds the handle) silently
+  showed as success while the disk was unchanged. Always check `save()`, and update UI
+  state ONLY on true; on false, touch nothing and warn. Editability (playing-locked / CD
+  track / radio stream / empty) is now one predicate, `tagEditability()`, shared by the
+  `e` entry guard and the save. Note: on a failed save we exit edit mode rather than
+  stay - staying would trap the user, since `s` (stop) is captured as text inside edit
+  mode. (Slice 7.)
+
 ## MP3 seek (bit reservoir)
 - MP3 frames borrow main_data from up to ~511 bytes of preceding frames (the bit
   reservoir). A raw seek lands "cold" → the first ~50–150ms decode garbled until it
@@ -78,6 +223,16 @@
   (Discord URLs). httpGet caps body at 10MB and rejects truncated-on-cap bodies.
 
 ## Process / workflow lessons
+- **The disconfirmation discipline pays for itself.** Briefs assert mechanisms at
+  file:line anchors; the implementer reads the tree and confirms each before coding,
+  and a mechanism divergence is a full stop, not a footnote. In the fix-plan queue it
+  caught a placebo fix before it shipped (a prescribed closeCD->stop swap at the
+  file-switch sites traced to functions that were already behaviourally identical -
+  the real bug was a transient openCD failure escalating into the eject purge) and
+  turned Slice 3's prescribed `cd_loaded_` atomic into the leaner reuse of
+  `cd_drive_letter_` (one source of truth instead of two that can desync). "The brief
+  is wrong" is a valid, expected outcome; where the tree and the brief disagree, the
+  tree wins.
 - **Additive-only.** Full-file replacements built on a stale baseline silently drop
   prior work. Build on the files Dos uploads in the same turn; prefer tight diffs when
   the base isn't re-uploaded.

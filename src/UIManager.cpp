@@ -468,16 +468,40 @@ void UIManager::resizeWindows() {
     doupdate();  // extra flush to guarantee frame hits the terminal
 }
 
+#ifdef REMOCT_PROBE
+// Slice-1 Probe A1: dump the curses colour budget once colour init completes, on
+// BOTH the Awesome and Classic paths. Temporary; removed when the slice closes.
+static void probeLogCaps(const char* mode) {
+#ifdef _WIN32
+    const char* term = "(wingui/n-a)";
+#else
+    const char* term = std::getenv("TERM") ? std::getenv("TERM") : "(null)";
+#endif
+    Log::writef("probe",
+        "A1 caps mode=%s COLORS=%d COLOR_PAIRS=%d has_colors=%d can_change_color=%d TERM=%s",
+        mode, COLORS, COLOR_PAIRS, (int)has_colors(), (int)can_change_color(), term);
+}
+#endif
+
 void UIManager::initColours() {
     if (!has_colors()) return;
     start_color();
     use_default_colors();
+
+    // start_color()/use_default_colors() reset the whole palette, art slots 64+ and
+    // pairs 20+ included. Any pair indices we handed out are now stale, so disown the
+    // art pair table; the next blit reallocates. One line here covers every caller
+    // (startup, Ctrl+T, ~ reload, and whatever site is added next).
+    art_pairs_key_.clear();
 
     // Split by mode (design spec section 6.5): theme.conf governs Classic; the named
     // truecolor palettes fully own Awesome. No layering, no 8-colour degradation of a
     // truecolor palette. Awesome sets its own pairs (incl. solid base bg) and returns.
     if (config_.awesome_mode) {
         applyAwesomeTheme();
+#ifdef REMOCT_PROBE
+        probeLogCaps("awesome");
+#endif
         return;
     }
 
@@ -508,6 +532,9 @@ void UIManager::initColours() {
     init_pair(CP_VIZ_LOW_B,  fg[CP_VIZ_LOW],  -1);
     init_pair(CP_VIZ_MID_B,  fg[CP_VIZ_MID],  -1);
     init_pair(CP_VIZ_HIGH_B, fg[CP_VIZ_HIGH], -1);
+#ifdef REMOCT_PROBE
+    probeLogCaps("classic");
+#endif
 
     // Reset the root screen to transparent so Classic re-inherits the terminal bg
     // (undoes the Awesome stdscr base fill above). Pair 0 = terminal default under
@@ -864,6 +891,106 @@ void UIManager::requestSeek(double delta) {
         flushPendingSeek();
 }
 
+// Remove every playlist + queued row for a CD drive letter and keep the cursor
+// in range. Shared by the reader-thread eject path (playback) and the lazy-
+// reopen eject path (stopped). (Slice 3)
+void UIManager::purgeCDRows(const std::string& drive) {
+    std::string prefix = drive + ":CD Track ";
+    playlist_.removeIf([&](const PlaylistEntry& e) {
+        return e.path.substr(0, prefix.size()) == prefix;
+    });
+    playlist_.queueRemoveIf([&](const PlaylistEntry& e) {
+        return e.path.substr(0, prefix.size()) == prefix;
+    });
+    pl_cursor_ = std::min(pl_cursor_, std::max(0, (int)playlist_.size() - 1));
+}
+
+// Ensure the CD handle is open & ready before a play / rip / MB action on a
+// stopped-but-loaded disc. See the declaration in UIManager.h for the full
+// contract. Returns true iff ready; on false (empty tray) the disc has been
+// fully unloaded and the caller must bail. (Slice 3)
+bool UIManager::reopenCDForAction(const std::string& drive) {
+    if (audio_.cdMode()) return true;          // handle already open & active
+    if (drive.empty())   return false;         // no disc known to reopen
+
+    // Bounded retry + failure discrimination (Slice 3 re-gate): a reopen right
+    // after file playback can hit a TRANSIENT openCD failure (WASAPI uninit->init
+    // settling). A bare single attempt escalated that blip into the destructive
+    // eject purge below, which unloaded a physically-present disc on a
+    // CD->file->CD round-trip. checkMedia() cannot discriminate here - after a
+    // failed open() dev_ is null, so it short-circuits false without asking the
+    // drive. Two discriminators instead:
+    //   1) retry: a transient busy clears within an attempt or two; a real empty
+    //      tray fails every attempt. 3 attempts / ~200 ms apart, only inside an
+    //      explicit user action (never a poll) - two brief retries cannot become
+    //      an audible seek-storm. Do not grow these bounds.
+    //   2) failure point: CDSource::lastOpenFail(). DeviceOpen = the OS handle
+    //      couldn't be acquired (busy/contention - NOT proof of an empty tray);
+    //      TocRead/NoAudioTracks = the drive answered and there is no readable
+    //      audio disc (confirmed empty).
+    // Purge only on a CONFIRMED empty tray. When in doubt, leave the rows alone:
+    // a stale row self-heals on the next action; nuking a loaded disc does not.
+    // Every failed attempt is logged so a misbehaving drive is diagnosed from
+    // the log, not from catching a flashing toast by eye.
+    bool confirmed_no_disc = false;
+    for (int attempt = 1; attempt <= 3; ++attempt) {
+        if (attempt > 1)
+            std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        if (audio_.openCD(drive)) {          // reopened: TOC re-read, device re-init'd
+            if (attempt > 1)
+                Log::writef("cd", "reopen %s: recovered on attempt %d/3 (transient)",
+                            drive.c_str(), attempt);
+            return true;
+        }
+        auto fail = audio_.cdSource().lastOpenFail();
+        const char* why =
+            (fail == CDSource::OpenFail::DeviceOpen)    ? "io.open (device handle)" :
+            (fail == CDSource::OpenFail::TocRead)       ? "readToc"                 :
+            (fail == CDSource::OpenFail::NoAudioTracks) ? "no audio tracks"         :
+                                                          "unknown";
+        Log::writef("cd", "reopen %s: attempt %d/3 failed at %s",
+                    drive.c_str(), attempt, why);
+        // Latest attempt wins: only a drive that ANSWERED (handle ok, no TOC /
+        // no audio) confirms an empty tray. A DeviceOpen failure leaves it
+        // unconfirmed even if an earlier attempt said otherwise.
+        confirmed_no_disc = (fail == CDSource::OpenFail::TocRead ||
+                             fail == CDSource::OpenFail::NoAudioTracks);
+    }
+
+    if (!confirmed_no_disc) {
+        // Device busy / handle contention - not proof the disc is gone. Keep the
+        // rows, keep cd_drive_letter_, tell the user, and let the next action
+        // retry. (Pre-Slice-3 behaviour for a failed openCD was exactly this
+        // benign: playCDTrack returned false and nothing was destroyed.)
+        Log::writef("cd", "reopen %s: all attempts busy - disc state kept", drive.c_str());
+        showTrackToast("CD drive busy", "Try again", "");
+        redraw_needed_.store(true);
+        return false;
+    }
+
+    // Confirmed empty tray -> ejected while stopped. This is the only
+    // eject-while-stopped detection point now that the poll purge is gone.
+    // Unload fully so no stale "loaded" state (rows / [CD] tag / album /
+    // cached release) survives for a disc that is physically gone.
+    Log::writef("cd", "reopen %s: confirmed no disc - unloading", drive.c_str());
+    purgeCDRows(drive);
+    cd_drive_letter_.clear();
+    cd_poll_ticks_ = 0;
+    cd_fail_count_ = 0;
+    mb_lookup_.cancel();
+    mb_fetching_.store(false);
+    {
+        std::lock_guard<std::mutex> lk(mb_mutex_);
+        mb_album_.clear();
+        mb_error_.clear();
+        mb_release_ = {};
+    }
+    cd_ripper_.cancel();
+    showTrackToast("CD ejected", "Disc removed", "");
+    redraw_needed_.store(true);
+    return false;
+}
+
 void UIManager::run() {
     last_playlist_current_for_sync_ = (int)playlist_.current();
     // Directory watch — poll every ~2s for changes
@@ -999,47 +1126,20 @@ void UIManager::run() {
             }
         }
 
-        // CD media check — only poll when nothing else is playing
-        // Skip entirely during file playback: drive may sleep, that's fine
-        // (slice 6: common — the CD path is live on Linux via SG_IO too).
-        if (!cd_drive_letter_.empty() && !audio_.cdMode()
-            && audio_.state() == PlaybackState::Stopped) {
-            ++cd_poll_ticks_;
-            if (cd_poll_ticks_ >= 25) {  // 25 * 80ms = 2 seconds
-                cd_poll_ticks_ = 0;
-                if (!audio_.cdSource().checkMedia()) {
-                    ++cd_fail_count_;
-                    if (cd_fail_count_ >= 3) {
-                        std::string prefix = cd_drive_letter_ + ":CD Track ";
-                        playlist_.removeIf([&](const PlaylistEntry& e) {
-                            return e.path.substr(0, prefix.size()) == prefix;
-                        });
-                        // Also remove any queued CD tracks for this drive
-                        playlist_.queueRemoveIf([&](const PlaylistEntry& e) {
-                            return e.path.substr(0, prefix.size()) == prefix;
-                        });
-                        cd_drive_letter_.clear();
-                        cd_fail_count_ = 0;
-                        cd_poll_ticks_ = 0;
-                        pl_cursor_ = std::min(pl_cursor_, std::max(0, (int)playlist_.size() - 1));
-                        pl_scroll_ = 0;
-                        redraw_needed_.store(true);
-                    }
-                } else {
-                    cd_fail_count_ = 0;
-                }
-            }
-        }
+        // Slice 3: the old stopped-state media poll here was removed. Slice 1
+        // proved it never checked real media — stop() closes the handle, so it
+        // only ever ran checkMedia() on a null handle (always false) and became a
+        // 6-second timer that purged the CD rows + MB metadata of a stopped-but-
+        // loaded disc. A stopped-but-loaded disc is now a normal, persistent state
+        // (rows survive; [CD] tag + album key off cd_drive_letter_). We cannot
+        // poll an open idle drive either (probe B2: it spins the drive up audibly,
+        // and the syscall returns before the motor is at speed so latency can't
+        // see it). Eject-while-stopped is instead detected on the next lazy reopen
+        // (reopenCDForAction -> openCD fails on an empty tray).
+
         // When CD is playing, use the reader thread's media_removed_ flag
         if (audio_.cdMode() && audio_.cdSource().mediaRemoved()) {
-            std::string prefix = cd_drive_letter_ + ":CD Track ";
-            playlist_.removeIf([&](const PlaylistEntry& e) {
-                return e.path.substr(0, prefix.size()) == prefix;
-            });
-            // Also remove any queued CD tracks — they're dangling after eject
-            playlist_.queueRemoveIf([&](const PlaylistEntry& e) {
-                return e.path.substr(0, prefix.size()) == prefix;
-            });
+            purgeCDRows(cd_drive_letter_);
             audio_.closeCD();
             audio_.clearTrackEnd();
             cd_drive_letter_.clear();
@@ -1056,8 +1156,7 @@ void UIManager::run() {
             cd_ripper_.cancel();
             ui_overlay_ = UIOverlay::None;
             pl_cursor_ = std::min(pl_cursor_, std::max(0, (int)playlist_.size() - 1));
-            pl_scroll_ = 0;
-            redraw_needed_.store(true);
+            redraw_needed_.store(true);   // scroll: invariant reveals the clamped cursor
         }
         if (playlist_.drainPending())
             redraw_needed_.store(true);
@@ -1115,6 +1214,12 @@ void UIManager::run() {
                 theme_tag_ticks_ == kThemeTagGoneTick)
                 redraw_needed_.store(true);
         }
+        // Expire the transient cmdline warning after ~5s (63 ticks * 80ms).
+        if (!warn_msg_.empty() && ++warn_msg_ticks_ > 62) {
+            warn_msg_.clear();
+            warn_msg_ticks_ = 0;
+            redraw_needed_.store(true);
+        }
 #ifndef _WIN32
         // Expire the toast-fallback status line (same cadence as rip_status_).
         if (!status_msg_.empty() && ++status_msg_ticks_ > 60) {
@@ -1140,15 +1245,29 @@ void UIManager::run() {
                     if (config_.toast_enabled)
                         showTrackToast(track.title, track.artist, track.album);
                 }
-                if (pl_cursor_ != cur) {
-                    pl_cursor_ = cur;
-                    int visible = paneVisibleRows(win_playlist_);
-                    if (pl_cursor_ < pl_scroll_)
-                        pl_scroll_ = pl_cursor_;
-                    else if (pl_cursor_ >= pl_scroll_ + visible)
-                        pl_scroll_ = pl_cursor_ - visible + 1;
-                    redraw_needed_.store(true);
+            }
+        }
+
+        // Follow-the-playing-row (F3): snap the cursor on ANY now-playing change
+        // (file, CD, stream), not just playlist_.current() changes - starting a
+        // stream never moves current(), so a song->radio or CD->radio transition
+        // was invisible to the cur-gated block above (launch sites set pl_cursor_
+        // directly, which is why launching a station worked). Keyed off
+        // nowPlayingRow() as before: nullopt (queue-launched station, nothing
+        // playing) resets the marker and leaves the cursor put. Runs every tick;
+        // nowPlayingRow() is one playlist scan. The cursor snap has exactly one
+        // owner - this block; scroll follows via the draw-time invariant (slice 5).
+        if (config_.follow_playing) {
+            if (auto row = nowPlayingRow(); row) {
+                if ((int)*row != last_now_playing_row_) {
+                    last_now_playing_row_ = (int)*row;
+                    if (pl_cursor_ != (int)*row) {
+                        pl_cursor_ = (int)*row;
+                        redraw_needed_.store(true);
+                    }
                 }
+            } else {
+                last_now_playing_row_ = -1;
             }
         }
 
@@ -1405,12 +1524,20 @@ void UIManager::drawRipConfirm() {   // slice 6: common (ncurses + portable CDSo
 
     WINDOW* w = newwin(BOX_H, BOX_W, y0, x0);
     if (!w) return;
+    // Match the panes' background so Awesome's frame colours and the wide-char
+    // rounded corners actually render on this newwin - wingui needs the window bkgd
+    // set for COLOR_PAIR() to take on a fresh window, and CP_DIM carries the themed
+    // base fill (same wbkgd the panes get in createWindows). Classic: plain default.
+    wbkgd(w, config_.awesome_mode ? COLOR_PAIR(CP_DIM) : COLOR_PAIR(0));
     werase(w);
 
-    // Plain border + title — no wbkgd so no background color bleed
-    panelFrame(w, "", true);
+    // Frame + title. Route the title through panelFrame so Awesome themes it (rounded
+    // cyan frame + inset label); panelFrame draws no title in Classic, so keep the
+    // manual centered one there.
     const char* title = " SECURE AUDIO EXTRACTION ";
-    mvwaddstr(w, 0, (BOX_W - (int)strlen(title)) / 2, title);
+    panelFrame(w, title, true);
+    if (!config_.awesome_mode)
+        mvwaddstr(w, 0, (BOX_W - (int)strlen(title)) / 2, title);
 
     // Drive / disc info
     const auto& cd = audio_.cdSource();
@@ -1649,11 +1776,14 @@ void UIManager::drawTitleBar() {
         modes += spdbuf;
     }
     if (audio_.muted())      modes += " [MUTE]";
-    if (audio_.cdMode())     modes += " [CD]";
+    // Slice 3: the [CD] tag and MB album track "a disc is loaded" (cd_drive_letter_),
+    // not "CD is the active source" (cdMode). A stopped-but-loaded disc keeps its
+    // tag + album so stop() no longer visibly forgets the disc.
+    if (!cd_drive_letter_.empty()) modes += " [CD]";
     if (mb_fetching_.load())  modes += " [MB...]";
     else {
         std::lock_guard<std::mutex> lk(mb_mutex_);
-        if (!mb_album_.empty() && audio_.cdMode())
+        if (!mb_album_.empty() && !cd_drive_letter_.empty())
             modes += " [" + mb_album_ + "]";
     }
     if (sleep_minutes_ > 0) {
@@ -1885,6 +2015,46 @@ void UIManager::drawDirBrowser() {
     }
 }
 
+std::optional<std::size_t> UIManager::nowPlayingRow() const {
+    if (audio_.state() == PlaybackState::Stopped) return std::nullopt;
+    // CD mode: currentTrack() carries no CD identity (openCD clears it), so map
+    // the playing track number to its playlist row directly - the same
+    // cdTrackNumber(path) match drawTitleBar uses for the CD title. This is what
+    // lets the lit row and the F3 follow-sync track CD playback (including CD
+    // auto-advance and file->CD returns) like every other source.
+    if (audio_.cdMode()) {
+        int t = audio_.cdCurrentTrack();
+        if (t <= 0) return std::nullopt;
+        for (std::size_t i = 0; i < playlist_.size(); ++i)
+            if (cdTrackNumber(playlist_.at(i).path) == t) return i;
+        return std::nullopt;   // queue-launched CD track: no row, lights nothing
+    }
+    const bool stream = audio_.streamMode();
+    const std::string want = stream ? audio_.streamUrl()
+                                    : audio_.currentTrack().path;
+    if (want.empty()) return std::nullopt;
+    for (std::size_t i = 0; i < playlist_.size(); ++i)
+        if (playlist_.at(i).path == want) return i;
+    return std::nullopt;   // queue-launched station: no row, lights nothing
+}
+
+const TrackInfo* UIManager::nowPlayingTrack() const {
+    if (audio_.streamMode()) return nullptr;
+    if (audio_.state() == PlaybackState::Stopped) return nullptr;
+    return &audio_.currentTrack();
+}
+
+void UIManager::ensurePlaylistCursorVisible() {
+    const int n = (int)playlist_.size();
+    if (n == 0) { pl_cursor_ = 0; pl_scroll_ = 0; return; }
+    pl_cursor_ = std::clamp(pl_cursor_, 0, n - 1);
+    const int visible = win_playlist_ ? paneVisibleRows(win_playlist_) : 0;
+    if (visible <= 0) return;                       // pane not built yet
+    if (pl_cursor_ < pl_scroll_)                    pl_scroll_ = pl_cursor_;
+    else if (pl_cursor_ >= pl_scroll_ + visible)    pl_scroll_ = pl_cursor_ - visible + 1;
+    pl_scroll_ = std::clamp(pl_scroll_, 0, std::max(0, n - visible));
+}
+
 void UIManager::drawPlaylist() {
     werase(win_playlist_);
     int rows, cols;
@@ -1932,22 +2102,18 @@ void UIManager::drawPlaylist() {
     if (pl_scroll_ >= (int)playlist_.size())
         pl_scroll_ = std::max(0, (int)playlist_.size() - 1);
     if (pl_scroll_ < 0) pl_scroll_ = 0;
+    ensurePlaylistCursorVisible();   // the invariant: every offscreen-cursor path self-heals here
+    // Lit row = nowPlayingRow(); see the accessor for why current() can't be used
+    // here (stale in stream mode; queue-launched stations light no row). Computed
+    // once before the loop - the accessor scans the playlist, so a per-row call
+    // would be O(n^2) on the draw path.
+    const std::optional<std::size_t> now_row = nowPlayingRow();
     for (int i = 0; i < visible; ++i) {
         size_t idx = (size_t)(pl_scroll_ + i);
         if (idx >= playlist_.size()) break;
         const auto& e  = playlist_.at(idx);
         bool cursor  = ((int)idx == pl_cursor_);
-        // The lit ("playing") row. In radio mode audio_.currentTrack() still holds
-        // the last file, so a stale file row would stay lit after switching to
-        // radio. Key off the URL actually streaming, NOT playlist_.current(): a
-        // station launched from the override queue has no playlist row, so
-        // current() is stale. A playlist-launched station's row path == streamUrl
-        // and lights; a queue-launched station matches no row and lights nothing
-        // (it shows on the now-playing line instead). In file mode, match the file.
-        bool playing = (audio_.state() != PlaybackState::Stopped) &&
-                       (audio_.streamMode()
-                          ? (e.path == audio_.streamUrl())
-                          : (e.path == audio_.currentTrack().path));
+        bool playing = now_row && *now_row == idx;
         short rpair = CP_DIM; attr_t rattr = A_BOLD;
         if      (cursor && focused) { rpair = CP_SELECTED;  rattr = A_BOLD; }
         else if (cursor)            { rpair = CP_SELECTED_UNFOCUSED; rattr = A_BOLD; }
@@ -2041,6 +2207,8 @@ void UIManager::drawVisualizer() {
         // response.
         float floor = kVizFloorCells;
         if (aw) { val = std::pow(val, 0.65f) * 1.10f; floor = kVizStripFloorCells; }
+        // Lift the resting floor per spectrum style: 80s LED +20%, classic bars +10%.
+        floor *= config_.viz_led ? 1.20f : 1.10f;
         float exact = std::clamp(val, 0.0f, 1.0f) * bar_area_rows;
         if (exact < floor) exact = floor;
 
@@ -2144,7 +2312,7 @@ void UIManager::drawHelp() {
         { "Playlist",       "",                             true  },
         { "a",              "Add selection to playlist (recursive)"},
         { "d",              "Delete selected track"               },
-        { "u  /  D",        "Move track up / down"                },
+        { "K  /  J",        "Move track up / down"                },
         { "c",              "Clear entire playlist"               },
         { "S  (Shift+S)",   "Save playlist as M3U file"           },
         { "l",              "Load / append M3U playlist file"     },
@@ -2168,6 +2336,7 @@ void UIManager::drawHelp() {
         { "Ctrl+D",         "Toggle Discord Rich Presence" },
         { "Ctrl+T",         "Toggle Classic / Awesome theme" },
         { "F2",             "Spectrum style: classic / 80s LED"   },
+        { "F3",             "Follow the playing track (cursor tracks the song)" },
         { "F7  /  F8",      "Awesome theme: previous / next" },
 #ifdef PDCURSES
         { "Alt+Enter",      "Toggle fullscreen (borderless)"      },
@@ -2504,8 +2673,25 @@ void UIManager::drawLyrics() {
 }
 
 // ── About pane ────────────────────────────────────────────────────────────────
-void UIManager::saveTagEdits() {
-    if (tag_edit_path_.empty()) return;
+UIManager::TagEditability UIManager::tagEditability(const std::string& path) const {
+    if (path.empty())            return TagEditability::Empty;
+    if (isCDTrackPath(path))     return TagEditability::NotAFile;   // CD track
+    if (isStreamPath(path))      return TagEditability::NotAFile;   // radio URL
+    // Locked iff this exact file is the one actively playing.
+    if (!audio_.streamMode() && !audio_.cdMode() &&
+        path == audio_.currentTrack().path &&
+        audio_.state() != PlaybackState::Stopped)
+        return TagEditability::PlayingLocked;
+    return TagEditability::Editable;
+}
+
+// Write the edited tags to disk. Returns true ONLY if the file was actually written:
+// TagLib::FileRef::save() returns bool and on Windows a locked (playing) file fails
+// with false, no throw. On failure we touch NOTHING in the UI - the pane and playlist
+// must reflect the unchanged disk, not the attempted edit.
+bool UIManager::saveTagEdits() {
+    if (tag_edit_path_.empty()) return false;
+    bool ok = false;
     try {
 #ifdef _WIN32
         auto wp = utf8_to_wide(tag_edit_path_);
@@ -2513,7 +2699,7 @@ void UIManager::saveTagEdits() {
 #else
         TagLib::FileRef ref(tag_edit_path_.c_str(), false, TagLib::AudioProperties::Fast);
 #endif
-        if (ref.isNull() || !ref.tag()) return;
+        if (ref.isNull() || !ref.tag()) return false;
         auto* tag = ref.tag();
         tag->setTitle (TagLib::String(tag_edit_values_[0], TagLib::String::UTF8));
         tag->setArtist(TagLib::String(tag_edit_values_[1], TagLib::String::UTF8));
@@ -2523,22 +2709,27 @@ void UIManager::saveTagEdits() {
             try { tag->setYear((unsigned int)std::stoi(tag_edit_values_[4])); }
             catch (...) {}
         }
-        ref.save();
-        info_cached_path_.clear();  // invalidate so drawTrackInfo re-reads on next open
+        ok = ref.save();                       // capture it - false = write refused
+    } catch (...) {
+        return false;
+    }
+    if (!ok) return false;                      // disk unchanged: do NOT lie to the UI
 
-        // Update playlist display title so it reflects immediately
-        for (std::size_t i = 0; i < playlist_.size(); ++i) {
-            if (playlist_.at(i).path == tag_edit_path_) {
-                // Rebuild display title as "Artist - Title"
-                std::string dt;
-                if (!tag_edit_values_[1].empty())
-                    dt = sanitizeForDisplay(tag_edit_values_[1]) + " - ";
-                dt += sanitizeForDisplay(tag_edit_values_[0]);
-                playlist_.setDisplayTitle(i, dt);
-                break;
-            }
+    info_cached_path_.clear();  // invalidate so drawTrackInfo re-reads on next open
+
+    // Update playlist display title so it reflects immediately (only on a real write)
+    for (std::size_t i = 0; i < playlist_.size(); ++i) {
+        if (playlist_.at(i).path == tag_edit_path_) {
+            // Rebuild display title as "Artist - Title"
+            std::string dt;
+            if (!tag_edit_values_[1].empty())
+                dt = sanitizeForDisplay(tag_edit_values_[1]) + " - ";
+            dt += sanitizeForDisplay(tag_edit_values_[0]);
+            playlist_.setDisplayTitle(i, dt);
+            break;
         }
-    } catch (...) {}
+    }
+    return true;
 }
 
 void UIManager::drawQueue() {
@@ -2922,11 +3113,16 @@ bool UIManager::allocArtColorPairs(const cover::Rendered& art,
     if (!has_colors() || art.cells.empty()) return false;
 
     const bool truecolor = (COLORS >= 256 && can_change_color());
-    const short C0 = 64;
+    const short C0 = kArtColourBase;
     const int   c_budget = truecolor ? std::min((int)COLORS, 256) - C0 : 0;   // art colour slots
-    const short P0 = 20;
+    const short P0 = kArtPairBase;
     const int   p_budget = std::min(COLOR_PAIRS, 256) - P0;                    // art pair slots
     if (p_budget < 1) return false;
+#ifdef REMOCT_PROBE
+    // Slice-1 Probe A2 counters (instrumentation only; allocation logic unchanged).
+    int probe_colour_fallback = 0;   // times the colour budget was spent (nearest-existing)
+    int probe_pair_fallback   = 0;   // times the PAIR budget was spent (nearest-existing)
+#endif
 
     static const int kBasic16[16][3] = {
         {0,0,0},{128,0,0},{0,128,0},{128,128,0},{0,0,128},{128,0,128},{0,128,128},{192,192,192},
@@ -2954,6 +3150,9 @@ bool UIManager::allocArtColorPairs(const cover::Rendered& art,
             return id;
         }
         long best=-1; short bi=C0;        // budget spent: nearest existing
+#ifdef REMOCT_PROBE
+        ++probe_colour_fallback;
+#endif
         for (size_t i=0;i<pal.size();++i){ long d=dist(r,g,b,pal[i][0],pal[i][1],pal[i][2]);
                                            if(best<0||d<best){best=d;bi=(short)(C0+i);} }
         return bi;
@@ -2969,8 +3168,34 @@ bool UIManager::allocArtColorPairs(const cover::Rendered& art,
             pairs.push_back({fg,bg});
             return id;
         }
-        // Budget spent (only if a pane were huge): reuse the closest fg's pair.
-        return (short)P0;
+        // Budget spent: reuse the existing pair nearest in colour to the wanted fg/bg
+        // (the pair analogue of colorFor's nearest-existing fallback). The 22x11 art box
+        // is 242 cells vs a 236-pair budget, so a busy cover reaches this on real art -
+        // Probe A2 measured it on 6 of 116 covers. P0 is only the seed for the search.
+        // fg/bg are slot IDs, not RGB: map back via pal (truecolor, slot = C0+i) or
+        // kBasic16 (non-truecolor, slot = 0..15), then score by summed fg+bg distance.
+        auto slotRGB = [&](short slot, int& r, int& g, int& b) {
+            if (truecolor) {
+                const int i = slot - C0;
+                if (i >= 0 && i < (int)pal.size()) { r=pal[i][0]; g=pal[i][1]; b=pal[i][2]; return; }
+            }
+            if (slot >= 0 && slot < 16) { r=kBasic16[slot][0]; g=kBasic16[slot][1]; b=kBasic16[slot][2]; return; }
+            r=g=b=0;
+        };
+        int wfr,wfg,wfb, wbr,wbg,wbb;
+        slotRGB(fg,wfr,wfg,wfb); slotRGB(bg,wbr,wbg,wbb);
+        long best=-1; short bi=(short)P0;
+        for (size_t j=0;j<pairs.size();++j) {
+            int pfr,pfg,pfb, pbr,pbg,pbb;
+            slotRGB(pairs[j].first,  pfr,pfg,pfb);
+            slotRGB(pairs[j].second, pbr,pbg,pbb);
+            long d = dist(wfr,wfg,wfb, pfr,pfg,pfb) + dist(wbr,wbg,wbb, pbr,pbg,pbb);
+            if (best<0 || d<best) { best=d; bi=(short)(P0+j); }
+        }
+#ifdef REMOCT_PROBE
+        ++probe_pair_fallback;
+#endif
+        return bi;
     };
 
     for (size_t i=0;i<art.cells.size();++i) {
@@ -2978,6 +3203,13 @@ bool UIManager::allocArtColorPairs(const cover::Rendered& art,
         out_pairs[i] = pairFor(colorFor(c.r_top,c.g_top,c.b_top),
                                colorFor(c.r_bot,c.g_bot,c.b_bot));
     }
+#ifdef REMOCT_PROBE
+    Log::writef("probe",
+        "A2 alloc grid=%dx%d cells=%zu truecolor=%d colours=%zu pairs=%zu "
+        "c_budget=%d p_budget=%d colour_fallback=%d pair_fallback=%d ret=1",
+        art.cols, art.rows, art.cells.size(), (int)truecolor, pal.size(), pairs.size(),
+        c_budget, p_budget, probe_colour_fallback, probe_pair_fallback);
+#endif
     return true;
 }
 
@@ -2993,13 +3225,13 @@ void UIManager::artCachePut(const std::string& key, const cover::Rendered& r) {
     if (info_art_cache_.size() > kInfoArtCacheMax) info_art_cache_.erase(info_art_cache_.begin());
 }
 
-// Commit a decoded grid as the shown art: allocate its colour pairs (UI thread -
-// curses palette) and mark the key. r.ok==false is a valid "no art" verdict.
+// Commit a decoded grid as the shown art: store the grid and mark its key. Colour
+// pairs are allocated later, at the blit. r.ok==false is a valid "no art" verdict.
 void UIManager::commitInfoArt(const std::string& key, const cover::Rendered& r) {
     info_art_key_ = key;
     info_art_ = r;
-    info_art_pairs_.clear();
-    if (info_art_.ok) allocArtColorPairs(info_art_, info_art_pairs_);
+    // Colour-pair allocation happens at the blit (drawTrackInfo), when we know
+    // which art source owns the shared global pair table. See art_pairs_key_.
 }
 
 // Spawn the one-shot decode worker (file read + stb decode, both curses-free).
@@ -3048,9 +3280,8 @@ void UIManager::refreshInfoArt(const std::string& path, int box_cols, int box_ro
     // Not decoded yet: clear the stale cover (don't show the wrong one) and kick
     // off the decode. Leave info_art_key_ on the old key so we keep retrying the
     // spawn until this key's decode lands and commits it.
-    if (!info_art_.cells.empty() || !info_art_pairs_.empty()) {
+    if (!info_art_.cells.empty()) {
         info_art_ = cover::Rendered{};
-        info_art_pairs_.clear();
     }
     if (path.empty() || isCDTrackPath(path) || box_cols < 4 || box_rows < 2) {
         artCachePut(key, cover::Rendered{});          // cache the "no art" verdict
@@ -3186,11 +3417,9 @@ void UIManager::refreshRadioArt(int box_cols, int box_rows) {
     if (rkey == radio_render_key_) return;
     radio_render_key_ = rkey;
     radio_art_ = cover::Rendered{};
-    radio_art_pairs_.clear();
     if (src.empty() || box_cols < 4 || box_rows < 2) return;
     cover::Rendered r = cover::render(src, box_cols, box_rows);
-    if (!r.ok) return;
-    if (!allocArtColorPairs(r, radio_art_pairs_)) return;
+    if (!r.ok) return;   // failed render -> radio_art_ stays {} (no art); colours alloc at the blit
     radio_art_ = std::move(r);
 }
 
@@ -3200,10 +3429,16 @@ void UIManager::drawTrackInfo() {
     int rows, cols;
     getmaxyx(w, rows, cols);
 
-    // Which track to show: highlighted in playlist if focused there, else current
-    std::size_t idx = (focus_ == Pane::Playlist && pl_cursor_ < (int)playlist_.size())
-                    ? (std::size_t)pl_cursor_
-                    : playlist_.current();
+    // Which track to show: cursored row if browsing the playlist, else the playing
+    // row (stream-aware), else the last-known index for the nothing-playing floor.
+    std::size_t idx;
+    if (focus_ == Pane::Playlist && pl_cursor_ < (int)playlist_.size()) {
+        idx = (std::size_t)pl_cursor_;
+    } else if (auto r = nowPlayingRow()) {
+        idx = *r;
+    } else {
+        idx = playlist_.current();   // nothing playing / queue-launched stream: last-known index
+    }
 
     // Header
     std::string hdr = tag_edit_mode_
@@ -3368,9 +3603,18 @@ void UIManager::drawTrackInfo() {
         const bool radio_item = audio_.streamMode() && path == audio_.streamUrl();
         if (radio_item) refreshRadioArt(box_cols, box_rows);
         else            refreshInfoArt(path, box_cols, box_rows);
-        const cover::Rendered&    art_r  = radio_item ? radio_art_       : info_art_;
-        const std::vector<short>& art_pr = radio_item ? radio_art_pairs_ : info_art_pairs_;
-        const bool has_art    = art_r.ok && !tag_edit_mode_;
+        const cover::Rendered&    art_r = radio_item ? radio_art_       : info_art_;
+        const std::string&        key   = radio_item ? radio_render_key_ : info_art_key_;
+
+        // Allocate curses pairs only when the global table doesn't already hold this
+        // image's colours. A pair index is valid only while the palette holds the
+        // colours it was allocated for; art_pairs_key_ records who owns it now.
+        if (art_r.ok && key != art_pairs_key_) {
+            art_pairs_.clear();
+            if (allocArtColorPairs(art_r, art_pairs_)) art_pairs_key_ = key;
+            else                                       art_pairs_key_.clear();
+        }
+        const bool has_art    = art_r.ok && !tag_edit_mode_ && !art_pairs_.empty();
         const int  art_cols   = has_art ? art_r.cols : 0;
         const int  art_rows   = has_art ? art_r.rows : 0;
         const int  art_bottom = art_y + art_rows;      // first row below the art band
@@ -3379,7 +3623,7 @@ void UIManager::drawTrackInfo() {
                 for (int cx = 0; cx < art_cols; ++cx) {
                     cchar_t cc; wchar_t s[2] = { (wchar_t)0x2580, 0 };   // ▀ UPPER HALF BLOCK
                     setcchar(&cc, s, A_NORMAL,
-                             art_pr[(size_t)cy * art_cols + cx], nullptr);
+                             art_pairs_[(size_t)cy * art_cols + cx], nullptr);
                     mvwadd_wch(w, art_y + cy, art_x + cx, &cc);
                 }
         }
@@ -3684,6 +3928,14 @@ void UIManager::drawProgress() {
 void UIManager::drawCmdLine() {
     if (goto_active_) { drawGotoBar(); return; }
     werase(win_cmdline_);
+    // Transient warning takes the bar for its ~5s lifetime (both platforms).
+    if (!warn_msg_.empty()) {
+        wattron(win_cmdline_, COLOR_PAIR(CP_STATUS_ERR) | A_BOLD);
+        mvwaddnstr(win_cmdline_, 0, 1, warn_msg_.c_str(), screen_cols_ - 2);
+        wattroff(win_cmdline_, COLOR_PAIR(CP_STATUS_ERR) | A_BOLD);
+        wnoutrefresh(win_cmdline_);
+        return;
+    }
 #ifndef _WIN32
     // Toast fallback (see UIManager.h) — drawn exactly like rip_status_.
     if (!status_msg_.empty()) {
@@ -4559,7 +4811,15 @@ void UIManager::handleInput(int ch) {
                     tag_edit_mode_ = false;
                     break;
                 case '\n': case KEY_ENTER: case '\r':  // Enter — save
-                    saveTagEdits();
+                    if (!saveTagEdits()) {
+                        // Write refused (file locked/read-only). Exit edit mode anyway -
+                        // staying would trap the user (s = stop isn't reachable from
+                        // inside edit mode). Warn persistently; the display title was NOT
+                        // updated, so the UI still shows the unchanged disk.
+                        warn_msg_ = "Tag save failed - file locked or read-only";
+                        warn_msg_ticks_ = 0;
+                        redraw_needed_.store(true);
+                    }
                     tag_edit_mode_ = false;
                     break;
                 case KEY_UP: case 'k':
@@ -4594,23 +4854,28 @@ void UIManager::handleInput(int ch) {
                 return;
             case 'e': case 'E': {
                 // Enter edit mode — only for real files, not CD tracks, not currently playing
-                std::size_t idx = (focus_ == Pane::Playlist && pl_cursor_ < (int)playlist_.size())
-                                ? (std::size_t)pl_cursor_ : playlist_.current();
+                std::size_t idx;
+                if (focus_ == Pane::Playlist && pl_cursor_ < (int)playlist_.size()) {
+                    idx = (std::size_t)pl_cursor_;
+                } else if (auto r = nowPlayingRow()) {
+                    idx = *r;
+                } else {
+                    idx = playlist_.current();   // nothing playing / queue-launched stream: last-known index
+                }
                 if (idx < playlist_.size()) {
                     const std::string& path = playlist_.at(idx).path;
-                    if (isCDTrackPath(path) || path.empty()) {
-                        return;  // CD track — silently ignore
-                    }
-                    if (path == audio_.currentTrack().path &&
-                        audio_.state() != PlaybackState::Stopped) {
-                        // Currently playing — warn in cmdline bar
-                        werase(win_cmdline_);
-                        wattron(win_cmdline_, COLOR_PAIR(CP_STATUS_OK) | A_BOLD);
-                        mvwaddnstr(win_cmdline_, 0, 1,
-                            "Stop playback first to edit tags  (s = stop)", screen_cols_ - 2);
-                        wattroff(win_cmdline_, COLOR_PAIR(CP_STATUS_OK) | A_BOLD);
-                        wrefresh(win_cmdline_);
-                        return;
+                    switch (tagEditability(path)) {
+                        case TagEditability::NotAFile:      // CD track / radio stream
+                        case TagEditability::Empty:
+                            return;                          // silently ignore, as today
+                        case TagEditability::PlayingLocked:
+                            // Currently playing — warn in the cmdline bar (persists ~5s)
+                            warn_msg_ = "Stop playback first to edit tags  (s = stop)";
+                            warn_msg_ticks_ = 0;
+                            redraw_needed_.store(true);
+                            return;
+                        case TagEditability::Editable:
+                            break;                           // fall through to enter edit mode
                     }
                     // All checks passed — enter edit mode
                     tag_edit_path_ = path;
@@ -4772,6 +5037,17 @@ void UIManager::handleInput(int ch) {
             showTrackToast(config_.viz_led ? "Spectrum: 80s LED" : "Spectrum: classic bars", "", "");
 #endif
             break;
+        case KEY_F(3):    // toggle follow-the-playing-row (persisted)
+            config_.follow_playing = !config_.follow_playing;
+            config_.save();
+            if (config_.follow_playing) {   // snap to the playing row now, not next track change
+                if (auto row = nowPlayingRow()) pl_cursor_ = (int)*row;
+                last_playlist_current_for_sync_ = (int)playlist_.current();  // keep the sync marker coherent
+            }
+            redraw_needed_.store(true);
+            showTrackToast(config_.follow_playing ? "Follow playing: ON"
+                                                  : "Follow playing: OFF", "", "");
+            break;
         case KEY_F(7):    // previous Awesome named palette (F7)
         case KEY_F(8): {  // next Awesome named palette (F8)
             if (!config_.awesome_mode) {
@@ -4888,18 +5164,22 @@ void UIManager::handleInput(int ch) {
             break;
         case 25:  // Ctrl+Y — CD rip  (slice 6: common — CD path live on Linux)
             if (ui_overlay_ != UIOverlay::None) break;  // already showing modal
-            if (audio_.cdMode() && !cd_ripper_.isActive()) {
-                const auto& cd = audio_.cdSource();
-                if (!cd.tracks().empty()) {
-                    ui_overlay_ = UIOverlay::RipConfirm;
-                    redraw_needed_.store(true);
-                }
-            } else if (audio_.cdMode() && cd_ripper_.isActive()) {
+            if (cd_ripper_.isActive()) {
                 // Already ripping — Ctrl+Y cancels
                 cd_ripper_.cancel();
                 rip_status_    = "Rip cancelled by user.";
                 rip_msg_ticks_ = 0;
                 redraw_needed_.store(true);
+            } else if (!cd_drive_letter_.empty()) {
+                // Slice 3: rip works on a stopped-but-loaded disc. Gate on loaded
+                // (cd_drive_letter_), not cdMode — stop() closed the handle, so
+                // reopen it first. reopenCDForAction handles an empty tray (eject
+                // while stopped): purge + toast + false, and we bail.
+                if (!reopenCDForAction(cd_drive_letter_)) break;
+                if (!audio_.cdSource().tracks().empty()) {
+                    ui_overlay_ = UIOverlay::RipConfirm;
+                    redraw_needed_.store(true);
+                }
             } else {
                 rip_status_    = "Ctrl+Y: Insert a CD and load it from [Drives] first.";
                 rip_msg_ticks_ = 0;
@@ -4907,8 +5187,12 @@ void UIManager::handleInput(int ch) {
             }
             break;
         case 18:  // Ctrl+R — MusicBrainz CD lookup
-            if (audio_.cdMode() && !mb_fetching_.load()) {
+            if (!cd_drive_letter_.empty() && !mb_fetching_.load()) {
                 if (mb_lookup_.isActive()) break;  // already in progress
+                // Slice 3: look up a stopped-but-loaded disc. Gate on loaded, not
+                // cdMode — reopen the handle first (stop() closed it); bail on an
+                // empty tray (reopenCDForAction purges + toasts).
+                if (!reopenCDForAction(cd_drive_letter_)) break;
                 const auto& cd = audio_.cdSource();
                 if (cd.tracks().empty()) break;
                 mb_fetching_.store(true);
@@ -4937,8 +5221,8 @@ void UIManager::handleInput(int ch) {
                                        ? " (" + rel.date.substr(0,4) + ")" : "");
                         redraw_needed_.store(true);
                     });
-            } else if (!audio_.cdMode()) {
-                // Not in CD mode — silently ignore
+            } else if (cd_drive_letter_.empty()) {
+                // No disc loaded — silently ignore
             }
             break;
         case 'Q':
@@ -5222,10 +5506,12 @@ void UIManager::handleInput(int ch) {
             playlist_.toggleShuffle(); break;
         case 'n': case 'N': {
             auto play_next = [&](const std::string& path, bool from_queue = false) {
-                if (!from_queue) pl_cursor_ = (int)playlist_.current();
+                // Follow-mode gates the cursor move (like the auto-advance sync block):
+                // OFF => manual next plays the track but leaves the cursor browsing.
+                if (!from_queue && config_.follow_playing) pl_cursor_ = (int)playlist_.current();
                 std::string drive; int track_num;
                 if (parseCDPath(path, drive, track_num)) {
-                    if (!audio_.cdMode()) audio_.openCD(drive);
+                    if (!reopenCDForAction(drive)) return;   // ejected while stopped
                     audio_.playCDTrack(track_num);
                     return;
                 }
@@ -5240,7 +5526,7 @@ void UIManager::handleInput(int ch) {
                     const std::string& qpath = qe->path;
                     std::string drive; int track_num;
                     if (parseCDPath(qpath, drive, track_num)) {
-                        if (!audio_.cdMode()) audio_.openCD(drive);
+                        if (!reopenCDForAction(drive)) break;   // ejected while stopped
                         audio_.playCDTrack(track_num);
                         // pl_cursor_ stays where it is — queue item has no playlist row
                         break;
@@ -5256,10 +5542,10 @@ void UIManager::handleInput(int ch) {
         }
         case 'p': case 'P': {
             auto play_prev = [&](const std::string& path) {
-                pl_cursor_ = (int)playlist_.current();
+                if (config_.follow_playing) pl_cursor_ = (int)playlist_.current();   // gated like manual next
                 std::string drive; int track_num;
                 if (parseCDPath(path, drive, track_num)) {
-                    if (!audio_.cdMode()) audio_.openCD(drive);
+                    if (!reopenCDForAction(drive)) return;   // ejected while stopped
                     audio_.playCDTrack(track_num);
                     return;
                 }
@@ -5295,41 +5581,33 @@ void UIManager::handleInput(int ch) {
             audio_.setBalance(std::clamp(audio_.balance() + 0.1f, -1.0f, 1.0f)); break;
         case '`':
             audio_.setBalance(0.0f); break;
-        case 'u': case 'U':
+        case 'K':   // move track up (was u/U)
             if (focus_ == Pane::Playlist && pl_cursor_ < (int)playlist_.size()) {
                 playlist_.moveUp((std::size_t)pl_cursor_);
-                if (pl_cursor_ > 0) {
-                    --pl_cursor_;
-                    if (pl_cursor_ < pl_scroll_) --pl_scroll_;
-                }
+                if (pl_cursor_ > 0) --pl_cursor_;   // scroll follows via the draw-time invariant
                 // Prevent cursor sync from snapping us away
                 last_playlist_current_for_sync_ = (int)playlist_.current();
             }
             break;
-        case 'D':
+        case 'J':   // move track down (was D)
             if (focus_ == Pane::Playlist && pl_cursor_ < (int)playlist_.size()) {
                 playlist_.moveDown((std::size_t)pl_cursor_);
-                if (pl_cursor_ + 1 < (int)playlist_.size()) {
-                    ++pl_cursor_;
-                    if (pl_cursor_ >= pl_scroll_ + paneVisibleRows(win_playlist_)) ++pl_scroll_;
-                }
+                if (pl_cursor_ + 1 < (int)playlist_.size()) ++pl_cursor_;   // scroll follows via the invariant
                 last_playlist_current_for_sync_ = (int)playlist_.current();
             }
             break;
         case 'd':
             if (focus_ == Pane::Playlist && pl_cursor_ < (int)playlist_.size()) {
-                bool was_playing = ((size_t)pl_cursor_ == playlist_.current()
-                                    && audio_.state() != PlaybackState::Stopped);
+                // Stream-aware "is the cursor on the playing row" - nowPlayingRow()
+                // folds in the state()!=Stopped check and is not stale in stream mode,
+                // so deleting an unrelated row under a stream no longer stops it.
+                auto now = nowPlayingRow();
+                bool was_playing = now && (size_t)pl_cursor_ == *now;
                 playlist_.removeAt((size_t)pl_cursor_);
                 if (was_playing) audio_.stop();
-                // Keep cursor in bounds
+                // Keep cursor in bounds; scroll re-clamps via the draw-time invariant.
                 if (pl_cursor_ >= (int)playlist_.size() && pl_cursor_ > 0)
                     --pl_cursor_;
-                // Keep scroll in bounds so cursor doesn't appear to jump
-                int visible = win_playlist_ ? paneVisibleRows(win_playlist_) : 0;
-                int max_scroll = std::max(0, (int)playlist_.size() - visible);
-                if (pl_scroll_ > max_scroll) pl_scroll_ = max_scroll;
-                if (pl_scroll_ > pl_cursor_) pl_scroll_ = pl_cursor_;
                 // Deleting an entry above the playing track shifts current()'s
                 // index; resync the marker so the follow logic doesn't read it as
                 // a track change and snap the cursor to the playing row.
@@ -5365,8 +5643,8 @@ void UIManager::handleInput(int ch) {
                     playlist_.addDirectoryAsync(full.string());
             }
             break;
-        case KEY_DOWN: case 'j': case 'J': navigateDown(); break;
-        case KEY_UP:   case 'k': case 'K': navigateUp();   break;
+        case KEY_DOWN: case 'j': navigateDown(); break;   // J freed for move-down
+        case KEY_UP:   case 'k': navigateUp();   break;   // K freed for move-up
         case KEY_LEFT:
             if (focus_ == Pane::DirBrowser) {
                 if (in_drive_list_) break;
@@ -5439,8 +5717,7 @@ void UIManager::gotoClose(bool commit) {
                     if (after > before) {
                         // Jump to the first genuinely-new entry (trust the size
                         // delta, not the line count — dedup may drop duplicates).
-                        pl_cursor_ = (int)before;
-                        pl_scroll_ = (int)before;
+                        pl_cursor_ = (int)before;   // scroll placed by the draw-time invariant
                         if (audio_.state() == PlaybackState::Stopped) {
                             playlist_.selectAt(before);
                             if (auto path = playlist_.currentPath(); path.has_value()) {
@@ -5451,7 +5728,6 @@ void UIManager::gotoClose(bool commit) {
                     } else {
                         // All duplicates / none on disk — keep the view valid.
                         if (pl_cursor_ >= (int)after) pl_cursor_ = std::max(0, (int)after - 1);
-                        if (pl_scroll_ >= (int)after) pl_scroll_ = 0;
                     }
                 } else if (fs::exists(target) && fs::is_directory(target)) {
                     current_dir_   = target;
@@ -5481,8 +5757,7 @@ void UIManager::gotoClose(bool commit) {
                     // Jump to the first genuinely-new entry. Dedup may have
                     // dropped some lines, so trust the size delta rather than
                     // the raw line count returned by loadPlaylist().
-                    pl_cursor_ = (int)before;
-                    pl_scroll_ = (int)before;
+                    pl_cursor_ = (int)before;   // scroll placed by the draw-time invariant
                     if (audio_.state() == PlaybackState::Stopped) {
                         playlist_.selectAt(before);
                         if (auto path = playlist_.currentPath(); path.has_value()) {
@@ -5495,7 +5770,6 @@ void UIManager::gotoClose(bool commit) {
                     // or none existed on disk). Keep the view on-screen instead
                     // of scrolling past the end and blanking the pane.
                     if (pl_cursor_ >= (int)after) pl_cursor_ = std::max(0, (int)after - 1);
-                    if (pl_scroll_ >= (int)after) pl_scroll_ = 0;
                 }
                 break;
             }
@@ -5541,8 +5815,7 @@ void UIManager::gotoClose(bool commit) {
                     // jump to it, reveal the playlist pane, then play. Coexists with
                     // existing file/CD entries; addStream dedups by URL.
                     std::size_t idx = playlist_.addStream(url, label);
-                    pl_cursor_  = (int)idx;
-                    pl_scroll_  = 0;
+                    pl_cursor_  = (int)idx;   // scroll placed by the draw-time invariant
                     right_pane_ = RightPane::Playlist;
                     playlist_.selectAt(idx);
                     audio_.beginStream(url);   // non-blocking; connects on a worker thread
@@ -5751,11 +6024,7 @@ void UIManager::navigateDown() {
             if (dir_cursor_ >= dir_scroll_+v) ++dir_scroll_;
         }
     } else {
-        int v = paneVisibleRows(win_playlist_);
-        if (pl_cursor_+1 < (int)playlist_.size()) {
-            ++pl_cursor_;
-            if (pl_cursor_ >= pl_scroll_+v) ++pl_scroll_;
-        }
+        if (pl_cursor_+1 < (int)playlist_.size()) ++pl_cursor_;   // scroll follows via the invariant
     }
 }
 
@@ -5763,7 +6032,7 @@ void UIManager::navigateUp() {
     if (focus_ == Pane::DirBrowser) {
         if (dir_cursor_ > 0) { --dir_cursor_; if (dir_cursor_ < dir_scroll_) dir_scroll_ = dir_cursor_; }
     } else {
-        if (pl_cursor_ > 0) { --pl_cursor_; if (pl_cursor_ < pl_scroll_) pl_scroll_ = pl_cursor_; }
+        if (pl_cursor_ > 0) --pl_cursor_;   // scroll follows via the invariant
     }
 }
 
@@ -5892,7 +6161,7 @@ void UIManager::activateSelection() {
             // entries (delete from the playlist to remove). addStream dedups by
             // URL, so re-selecting a station just jumps to its existing row.
             std::size_t idx = playlist_.addStream(url, label);
-            pl_cursor_ = (int)idx; pl_scroll_ = 0;
+            pl_cursor_ = (int)idx;   // reported bug fix: scroll placed by the draw-time invariant
             playlist_.selectAt(idx);
             right_pane_ = RightPane::Playlist;
             in_radio_search_ = false;
@@ -6043,7 +6312,7 @@ void UIManager::activateSelection() {
                 const std::string& path = p.value();
                 std::string drive; int track_num;
                 if (parseCDPath(path, drive, track_num)) {
-                    if (!audio_.cdMode()) audio_.openCD(drive);
+                    if (!reopenCDForAction(drive)) return;   // ejected while stopped
                     audio_.playCDTrack(track_num);
                     return;
                 }
@@ -6389,12 +6658,19 @@ void UIManager::drawMBSearch() {
     }
     WINDOW* w = mb_search_win_;
     if (!w) return;
+    // Themed base bg (Awesome) like the panes so frame colours + rounded corners
+    // render on this reused window; set each draw so a theme toggle updates it.
+    // Classic: plain default (see drawRipConfirm for the wingui rationale).
+    wbkgd(w, config_.awesome_mode ? COLOR_PAIR(CP_DIM) : COLOR_PAIR(0));
     werase(w);
 
-    // Plain border + title (rounded in Awesome mode)
-    panelFrame(w, "", true);
+    // Frame + title. Route the title through panelFrame so Awesome themes it
+    // (rounded cyan frame + inset label); panelFrame draws no title in Classic,
+    // so keep the manual centered one there.
     const char* title = " MUSICBRAINZ SEARCH ";
-    mvwaddstr(w, 0, (BOX_W - (int)strlen(title)) / 2, title);
+    panelFrame(w, title, true);
+    if (!config_.awesome_mode)
+        mvwaddstr(w, 0, (BOX_W - (int)strlen(title)) / 2, title);
 
     // Artist field
     mvwaddstr(w, 2, 3, "Artist :");

@@ -301,7 +301,7 @@
 
 <!-- ── Sidebar ── -->
 <nav>
-  <div class="logo">RE-MOCT<span>v1.1.0</span></div>
+  <div class="logo">RE-MOCT<span>v1.2.0</span></div>
   <div class="nav-section">Overview</div>
   <a href="#intro">Introduction</a>
   <a href="#formats">Formats</a>
@@ -330,10 +330,10 @@
 <!-- ── Main ── -->
 <main>
 
-<h1>RE-MOCT <span class="version">v1.1.0</span></h1>
+<h1>RE-MOCT <span class="version">v1.2.0</span></h1>
 
 <div class="note" style="margin-bottom:24px">
-  <strong>1.1.0 released.</strong>
+  <strong>1.2.0 released - the MOC-parity milestone.</strong>
   RE-MOCT runs on <strong>Windows</strong> and <strong>Linux</strong>. Grab a build from the
   <a href="https://github.com/RadMageIRL/re-moct/releases">GitHub Releases page</a>, or build
   from source - see <a href="#build">Build</a>. Its streaming source ships as a loadable
@@ -352,7 +352,7 @@
 <div class="hero">
   <div class="hero-line">
     <span class="left hl">CD Track 02 [F:]</span>
-    <span class="right">[REPEAT ALL] [SHUFFLE] [CD] [New Miserable Experience (1992)] [EQ] RE-MOCT v1.1.0</span>
+    <span class="right">[REPEAT ALL] [SHUFFLE] [CD] [New Miserable Experience (1992)] [EQ] RE-MOCT v1.2.0</span>
   </div>
   <div class="hero-line" style="margin-top:2px">
     <span class="left dim">Playlist [12]&nbsp;&nbsp;46m 8s</span>
@@ -471,7 +471,7 @@
 <!-- ── Playlist ── -->
 <h2 id="playlist" class="section-anchor">Playlist</h2>
 
-<p>The playlist is the right-hand pane in focus. Tracks are deduped on add. The playlist is restored on next launch (CD tracks are excluded - they are volatile).</p>
+<p>The playlist is the right-hand pane in focus. Tracks are deduped on add. The playlist is restored on next launch (CD tracks are excluded - they are volatile). The pane header shows the cursor position as <code>[3/12]</code> - which row of how many.</p>
 
 <div class="kb">
   <div class="kb-row"><div class="kb-key">a</div><div class="kb-desc">Add highlighted file or directory (recursive) to playlist</div></div>
@@ -481,6 +481,9 @@
   <div class="kb-row"><div class="kb-key">S</div><div class="kb-desc">Save playlist (M3U / M3U8 / PLS / XSPF)</div></div>
   <div class="kb-row"><div class="kb-key">l</div><div class="kb-desc">Load / append playlist file - autoplays if stopped</div></div>
   <div class="kb-row"><div class="kb-key">o</div><div class="kb-desc">Cycle sort: none / title / artist / duration / filename</div></div>
+  <div class="kb-row"><div class="kb-key">\</div><div class="kb-desc">Search the playlist - matches artist + title, case-insensitive. A single match jumps straight there; multiple matches open a pick list (Enter to jump). Cursor-jump only - the playlist is never filtered or reordered.</div></div>
+  <div class="kb-row"><div class="kb-key">Shift+F</div><div class="kb-desc">Toggle a per-row file-type column (FLAC / MP3 / ...). Off by default, remembered across runs.</div></div>
+  <div class="kb-row"><div class="kb-key">PgUp / PgDn / Home / End</div><div class="kb-desc">Move by a page, or jump to the top / bottom</div></div>
 </div>
 
 <div class="note">Loading a playlist via <code>l</code> or the goto bar appends to any existing tracks and jumps the cursor to the first newly added entry. If nothing is playing, it autoplays immediately.</div>
@@ -504,6 +507,8 @@
   <div class="kb-row"><div class="kb-key">O</div><div class="kb-desc">Cycle browser sort: name / date modified / size</div></div>
   <div class="kb-row"><div class="kb-key">b</div><div class="kb-desc">Bookmark current directory</div></div>
   <div class="kb-row"><div class="kb-key">B</div><div class="kb-desc">Show bookmarks popup (Enter to jump, x to delete)</div></div>
+  <div class="kb-row"><div class="kb-key">PgUp / PgDn / Home / End</div><div class="kb-desc">Move by a page, or jump to the top / bottom of the listing</div></div>
+  <div class="kb-row"><div class="kb-key">F12</div><div class="kb-desc">Refresh the drive list - hot-plugged USB / optical drives appear without a restart</div></div>
 </div>
 
 <div class="note">The goto bar accepts drive roots (<code>G:\</code>), directories, and playlist files (<code>.m3u</code>, <code>.pls</code>, etc.). Pressing Enter on a playlist file in the goto bar loads and autoplays it.</div>
@@ -544,8 +549,8 @@
     <p>Raw sector reads via <code>IOCTL_CDROM_READ_RAW</code>. Audio decoded in a dedicated reader thread into a lock-free ring buffer. Audio callback consumes from ring - no mutex in realtime path.</p>
   </div>
   <div class="card">
-    <div class="card-title">Eject detection</div>
-    <p>Non-blocking media check polls every ~2 seconds. On eject, all CD entries are removed from playlist and queue, MusicBrainz state is cleared, and playback stops cleanly.</p>
+    <div class="card-title">Eject &amp; eject detection</div>
+    <p>Non-blocking media check polls every ~2 seconds. On eject, all CD entries are removed from playlist and queue, MusicBrainz state is cleared, and playback stops cleanly. <code>Shift+E</code> ejects the highlighted CD drive from <code>[Drives]</code> (refused during an active rip); drives whose firmware refuses software eject report so honestly.</p>
   </div>
   <div class="card">
     <div class="card-title">MusicBrainz lookup</div>
@@ -621,7 +626,7 @@
 <!-- ── Visualizer ── -->
 <h2 id="visualizer" class="section-anchor">Visualizer</h2>
 
-<p>Press <code>v</code> to open the visualizer in the right pane. Renders a frequency spectrum using block characters. Updates in real time from the audio callback output.</p>
+<p>Press <code>v</code> to open the visualizer in the right pane. Renders a frequency spectrum using block characters, updating in real time from the audio callback output. As of 1.2.0 the spectrum is computed with a real FFT - accurate across the full range with no aliasing - plus per-band normalization and a perceptual tilt, so the display reflects each track's actual mastering character. <code>F2</code> switches the drawing style.</p>
 
 <!-- ── Lyrics ── -->
 <h2 id="lyrics" class="section-anchor">Lyrics</h2>
@@ -706,6 +711,8 @@
 <div class="kb">
   <div class="kb-row"><div class="kb-key">Tab</div><div class="kb-desc">Switch focus: file browser ↔ playlist</div></div>
   <div class="kb-row"><div class="kb-key">j / k  or  ↑↓</div><div class="kb-desc">Move cursor up / down</div></div>
+  <div class="kb-row"><div class="kb-key">PgUp / PgDn</div><div class="kb-desc">Move by a page (browser and playlist)</div></div>
+  <div class="kb-row"><div class="kb-key">Home / End</div><div class="kb-desc">Jump to the top / bottom of the list</div></div>
   <div class="kb-row"><div class="kb-key">Enter</div><div class="kb-desc">Play selected / enter directory</div></div>
   <div class="kb-row"><div class="kb-key">← (Left arrow)</div><div class="kb-desc">Go to parent directory</div></div>
   <div class="kb-row"><div class="kb-key">g</div><div class="kb-desc">Goto directory or playlist file (Tab to autocomplete)</div></div>
@@ -720,6 +727,8 @@
   <div class="kb-row"><div class="kb-key">S</div><div class="kb-desc">Save playlist as M3U / M3U8 / PLS / XSPF</div></div>
   <div class="kb-row"><div class="kb-key">l</div><div class="kb-desc">Load / append playlist file</div></div>
   <div class="kb-row"><div class="kb-key">o</div><div class="kb-desc">Cycle sort: none / title / artist / duration / filename</div></div>
+  <div class="kb-row"><div class="kb-key">\</div><div class="kb-desc">Search the playlist (Enter jumps; pick list on multiple matches)</div></div>
+  <div class="kb-row"><div class="kb-key">Shift+F</div><div class="kb-desc">Toggle file-type column (off by default, persisted)</div></div>
   <div class="kb-row"><div class="kb-key">q</div><div class="kb-desc">Add to play queue</div></div>
   <div class="kb-row"><div class="kb-key">Q</div><div class="kb-desc">Show / hide queue pane</div></div>
 </div>
@@ -731,6 +740,7 @@
   <div class="kb-row"><div class="kb-key">b</div><div class="kb-desc">Bookmark current directory</div></div>
   <div class="kb-row"><div class="kb-key">B</div><div class="kb-desc">Show bookmarks (Enter: jump, x: delete)</div></div>
   <div class="kb-row"><div class="kb-key">Del</div><div class="kb-desc">Remove entry (in FAVs pane)</div></div>
+  <div class="kb-row"><div class="kb-key">F12</div><div class="kb-desc">Refresh the drive list (hot-plugged drives)</div></div>
 </div>
 
 <div class="kb-group">Views</div>
@@ -741,6 +751,7 @@
   <div class="kb-row"><div class="kb-key">i</div><div class="kb-desc">Track info pane</div></div>
   <div class="kb-row"><div class="kb-key">A</div><div class="kb-desc">About screen</div></div>
   <div class="kb-row"><div class="kb-key">X (Shift+X)</div><div class="kb-desc">Audio output device picker / switch output device pane</div></div>
+  <div class="kb-row"><div class="kb-key">;</div><div class="kb-desc">Chapter list for the highlighted audiobook - Enter plays that chapter (, / . jump chapters in the playing track)</div></div>
   <div class="kb-row"><div class="kb-key">?</div><div class="kb-desc">Help screen (j/k to scroll)</div></div>
 </div>
 
@@ -749,6 +760,7 @@
   <div class="kb-row"><div class="kb-key">Ctrl+R</div><div class="kb-desc">Fetch CD metadata from MusicBrainz via DiscID (CD mode only)</div></div>
   <div class="kb-row"><div class="kb-key">Ctrl+F</div><div class="kb-desc">Manual MusicBrainz / Discogs search (artist + album text search)</div></div>
   <div class="kb-row"><div class="kb-key">Ctrl+Y</div><div class="kb-desc">Open rip dialog (A=AccurateRip  C=CUETools  Y=Local  B=Local 2-pass  N=cancel)</div></div>
+  <div class="kb-row"><div class="kb-key">Shift+E</div><div class="kb-desc">Eject the highlighted CD drive (in [Drives])</div></div>
 </div>
 
 <div class="kb-group">Global</div>
@@ -804,7 +816,7 @@ ctest --test-dir build --output-on-failure</pre>
 <p>The single-header dependencies (miniaudio, nlohmann/json) and the vendored MD5 are checked into the repo - no separate download step. Binary output: <code>build/bin/remoct</code> (or <code>remoct.exe</code>), with the streaming plugin beside it in <code>build/bin/plugins/</code>.</p>
 
 <hr>
-<p style="font-size:11px; color:var(--muted); text-align:center">RE-MOCT v1.1.0 &nbsp;·&nbsp; C++20 &nbsp;·&nbsp; Built with ncurses, miniaudio, TagLib &nbsp;·&nbsp; <a href="https://github.com/RadMageIRL/re-moct" style="color:var(--accent)">github.com/RadMageIRL/re-moct</a></p>
+<p style="font-size:11px; color:var(--muted); text-align:center">RE-MOCT v1.2.0 &nbsp;·&nbsp; C++20 &nbsp;·&nbsp; Built with ncurses, miniaudio, TagLib &nbsp;·&nbsp; <a href="https://github.com/RadMageIRL/re-moct" style="color:var(--accent)">github.com/RadMageIRL/re-moct</a></p>
 
 </main>
 </div>

@@ -236,6 +236,15 @@
   track-change cursor move must respect the toggle, not just auto-advance: the manual n/p
   handlers also gate their cursor set on `follow_playing`, or OFF looks identical to ON
   when you change tracks by hand. (Slice 6; mechanism finalized in 91817b8.)
+- **A per-row marquee must evaluate against the SAME width the row renders
+  with.** The F11 filetype column narrows the title field; `scrollToWidth`
+  decides scroll-vs-pad from the width it is handed, so the row's title width
+  (`nw`) is computed ONCE - with the column width already subtracted - and that
+  single value feeds both the marquee decision and the render. Compute the
+  width in two places and a long title scrolls against the wrong width: under
+  the filetype column, or not at all. Also: a blank tag (CD/stream/unknown
+  rows) zeroes the column for that row, so the title reclaims the space - the
+  column is per-row, not global.
 - **Playlist search (\) is pick-to-jump, deliberately NOT a filter.** The results
   overlay holds REAL playlist indices; picking one is a single `pl_cursor_`
   assignment (scroll = the slice-5 invariant, follow = untouched since nothing

@@ -117,6 +117,11 @@ private:
     void toggleFocus();
     void navigateDown();
     void navigateUp();
+    // Page / Home / End for the focused list pane (playlist or browser).
+    // Cursor-movement only: playlist scroll = the slice-5 draw-time invariant;
+    // the browser has NO invariant, so these clamp dir_scroll_ themselves.
+    void navigatePage(int dir);          // +1 = PgDn, -1 = PgUp; page = visible-1
+    void navigateHomeEnd(bool to_end);   // false = Home (row 0), true = End (last)
     void activateSelection();
 
     Pane      focus_           = Pane::DirBrowser;

@@ -18,6 +18,7 @@
 #include "ListenBrainz.h"
 #include "DiscordRP.h"
 #include "AudioManager.h"
+#include "VizFFT.h"
 #include "miniaudio.h"
 #include "LrcData.h"
 #include "Mp4Chapters.h"
@@ -197,9 +198,15 @@ private:
 
     // Visualizer
     static constexpr int VIZ_BINS = 64;   // finer spectrum: fills a wide strip with
-                                          // thin bars (DFT cost is per-k, not per-bin)
+                                          // thin bars (bin cost is integration, not DFT)
     std::array<float, VIZ_BINS> viz_bars_     {};
     std::array<float, VIZ_BINS> viz_smoothed_ {};
+    // Slice C: real radix-2 FFT replaces the stride-4 DFT that aliased
+    // everything above ~sr/8 (~5.5 kHz) - the top ~10 bars were noise-derived.
+    // Members, not locals: tables/scratch precomputed once, magnitude() is
+    // allocation-free (per-frame hot path). Proven by tests/viz_fft_test.cpp.
+    VizFFT<AudioManager::VIZ_BUF_SIZE> viz_fft_;
+    std::array<float, AudioManager::VIZ_BUF_SIZE / 2> viz_fft_mag_ {};
     // Coupled per-band peak normalization (viz-normalize A+B). MEMBERS with slow
     // decay persisting across calls - the bug this replaced was a loop-scope
     // `static float peak_mag` acting as one global AGC shared by all 64 bands,

@@ -1445,7 +1445,7 @@ void UIManager::run() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Visualizer DSP – DFT magnitude across log-spaced frequency bins
+// Visualizer DSP – FFT magnitude integrated into log-spaced frequency bins
 // ─────────────────────────────────────────────────────────────────────────────
 void UIManager::computeVizBins() {
     static constexpr int N = AudioManager::VIZ_BUF_SIZE;
@@ -1482,8 +1482,15 @@ void UIManager::computeVizBins() {
         samples[i] *= w;
     }
 
+    // Slice C: ONE real FFT per frame -> honest, alias-free magnitudes for
+    // k in [0, N/2). The stride-4 DFT this replaced was only coherent up to
+    // ~sr/8 (~5.5 kHz @ 44.1k) - the top ~10 bars were aliased noise, which
+    // no amount of A+B tuning could restore. Also ~30x cheaper (measured in
+    // viz_fft_test: N log N once vs N^2-ish per band).
+    viz_fft_.magnitude(samples, viz_fft_mag_.data());
+
     // Log-spaced frequency bin edges (20 Hz – 18 kHz mapped across VIZ_BINS)
-    // For each bin compute DFT magnitude over that freq range
+    // For each band integrate the FFT magnitude over that freq range
     const float sr     = (audio_.currentTrack().sample_rate > 0)
                        ? (float)audio_.currentTrack().sample_rate
                        : 44100.0f;
@@ -1515,18 +1522,17 @@ void UIManager::computeVizBins() {
             }
         }
 
-        // DFT magnitude over [k_lo, k_hi)
+        // Band magnitude = AVERAGE of the FFT bins in [k_lo, k_hi). Average,
+        // not sum: log bands widen with frequency, and summing would bake a
+        // second width-proportional tilt on top of VIZ_TILT (the dialed house
+        // tilt would silently stop meaning what it says). Not max: peak-biased
+        // and jumpy under smoothing. Average also preserves the old code's
+        // semantics (it, too, divided by the k-count), so A+B consumes this
+        // exactly as before - only the magnitude source changed.
         float mag = 0.0f;
-        for (int k = k_lo; k < k_hi; ++k) {
-            float re = 0.0f, im = 0.0f;
-            float ang = -2.0f * 3.14159265f * k / N;
-            for (int n = 0; n < N; n += 4) {   // stride 4 for speed
-                re += samples[n] * std::cos(ang * n);
-                im += samples[n] * std::sin(ang * n);
-            }
-            mag += std::sqrt(re*re + im*im);
-        }
-        mag /= (float)(N / 4) * (k_hi - k_lo);
+        for (int k = k_lo; k < k_hi; ++k)
+            mag += viz_fft_mag_[k];
+        mag /= (float)(k_hi - k_lo);
 
         // Perceptual tilt (B): lift treble toward realistic display balance while
         // preserving relative dynamics. Applied BEFORE peak tracking so the

@@ -236,6 +236,42 @@
   track-change cursor move must respect the toggle, not just auto-advance: the manual n/p
   handlers also gate their cursor set on `follow_playing`, or OFF looks identical to ON
   when you change tracks by hand. (Slice 6; mechanism finalized in 91817b8.)
+- **A loop-scope `static` is a global in disguise - the spectrum's "per-band"
+  AGC was one shared scalar.** `static float peak_mag` declared INSIDE the
+  per-band loop of `computeVizBins()` made every band normalize against the
+  loudest (bass) band's rolling peak, permanently pinning the treble low; the
+  comment said "auto-scales to the actual signal level" as if per-band, but the
+  scope said otherwise. Fix (viz-normalize A+B): per-band rolling peaks as
+  MEMBERS (`viz_peak_[]` + `viz_global_peak_`, slow 0.9995 decay) with each
+  band's effective peak floored to `VIZ_PEAK_COUPLE` x the global peak - fully
+  independent per-band normalization is NOT the goal (it flattens the real
+  spectral shape and lets quiet bands pump on noise); couple it. Plus a
+  perceptual treble tilt applied BEFORE peak tracking (after = double-count).
+  Deliberately MODE-AGNOSTIC: the DSP feeds `viz_smoothed_[]`, consumed by
+  Classic AND Awesome and both F2 styles - "Classic looks fine" was the bug
+  wearing Classic's minimal vibe. If one house tunable setting can't serve both
+  modes, that's a separate decision; do not gate shared-DSP fixes by mode. The
+  stride-4 DFT still aliases above ~sr/8 (~5.5 kHz @ 44.1k), so the top ~10
+  bars are "alive but low-information" after this fix - that ceiling is Slice
+  C's (real FFT) go/no-go trigger, measured not theorized.
+- **Bare F-keys are unreliable cross-platform - prefer Shift+letter for new
+  bindings.** Terminal emulators claim an unpredictable subset of F-keys at the
+  window/terminal layer before the app ever sees them (F1 help, F10 menu, F11
+  fullscreen in GNOME Terminal/Konsole/xterm), and you cannot test every
+  terminal a user might run; it "works on Windows" only because the wingui GDI
+  app IS the window. Shift+letter combos are never intercepted - categorically
+  safe. The filetype toggle shipped as F11, fullscreened Linux terminals
+  instead, and moved to Shift+F (f=ReplayGain, F=Filetype - the e/E grammar).
+  F2/F3/F7/F8/F12 are verified-working keepers, not precedent for new ones.
+- **A per-row marquee must evaluate against the SAME width the row renders
+  with.** The F11 filetype column narrows the title field; `scrollToWidth`
+  decides scroll-vs-pad from the width it is handed, so the row's title width
+  (`nw`) is computed ONCE - with the column width already subtracted - and that
+  single value feeds both the marquee decision and the render. Compute the
+  width in two places and a long title scrolls against the wrong width: under
+  the filetype column, or not at all. Also: a blank tag (CD/stream/unknown
+  rows) zeroes the column for that row, so the title reclaims the space - the
+  column is per-row, not global.
 - **Playlist search (\) is pick-to-jump, deliberately NOT a filter.** The results
   overlay holds REAL playlist indices; picking one is a single `pl_cursor_`
   assignment (scroll = the slice-5 invariant, follow = untouched since nothing

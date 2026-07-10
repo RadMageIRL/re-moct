@@ -104,6 +104,14 @@ add_executable(md5_test
 target_include_directories(md5_test PRIVATE ${CMAKE_SOURCE_DIR}/lib)
 add_test(NAME md5_test COMMAND md5_test)
 
+# Viz FFT (Slice C) - include/VizFFT.h proven in ISOLATION before it touched
+# computeVizBins(): DC / bin-centred sines / 100 Hz-20 kHz sweep alias check
+# (the old stride-4 DFT folds above ~sr/8) / Parseval / frame-cost gate vs the
+# old per-band strided DFT. Pure, both matrix jobs.
+add_executable(viz_fft_test viz_fft_test.cpp)
+target_include_directories(viz_fft_test PRIVATE ${CMAKE_SOURCE_DIR}/include)
+add_test(NAME viz_fft_test COMMAND viz_fft_test)
+
 # core::IHttp POST seam (group b) — end-to-end request test. Links the real
 # LastFm/ListenBrainz consumers + the REAL platform transport (satisfies
 # core::http(); the test injects a FakeHttp via setHttp to assert the request

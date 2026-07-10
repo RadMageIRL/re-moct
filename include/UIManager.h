@@ -18,6 +18,7 @@
 #include "ListenBrainz.h"
 #include "DiscordRP.h"
 #include "AudioManager.h"
+#include "VizFFT.h"
 #include "miniaudio.h"
 #include "LrcData.h"
 #include "Mp4Chapters.h"
@@ -117,6 +118,11 @@ private:
     void toggleFocus();
     void navigateDown();
     void navigateUp();
+    // Page / Home / End for the focused list pane (playlist or browser).
+    // Cursor-movement only: playlist scroll = the slice-5 draw-time invariant;
+    // the browser has NO invariant, so these clamp dir_scroll_ themselves.
+    void navigatePage(int dir);          // +1 = PgDn, -1 = PgUp; page = visible-1
+    void navigateHomeEnd(bool to_end);   // false = Home (row 0), true = End (last)
     void activateSelection();
 
     Pane      focus_           = Pane::DirBrowser;
@@ -192,9 +198,21 @@ private:
 
     // Visualizer
     static constexpr int VIZ_BINS = 64;   // finer spectrum: fills a wide strip with
-                                          // thin bars (DFT cost is per-k, not per-bin)
+                                          // thin bars (bin cost is integration, not DFT)
     std::array<float, VIZ_BINS> viz_bars_     {};
     std::array<float, VIZ_BINS> viz_smoothed_ {};
+    // Slice C: real radix-2 FFT replaces the stride-4 DFT that aliased
+    // everything above ~sr/8 (~5.5 kHz) - the top ~10 bars were noise-derived.
+    // Members, not locals: tables/scratch precomputed once, magnitude() is
+    // allocation-free (per-frame hot path). Proven by tests/viz_fft_test.cpp.
+    VizFFT<AudioManager::VIZ_BUF_SIZE> viz_fft_;
+    std::array<float, AudioManager::VIZ_BUF_SIZE / 2> viz_fft_mag_ {};
+    // Coupled per-band peak normalization (viz-normalize A+B). MEMBERS with slow
+    // decay persisting across calls - the bug this replaced was a loop-scope
+    // `static float peak_mag` acting as one global AGC shared by all 64 bands,
+    // so every band normalized against the bass peak and the top pinned low.
+    std::array<float, VIZ_BINS> viz_peak_ {};   // per-band rolling peak
+    float viz_global_peak_ = 0.001f;            // global rolling peak (coupling floor)
     void computeVizBins();
 
     // Input bar state (goto dir / save M3U / load M3U)

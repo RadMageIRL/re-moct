@@ -5,6 +5,35 @@ All notable changes to RE-MOCT are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.0] - 2026-07-10
+
+Feature release: the MOC-parity milestone - list page navigation, a playlist
+cursor-position readout, an optional file-type column, and a rewritten
+spectrum visualizer. With this release RE-MOCT matches and goes beyond MOC's
+feature set.
+
+### Added
+
+- **List page navigation** (**PgUp** / **PgDn** / **Home** / **End**): move by
+  a page or jump to the top/bottom of the browser and playlist. Cursor-only -
+  nothing plays or reorders.
+- **Cursor position in the playlist header**: **[3/12]** shows which row of
+  how many the cursor is on.
+- **File-type column** (**Shift+F**): toggles a per-row FLAC/MP3/etc. column
+  in the playlist, MOC-style. Off by default, remembered across runs.
+  (Shift+F rather than a bare F-key: Linux terminals grab F11 for fullscreen.)
+
+### Changed
+
+- **Rewritten spectrum visualizer**: a real FFT replaces the old approximate
+  transform, which aliased everything above ~5.5 kHz - the top bars were
+  noise, not signal. The spectrum is now accurate across the full range and
+  far cheaper to compute, with per-band normalization and a perceptual tilt
+  so quiet ranges stay readable and each track's real mastering character
+  shows.
+
+[1.2.0]: https://github.com/RadMageIRL/re-moct/releases/tag/1.2.0
+
 ## [1.1.3] - 2026-07-09
 
 Feature release: playlist search, CD eject from the TUI, drive-list refresh,

@@ -1445,11 +1445,30 @@ void UIManager::run() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Visualizer DSP – DFT magnitude across log-spaced frequency bins
+// Visualizer DSP – FFT magnitude integrated into log-spaced frequency bins
 // ─────────────────────────────────────────────────────────────────────────────
 void UIManager::computeVizBins() {
     static constexpr int N = AudioManager::VIZ_BUF_SIZE;
     static float samples[N];
+
+    // ── viz-normalize tunables (dial on hardware, no rebuild-per-guess) ──────
+    // Deliberately MODE-AGNOSTIC: this is shared DSP feeding viz_smoothed_[],
+    // which Classic, Awesome, and both F2 styles all consume. If the fixed
+    // output makes Classic feel too busy, dial THESE to a house setting that
+    // serves both modes - do NOT add an awesome_mode branch here (decided with
+    // Dos; a mode gate would knowingly leave the bug live in one consumer).
+    static constexpr float VIZ_TILT          = 0.75f;   // treble lift exponent (0=off, ~1 = +6 dB/oct)
+    static constexpr float VIZ_TILT_PIVOT_HZ = 500.0f;  // freq that stays put under tilt
+                                                        // (was 1000: everything below the
+                                                        // pivot is ATTENUATED by the tilt,
+                                                        // which dipped the low-mids; at 500
+                                                        // only true sub-bass sits below)
+    static constexpr float VIZ_PEAK_COUPLE   = 0.15f;   // per-band peak floor, fraction of global peak
+                                                        // (was 0.20. NOTE the direction: quiet bands
+                                                        // display mag/(COUPLE*global), so LOWERING the
+                                                        // couple LIFTS them; raising it deadens them
+                                                        // and also suppresses silence-pump. Dial DOWN
+                                                        // for livelier quiet bands, UP if silence pumps)
 
     int got = audio_.copySamples(samples, N);
     if (got == 0) {
@@ -1463,8 +1482,15 @@ void UIManager::computeVizBins() {
         samples[i] *= w;
     }
 
+    // Slice C: ONE real FFT per frame -> honest, alias-free magnitudes for
+    // k in [0, N/2). The stride-4 DFT this replaced was only coherent up to
+    // ~sr/8 (~5.5 kHz @ 44.1k) - the top ~10 bars were aliased noise, which
+    // no amount of A+B tuning could restore. Also ~30x cheaper (measured in
+    // viz_fft_test: N log N once vs N^2-ish per band).
+    viz_fft_.magnitude(samples, viz_fft_mag_.data());
+
     // Log-spaced frequency bin edges (20 Hz – 18 kHz mapped across VIZ_BINS)
-    // For each bin compute DFT magnitude over that freq range
+    // For each band integrate the FFT magnitude over that freq range
     const float sr     = (audio_.currentTrack().sample_rate > 0)
                        ? (float)audio_.currentTrack().sample_rate
                        : 44100.0f;
@@ -1496,26 +1522,43 @@ void UIManager::computeVizBins() {
             }
         }
 
-        // DFT magnitude over [k_lo, k_hi)
+        // Band magnitude = AVERAGE of the FFT bins in [k_lo, k_hi). Average,
+        // not sum: log bands widen with frequency, and summing would bake a
+        // second width-proportional tilt on top of VIZ_TILT (the dialed house
+        // tilt would silently stop meaning what it says). Not max: peak-biased
+        // and jumpy under smoothing. Average also preserves the old code's
+        // semantics (it, too, divided by the k-count), so A+B consumes this
+        // exactly as before - only the magnitude source changed.
         float mag = 0.0f;
-        for (int k = k_lo; k < k_hi; ++k) {
-            float re = 0.0f, im = 0.0f;
-            float ang = -2.0f * 3.14159265f * k / N;
-            for (int n = 0; n < N; n += 4) {   // stride 4 for speed
-                re += samples[n] * std::cos(ang * n);
-                im += samples[n] * std::sin(ang * n);
-            }
-            mag += std::sqrt(re*re + im*im);
-        }
-        mag /= (float)(N / 4) * (k_hi - k_lo);
+        for (int k = k_lo; k < k_hi; ++k)
+            mag += viz_fft_mag_[k];
+        mag /= (float)(k_hi - k_lo);
 
-        // Adaptive gain: track rolling peak and normalize against it
-        // This auto-scales to the actual signal level
-        static float peak_mag = 0.001f;
-        if (mag > peak_mag) peak_mag = mag;
-        else peak_mag *= 0.9995f;  // slow decay so gain doesn't chase noise
+        // Perceptual tilt (B): lift treble toward realistic display balance while
+        // preserving relative dynamics. Applied BEFORE peak tracking so the
+        // per-band peak tracks the tilted magnitude (tilting after normalization
+        // would double-count).
+        const float f_center = std::sqrt(f_lo * f_hi);   // geometric band centre
+        mag *= std::pow(f_center / VIZ_TILT_PIVOT_HZ, VIZ_TILT);
 
-        float val = (peak_mag > 0.0f) ? (mag / peak_mag) : 0.0f;
+        // Coupled per-band peak normalization (A). The old code was a loop-scope
+        // `static float peak_mag` - ONE global AGC shared by all 64 bands, so
+        // every band divided by the (bass-dominated) loudest band's peak and the
+        // top pinned low. Now each band self-scales against its own rolling peak,
+        // but that peak is floored to a fraction of the GLOBAL rolling peak so a
+        // near-silent band cannot normalize its own noise up to full height.
+        // Both peaks are members (persist across calls, slow 0.9995 decay - the
+        // old scalar's rule); the global one is updated per band visit exactly as
+        // the old scalar was, converging on the loudest band's magnitude.
+        if (mag > viz_global_peak_) viz_global_peak_ = mag;
+        else                        viz_global_peak_ *= 0.9995f;
+
+        float& pk = viz_peak_[b];
+        if (mag > pk) pk = mag;
+        else          pk *= 0.9995f;
+
+        float eff_peak = std::fmax(pk, VIZ_PEAK_COUPLE * viz_global_peak_);
+        float val = (eff_peak > 0.0f) ? (mag / eff_peak) : 0.0f;
         // Power curve: raises quiet parts, keeps peaks near top
         val = std::pow(val, 0.6f);
         val = std::clamp(val, 0.0f, 0.95f);
@@ -2140,6 +2183,25 @@ void UIManager::ensurePlaylistCursorVisible() {
     pl_scroll_ = std::clamp(pl_scroll_, 0, std::max(0, n - visible));
 }
 
+// Short uppercase type tag for the optional F11 filetype column (MOC parity).
+// "" for non-files (CD tracks, streams) and unrecognised extensions - a blank
+// tag also zeroes the column width for that row, so the title reclaims the
+// space (see the ftw math in drawPlaylist).
+static std::string fileTypeTag(const std::string& path) {
+    if (isCDTrackPath(path) || isStreamPath(path)) return "";
+    std::string ext = fs::path(path).extension().string();
+    if (ext.size() < 2) return "";
+    ext.erase(0, 1);                                     // drop the dot
+    for (char& c : ext) c = (char)std::toupper((unsigned char)c);
+    if (ext == "AIF") ext = "AIFF";
+    if (ext == "MP4") ext = "M4A";
+    static const char* known[] = { "FLAC", "MP3", "OGG", "OPUS", "WAV",
+                                   "AIFF", "M4A", "M4B", "WMA", "AAC" };
+    for (const char* k : known)
+        if (ext == k) return ext;
+    return "";   // unknown extension: no tag (safer than guessing)
+}
+
 void UIManager::drawPlaylist() {
     werase(win_playlist_);
     int rows, cols;
@@ -2164,7 +2226,15 @@ void UIManager::drawPlaylist() {
     const bool aw = config_.awesome_mode;
     const int  cx = aw ? 1 : 0;
     const int  cw = aw ? cols - 2 : cols;
-    std::string hdr = " Playlist [" + std::to_string(playlist_.size()) + "]";
+    // [cursor/total], 1-based - "where am I" on a long list. [0] when empty
+    // (never [1/0]); cursor clamped so a stale value can't print past the size.
+    std::string hdr = " Playlist [";
+    if (playlist_.size() == 0) {
+        hdr += "0]";
+    } else {
+        hdr += std::to_string(std::min(pl_cursor_ + 1, (int)playlist_.size()))
+             + "/" + std::to_string(playlist_.size()) + "]";
+    }
     if (playlist_.isLoading()) {
         hdr += "  [loading " + std::to_string(playlist_.pendingCount()) + "...]";
     } else if (!total_str.empty()) {
@@ -2207,10 +2277,24 @@ void UIManager::drawPlaylist() {
         wattron(win_playlist_, COLOR_PAIR(rpair) | rattr);
         const bool ico = config_.nerd_icons;
         std::string mark = (playing && !ico) ? "> " : "  ";
+        // Optional filetype column (F11): a fixed 4-char field + 1 space between
+        // title and duration. Blank tag (CD/stream/unknown) = zero width for
+        // that row, title reclaims the space.
+        std::string ftype;
+        int ftw = 0;
+        if (config_.show_filetype) {
+            ftype = fileTypeTag(e.path);
+            ftw = ftype.empty() ? 0 : 5;
+        }
         std::string dur  = formatTime(e.duration_sec);
-        int nw = cw - (int)mark.size() - (int)dur.size() - 3;
+        // THE marquee-width constraint: nw is computed ONCE, with ftw already
+        // subtracted, and this single value feeds BOTH the scroll decision and
+        // the render (scrollToWidth marquees iff dispWidth > nw). A second
+        // width calc anywhere makes long titles scroll against the wrong width.
+        int nw = cw - (int)mark.size() - (int)dur.size() - 3 - ftw;
         std::string name = (nw > 0) ? scrollToWidth(e.display_title, nw, text_scroll_offset_) : "";
-        std::string line = " " + mark + name + " " + dur + " ";
+        std::string ftcol = ftw ? (padToWidth(ftype, 4) + " ") : "";
+        std::string line = " " + mark + name + " " + ftcol + dur + " ";
         std::wstring wline = utf8_to_wide(padToWidth(line, cw));
         mvwaddnwstr(win_playlist_, i+1, cx, wline.c_str(), (int)wline.size());
         if (ico && playing) {   // play glyph on the reserved mark cell
@@ -2392,6 +2476,8 @@ void UIManager::drawHelp() {
         { "Tab",            "Switch focus: browser / playlist"    },
         { "j / k",          "Navigate down / up"                  },
         { "Arrow up/down",  "Navigate down / up"                  },
+        { "PgDn / PgUp",    "Navigate down / up one page"         },
+        { "Home / End",     "Jump to first / last row"            },
         { "Left arrow",     "Go to parent directory"              },
         { "g",              "Goto directory  (Tab = complete)"    },
         { "Playlist",       "",                             true  },
@@ -2423,6 +2509,7 @@ void UIManager::drawHelp() {
         { "F2",             "Spectrum style: classic / 80s LED"   },
         { "F3",             "Follow the playing track (cursor tracks the song)" },
         { "F7  /  F8",      "Awesome theme: previous / next" },
+        { "F  (Shift+F)",   "Toggle file-type column (FLAC/MP3/...) in the playlist" },
         { "F12",            "Refresh the [Drives] list (pick up hot-plugged drives)" },
         { "E  (Shift+E)",   "Eject highlighted CD drive (in [Drives])" },
         { "\\",             "Search playlist (jump to a track)" },
@@ -4774,7 +4861,7 @@ void UIManager::handleInput(int ch) {
                 if (!audio_.eqEnabled()) audio_.setEqEnabled(true);
                 eq_preset_name_ = "";
                 return;
-            case 'f': case 'F':
+            case 'f':   // F freed for the filetype toggle (was a pure dupe of f)
                 audio_.setEqEnabled(!audio_.eqEnabled()); return;
             case '0':
                 audio_.resetEq(); eq_preset_name_ = "Flat"; return;
@@ -5275,6 +5362,16 @@ void UIManager::handleInput(int ch) {
             theme_tag_ticks_ = 0;   // flash [THEME:<name>] on the cwd line for ~10s
             break;
         }
+        case 'F':   // Shift+F: toggle the per-row filetype column (persisted)
+            // Not an F-key: F11 is grabbed by Linux terminals for fullscreen
+            // before the app ever sees it. Shift+F is terminal-safe and
+            // mnemonic (f=ReplayGain, F=Filetype), like e/E.
+            // No toast: the column appearing/disappearing is its own feedback
+            // (unlike F12, whose refresh may change nothing visible).
+            config_.show_filetype = !config_.show_filetype;
+            config_.save();
+            redraw_needed_.store(true);
+            break;
         case KEY_F(12):   // refresh the drive list (pick up hot-plugged drives)
             // Hot-plug isn't auto-detected ([Drives] only rebuilds on entry, and
             // the periodic dir re-scan skips the drive list); F12 is the manual
@@ -5580,7 +5677,7 @@ void UIManager::handleInput(int ch) {
             if (!audio_.cdMode()) { audio_.adjustSpeed(-0.02f); } break;
         case '}':
             if (!audio_.cdMode()) { audio_.adjustSpeed(+0.02f); } break;
-        case 'f': case 'F':
+        case 'f':   // F freed for the filetype toggle (was a pure dupe of f)
             if (!audio_.cdMode())
                 audio_.setReplayGain(!audio_.replayGain());
             break;
@@ -5919,6 +6016,13 @@ void UIManager::handleInput(int ch) {
             break;
         case KEY_DOWN: case 'j': navigateDown(); break;   // J freed for move-down
         case KEY_UP:   case 'k': navigateUp();   break;   // K freed for move-up
+        // Page nav for the focused list. The KEY_HOME/KEY_END in handleGotoInput
+        // are the goto-bar TEXT-cursor handlers - separate context, no collision
+        // (goto_active_ intercepts before this switch).
+        case KEY_NPAGE: navigatePage(+1);        break;   // PgDn
+        case KEY_PPAGE: navigatePage(-1);        break;   // PgUp
+        case KEY_HOME:  navigateHomeEnd(false);  break;
+        case KEY_END:   navigateHomeEnd(true);   break;
         case KEY_LEFT:
             if (focus_ == Pane::DirBrowser) {
                 if (in_drive_list_) break;
@@ -6336,6 +6440,49 @@ void UIManager::navigateUp() {
     } else {
         if (pl_cursor_ > 0) --pl_cursor_;   // scroll follows via the invariant
     }
+}
+
+// PgUp/PgDn: move the focused pane's cursor by one visible page (visible-1, the
+// standard pager overlap: the old view's last row becomes the new view's first).
+// Page size is the REAL pane height via paneVisibleRows, not a constant.
+void UIManager::navigatePage(int dir) {
+    if (focus_ == Pane::DirBrowser) {
+        int n = (int)dir_entries_.size();
+        if (n == 0) return;
+        int v = std::max(1, paneVisibleRows(win_dir_) - 1);
+        dir_cursor_ = std::clamp(dir_cursor_ + dir * v, 0, n - 1);
+        // No draw-time scroll invariant in the browser (j/k nudge per-handler):
+        // clamp scroll to keep the paged cursor visible ourselves.
+        int vis = paneVisibleRows(win_dir_);
+        if (dir_cursor_ < dir_scroll_) dir_scroll_ = dir_cursor_;
+        else if (vis > 0 && dir_cursor_ >= dir_scroll_ + vis)
+            dir_scroll_ = dir_cursor_ - vis + 1;
+    } else {
+        int n = (int)playlist_.size();
+        if (n == 0) return;
+        int v = std::max(1, paneVisibleRows(win_playlist_) - 1);
+        pl_cursor_ = std::clamp(pl_cursor_ + dir * v, 0, n - 1);
+        // scroll follows via the slice-5 draw-time invariant
+    }
+    redraw_needed_.store(true);
+}
+
+// Home/End: cursor to the first / last row of the focused list.
+void UIManager::navigateHomeEnd(bool to_end) {
+    if (focus_ == Pane::DirBrowser) {
+        int n = (int)dir_entries_.size();
+        if (n == 0) return;
+        dir_cursor_ = to_end ? n - 1 : 0;
+        int vis = paneVisibleRows(win_dir_);
+        if (dir_cursor_ < dir_scroll_) dir_scroll_ = dir_cursor_;
+        else if (vis > 0 && dir_cursor_ >= dir_scroll_ + vis)
+            dir_scroll_ = dir_cursor_ - vis + 1;
+    } else {
+        int n = (int)playlist_.size();
+        if (n == 0) return;
+        pl_cursor_ = to_end ? n - 1 : 0;   // scroll via the invariant
+    }
+    redraw_needed_.store(true);
 }
 
 void UIManager::activateSelection() {

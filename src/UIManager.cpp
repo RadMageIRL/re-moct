@@ -2466,7 +2466,7 @@ void UIManager::drawHelp() {
         { "F2",             "Spectrum style: classic / 80s LED"   },
         { "F3",             "Follow the playing track (cursor tracks the song)" },
         { "F7  /  F8",      "Awesome theme: previous / next" },
-        { "F11",            "Toggle file-type column (FLAC/MP3/...) in the playlist" },
+        { "F  (Shift+F)",   "Toggle file-type column (FLAC/MP3/...) in the playlist" },
         { "F12",            "Refresh the [Drives] list (pick up hot-plugged drives)" },
         { "E  (Shift+E)",   "Eject highlighted CD drive (in [Drives])" },
         { "\\",             "Search playlist (jump to a track)" },
@@ -4818,7 +4818,7 @@ void UIManager::handleInput(int ch) {
                 if (!audio_.eqEnabled()) audio_.setEqEnabled(true);
                 eq_preset_name_ = "";
                 return;
-            case 'f': case 'F':
+            case 'f':   // F freed for the filetype toggle (was a pure dupe of f)
                 audio_.setEqEnabled(!audio_.eqEnabled()); return;
             case '0':
                 audio_.resetEq(); eq_preset_name_ = "Flat"; return;
@@ -5319,7 +5319,10 @@ void UIManager::handleInput(int ch) {
             theme_tag_ticks_ = 0;   // flash [THEME:<name>] on the cwd line for ~10s
             break;
         }
-        case KEY_F(11):   // toggle the per-row filetype column (persisted)
+        case 'F':   // Shift+F: toggle the per-row filetype column (persisted)
+            // Not an F-key: F11 is grabbed by Linux terminals for fullscreen
+            // before the app ever sees it. Shift+F is terminal-safe and
+            // mnemonic (f=ReplayGain, F=Filetype), like e/E.
             // No toast: the column appearing/disappearing is its own feedback
             // (unlike F12, whose refresh may change nothing visible).
             config_.show_filetype = !config_.show_filetype;
@@ -5631,7 +5634,7 @@ void UIManager::handleInput(int ch) {
             if (!audio_.cdMode()) { audio_.adjustSpeed(-0.02f); } break;
         case '}':
             if (!audio_.cdMode()) { audio_.adjustSpeed(+0.02f); } break;
-        case 'f': case 'F':
+        case 'f':   // F freed for the filetype toggle (was a pure dupe of f)
             if (!audio_.cdMode())
                 audio_.setReplayGain(!audio_.replayGain());
             break;

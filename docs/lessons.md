@@ -236,6 +236,15 @@
   track-change cursor move must respect the toggle, not just auto-advance: the manual n/p
   handlers also gate their cursor set on `follow_playing`, or OFF looks identical to ON
   when you change tracks by hand. (Slice 6; mechanism finalized in 91817b8.)
+- **Bare F-keys are unreliable cross-platform - prefer Shift+letter for new
+  bindings.** Terminal emulators claim an unpredictable subset of F-keys at the
+  window/terminal layer before the app ever sees them (F1 help, F10 menu, F11
+  fullscreen in GNOME Terminal/Konsole/xterm), and you cannot test every
+  terminal a user might run; it "works on Windows" only because the wingui GDI
+  app IS the window. Shift+letter combos are never intercepted - categorically
+  safe. The filetype toggle shipped as F11, fullscreened Linux terminals
+  instead, and moved to Shift+F (f=ReplayGain, F=Filetype - the e/E grammar).
+  F2/F3/F7/F8/F12 are verified-working keepers, not precedent for new ones.
 - **A per-row marquee must evaluate against the SAME width the row renders
   with.** The F11 filetype column narrows the title field; `scrollToWidth`
   decides scroll-vs-pad from the width it is handed, so the row's title width

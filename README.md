@@ -10,9 +10,9 @@ it becomes *RE-MOCT* - the remix: a comet progress bar, a sub-cell block visuali
 breathing animations. The mode toggle is the whole point.
 
 <br>
-<img width="1913" height="1057" alt="image" src="https://github.com/user-attachments/assets/2d133216-930e-4d65-9fce-bee538153927" />
+<img width="1204" height="603" alt="image" src="https://github.com/user-attachments/assets/4ca8d52c-2ed9-4956-96d5-d7bf2763a535" />
 <br><br>
-<img width="1919" height="1077" alt="image" src="https://github.com/user-attachments/assets/336ef899-7e2e-4cf3-bf34-0fbf4e4ce6e6" />
+<img width="1913" height="1057" alt="image" src="https://github.com/user-attachments/assets/2d133216-930e-4d65-9fce-bee538153927" />
 <br>
 
 ## Screenshots

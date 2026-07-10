@@ -28,10 +28,13 @@ and a playlist/rip view. The public feature guide is [`docs/index.html`](docs/in
 - Repeat (track/all), shuffle, seek, volume, 10-band equalizer
 - ReplayGain tag support; per-track play counts
 - LRC lyrics, tag editor (via TagLib), queue, bookmarks, favorites (star key), goto bar
-- Split-pane UI: directory browser + playlist/views; full-text playlist search
+- Split-pane UI: directory browser + playlist/views; full-text playlist search (`\`)
+- Page navigation (`PgUp`/`PgDn`/`Home`/`End`), cursor position readout in the playlist
+  header (`[3/12]`), optional per-row file-type column (`Shift+F`)
 
 **CD playback & ripping** (Ctrl+Y)
 - Red Book CD playback + MusicBrainz disc lookup (Ctrl+R)
+- Eject from the TUI (Shift+E) and drive-list refresh for hot-plugged drives (F12)
 - Three rip modes:
   - **[A] AccurateRip** - network CRC verify against accuraterip.com + drive-offset correction
   - **[C] CUETools Database** - offset-immune whole-disc CRC32 (cue.tools/db)
@@ -53,6 +56,8 @@ and a playlist/rip view. The public feature guide is [`docs/index.html`](docs/in
   progress bar, breathing animations, a full-width spectrum
 - Spectrum styles (**F2**): classic solid bars, or an 80s graphic-EQ "LED" look; the
   bars fill the full width at any size
+- The spectrum is a real FFT (since 1.2.0): accurate top-to-bottom with no aliasing,
+  per-band normalization and a perceptual tilt - it shows each track's real mastering
 - Cover art in the Track Info (**i**) pane for local files and radio (half-block render,
   station cover / iTunes-Deezer lookup / logo floor)
 - 18 named truecolor Awesome palettes, cycled with **F7** / **F8**; a KITT scanner in
@@ -96,6 +101,9 @@ truecolor + Alt+Enter fullscreen); see [BUILD.md](BUILD.md).
 | `i` / `e` | Track info / 10-band EQ | `Shift+L` / `Shift+A` / `Shift+X` | Lyrics / About / Output device picker |
 | `F2` | Spectrum: classic / 80s LED | `F7` / `F8` | Awesome theme: previous / next |
 | `K` / `J` | Move track up / down | `F3` | Follow the playing track (default on) |
+| `PgUp` / `PgDn` / `Home` / `End` | Page / top-bottom jump | `\` | Playlist search |
+| `Shift+F` | File-type column toggle | `Shift+E` | Eject CD drive (in `[Drives]`) |
+| `F12` | Refresh drive list | `;` | Audiobook chapter list |
 | `Alt+Enter` | Fullscreen (Windows wingui build) | | |
 
 ## Configuration

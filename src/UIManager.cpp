@@ -1451,6 +1451,25 @@ void UIManager::computeVizBins() {
     static constexpr int N = AudioManager::VIZ_BUF_SIZE;
     static float samples[N];
 
+    // ── viz-normalize tunables (dial on hardware, no rebuild-per-guess) ──────
+    // Deliberately MODE-AGNOSTIC: this is shared DSP feeding viz_smoothed_[],
+    // which Classic, Awesome, and both F2 styles all consume. If the fixed
+    // output makes Classic feel too busy, dial THESE to a house setting that
+    // serves both modes - do NOT add an awesome_mode branch here (decided with
+    // Dos; a mode gate would knowingly leave the bug live in one consumer).
+    static constexpr float VIZ_TILT          = 0.75f;   // treble lift exponent (0=off, ~1 = +6 dB/oct)
+    static constexpr float VIZ_TILT_PIVOT_HZ = 500.0f;  // freq that stays put under tilt
+                                                        // (was 1000: everything below the
+                                                        // pivot is ATTENUATED by the tilt,
+                                                        // which dipped the low-mids; at 500
+                                                        // only true sub-bass sits below)
+    static constexpr float VIZ_PEAK_COUPLE   = 0.15f;   // per-band peak floor, fraction of global peak
+                                                        // (was 0.20. NOTE the direction: quiet bands
+                                                        // display mag/(COUPLE*global), so LOWERING the
+                                                        // couple LIFTS them; raising it deadens them
+                                                        // and also suppresses silence-pump. Dial DOWN
+                                                        // for livelier quiet bands, UP if silence pumps)
+
     int got = audio_.copySamples(samples, N);
     if (got == 0) {
         viz_smoothed_.fill(0.0f);
@@ -1509,13 +1528,31 @@ void UIManager::computeVizBins() {
         }
         mag /= (float)(N / 4) * (k_hi - k_lo);
 
-        // Adaptive gain: track rolling peak and normalize against it
-        // This auto-scales to the actual signal level
-        static float peak_mag = 0.001f;
-        if (mag > peak_mag) peak_mag = mag;
-        else peak_mag *= 0.9995f;  // slow decay so gain doesn't chase noise
+        // Perceptual tilt (B): lift treble toward realistic display balance while
+        // preserving relative dynamics. Applied BEFORE peak tracking so the
+        // per-band peak tracks the tilted magnitude (tilting after normalization
+        // would double-count).
+        const float f_center = std::sqrt(f_lo * f_hi);   // geometric band centre
+        mag *= std::pow(f_center / VIZ_TILT_PIVOT_HZ, VIZ_TILT);
 
-        float val = (peak_mag > 0.0f) ? (mag / peak_mag) : 0.0f;
+        // Coupled per-band peak normalization (A). The old code was a loop-scope
+        // `static float peak_mag` - ONE global AGC shared by all 64 bands, so
+        // every band divided by the (bass-dominated) loudest band's peak and the
+        // top pinned low. Now each band self-scales against its own rolling peak,
+        // but that peak is floored to a fraction of the GLOBAL rolling peak so a
+        // near-silent band cannot normalize its own noise up to full height.
+        // Both peaks are members (persist across calls, slow 0.9995 decay - the
+        // old scalar's rule); the global one is updated per band visit exactly as
+        // the old scalar was, converging on the loudest band's magnitude.
+        if (mag > viz_global_peak_) viz_global_peak_ = mag;
+        else                        viz_global_peak_ *= 0.9995f;
+
+        float& pk = viz_peak_[b];
+        if (mag > pk) pk = mag;
+        else          pk *= 0.9995f;
+
+        float eff_peak = std::fmax(pk, VIZ_PEAK_COUPLE * viz_global_peak_);
+        float val = (eff_peak > 0.0f) ? (mag / eff_peak) : 0.0f;
         // Power curve: raises quiet parts, keeps peaks near top
         val = std::pow(val, 0.6f);
         val = std::clamp(val, 0.0f, 0.95f);

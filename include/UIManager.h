@@ -200,6 +200,12 @@ private:
                                           // thin bars (DFT cost is per-k, not per-bin)
     std::array<float, VIZ_BINS> viz_bars_     {};
     std::array<float, VIZ_BINS> viz_smoothed_ {};
+    // Coupled per-band peak normalization (viz-normalize A+B). MEMBERS with slow
+    // decay persisting across calls - the bug this replaced was a loop-scope
+    // `static float peak_mag` acting as one global AGC shared by all 64 bands,
+    // so every band normalized against the bass peak and the top pinned low.
+    std::array<float, VIZ_BINS> viz_peak_ {};   // per-band rolling peak
+    float viz_global_peak_ = 0.001f;            // global rolling peak (coupling floor)
     void computeVizBins();
 
     // Input bar state (goto dir / save M3U / load M3U)

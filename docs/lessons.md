@@ -935,3 +935,53 @@ runtime-discoverable, not compile-discoverable; a green build proves nothing abo
   frequency sweep (bins just partition the same k's). A low band whose log-spaced range collapses
   onto a single FFT bin (`k_lo==k_hi`) must use that k, not hit the above-Nyquist "empty" skip, or
   low bands drop out.
+
+## Decode backends / Opus + WavPack (decode-opus-wv slice)
+- **`.ogg` Vorbis is advertised-but-broken today.** `.ogg` sits in `AUDIO_EXTS`
+  and `fileTypeTag`, but this build compiles NO Vorbis decoder: miniaudio gates
+  its whole stb_vorbis backend on `STB_VORBIS_INCLUDE_STB_VORBIS_H`, which nothing
+  in the tree defines (proven by compile probe, plan §1.2). Browsable, labelled,
+  un-playable - exactly the trap `.opus` was in before this slice. Becomes the
+  next slice; until then a red `.ogg` result is NOT a decode-slice regression.
+- **Custom decoder backends register through `remoct_custom_backends()`
+  (CustomBackends.{h,cpp}) - add codecs THERE, not at the call sites.** Playback
+  (`open_decoder`) and BPM analysis (`detectBpm`) share the array; before the
+  helper they were two hand-maintained literals that could drift.
+- **TagLib ships its own `opusfile.h` and its include dir is on the target's
+  path.** `#include <opusfile.h>` can resolve to TagLib's C++ tag reader instead
+  of libopusfile's C codec API. Our code always writes `#include <opus/opusfile.h>`.
+  The `-I.../include/opus` dir itself IS still required (opusfile.h includes its
+  libopus siblings like `<opus_multistream.h>` unprefixed - upstream mandates
+  that dir via pkg-config Cflags). **The enforced guard is the CI grep gate**
+  (ci.yml "Include-guard lint": bare `<opusfile.h>`/`<vorbisfile.h>` fails the
+  build; vorbisfile is pre-covered for the Vorbis slice). The -I ordering is
+  defense-in-depth only. Recorded fact - the REAL compile line for
+  LocalFileSource.cpp (ninja -v, Option C config, 2026-07-16):
+  `-IE:/code/remoct/include -IE:/code/remoct/lib -IC:/msys64/ucrt64/include/opus
+  -IC:/msys64/ucrt64/include/taglib -IE:/code/remoct/lib/pdcursesmod` - the opus
+  dir does precede taglib's. Note `${MSYS2_PREFIX}/include` is ABSENT: CMake
+  filters it as a compiler-implicit dir - which is also why the empty
+  `${FDKAAC_INCLUDE}` interpolation never broke anything (the compiler's own
+  default path covers those headers).
+- **Opus ReplayGain is R128_TRACK_GAIN: an INTEGER in Q7.8 (dB×256), referenced
+  to -23 LUFS.** Reading it as plain dB (the old third fallback in
+  `populate_track_info`) turned an ordinary tag into hundreds of negative dB ->
+  gain 0.0 -> a muted track. Correct read: `value/256 + 5` (+5 rebases -23 ->
+  -18 LUFS, the ReplayGain convention). No header-gain term: libopusfile applies
+  `OpusHead.output_gain` itself, and RFC 7845 defines the tag relative to that.
+- **Pre-existing, KNOWN, deliberately not fixed here** (tombstones so they don't
+  get rediscovered as new bugs):
+  - `${FDKAAC_INCLUDE}` is interpolated in the include block ~50 lines before
+    `find_path` sets it, so it expands EMPTY; builds work only because the whole
+    MSYS2/system include dir is added separately. The Opus/WavPack include call
+    was placed after the finds to avoid inheriting this.
+  - The WASAPI warm-up in `initDevice` claims "file_src_ is null" in its comment,
+    but on the first `play()` `file_src_` is assigned BEFORE `initDevice()`, so
+    the warm-up callback can consume a few frames from the just-primed decoder;
+    the outer "the callback never fires" comment is stale (the code does
+    start/stop). Benign today, worth knowing before touching device bring-up.
+  - `REPLAYGAIN_TRACK_PEAK` is written by the ripper but never read back: the RG
+    apply path has NO clip protection beyond the clamp at 4.0.
+  - The unconditional +6 dB RG preamp boosts UNTAGGED tracks by +6 dB when RG is
+    on (db==0 -> gain 1.0, then ×1.995) - the opposite of normalization for
+    untagged files, and a 0.0 dB tag is indistinguishable from "no tag".

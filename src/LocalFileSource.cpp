@@ -5,8 +5,8 @@
 // the seek-prime and cursor logic moved from AudioManager::seekTo/positionSec.
 #include "LocalFileSource.h"
 #include "StringUtils.h"
-#include "AacDecoder.h"   // FDK-AAC custom miniaudio backend (.aac/.m4a/.mp4)
-#include "Mp4Chapters.h"  // mp4AacChannelCount: true ASC channel count
+#include "CustomBackends.h" // the shared AAC/Opus/WavPack backend array
+#include "Mp4Chapters.h"    // mp4AacChannelCount: true ASC channel count
 
 #include <taglib/fileref.h>
 #include <taglib/tag.h>
@@ -56,10 +56,25 @@ static void populate_track_info(TrackInfo& info, const std::string& path) {
             if (s.empty()) return 0.0f;
             try { return std::stof(s); } catch (...) { return 0.0f; }
         };
-        float rg_db = tryRG("REPLAYGAIN_TRACK_GAIN");
-        if (rg_db == 0.0f) rg_db = tryRG("replaygain_track_gain");
-        if (rg_db == 0.0f) rg_db = tryRG("R128_TRACK_GAIN");
-        // Convert dB to linear: gain = 10^(dB/20)
+        float rg_db = 0.0f;
+        std::string rg_ext = fs::path(path).extension().string();
+        std::transform(rg_ext.begin(), rg_ext.end(), rg_ext.begin(), ::tolower);
+        if (rg_ext == ".opus") {
+            // Opus (RFC 7845) carries gain as R128_TRACK_GAIN: an INTEGER in
+            // Q7.8 fixed-point dB (value/256), referenced to -23 LUFS. Reading
+            // it as plain dB (the old fallback) turned an ordinary tag into
+            // hundreds of negative dB and muted the track. Rebase +5 dB to the
+            // ReplayGain -18 LUFS convention so the preamp in maDataCallback
+            // treats Opus like every other format. The tag is relative to the
+            // OpusHead output gain, which libopusfile already applies
+            // (OP_HEADER_GAIN default), so there is no header-gain term here.
+            if (float q78 = tryRG("R128_TRACK_GAIN"); q78 != 0.0f)
+                rg_db = q78 / 256.0f + 5.0f;
+        }
+        if (rg_db == 0.0f) {
+            rg_db = tryRG("REPLAYGAIN_TRACK_GAIN");
+            if (rg_db == 0.0f) rg_db = tryRG("replaygain_track_gain");
+        }
         info.replaygain_db = rg_db;
     }
     if (auto* ap = ref.audioProperties(); ap) {
@@ -87,11 +102,12 @@ static bool open_decoder(const std::string& path, ma_decoder& dec,
     // non-zero channels/rate also keep miniaudio off the format-sniffer path that can
     // crash on files with bad/dual ID3 tags (previously done via TagLib hints).
     ma_decoder_config cfg = ma_decoder_config_init(ma_format_f32, 2, 44100);
-    // Plug in the FDK-AAC backend so .aac/.m4a/.mp4 decode through the same pipeline.
-    // It fails fast for non-AAC, so flac/mp3/wav/ogg still use miniaudio's built-ins.
-    static ma_decoding_backend_vtable* k_aac_backends[] = { ma_aac_backend_vtable() };
-    cfg.ppCustomBackendVTables = k_aac_backends;
-    cfg.customBackendCount     = 1;
+    // Plug in the custom backends (FDK-AAC, Opus, WavPack — CustomBackends.cpp)
+    // so .aac/.m4a/.mp4/.opus/.wv decode through the same pipeline. Each fails
+    // fast for non-matching input, so flac/mp3/wav still use miniaudio's built-ins.
+    size_t nbackends = 0;
+    cfg.ppCustomBackendVTables = remoct_custom_backends(&nbackends);
+    cfg.customBackendCount     = (ma_uint32)nbackends;
     cfg.pCustomBackendUserData = nullptr;
 #ifdef _WIN32
     auto wpath = utf8_to_wide(path);

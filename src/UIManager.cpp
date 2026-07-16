@@ -2196,7 +2196,7 @@ static std::string fileTypeTag(const std::string& path) {
     if (ext == "AIF") ext = "AIFF";
     if (ext == "MP4") ext = "M4A";
     static const char* known[] = { "FLAC", "MP3", "OGG", "OPUS", "WAV",
-                                   "AIFF", "M4A", "M4B", "WMA", "AAC" };
+                                   "AIFF", "M4A", "M4B", "WMA", "AAC", "WV" };
     for (const char* k : known)
         if (ext == k) return ext;
     return "";   // unknown extension: no tag (safer than guessing)

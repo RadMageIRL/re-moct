@@ -1,7 +1,7 @@
 #define MINIAUDIO_IMPLEMENTATION
 #include "AudioManager.h"
 #include "StringUtils.h"
-#include "AacDecoder.h"   // FDK-AAC custom miniaudio backend (used by detectBpm's analysis decoder)
+#include "CustomBackends.h" // AAC/Opus/WavPack backends (used by detectBpm's analysis decoder)
 #include "PortUtil.h"     // port::exeDir — resolve the streaming plugin beside the binary (slice c)
 #include "Log.h"          // stream-plugin load diagnostics
 
@@ -908,9 +908,9 @@ int AudioManager::detectBpm(const std::string& path, int sample_rate,
     // Open a fresh decoder just for analysis — don't touch the playback decoder
     ma_decoder dec {};
     ma_decoder_config cfg = ma_decoder_config_init(ma_format_f32, 1, 0); // mono f32
-    static ma_decoding_backend_vtable* k_aac_backends2[] = { ma_aac_backend_vtable() };
-    cfg.ppCustomBackendVTables = k_aac_backends2;
-    cfg.customBackendCount     = 1;
+    size_t nbackends = 0;
+    cfg.ppCustomBackendVTables = remoct_custom_backends(&nbackends);
+    cfg.customBackendCount     = (ma_uint32)nbackends;
     cfg.pCustomBackendUserData = nullptr;
 #ifdef _WIN32
     {

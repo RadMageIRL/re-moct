@@ -5,6 +5,29 @@ All notable changes to RE-MOCT are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.0] - UNRELEASED
+
+Feature release: Opus and WavPack playback.
+
+### Added
+
+- **Opus playback** (`.opus`): full decode/seek via libopus + libopusfile.
+  Opus files were already browsable but silently failed to play; they now
+  play, seek, show correct duration, and read tags. Opus ReplayGain
+  (`R128_TRACK_GAIN`, including the -23 to -18 LUFS reference rebase) is
+  applied correctly - previously a tagged Opus file would have played muted
+  with ReplayGain enabled.
+- **WavPack playback** (`.wv`): full decode/seek via libwavpack - 16/24/32-bit
+  integer and float files, at any sample rate, with a **WV** file-type column
+  label. Hybrid (lossy) `.wv` files play at their encoded quality; `.wvc`
+  correction sidecars are not read (planned).
+- **BPM detection** now works for `.opus` and `.wv` files too.
+
+### Changed
+
+- New library dependencies: libopus, libopusfile, libwavpack (all BSD-3-Clause;
+  see THIRD-PARTY-NOTICES.md).
+
 ## [1.2.0] - 2026-07-10
 
 Feature release: the MOC-parity milestone - list page navigation, a playlist

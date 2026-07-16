@@ -37,9 +37,23 @@ jobs:
           DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
             build-essential g++ cmake ninja-build pkg-config git ca-certificates \
             libflac-dev libmp3lame-dev libebur128-dev libfdk-aac-dev \
+            libopus-dev libopusfile-dev libwavpack-dev \
             libncurses-dev libtag-dev libcurl4-openssl-dev libnotify-dev \
             libasound2-dev libpulse-dev
       - uses: actions/checkout@v4
+      # Fail-fast, before any compile: the prefixed-include convention for
+      # codec headers is machine-enforced here (the CMake -I ordering that
+      # also protects it is defense-in-depth only). vorbisfile is included
+      # forward-looking for the Vorbis slice.
+      - name: Include-guard lint (bare codec headers)
+        run: |
+          # Forbid bare <opusfile.h>/<vorbisfile.h>: must be <opus/...> / <vorbis/...>.
+          # TagLib ships taglib/opusfile.h + taglib/vorbisfile.h on the same include path;
+          # a bare include silently resolves to the C++ tag class instead of the C codec API.
+          if grep -rnE '#[[:space:]]*include[[:space:]]*<(opusfile|vorbisfile)\.h>' src/ include/; then
+            echo "ERROR: bare <opusfile.h>/<vorbisfile.h> include - use the codec prefix." >&2
+            exit 1
+          fi
       - name: Configure
         run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
       - name: Build (remoct + test suite)
@@ -71,6 +85,9 @@ jobs:
             mingw-w64-ucrt-x86_64-lame
             mingw-w64-ucrt-x86_64-libebur128
             mingw-w64-ucrt-x86_64-fdk-aac
+            mingw-w64-ucrt-x86_64-opus
+            mingw-w64-ucrt-x86_64-opusfile
+            mingw-w64-ucrt-x86_64-wavpack
       - uses: actions/checkout@v4
       - name: Configure
         run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release

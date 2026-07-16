@@ -321,6 +321,9 @@ if(WIN32)
         ${CMAKE_SOURCE_DIR}/src/platform/win/PluginLoaderWin.cpp
         ${CMAKE_SOURCE_DIR}/src/CDSource.cpp
         ${CMAKE_SOURCE_DIR}/src/AacDecoder.cpp
+        ${CMAKE_SOURCE_DIR}/src/OpusDecoder.cpp
+        ${CMAKE_SOURCE_DIR}/src/WavPackDecoder.cpp
+        ${CMAKE_SOURCE_DIR}/src/CustomBackends.cpp
         ${CMAKE_SOURCE_DIR}/src/Mp4Chapters.cpp
         ${CMAKE_SOURCE_DIR}/src/Log.cpp
         ${CMAKE_SOURCE_DIR}/src/platform/win/HttpWinInet.cpp
@@ -328,10 +331,12 @@ if(WIN32)
     )
     target_include_directories(xfade_handoff_test PRIVATE
         ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/lib
-        ${FDKAAC_INCLUDE} ${TAGLIB_INCLUDE_DIRS})
+        ${FDKAAC_INCLUDE} ${OPUS_INCLUDE} ${OPUS_INCLUDE}/opus ${WAVPACK_INCLUDE}
+        ${TAGLIB_INCLUDE_DIRS})
     target_compile_definitions(xfade_handoff_test PRIVATE UNICODE _UNICODE)
     target_link_libraries(xfade_handoff_test PRIVATE
-        ${TAGLIB_LIBRARIES} ${FDKAAC_LIB} wininet winmm ole32)
+        ${TAGLIB_LIBRARIES} ${FDKAAC_LIB} ${OPUSFILE_LIB} ${OPUS_LIB} ${OGG_LIB}
+        ${WAVPACK_LIB} wininet winmm ole32)
     add_test(NAME xfade_handoff_test COMMAND xfade_handoff_test)
     set_tests_properties(xfade_handoff_test PROPERTIES TIMEOUT 180 SKIP_RETURN_CODE 77)
 endif()

@@ -31,7 +31,7 @@ static bool path_exists(const std::string& p) {
 
 static const std::vector<std::string> AUDIO_EXTS = {
     ".mp3", ".flac", ".ogg", ".opus", ".wav", ".aiff", ".aif",
-    ".m4a", ".m4b", ".aac", ".wma", ".mp4"
+    ".m4a", ".m4b", ".aac", ".wma", ".mp4", ".wv"
 };
 
 bool PlaylistManager::isSupportedAudio(const std::string& path) {

@@ -34,6 +34,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <deque>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -181,6 +182,11 @@ private:
     void rollCut(bool partial_tail);       // finalize+tag current, ready next
     void failCut(const std::string& why);  // finalize(false), remove files, stop
     std::string cutBasePath() const;       // dir + sanitized name (no ext)
+    // Worker thread: take the art queued for `key` (a cut's raw now-playing),
+    // if present, and evict it. true + fills out/mime on a hit; leaves them
+    // untouched on a miss (the caller's no-art path).
+    bool takePendingArt(const std::string& key,
+                        std::vector<uint8_t>& out, const char*& mime);
 
     // ── ring (SPSC: audio thread writes, worker reads) ───────────────────────
     std::vector<float>    ring_;           // ring_frames_ * CHANNELS floats
@@ -203,11 +209,23 @@ private:
     mutable std::mutex    meta_mtx_;
     std::string           pending_raw_;
     std::atomic<bool>     split_pending_ { false };
-    // Pending cover art (rec-cover-art): raw-title key + validated bytes +
-    // magic-derived MIME. Consumed (by key match) at tag time.
-    std::string           pending_art_raw_;
-    std::vector<uint8_t>  pending_art_;
-    const char*           pending_art_mime_ = nullptr;
+    // Pending cover art (rec-cover-art): a small raw-np-keyed ring, NOT a
+    // single slot - the split-trim hold keeps a cut open across later songs,
+    // whose art would otherwise clobber the one slot before the held cut rolls
+    // (rec-art-pending-race-fix). onArt inserts (newest wins on a key
+    // collision); a roll takes its cut's entry and evicts it. INVARIANT: with
+    // cap 3 the held cut (the oldest live entry) survives at most 2 newer
+    // distinct arts before its own roll - one clobber was the bug, this gives
+    // margin for two. A station firing 3+ distinct art-bearing items inside a
+    // single ~1200 ms hold would still evict the held cut's art (oldest out) -
+    // a known, accepted bound, not silent history. A cut discarded to ads/
+    // never consumes its entry; the capacity bound (not a map) reclaims those.
+    // mime is a STATIC literal from artMimeFromMagic (never a pointer into the
+    // moved-out bytes), so it stays valid after the move. Guarded by
+    // meta_mtx_; never touched by the audio thread.
+    struct PendingArt { std::string key; std::vector<uint8_t> bytes; const char* mime = nullptr; };
+    static constexpr size_t kPendingArtMax = 3;
+    std::deque<PendingArt> pending_arts_;
 
     // ── current cut (worker-owned between open/roll) ─────────────────────────
     struct Out { RipFormat fmt; std::string path; std::unique_ptr<IEncoder> enc; };

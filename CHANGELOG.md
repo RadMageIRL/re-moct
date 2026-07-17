@@ -21,6 +21,13 @@ Feature release: Opus and WavPack playback.
 
 ### Fixed
 
+- **Recorded cuts keep their cover art when split-hold is on.** A recorded
+  song could ship without its cover even though the art showed correctly in
+  the now-playing pane. With the split hold active (the default), a cut stays
+  open briefly past the next song's start; the next song's art arriving in
+  that window used to overwrite the pending image before the held cut was
+  written, so the finished file went out coverless. Each song's art is now
+  held separately by title, so a cut always embeds its own cover.
 - **Radio cover art now refreshes reliably.** Two staleness sources fixed:
   a track's art could go permanently missing when its lookup finished during
   a metadata dip (an ad break or LIVE stretch) while a recording was active -

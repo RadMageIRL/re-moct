@@ -119,9 +119,7 @@ bool StreamRecorder::start(const RecOptions& opt, const std::string& station,
     {
         std::lock_guard<std::mutex> lk(meta_mtx_);
         pending_raw_.clear();
-        pending_art_raw_.clear();
-        pending_art_.clear();
-        pending_art_mime_ = nullptr;
+        pending_arts_.clear();
     }
     split_pending_.store(false);
     cut_artist_.clear(); cut_title_.clear(); cut_raw_.clear();
@@ -176,12 +174,27 @@ static const char* artMimeFromMagic(const std::vector<uint8_t>& b) {
 void StreamRecorder::onArt(const std::string& raw_now_playing,
                            std::vector<uint8_t> bytes) {
     if (!running_.load(std::memory_order_relaxed)) return;
-    const char* mime = artMimeFromMagic(bytes);
+    const char* mime = artMimeFromMagic(bytes);   // static literal (or null)
     if (!mime) return;                 // reject early: no broken picture blocks
     std::lock_guard<std::mutex> lk(meta_mtx_);
-    pending_art_raw_  = raw_now_playing;
-    pending_art_      = std::move(bytes);
-    pending_art_mime_ = mime;
+    // Newest wins on a key collision (a song's art re-fetching replaces it).
+    for (auto it = pending_arts_.begin(); it != pending_arts_.end(); ++it)
+        if (it->key == raw_now_playing) { pending_arts_.erase(it); break; }
+    pending_arts_.push_back({ raw_now_playing, std::move(bytes), mime });
+    if (pending_arts_.size() > kPendingArtMax) pending_arts_.pop_front();  // evict oldest
+}
+
+bool StreamRecorder::takePendingArt(const std::string& key,
+                                    std::vector<uint8_t>& out, const char*& mime) {
+    std::lock_guard<std::mutex> lk(meta_mtx_);
+    for (auto it = pending_arts_.begin(); it != pending_arts_.end(); ++it)
+        if (it->key == key) {
+            out  = std::move(it->bytes);
+            mime = it->mime;               // static literal; outlives the entry
+            pending_arts_.erase(it);       // evict on use
+            return true;
+        }
+    return false;
 }
 
 std::string StreamRecorder::currentTitle() const {
@@ -555,16 +568,11 @@ void StreamRecorder::rollCut(bool partial_tail) {
         // Cover art: key-match at tag time — the pending image embeds ONLY if
         // it belongs to THIS cut's raw title (no art rather than wrong art;
         // an edge cut under the metadata slop may miss a cover, never carry
-        // a neighbor's). One locked read; the fetch is never awaited.
+        // a neighbor's). The ring survives newer songs' art landing during a
+        // split-trim hold (rec-art-pending-race-fix); take + evict this cut's.
         std::vector<uint8_t> art;
         const char* art_mime = nullptr;
-        {
-            std::lock_guard<std::mutex> lk(meta_mtx_);
-            if (!pending_art_.empty() && pending_art_raw_ == cut_raw_) {
-                art      = pending_art_;
-                art_mime = pending_art_mime_;
-            }
-        }
+        takePendingArt(cut_raw_, art, art_mime);
         for (auto& o : outs_)
             tagCut(o.path, o.fmt, cut_artist_, cut_title_, cut_raw_, station_,
                    rg_valid, rg_gain, rg_peak, art, art_mime);
@@ -820,16 +828,11 @@ void StreamRecorder::rollCopyCut(bool partial_tail) {
         }
         stop_req_.store(true, std::memory_order_release);
     } else {
-        // Cover art: same key-match-at-tag-time contract as the PCM roll.
+        // Cover art: same take-and-evict contract as the PCM roll (the ring
+        // survives newer songs' art during a hold - rec-art-pending-race-fix).
         std::vector<uint8_t> art;
         const char* art_mime = nullptr;
-        {
-            std::lock_guard<std::mutex> lk(meta_mtx_);
-            if (!pending_art_.empty() && pending_art_raw_ == cut_raw_) {
-                art      = pending_art_;
-                art_mime = pending_art_mime_;
-            }
-        }
+        takePendingArt(cut_raw_, art, art_mime);
         if (copy_codec_ == 2)
             tagCutM4a(copy_path_, cut_artist_, cut_title_, cut_raw_, station_,
                       art, art_mime);

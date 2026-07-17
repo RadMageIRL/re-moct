@@ -453,6 +453,50 @@ int main() {
         }
     }
 
+    // ── 4b-hold. cover art survives the split-trim HOLD (rec-art-pending-race-fix)
+    // The bug: with the default hold, song A's cut stays open while song B's art
+    // resolves and clobbers the single pending-art slot, so A's held cut rolls
+    // artless. The ring keeps each song's art keyed by its raw title. Modeled
+    // with real ordering (B's art lands WHILE A is still held) and DISTINCT art
+    // sizes so cross-contamination is caught, not just presence. A is inverted,
+    // B forward - proves the fix is independent of the deinvert path. This is
+    // the case 4b (split_offset_ms = 0) never exercised.
+    {
+        std::vector<uint8_t> artA = { 0xFF, 0xD8, 0xFF, 0xE0 }; artA.resize(300, 0x11);
+        std::vector<uint8_t> artB = { 0xFF, 0xD8, 0xFF, 0xE0 }; artB.resize(500, 0x22);
+        StreamRecorder rec;
+        RecOptions opt; opt.formats = { RipFormat::Opus };
+        opt.split_offset_ms = 1200;                       // the shipped default hold
+        CHECK(rec.start(opt, "Test FM", root));
+        uint64_t phase = 0;
+        rec.onTitle("Shins, The - New Slang");            // song A (inverted)
+        rec.onArt("Shins, The - New Slang", artA);        // A's art (pane-confirmed)
+        pushSine(rec, phase, 44100, 440.0, 0.5);
+        CHECK(waitFor(15000, [&]{ return rec.totalFrames() == 44100; }));
+        rec.onTitle("Sia - Unstoppable");                 // song B commits -> hold arms
+        // B's fetch is in flight; the broadcast keeps flowing to the held A cut.
+        pushSine(rec, phase, 22050, 880.0, 0.5);
+        CHECK(waitFor(15000, [&]{ return rec.totalFrames() == 44100 + 22050; }));
+        rec.onArt("Sia - Unstoppable", artB);             // B's art lands DURING A's hold
+        // Past the 1200 ms hold (52920 frames after B's title): A rolls, the
+        // rest attributes to B. With the OLD single slot, A's art was already
+        // clobbered by B's here; with the ring, A keeps A's.
+        pushSine(rec, phase, 66150, 880.0, 0.5);
+        CHECK(waitFor(15000, [&]{ return rec.cutIndex() >= 1; }));
+        rec.stop();                                       // B rolls as the tail cut
+        auto cuts = rec.cuts();
+        CHECK(cuts.size() == 2);
+        if (cuts.size() == 2) {
+            // Each cut carries ITS OWN art, proven by the distinct sizes.
+            OpusTags a = readOpus(cuts[0].paths[0]);
+            CHECK(a.artist == "The Shins" && a.title == "New Slang");   // deinvert (filename/tag)
+            CHECK(a.has_art && a.art_size == 300);                      // A's art, not B's
+            OpusTags b = readOpus(cuts[1].paths[0]);
+            CHECK(b.artist == "Sia" && b.title == "Unstoppable");
+            CHECK(b.has_art && b.art_size == 500);                      // B's art, not A's
+        }
+    }
+
     // ── 4c. split-trim: the hold defers the roll FRAME-EXACTLY ───────────────
     {
         // offset 500 ms = 22050 frames: the closing cut keeps exactly that

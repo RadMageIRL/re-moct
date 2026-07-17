@@ -129,6 +129,35 @@ int main() {
         CHECK(rmsOf(healed) > 0.15);                      // audio resumed after self-heal
         CHECK(waitFor(5000, [&]{ return ss.nowPlaying() == "Bjork - Joga"; }));
 
+        // ── 5b. abi-cluster keep-draining: the pause contract, both ways ──────
+        // While record-active, a playback pause interrupts NOTHING: readFrames
+        // keeps draining REAL frames and the producer keeps consuming the
+        // network (segment_gets advances). With record-active off, the same
+        // paused stream reverts to the old contract byte-for-byte: silence
+        // pads + a frozen producer. Both pinned in one run.
+        {
+            { std::lock_guard<std::mutex> lk(fake.mtx); fake.window_top += 6; }  // +12s of fresh window
+            ss.setRecordActive(true);
+            ss.pause(true);
+            int gets0 = fake.segment_gets.load();
+            auto held = drainFrames(ss, 400 * 512);       // ~4.6s drained WHILE PAUSED
+            CHECK(rmsOf(held) > 0.15);                    // real audio through the pause
+            CHECK(waitFor(8000, [&]{ return fake.segment_gets.load() > gets0; }));  // network consumed
+
+            ss.setRecordActive(false);                    // still paused: the OLD contract
+            port::sleepMs(300);                           // let any in-flight fetch settle
+            auto silent = drainFrames(ss, 20 * 512);
+            CHECK(rmsOf(silent) == 0.0);                  // silence pads again
+            int gets1 = fake.segment_gets.load();
+            port::sleepMs(800);
+            CHECK(fake.segment_gets.load() == gets1);     // producer frozen again
+
+            ss.pause(false);                              // resume: normal playback
+            CHECK(waitFor(10000, [&]{ return ss.isPrebuffered(); }));
+            auto resumed = drainFrames(ss, 50 * 512);
+            CHECK(rmsOf(resumed) > 0.15);
+        }
+
         // ── 6. prompt close mid-fetch: stop_ as the cancel token ──────────────
         {
             fake.block_segments.store(true);

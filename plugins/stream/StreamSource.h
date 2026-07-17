@@ -105,6 +105,13 @@ public:
     const std::string& url() const { return url_; }  // stream URL currently open ("" if none)
     void pause(bool p)      { paused_.store(p); }
     bool paused()     const { return paused_.load(); }
+    // abi-cluster keep-draining: while a host recording is active, a playback
+    // pause must not interrupt the broadcast pipeline — the three paused_
+    // gates (readFrames silence short-circuit + both producers' network
+    // freeze) are bypassed and the HOST mutes its output post-tap instead.
+    // Off (the default, and for every pre-cluster host): pause behavior is
+    // byte-for-byte the old contract.
+    void setRecordActive(bool on) { record_active_.store(on); }
 
     // Seconds of wall-clock playback since the first sample left the ring.
     // (double per core::ISource; the stored value is whole seconds.)
@@ -273,6 +280,7 @@ private:
     // State
     std::atomic<bool>       playing_     { false };
     std::atomic<bool>       paused_      { false };
+    std::atomic<bool>       record_active_ { false };  // abi-cluster: drain through pause
     std::atomic<bool>       stop_        { false };
     // ABI-typed (plain int32) mirror of stop_'s cancel signal, for the HTTP cancel
     // token (Phase 4 slice b). A plain int32 — NOT std::atomic — so it crosses the

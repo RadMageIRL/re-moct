@@ -59,6 +59,23 @@ double PluginSource::positionSec() const {
     return (self_ && plugin_->position_sec) ? plugin_->position_sec(self_) : 0.0;
 }
 
+// abi-cluster: the appended-field reach check — the contract's
+// min(host, plugin) struct_size rule, applied before even READING a pointer
+// an old (smaller) descriptor does not carry.
+static bool reachesRecordActive(const RemoctPlugin* p) {
+    return p && p->struct_size >= offsetof(RemoctPlugin, set_record_active)
+                                  + sizeof(p->set_record_active);
+}
+
+bool PluginSource::supportsRecordActive() const {
+    return self_ && reachesRecordActive(plugin_) && plugin_->set_record_active;
+}
+
+bool PluginSource::setRecordActive(bool on) {
+    if (!supportsRecordActive()) return false;
+    return plugin_->set_record_active(self_, on ? 1 : 0) != 0;
+}
+
 void PluginSource::setPreferDigital(bool b) {
     if (self_ && plugin_->set_config) plugin_->set_config(self_, "prefer_digital", b ? "1" : "0");
 }

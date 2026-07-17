@@ -193,7 +193,42 @@ typedef struct RemoctPlugin {
      * One typed-enough knob channel, modeled on the one real knob. e.g.
      * ("prefer_digital","1"), ("deeplog","1"). NOT a general settings bus. */
     void    (*set_config)(void* self, const char* key, const char* value);
+
+    /* ── THE ABI-CLUSTER GROWTH (the one additive opening; design of record:
+     * docs/abi-cluster-design.md). Appended per the Versioning contract
+     * below: abi_version stays 1, struct_size grows, the host checks
+     * struct_size reaches a field AND the pointer is non-NULL before any
+     * call. A v1 plugin (smaller struct) is fully supported forever. ──
+     *
+     * set_record_active (host/UI thread) — keep-draining-while-paused.
+     * While active (a recording is running), a playback pause must NOT
+     * interrupt the broadcast pipeline: the plugin keeps consuming the
+     * network and read_frames keeps draining REAL audio; the HOST renders
+     * playback silence by muting its output buffer AFTER the recorder tap
+     * (one truth in the plugin, two views in the host). Inactive: pause
+     * behavior is byte-for-byte the pre-cluster contract. Returns 1 if
+     * honored — the ack drives the host's honest pause copy. */
+    int32_t  (*set_record_active)(void* self, int32_t on);
+
+    /* Copy/remux tee (slice B of the cluster) — DECLARED here so the
+     * boundary grows exactly once; a plugin may ship these NULL until it
+     * implements them (per-fn null-check makes that a valid state).
+     * encoded_caps: the REMOCT_CODEC_* currently flowing (0 = none/unknown).
+     * set_encoded_capture: arm/disarm the plugin-side compressed-byte tee
+     * (OFF by default — zero cost when unused).
+     * read_encoded: host/WORKER-thread pull of the tee'd compressed bytes
+     * (post-transport framing: ICY metaint stripped, HLS segment payloads
+     * concatenated); codec_out = REMOCT_CODEC_*; discont_out = 1 when a
+     * reconnect/re-pin boundary occurred since the last read (the muxer
+     * resyncs on the next frame header). Never the audio thread. */
+    int32_t  (*encoded_caps)(void* self);
+    void     (*set_encoded_capture)(void* self, int32_t on);
+    uint32_t (*read_encoded)(void* self, uint8_t* dst, uint32_t cap,
+                             int32_t* codec_out, int32_t* discont_out);
 } RemoctPlugin;
+
+/* Compressed-stream codec tags for the copy/remux tee. */
+enum { REMOCT_CODEC_NONE = 0, REMOCT_CODEC_MP3 = 1, REMOCT_CODEC_AAC_ADTS = 2 };
 
 /* ── The ONE exported symbol ─────────────────────────────────────────────────
  * A plugin exports exactly this (C linkage, undecorated name), returning a

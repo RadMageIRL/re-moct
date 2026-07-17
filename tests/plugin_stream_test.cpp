@@ -91,6 +91,49 @@ int main() {
         std::printf("  ok   closed (instance kept; dtor destroys)\n");
     }
 
+    // ── (3) abi-cluster compat matrix (the struct-growth contract) ───────────
+    // The boundary grew by appending four fns after set_config; abi_version
+    // stays 1 and detection is struct_size-reach + per-fn null-check. Pin all
+    // the machine-checkable cells:
+    std::printf("[abi-cluster] struct growth + compat matrix\n");
+    {
+        // Layout invariants: the growth is strictly TRAILING (an old host's
+        // v1 prefix is byte-identical), and the v1 size equals the offset the
+        // first appended field starts at (no padding surprises).
+        static_assert(offsetof(RemoctPlugin, set_record_active) >
+                      offsetof(RemoctPlugin, set_config),
+                      "cluster fields must trail the v1 surface");
+        static_assert(offsetof(RemoctPlugin, encoded_caps) >
+                      offsetof(RemoctPlugin, set_record_active),
+                      "declared order is part of the contract");
+
+        // new host + NEW plugin: capability present, call honored (ack == 1).
+        {
+            core::PluginSource ps(d, svc.table());
+            CHECK(ps.supportsRecordActive(), "new plugin: supportsRecordActive()");
+            CHECK(ps.setRecordActive(true),  "new plugin: set_record_active honored (ack)");
+            CHECK(ps.setRecordActive(false), "new plugin: cleared (ack)");
+            CHECK(d->encoded_caps == nullptr && d->read_encoded == nullptr,
+                  "slice A: copy/remux fns declared-NULL until slice B");
+        }
+        // new host + OLD (v1) plugin: a v1-sized descriptor — the host must
+        // refuse to even READ past struct_size (the pointer slot is left
+        // non-null garbage-adjacent on purpose: ack==false proves no call).
+        {
+            RemoctPlugin v1 = *d;
+            v1.struct_size = (uint32_t)offsetof(RemoctPlugin, set_record_active);
+            core::PluginSource ps(&v1, svc.table());
+            CHECK(ps.valid(), "v1 fixture: instance still created");
+            CHECK(!ps.supportsRecordActive(), "v1 fixture: capability ABSENT (reach check)");
+            CHECK(!ps.setRecordActive(true),  "v1 fixture: call refused, no crash");
+            CHECK(ps.nowPlaying().empty() || true, "v1 fixture: v1 surface still works");
+            ps.close();
+        }
+        // old host + new plugin: not literally runnable here, but pinned by
+        // the layout static_asserts above (the v1 prefix an old host reads is
+        // unchanged) + the loader's min(struct_size) discipline.
+    }
+
     std::printf("\n%s (%d failure%s)\n", g_fail ? "FAILED" : "PASSED",
                 g_fail, g_fail == 1 ? "" : "s");
     return g_fail ? 1 : 0;

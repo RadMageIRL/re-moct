@@ -47,10 +47,29 @@ AudioManager::~AudioManager() {
     bpm_cancel_.store(true);
     if (bpm_thread_.joinable()) bpm_thread_.join();
     if (stream_connect_thread_.joinable()) stream_connect_thread_.join();
-    stream_recorder_.stop();   // finalize an in-flight capture while the plugin
+    endRecording();            // finalize an in-flight capture while the plugin
                                // and device still exist (R1); no-op when idle
     teardown();
     teardownNext();
+}
+
+// ─── stream capture lifecycle (abi-cluster slice A) ──────────────────────────
+// The keep-draining signal travels WITH the recorder lifecycle so no stop path
+// can leave the plugin draining through pauses with nothing recording.
+bool AudioManager::beginRecording(const RecOptions& opt, const std::string& station,
+                                  const std::string& out_dir) {
+    if (!stream_recorder_.start(opt, station, out_dir)) return false;
+    // Best-effort: 1 = the plugin drains through playback pauses (gapless);
+    // 0/absent = old plugin, the pause-gap behavior remains (the panel note
+    // stays honest via recordingDrainSupported()).
+    stream_plugin_.setRecordActive(true);
+    return true;
+}
+
+void AudioManager::endRecording() {
+    stream_recorder_.stop();               // idempotent; finalizes in-flight cut
+    if (stream_plugin_.valid())
+        stream_plugin_.setRecordActive(false);   // no-op plugin-side when already off
 }
 
 void AudioManager::teardown() {
@@ -125,7 +144,7 @@ bool AudioManager::play(const std::string& path) {
     // audio callback stops entering the stream branch, then join the producer).
     if (stream_mode_.load()) {
         stream_mode_.store(false);
-        stream_recorder_.stop();   // finalize an in-flight capture BEFORE close (R1)
+        endRecording();            // finalize an in-flight capture BEFORE close (R1)
         stream_plugin_.close();
     }
     // Exit CD mode if switching to file playback
@@ -385,7 +404,7 @@ void AudioManager::stop() {
         return;
     }
     if (stream_mode_.load()) {
-        stream_recorder_.stop();     // finalize an in-flight capture BEFORE close (R1);
+        endRecording();              // finalize an in-flight capture BEFORE close (R1);
                                      // its first act gates the tap off, so the
                                      // baseline close/mode order below is untouched
         stream_plugin_.close();
@@ -613,9 +632,21 @@ void AudioManager::onDataCallback(void* output, ma_uint32 frame_count) {
         // so the recording is the undecorated broadcast — the same doctrine as
         // the CD live-BPM tap below. Inline no-op unless armed; when armed, one
         // bounded copy into the recorder's SPSC ring (no lock/alloc/IO — see
-        // StreamRecorder::push). Note: while paused, readFrames delivers
-        // silence pads and those are what get captured (probed at plan/R1).
+        // StreamRecorder::push).
         stream_recorder_.capture(out, frame_count);
+
+        // abi-cluster keep-draining: while paused-and-recording, a capable
+        // plugin keeps delivering REAL frames (one truth) — the tap above got
+        // them; playback goes silent HERE (the second view). ORDER IS THE
+        // CONTRACT: this memset must stay AFTER capture() or the file gets the
+        // silence. With an old plugin readFrames already delivered silence and
+        // this is a harmless double-zero. Two relaxed atomics — no new
+        // blocking work on the audio thread; volume/EQ run on zeros and the
+        // viz flatlines exactly as a pause always looked.
+        if (stream_recorder_.recording() &&
+            state_.load(std::memory_order_relaxed) == PlaybackState::Paused) {
+            std::memset(out, 0, (size_t)frame_count * 2 * sizeof(float));
+        }
 
         float vol = volume_.load();
         if (vol != 1.0f)
@@ -1118,7 +1149,7 @@ bool AudioManager::openCD(const std::string& drive_letter) {
     // Exit stream mode if active before entering CD mode.
     if (stream_mode_.load()) {
         stream_mode_.store(false);
-        stream_recorder_.stop();   // finalize an in-flight capture BEFORE close (R1)
+        endRecording();            // finalize an in-flight capture BEFORE close (R1)
         stream_plugin_.close();
     }
     // teardown handles already-stopped device safely
@@ -1209,7 +1240,7 @@ void AudioManager::startStreamConnectLocked(const std::string& url) {
     // worker touches stream_plugin_. (stream_mode_ is cleared first, so a prior
     // stream's callback stops entering the stream branch.)
     if (cd_mode_.load()) { cd_source_.stop(); cd_source_.close(); cd_mode_.store(false); }
-    stream_recorder_.stop();   // a station switch ends the old stream's capture (R1);
+    endRecording();            // a station switch ends the old stream's capture (R1);
                                // no-op when idle. The connect-fail/superseded close
                                // sites need no hook: their stream never played, so
                                // nothing can be recording it (arming needs streamMode).

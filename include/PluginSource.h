@@ -44,6 +44,16 @@ public:
     // deep-log toggle ("deeplog","1"/"0") — see AudioManager::setDeepLog.
     void setConfig(const char* key, const char* value);
 
+    // ── abi-cluster (appended-field consumers). The v1 fields above never
+    // needed reach checks (every v1 descriptor carries them); the appended
+    // fields DO: reading a pointer past an old plugin's struct_size is a read
+    // off the end of its descriptor. supportsRecordActive() is the pure
+    // capability probe (no call — drives the panel copy pre-start);
+    // setRecordActive() returns the plugin's ack (false when absent/refused —
+    // the pause-gap note stays honest). ──
+    bool supportsRecordActive() const;
+    bool setRecordActive(bool on);
+
 private:
     const RemoctPlugin* plugin_ = nullptr;
     void*               self_   = nullptr;     // created once in the ctor

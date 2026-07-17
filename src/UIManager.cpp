@@ -1900,11 +1900,18 @@ void UIManager::drawRecPanel() {
                   rec_ads_discard_ ? "DISCARD (not written)" : "Save (to ads/ folder)");
         mvwaddstr(w, 11, 3, "[D] Output dir (edit)");
 
-        // The pause-gap notice — the R1 finding, stated plainly — plus the
-        // Discard cost AT THE TOGGLE (the informed opt-in, not buried in docs).
+        // The pause note — driven by the plugin's keep-draining capability
+        // (abi-cluster slice A): with a capable plugin, pausing mutes playback
+        // while the recording continues gaplessly; with an old plugin the R1
+        // pause-gap truth stays. Plus the Discard cost AT THE TOGGLE.
         wattron(w, A_DIM);
-        mvwaddstr(w, 13, 3, "Note: pausing playback while recording leaves a");
-        mvwaddstr(w, 14, 3, "silence gap - the paused-over airtime is not captured.");
+        if (audio_.recordingDrainSupported()) {
+            mvwaddstr(w, 13, 3, "Note: pausing mutes playback - the recording");
+            mvwaddstr(w, 14, 3, "continues (you rejoin the live broadcast on resume).");
+        } else {
+            mvwaddstr(w, 13, 3, "Note: pausing playback while recording leaves a");
+            mvwaddstr(w, 14, 3, "silence gap - the paused-over airtime is not captured.");
+        }
         mvwaddstr(w, 15, 3, "Cuts split on station metadata (boundaries are +/-1-2s).");
         if (rec_ads_discard_)
             mvwaddstr(w, 16, 3, "Discard trusts station metadata - a mislabeled song can be lost.");
@@ -5049,7 +5056,8 @@ void UIManager::handleInput(int ch) {
         }
         if (rec.recording()) {
             if (ch == 'x' || ch == 'X') {
-                rec.stop();                     // finalizes the in-flight cut
+                audio_.endRecording();          // finalizes the in-flight cut
+                                                // + clears the drain signal
                 // Session-end summary: the ads-skipped count rides the toast —
                 // the Discard trust surface survives past the live panel.
                 std::string sum = std::to_string(rec.cuts().size() -
@@ -5102,8 +5110,10 @@ void UIManager::handleInput(int ch) {
             opt.ads_discard     = rec_ads_discard_;
             std::string st = stationLabel(audio_.streamUrl());
             if (st.rfind("RADIO: ", 0) == 0) st = st.substr(7);
-            if (rec.start(opt, st, rec_dir_.empty() ? CDRipper::recordingsDir()
-                                                    : rec_dir_))
+            // abi-cluster: start through the wrapper so the keep-draining
+            // signal travels with the recorder lifecycle.
+            if (audio_.beginRecording(opt, st, rec_dir_.empty() ? CDRipper::recordingsDir()
+                                                                : rec_dir_))
                 rec.onTitle(audio_.streamNowPlaying());   // seed the first label
             else
                 showTrackToast("Recording failed", rec.lastError(), "");

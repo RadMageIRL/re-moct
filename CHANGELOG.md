@@ -46,6 +46,14 @@ Feature release: Opus and WavPack playback.
 
 ### Added
 
+- **Recording continues through a playback pause.** Pausing while recording
+  now mutes only what you hear - the broadcast keeps being captured, with no
+  silence gap and nothing lost; on resume you rejoin the live broadcast.
+  (Previously the paused-over airtime was silence in the file and gone for
+  good - the recording panel said so.) Requires the updated streaming
+  plugin; with an older plugin the old behavior and the old honest note
+  remain. The plugin interface grew compatibly - existing plugins keep
+  working unchanged.
 - **Split hold for recordings** - radio metadata tends to fire a little
   early, guillotining the previous song's outro. The recorder now holds the
   cut boundary by a configurable offset (default 1200 ms, "Split hold" in

@@ -111,6 +111,13 @@ void sp_set_config(void* self, const char* key, const char* value) noexcept {
         inst(self)->src.setProbeMinted(on);
 }
 
+// abi-cluster slice A: keep-draining. Returns 1 = honored (the ack drives the
+// host's honest pause copy). Host/UI thread, like every non-audio entry.
+int32_t sp_set_record_active(void* self, int32_t on) noexcept {
+    inst(self)->src.setRecordActive(on != 0);
+    return 1;
+}
+
 const RemoctPlugin STREAM_PLUGIN = {
     /* abi_version  */ REMOCT_ABI_VERSION,
     /* struct_size  */ static_cast<uint32_t>(sizeof(RemoctPlugin)),
@@ -132,6 +139,13 @@ const RemoctPlugin STREAM_PLUGIN = {
     /* art_url      */ sp_art_url,
     /* last_error   */ sp_last_error,
     /* set_config   */ sp_set_config,
+    /* ── the abi-cluster growth (design doc): drain implemented in slice A;
+     * the copy/remux tee is DECLARED-NULL until slice B — a valid state by
+     * the contract's per-fn null-check. ── */
+    /* set_record_active   */ sp_set_record_active,
+    /* encoded_caps        */ nullptr,
+    /* set_encoded_capture */ nullptr,
+    /* read_encoded        */ nullptr,
 };
 
 } // namespace

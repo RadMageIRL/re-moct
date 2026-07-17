@@ -150,6 +150,15 @@ public:
     // here — R2's [Rec] panel drives it through this accessor (start/stop/
     // onTitle/state); the audio callback taps into it in the stream branch.
     StreamRecorder& streamRecorder() { return stream_recorder_; }
+    // abi-cluster slice A: recording start/stop go through these wrappers so
+    // the keep-draining signal always travels WITH the recorder lifecycle
+    // (set_record_active(1) on start, (0) on every stop path incl. teardown).
+    // beginRecording's recorder result is authoritative; the drain ack is
+    // best-effort (old plugin -> false -> the pause-gap note stays honest).
+    bool beginRecording(const RecOptions& opt, const std::string& station,
+                        const std::string& out_dir);
+    void endRecording();
+    bool recordingDrainSupported() const { return stream_plugin_.supportsRecordActive(); }
 
     // Called by track-end callback to pre-load next track for crossfade/gapless
     // Returns false if next track can't be opened

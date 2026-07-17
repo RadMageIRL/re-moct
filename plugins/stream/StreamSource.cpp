@@ -1455,7 +1455,10 @@ void StreamSource::producerWorker() {
     bool logged_first = false;
 
     while (!stop_.load()) {
-        if (paused_.load()) { port::sleepMs(20); continue; }
+        // abi-cluster keep-draining: while a recording is active the network
+        // keeps being consumed through a playback pause (the host mutes its
+        // output post-tap instead). Inactive: the old freeze, byte-for-byte.
+        if (paused_.load() && !record_active_.load()) { port::sleepMs(20); continue; }
 
         if (hls_repin_pending_.exchange(false)) {
             slog("producer: ad-onset live-edge re-pin -> re-handshake");
@@ -1533,7 +1536,8 @@ void StreamSource::producerWorkerAAC() {
     bool logged_first       = false;
 
     while (!stop_.load()) {
-        if (paused_.load()) { port::sleepMs(20); continue; }
+        // abi-cluster keep-draining: see the producer loop above — same gate.
+        if (paused_.load() && !record_active_.load()) { port::sleepMs(20); continue; }
         if (hls_repin_pending_.exchange(false)) {
             slog("producerAAC: ad-onset live-edge re-pin -> re-handshake");
             disconnect();
@@ -1644,7 +1648,11 @@ void StreamSource::producerWorkerAAC() {
 uint32_t StreamSource::readFrames(float* dst, uint32_t frame_count) {
     int samples_needed = (int)frame_count * CHANNELS;
 
-    if (paused_.load() || !prebuffered_.load()) {
+    // abi-cluster keep-draining: while a recording is active, a playback pause
+    // does NOT silence this read — the ring drains REAL frames (the host mutes
+    // its playback output AFTER the recorder tap; one truth, two views). The
+    // !prebuffered_ arm is untouched — buffering still silence-pads.
+    if ((paused_.load() && !record_active_.load()) || !prebuffered_.load()) {
         std::memset(dst, 0, samples_needed * sizeof(float));
         return frame_count;
     }

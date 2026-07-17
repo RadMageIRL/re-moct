@@ -168,16 +168,21 @@ byte-identical). Next recorded: log-semantics slice (lossless=master marking).
 See `docs/session-handoff-2026-07-16-rip-overhaul-complete.md` + the five
 `docs/rip-*-plan.md` design-of-record docs.
 
-**2026-07-17: stream-record R1 SHIPPED (`c333428`, CI green) - "rip the
-radio", engine half.** StreamRecorder (SPSC ring tap in the stream callback
-pre-volume/EQ, dedicated worker, split-on-title via the polled published
-nowPlaying, MP3/Opus lossy-only, per-cut RG, timestamp fallback naming,
-partial marking) + CDRipper::musicRoot()/recordingsDir() extraction (CD-gate
-proven inert) + stream_record_test both platforms. Live-gated on SomaFM +
-KKJO with real on-air splits, 0 drops. KEY FINDING: pause loses broadcast
-(producers halt) - recording states the gap, doesn't fix it. **R2 (panel/^E/
-[REC] badge) PLANNED, awaiting review: `docs/stream-record-r2-plan.md`.**
-Handoff: `docs/session-handoff-2026-07-17-stream-record-r1.md`.
+**2026-07-17 full-day flight (12 slices + 2 fixes, all CI-green):**
+stream-record COMPLETE (R1 engine `c333428` + R2 panel/^E/[REC] `9f8c393`,
+covers `8f06fab`, split-trim hold + ad-aware routing `8038368` - the [Rec]
+panel now: format/split/hold/ads/dir, pulsing red [REC]); the MP3 tag pair
+(read `e7c3fc8` + write `8a36b4c`; smoke/subM3 = the tag contract, subM =
+legacy specimen); log-semantics `76798ad` (Formats/Master lines); radio-art
+staleness fixed `758cf3b` (shared radioArtFloor + time-bounded neg cache);
+**THE ABI OPENED ONCE `254baca`** (slice A: 4 fns appended, NO version
+bump, keep-draining = gapless pause capture, 0.00s silence across a 35s
+pause; copy/remux slice B planned+committed `c62ca85` - M4A decisively,
+AacDecoder already decodes ADTS+MP4); batch ReplayGain `7dc403b` (^O
+folder scan, rip-parity EXACT, THE HEAL fixes pre-fix MP3s library-wide).
+**Backlog = slice B only.** Handoffs: `session-handoff-2026-07-17-*.md`;
+lessons: LP64 (long) tick-math trap, TagLib RW-handle sharing trap,
+additive-ABI reach-check discipline.
 
 ## Deep knowledge - read the matching file when a task touches it
 - Roadmap, phases, parked items, decisions → `docs/roadmap.md`

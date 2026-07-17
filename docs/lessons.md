@@ -1122,3 +1122,32 @@ runtime-discoverable, not compile-discoverable; a green build proves nothing abo
   name a CDRipper symbol. When a helper wants sharing across TU-heavy
   boundaries, move the body to a header home and delegate - do not link the
   heavy TU.
+- **The LP64 (long) trap in uint32 tick math (radio-art-refresh-fix, caught
+  by art_miss_cache_test's FIRST Linux run)**: `(long)(uint32_a - uint32_b)`
+  is the tree's wrap-compare idiom - and long is 64-bit on Linux/LP64, so a
+  wrapped difference promotes to a huge POSITIVE value and the comparison
+  inverts (every cache entry expired instantly; Windows' 32-bit long masked
+  it completely). The correct form is `(int32_t)(a - b)`. FLAGGED, not yet
+  fixed: StreamSource's np_pub_q_ release check uses the (long) form - a
+  potential pre-existing Linux nit (title publish delays may release
+  early); its own small look someday.
+- **TagLib File objects open READ-WRITE by default (gain_scan_test, found
+  the hard way)**: a still-in-scope TagLib::MPEG::File - even one only used
+  for reading - holds a write handle, and on Windows that blocks a second
+  open (LocalFileSource's FileRef) with a sharing violation that TagLib
+  swallows SILENTLY: metadata is skipped, ReplayGain reads 0, and the file
+  looks untagged while being perfectly tagged. Scope TagLib file objects
+  tightly; close before any re-open of the same path. The scope brace IS
+  the fix.
+- **Additive ABI growth, realized (abi-cluster slice A)**: the contract's
+  own rules did all the work - NO version bump (REMOCT_ABI_VERSION is the
+  breaking gate; bumping would reject every old plugin), one struct growth
+  appending fn pointers, and the NEW discipline appended fields demand:
+  check struct_size REACHES a field before even reading its pointer (an
+  old descriptor simply ends earlier - reading past it is UB, not NULL).
+  Per-fn null-check then gives per-feature capability granularity free.
+  The keep-draining shape worth remembering: ONE truth in the plugin (real
+  frames keep flowing), TWO views in the host (tap gets audio, playback
+  gets a post-tap memset) - and the gapless proof was structural (the
+  paused pipeline IS the unpaused pipeline) then confirmed empirically
+  (0.00s silence across a 35s pause).

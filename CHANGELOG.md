@@ -22,11 +22,18 @@ Feature release: Opus and WavPack playback.
   label. Hybrid (lossy) `.wv` files play at their encoded quality; `.wvc`
   correction sidecars are not read (planned).
 - **BPM detection** now works for `.opus` and `.wv` files too.
+- **Ogg Vorbis playback** (`.ogg`): full decode/seek via libvorbis +
+  libvorbisfile. Like Opus, `.ogg` files were already browsable but silently
+  failed to play; they now play, seek, show correct duration, and read tags
+  (including standard ReplayGain). BPM detection works for `.ogg` too.
 
 ### Changed
 
-- New library dependencies: libopus, libopusfile, libwavpack (all BSD-3-Clause;
-  see THIRD-PARTY-NOTICES.md).
+- **Opus decode is now native float** (matching the new Vorbis backend): the
+  decoder hands float samples straight through instead of quantizing to
+  16-bit first. ReplayGain behavior is unchanged.
+- New library dependencies: libopus, libopusfile, libwavpack, libvorbis (all
+  BSD-3-Clause; see THIRD-PARTY-NOTICES.md).
 
 ## [1.2.0] - 2026-07-10
 

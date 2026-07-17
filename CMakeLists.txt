@@ -66,6 +66,7 @@ set(REMOCT_SOURCES
     src/AacDecoder.cpp            # FDK-AAC file (.m4a/.m4b) backend — stays host (D5)
     src/OpusDecoder.cpp           # libopus/libopusfile (.opus) backend
     src/WavPackDecoder.cpp        # libwavpack (.wv) backend
+    src/VorbisDecoder.cpp         # libvorbis/libvorbisfile (.ogg) backend
     src/CustomBackends.cpp        # the shared custom-backend array (playback + BPM)
     src/Mp4Chapters.cpp
     src/RadioBrowser.cpp
@@ -221,12 +222,22 @@ find_library(WAVPACK_LIB NAMES wavpack PATHS "${MSYS2_PREFIX}/lib" REQUIRED)
 find_path(WAVPACK_INCLUDE NAMES wavpack/wavpack.h PATHS "${MSYS2_PREFIX}/include" REQUIRED)
 message(STATUS "wavpack: ${WAVPACK_LIB}")
 
+# ── libvorbis + libvorbisfile (Ogg Vorbis decode: .ogg) ────────────────────
+find_library(VORBIS_LIB     NAMES vorbis     PATHS "${MSYS2_PREFIX}/lib" REQUIRED)
+find_library(VORBISFILE_LIB NAMES vorbisfile PATHS "${MSYS2_PREFIX}/lib" REQUIRED)
+# Root include only: vorbisfile.h pulls its siblings via QUOTED includes
+# (probe-verified — unlike opusfile's unprefixed-angle siblings), so no
+# <prefix>/include/vorbis entry exists to order. The bare-include ban is the
+# CI grep gate, which already covers vorbisfile.
+find_path(VORBIS_INCLUDE NAMES vorbis/vorbisfile.h PATHS "${MSYS2_PREFIX}/include" REQUIRED)
+message(STATUS "vorbisfile: ${VORBISFILE_LIB}")
+
 # Added HERE (after the find_path calls) rather than in the include block at
 # the top: that block interpolates its variables before find_path has set them
 # (the FDKAAC_INCLUDE entry there expands empty and only works because the
 # whole MSYS2 include dir is added separately).
 target_include_directories(remoct PRIVATE
-    ${OPUS_INCLUDE} ${OPUS_INCLUDE}/opus ${WAVPACK_INCLUDE})
+    ${OPUS_INCLUDE} ${OPUS_INCLUDE}/opus ${WAVPACK_INCLUDE} ${VORBIS_INCLUDE})
 
 # ── Curses: PDCursesMod wingui (Windows+REMOCT_PDCURSES) or ncursesw ────────
 if(WIN32 AND REMOCT_PDCURSES)
@@ -292,8 +303,10 @@ target_link_libraries(remoct PRIVATE
     ${LAME_LIB}
     ${EBUR128_LIB}
     ${FDKAAC_LIB}
-    ${OPUSFILE_LIB}   # dependency order: opusfile -> opus/ogg
+    ${OPUSFILE_LIB}   # dependency order: opusfile -> opus, vorbisfile -> vorbis, both -> ogg
     ${OPUS_LIB}
+    ${VORBISFILE_LIB}
+    ${VORBIS_LIB}
     ${OGG_LIB}
     ${WAVPACK_LIB}
     $<$<PLATFORM_ID:Windows>:winmm>

@@ -8,10 +8,12 @@
 // libopusfile's own parser reject non-Opus Ogg (e.g. Vorbis), failing fast
 // (MA_NO_BACKEND) so the other decoders proceed unchanged.
 //
-// Output is signed-16 PCM at 48 kHz — Opus's native rate; libopusfile always
-// decodes to 48 kHz — and miniaudio's converter resamples to the device
-// format. libopusfile applies the OpusHead output-gain field itself
-// (OP_HEADER_GAIN default), so the R128 ReplayGain tags read in
+// Output is 32-bit float PCM at 48 kHz — Opus's native rate; libopusfile
+// always decodes to 48 kHz — via op_read_float (native-float lossy decode,
+// the same output rule as the Vorbis backend; no s16 quantize round trip).
+// miniaudio's converter resamples to the device format. libopusfile applies
+// the OpusHead output-gain field itself (OP_HEADER_GAIN default, on every
+// op_read* entry point), so the R128 ReplayGain tags read in
 // populate_track_info are relative to the PCM this backend emits, exactly the
 // RFC 7845 convention.
 #pragma once

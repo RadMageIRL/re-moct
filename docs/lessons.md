@@ -985,3 +985,20 @@ runtime-discoverable, not compile-discoverable; a green build proves nothing abo
   - The unconditional +6 dB RG preamp boosts UNTAGGED tracks by +6 dB when RG is
     on (db==0 -> gain 1.0, then ×1.995) - the opposite of normalization for
     untagged files, and a 0.0 dB tag is indistinguishable from "no tag".
+- **vorbisfile.h does NOT need its own include dir (unlike opusfile.h).**
+  Probe-verified on the live toolchain: `#include <vorbis/vorbisfile.h>`
+  compiles with only the include ROOT on the path, because vorbisfile.h pulls
+  its siblings as QUOTED includes (`#include "codec.h"` - resolved relative to
+  its own dir) and codec.h uses the prefixed `<ogg/ogg.h>`. Contrast opusfile.h,
+  whose unprefixed `<opus_multistream.h>` sibling includes force
+  `-I<prefix>/include/opus` onto the path. So the vorbis CMake block adds NO
+  extra -I entry and there is no ordering question vs TagLib's dir; a bare
+  `<vorbisfile.h>` (which would resolve to TagLib's C++ header) is caught by
+  the CI grep gate before anything compiles.
+- **ov_read_float is PLANAR (float** per channel, decoder-internal buffers);
+  op_read_float is INTERLEAVED (one flat float*).** They are not symmetric -
+  the interleave loop lives only in VorbisDecoder, and the pointers ov_read_float
+  hands back are invalidated by the next call, so interleave immediately.
+  Chained Ogg streams can also switch channel count per link: clamp to the
+  CURRENT link's channels (ov_info(vf, bitstream)) before indexing pcm[], or a
+  channel-count change mid-file reads a garbage plane pointer.

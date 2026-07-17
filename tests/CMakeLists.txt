@@ -323,6 +323,7 @@ if(WIN32)
         ${CMAKE_SOURCE_DIR}/src/AacDecoder.cpp
         ${CMAKE_SOURCE_DIR}/src/OpusDecoder.cpp
         ${CMAKE_SOURCE_DIR}/src/WavPackDecoder.cpp
+        ${CMAKE_SOURCE_DIR}/src/VorbisDecoder.cpp
         ${CMAKE_SOURCE_DIR}/src/CustomBackends.cpp
         ${CMAKE_SOURCE_DIR}/src/Mp4Chapters.cpp
         ${CMAKE_SOURCE_DIR}/src/Log.cpp
@@ -335,7 +336,8 @@ if(WIN32)
         ${TAGLIB_INCLUDE_DIRS})
     target_compile_definitions(xfade_handoff_test PRIVATE UNICODE _UNICODE)
     target_link_libraries(xfade_handoff_test PRIVATE
-        ${TAGLIB_LIBRARIES} ${FDKAAC_LIB} ${OPUSFILE_LIB} ${OPUS_LIB} ${OGG_LIB}
+        ${TAGLIB_LIBRARIES} ${FDKAAC_LIB} ${OPUSFILE_LIB} ${OPUS_LIB}
+        ${VORBISFILE_LIB} ${VORBIS_LIB} ${OGG_LIB}
         ${WAVPACK_LIB} wininet winmm ole32)
     add_test(NAME xfade_handoff_test COMMAND xfade_handoff_test)
     set_tests_properties(xfade_handoff_test PROPERTIES TIMEOUT 180 SKIP_RETURN_CODE 77)

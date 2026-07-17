@@ -22,6 +22,7 @@ license texts referenced here must accompany the distribution.
 | **libogg** (Xiph.Org) | Ogg container (libFLAC + libopusfile dependency) | Transitive dynamic link | BSD-3-Clause | https://xiph.org/ogg/ |
 | **libopus** (Xiph.Org) | Opus decode (`.opus` playback) | Dynamic link | BSD-3-Clause | https://opus-codec.org/ |
 | **libopusfile** (Xiph.Org) | Ogg Opus demux/seek over libopus | Dynamic link | BSD-3-Clause | https://opus-codec.org/ |
+| **libvorbis / libvorbisfile** (Xiph.Org) | Ogg Vorbis decode (`.ogg` playback) | Dynamic link | BSD-3-Clause | https://xiph.org/vorbis/ |
 | **WavPack (libwavpack)** | WavPack decode (`.wv` playback) | Dynamic link | BSD-3-Clause | https://www.wavpack.com/ |
 | ⚠ **LAME / libmp3lame** | MP3 encode (CD ripping) | Dynamic link | LGPL-2.1-or-later | https://lame.sourceforge.io/ |
 | ⚠ **TagLib** | Read/write audio tags | Dynamic link | LGPL-2.1-only **or** MPL-1.1 (dual) | https://taglib.org/ |
@@ -113,6 +114,11 @@ redistributions:
 > in source and binary forms, with or without modification, are permitted provided that
 > the BSD-3-Clause conditions (retain copyright notice, this list of conditions, and the
 > disclaimer; no endorsement) are met. THE SOFTWARE IS PROVIDED "AS IS".
+
+**libvorbis / libvorbisfile (Xiph.Org) - BSD-3-Clause**
+> Copyright (c) 2002-2020 Xiph.Org Foundation. Redistribution and use in source and
+> binary forms, with or without modification, are permitted provided that the
+> BSD-3-Clause conditions are met. THE SOFTWARE IS PROVIDED "AS IS".
 
 **WavPack (libwavpack) - BSD-3-Clause**
 > Copyright (c) 1998-2025 David Bryant. All rights reserved. Redistribution and use in

@@ -1,6 +1,7 @@
 // OpusDecoder.cpp — miniaudio custom decoding backend backed by libopusfile.
 // See OpusDecoder.h for the contract. Decodes Ogg Opus (.opus). Output is
-// interleaved signed-16 PCM at 48 kHz.
+// interleaved 32-bit float PCM at 48 kHz (native-float lossy decode, like
+// the Vorbis backend — op_read_float, one hop, no s16 quantize round trip).
 //
 // Design: the whole encoded file is slurped into memory on init (the
 // AacDecoder.cpp pattern — songs are a few MB; this removes a class of
@@ -51,13 +52,14 @@ struct OpusBackend {
 // ── ma_data_source vtable ─────────────────────────────────────────────────────
 ma_result opus_ds_read(ma_data_source* pDS, void* out, ma_uint64 frameCount, ma_uint64* pRead) {
     OpusBackend* b = (OpusBackend*)pDS;
-    opus_int16* dst = (opus_int16*)out;
+    float* dst = (float*)out;
     ma_uint64 served = 0;
     while (served < frameCount) {
-        // op_read's buffer size is a value count (samples across channels) in an
-        // int; it copies out of its internal packet buffer, so small caps are fine.
+        // op_read_float's buffer size is a value count (samples across channels)
+        // in an int, INTERLEAVED output (unlike Vorbis's planar ov_read_float);
+        // it copies out of its internal packet buffer, so small caps are fine.
         int cap = (int)std::min<ma_uint64>((frameCount - served) * b->channels, 1 << 20);
-        int got = op_read(b->of, dst, cap, nullptr);
+        int got = op_read_float(b->of, dst, cap, nullptr);
         if (got == OP_HOLE) continue;          // corrupt page: skip it; opusfile resyncs
         if (got <= 0) break;                   // 0 = EOF, negative = hard error
         dst    += (size_t)got * b->channels;
@@ -78,7 +80,7 @@ ma_result opus_ds_seek(ma_data_source* pDS, ma_uint64 frameIndex) {
 ma_result opus_ds_get_format(ma_data_source* pDS, ma_format* fmt, ma_uint32* ch,
                              ma_uint32* sr, ma_channel* chMap, size_t chMapCap) {
     OpusBackend* b = (OpusBackend*)pDS;
-    if (fmt) *fmt = ma_format_s16;
+    if (fmt) *fmt = ma_format_f32;
     if (ch)  *ch  = b->channels ? b->channels : 2;
     if (sr)  *sr  = 48000;                     // Opus is always 48 kHz internally
     if (chMap && chMapCap > 0)

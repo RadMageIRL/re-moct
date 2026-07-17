@@ -1,5 +1,5 @@
 // CustomBackends.h — the process-wide list of miniaudio custom decoding
-// backends (FDK-AAC, Opus, WavPack).
+// backends (FDK-AAC, Opus, WavPack, Vorbis).
 //
 // Every ma_decoder that should understand the custom formats registers THIS
 // array, so the playback path (LocalFileSource's open_decoder) and the

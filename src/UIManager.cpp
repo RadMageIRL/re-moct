@@ -40,6 +40,7 @@
 #include <cwchar>
 #include <clocale>
 #include <cstdint>
+#include <climits>   // INT_MAX (help-pane End: draw-time clamp pins it to max_scroll)
 #include <ctime>
 #include <thread>
 #include <cstdarg>
@@ -5467,12 +5468,30 @@ void UIManager::handleInput(int ch) {
         return;
     }
 
-    // When help is showing, j/k scroll it; other keys still work globally
+    // When help is showing, j/k scroll it; other keys still work globally.
+    // PgUp/PgDn/Home/End mirror the playlist's nav SEMANTICS (page = one
+    // visible page minus a row of overlap, clamped at both ends) applied to
+    // the help pane's scroll offset. The end clamp is drawHelp's draw-time
+    // invariant (help_scroll_ = clamp(0, max_scroll)), the same pattern the
+    // playlist uses for its cursor scroll, so setting help_scroll_ past a
+    // bound here is pinned on the next render - short content (max_scroll==0)
+    // clamps every key to 0, a harmless no-op.
     if (right_pane_ == RightPane::Help) {
+        // Page size from the help viewport (win_playlist_ hosts the pane):
+        // rows-2 visible rows (header + bottom border), minus one for overlap,
+        // exactly as drawHelp computes visible_rows.
+        int hr = 0, hc = 0;
+        if (win_playlist_) getmaxyx(win_playlist_, hr, hc);
+        (void)hc;
+        int help_page = std::max(1, (hr - 2) - 1);
         switch (ch) {
             case 17: audio_.stop(); running_ = false; return;
             case 'j': case 'J': case KEY_DOWN: ++help_scroll_; redraw_needed_.store(true); return;
             case 'k': case 'K': case KEY_UP:   --help_scroll_; redraw_needed_.store(true); return;
+            case KEY_NPAGE: help_scroll_ += help_page; redraw_needed_.store(true); return;  // PgDn
+            case KEY_PPAGE: help_scroll_ -= help_page; redraw_needed_.store(true); return;  // PgUp
+            case KEY_HOME:  help_scroll_ = 0;          redraw_needed_.store(true); return;
+            case KEY_END:   help_scroll_ = INT_MAX;    redraw_needed_.store(true); return;  // draw clamps to max_scroll
             case ' ': audio_.togglePause(); return;
             case 's': audio_.stop(); return;
             default: return;

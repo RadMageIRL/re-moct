@@ -553,3 +553,10 @@ target_link_libraries(mp3_rg_read_test PRIVATE
     $<$<PLATFORM_ID:Linux>:dl> $<$<PLATFORM_ID:Linux>:pthread> $<$<PLATFORM_ID:Linux>:m>)
 add_test(NAME mp3_rg_read_test COMMAND mp3_rg_read_test)
 set_tests_properties(mp3_rg_read_test PROPERTIES TIMEOUT 60)
+
+# radio-art-refresh-fix — the time-bounded art negative cache (header-only,
+# no deps): rate-limits within the TTL, self-heals at it, wrap-safe ticks.
+add_executable(art_miss_cache_test art_miss_cache_test.cpp)
+target_include_directories(art_miss_cache_test PRIVATE ${CMAKE_SOURCE_DIR}/include)
+add_test(NAME art_miss_cache_test COMMAND art_miss_cache_test)
+set_tests_properties(art_miss_cache_test PROPERTIES TIMEOUT 30)

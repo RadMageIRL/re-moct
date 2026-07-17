@@ -24,6 +24,7 @@
 #include "Mp4Chapters.h"
 #include "AwesomeThemes.h"
 #include "CoverArtRender.h"
+#include "ArtMissCache.h"   // time-bounded art negative cache (radio-art-refresh-fix)
 #include "core/INotify.h"
 
 class PlaylistManager;
@@ -117,6 +118,8 @@ private:
     void radioArtPickup(const std::string& song_key);
     void radioArtKick(const std::string& artist, const std::string& title,
                       const std::string& song_key);
+    void radioArtFloor(const std::string& song_key);   // radio-art-refresh-fix: the
+                                                       // empty-key reset BOTH drivers share
     void handleMBSearchInput(int ch);
     void drawProgress();
     void drawCmdLine();
@@ -544,9 +547,12 @@ private:
     std::string       discord_art_key_;            // "artist\ttrack" the result is for (guarded)
     std::string       discord_art_cache_key_;       // last resolved key (UI thread only)
     std::string       discord_art_cache_url_;       // last resolved url (UI thread only)
-    std::unordered_set<std::string> discord_art_neg_; // radio keys that resolved to NO art this
-                                                      // session — skip re-querying on rotation
-                                                      // return (UI thread only). Stream-only.
+    ArtMissCache      discord_art_neg_;             // radio keys whose art lookup MISSED —
+                                                    // time-bounded (radio-art-refresh-fix Fix #2:
+                                                    // a transient failure self-heals after the
+                                                    // TTL; a genuine no-art song stays
+                                                    // rate-limited). UI thread only. Stream-only;
+                                                    // shared by the pane and Discord paths.
     void startDiscordArtLookup(const std::string& artist,
                                const std::string& album,
                                const std::string& key,

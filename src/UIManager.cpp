@@ -1135,6 +1135,10 @@ void UIManager::run() {
                 std::string key = radioSongIdentity(np, artist, title);
                 radioArtPickup(key);
                 if (!key.empty()) radioArtKick(artist, title, key);
+                else radioArtFloor(key);   // radio-art-refresh-fix: the branch this
+                                           // driver was missing — a dip now resets
+                                           // radio_bytes_key_ so the song's return
+                                           // re-kicks instead of being suppressed
                 if (!key.empty() && radio_bytes_key_ == key && radio_bytes_resolved_ &&
                     !radio_bytes_.empty() && np != rec_art_pushed_key_) {
                     rec_art_pushed_key_ = np;
@@ -3879,7 +3883,7 @@ void UIManager::radioArtPickup(const std::string& song_key) {
             radio_bytes_resolved_ = true;
             radio_render_key_.clear();                       // force a re-decode
             if (radio_bytes_.empty() && !was_station)
-                discord_art_neg_.insert(song_key);
+                discord_art_neg_.add(song_key, port::tickMs());
             requestRedraw();                                 // cover landed -> repaint
         }
         // else: the song moved on mid-fetch; the (re)trigger handles the new one.
@@ -3905,9 +3909,28 @@ void UIManager::radioArtKick(const std::string& artist, const std::string& title
         radio_render_key_.clear();
         if (!station_art.empty())
             startRadioArtFetch(artist, title, station_art);
-        else if (discord_art_neg_.find(song_key) == discord_art_neg_.end())
+        else if (!discord_art_neg_.hit(song_key, port::tickMs()))
             startRadioArtFetch(artist, title, "");       // song-entity lookup
-        else { radio_bytes_.clear(); radio_bytes_resolved_ = true; }   // known miss -> floor
+        else { radio_bytes_.clear(); radio_bytes_resolved_ = true; }   // fresh miss -> floor
+    }
+}
+
+// radio-art-refresh-fix: the empty-key floor reset, hoisted from
+// refreshRadioArt's inline else-branch so BOTH drivers (the pane and the
+// recording tick) share it. The confirmed stale-until-bounce bug existed
+// precisely because the tick driver was extracted with a SUBSET of the
+// original's branches: a fetch completing during a metadata dip was
+// discarded while radio_bytes_key_ still named the song, so the catch-up
+// re-kick (song_changed) never fired when the song returned. With all four
+// operations (identity/pickup/kick/floor) shared, the drivers cannot
+// diverge again.
+void UIManager::radioArtFloor(const std::string& song_key) {
+    if (song_key != radio_bytes_key_) {
+        // No parseable now-playing (ad break / LIVE / pre-title): float on the logo.
+        radio_bytes_key_ = song_key;   // ""
+        radio_bytes_.clear();
+        radio_bytes_resolved_ = true;
+        radio_render_key_.clear();
     }
 }
 
@@ -3917,15 +3940,10 @@ void UIManager::refreshRadioArt(int box_cols, int box_rows) {
     std::string song_key = radioSongIdentity(audio_.streamNowPlaying(), artist, title);
 
     radioArtPickup(song_key);
-    if (!song_key.empty()) {
+    if (!song_key.empty())
         radioArtKick(artist, title, song_key);
-    } else if (song_key != radio_bytes_key_) {
-        // No parseable now-playing (ad break / LIVE / pre-title): float on the logo.
-        radio_bytes_key_ = song_key;   // ""
-        radio_bytes_.clear();
-        radio_bytes_resolved_ = true;
-        radio_render_key_.clear();
-    }
+    else
+        radioArtFloor(song_key);   // same code, new home — behavior identical
 
     // Decode step: real cover if we have one, else the logo floor. Cached on
     // (source | box), so no per-frame re-decode and the logo doesn't thrash.
@@ -4841,7 +4859,7 @@ void UIManager::updateScrobbler() {
                 // confirmed miss is remembered so rotation repeats don't re-query.
                 if (key == discord_art_cache_key_ && !discord_art_cache_url_.empty())
                     image = discord_art_cache_url_;            // resolved earlier this session
-                else if (discord_art_neg_.find(key) == discord_art_neg_.end())
+                else if (!discord_art_neg_.hit(key, port::tickMs()))
                     startDiscordArtLookup(artist, track, key, /*song=*/true);
             }
 
@@ -4868,9 +4886,10 @@ void UIManager::updateScrobbler() {
                     discord_.setActivity(discord_track_, sta, discord_start_, url, "RE-MOCT");
                 } else if (audio_.streamMode()) {
                     // Radio lookup came back empty for the still-current track: remember
-                    // the miss so the same song returning in rotation keeps the logo
-                    // without re-hitting iTunes/Deezer. Logo is already on screen.
-                    discord_art_neg_.insert(forkey);
+                    // the miss (time-bounded - a transient failure self-heals after the
+                    // TTL) so the same song returning soon keeps the logo without
+                    // re-hitting iTunes/Deezer. Logo is already on screen.
+                    discord_art_neg_.add(forkey, port::tickMs());
                 }
             } else if (!audio_.streamMode() && !discord_album_.empty()) {
                 // The finished lookup was for a since-skipped track — retry for the

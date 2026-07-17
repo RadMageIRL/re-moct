@@ -21,6 +21,15 @@ Feature release: Opus and WavPack playback.
 
 ### Fixed
 
+- **Radio cover art now refreshes reliably.** Two staleness sources fixed:
+  a track's art could go permanently missing when its lookup finished during
+  a metadata dip (an ad break or LIVE stretch) while a recording was active -
+  switching stations and back was the only recovery; and a single transient
+  network failure on a song's first art lookup used to blank that song for
+  the whole session. Art now recovers on the song's return, and failed
+  lookups retry after a cooldown instead of never - while genuinely
+  art-less songs are still looked up at most once per cooldown window.
+
 - **MP3 ReplayGain and AccurateRip tags are now written in the standard
   form other players read.** Previously the whole "KEY=value" text landed
   in the tag frame's description with an empty value - RE-MOCT could read

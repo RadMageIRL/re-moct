@@ -35,3 +35,6 @@ icon/*
 
 # ctest scratch (a stray repo-root ctest run creates this)
 Testing/
+
+# Local diagnostic/feasibility tools - kept in-tree for testing, never pushed
+tools/

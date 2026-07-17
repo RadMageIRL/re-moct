@@ -24,6 +24,7 @@
 
 #include <taglib/mpegfile.h>
 #include <taglib/id3v2tag.h>
+#include <taglib/textidentificationframe.h>   // UserTextIdentificationFrame (readMp3)
 #include <taglib/opusfile.h>   // TagLib's own (collision-safe: taglib/ prefixed)
 #include <taglib/xiphcomment.h>
 
@@ -79,9 +80,15 @@ static void pushSine(StreamRecorder& rec, uint64_t& phase, uint32_t frames,
 
 struct Mp3Tags {
     std::string title, artist;
-    bool has_rg = false;
-    std::string rg_gain;   // "REPLAYGAIN_TRACK_GAIN=..." payload
+    bool has_rg = false;       // a PROPER standard-shape RG frame was found
+    std::string rg_gain;       // its VALUE field, e.g. "-6.92 dB"
 };
+// Strengthened for mp3-rg-write: the RG frame must be a genuine
+// UserTextIdentificationFrame with a CLEAN description (exactly
+// "REPLAYGAIN_TRACK_GAIN" — no "=value" blob baked in) and a NON-EMPTY
+// value field. This is the production-write half of the write->read chain:
+// tagCut writes the standard shape on every ctest, and mp3_rg_read_test's
+// standard-shape case proves LocalFileSource reads exactly that shape.
 static Mp3Tags readMp3(const std::string& path) {
     Mp3Tags out;
     TagLib::MPEG::File f(TL_PATH(path), true);
@@ -91,10 +98,12 @@ static Mp3Tags readMp3(const std::string& path) {
     out.title  = tag->title().to8Bit(true);
     out.artist = tag->artist().to8Bit(true);
     for (auto* fr : tag->frameList("TXXX")) {
-        std::string s = fr->toString().to8Bit(true);
-        if (s.find("REPLAYGAIN_TRACK_GAIN") != std::string::npos) {
-            out.has_rg = true; out.rg_gain = s;
-        }
+        auto* u = dynamic_cast<TagLib::ID3v2::UserTextIdentificationFrame*>(fr);
+        if (!u) continue;
+        if (u->description().to8Bit(true) != "REPLAYGAIN_TRACK_GAIN") continue;
+        const auto& fl = u->fieldList();     // [0]=description, [1..]=value(s)
+        for (unsigned int i = 1; i < fl.size(); ++i)
+            if (!fl[i].isEmpty()) { out.has_rg = true; out.rg_gain = fl[i].to8Bit(true); break; }
     }
     return out;
 }

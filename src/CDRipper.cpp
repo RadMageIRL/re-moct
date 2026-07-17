@@ -718,22 +718,38 @@ void CDRipper::tagFile(const std::string&         path,
             tag->setTrack ((unsigned int)track_num);
             if (rel.date.size()>=4) try { tag->setYear((unsigned)std::stoi(rel.date.substr(0,4))); } catch(...){}
 
+            // TENC is a standard ID3v2 text frame — the generic construction
+            // is CORRECT for it and stays.
             auto addTxt = [&](const char* id, const std::string& val) {
                 auto* f2 = new TagLib::ID3v2::TextIdentificationFrame(id, TagLib::String::UTF8);
                 f2->setText(TagLib::String(val, TagLib::String::UTF8));
                 tag->addFrame(f2);
             };
+            // TXXX frames need the description/value SPLIT (mp3-rg-write):
+            // the old addTxt("TXXX", "KEY=value") blob re-parsed with the
+            // whole string in the DESCRIPTION and an empty value — invisible
+            // to PropertyMap, foobar2000, and CUETools alike (probe-proven;
+            // docs/mp3-rg-read-plan.md). Keys and value strings are
+            // byte-identical to before; only the framing is corrected. The
+            // decode side reads BOTH shapes (mp3-rg-read), so legacy files
+            // stay readable and are never re-tagged.
+            auto addUserTxt = [&](const char* desc, const std::string& val) {
+                auto* f2 = new TagLib::ID3v2::UserTextIdentificationFrame(TagLib::String::UTF8);
+                f2->setDescription(desc);
+                f2->setText(TagLib::String(val, TagLib::String::UTF8));
+                tag->addFrame(f2);
+            };
             addTxt("TENC", "RE-MOCT v" REMOCT_VERSION);
             if (!ar_str.empty()) {
-                addTxt("TXXX", "AccurateRip="      + ar_str);
-                addTxt("TXXX", "ACCURATERIPCRC="   + std::string(ar_crc_str));
-                addTxt("TXXX", "ACCURATERIPCOUNT=" + std::string(ar_conf_str));
+                addUserTxt("AccurateRip",      ar_str);
+                addUserTxt("ACCURATERIPCRC",   std::string(ar_crc_str));
+                addUserTxt("ACCURATERIPCOUNT", std::string(ar_conf_str));
             }
             if (rg.valid) {
-                addTxt("TXXX", "REPLAYGAIN_TRACK_GAIN="+rg_str(rg.track_gain));
-                addTxt("TXXX", "REPLAYGAIN_TRACK_PEAK="+rg_peak_str(rg.track_peak));
-                addTxt("TXXX", "REPLAYGAIN_ALBUM_GAIN="+rg_str(rg.album_gain));
-                addTxt("TXXX", "REPLAYGAIN_ALBUM_PEAK="+rg_peak_str(rg.album_peak));
+                addUserTxt("REPLAYGAIN_TRACK_GAIN", rg_str(rg.track_gain));
+                addUserTxt("REPLAYGAIN_TRACK_PEAK", rg_peak_str(rg.track_peak));
+                addUserTxt("REPLAYGAIN_ALBUM_GAIN", rg_str(rg.album_gain));
+                addUserTxt("REPLAYGAIN_ALBUM_PEAK", rg_peak_str(rg.album_peak));
             }
             if (!art.empty()) {
                 auto* ap = new TagLib::ID3v2::AttachedPictureFrame();

@@ -223,10 +223,20 @@ void tagCut(const std::string& path, RipFormat fmt,
                 f2->setText(TagLib::String(val, TagLib::String::UTF8));
                 tag->addFrame(f2);
             };
+            // TXXX = proper description/value split (mp3-rg-write, the
+            // tagFile mirror): the old "KEY=value" blob was invisible to
+            // every non-RE-MOCT reader. TENC stays generic — correct for a
+            // standard text frame.
+            auto addUserTxt = [&](const char* desc, const std::string& val) {
+                auto* f2 = new TagLib::ID3v2::UserTextIdentificationFrame(TagLib::String::UTF8);
+                f2->setDescription(desc);
+                f2->setText(TagLib::String(val, TagLib::String::UTF8));
+                tag->addFrame(f2);
+            };
             addTxt("TENC", "RE-MOCT v" REMOCT_VERSION);
             if (rg_valid) {
-                addTxt("TXXX", "REPLAYGAIN_TRACK_GAIN=" + rgStr(rg_gain));
-                addTxt("TXXX", "REPLAYGAIN_TRACK_PEAK=" + rgPeakStr(rg_peak));
+                addUserTxt("REPLAYGAIN_TRACK_GAIN", rgStr(rg_gain));
+                addUserTxt("REPLAYGAIN_TRACK_PEAK", rgPeakStr(rg_peak));
             }
             f.save(TagLib::MPEG::File::ID3v2, TagLib::File::StripNone, TagLib::ID3v2::v4);
         } else if (fmt == RipFormat::Opus) {

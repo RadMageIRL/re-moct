@@ -11,6 +11,13 @@ Feature release: Opus and WavPack playback.
 
 ### Fixed
 
+- **MP3 ReplayGain and AccurateRip tags are now written in the standard
+  form other players read.** Previously the whole "KEY=value" text landed
+  in the tag frame's description with an empty value - RE-MOCT could read
+  its own files (see the ReplayGain fix below) but foobar2000-class players
+  and CUETools saw nothing. New rips and recordings write a proper
+  description/value split; the tag names and values are unchanged. Existing
+  files are not modified and still read fine in RE-MOCT.
 - **MP3 files now honor their ReplayGain tags.** MP3s ripped by RE-MOCT
   carried a correct gain value that the player never applied - MP3 tracks
   played at full level while their FLAC and Opus siblings played

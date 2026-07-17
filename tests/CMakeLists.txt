@@ -454,3 +454,29 @@ add_dependencies(plugin_hls_parity_test remoct_stream)
 add_test(NAME plugin_hls_parity_test COMMAND plugin_hls_parity_test)
 set_tests_properties(plugin_hls_parity_test PROPERTIES TIMEOUT 90)
 
+
+# rip-encoder-seam — the byte-identity oracle. The reference arm is the
+# pre-seam inline FLAC/LAME sequence frozen verbatim in the test; the seam arm
+# is FlacEncoder/Mp3Encoder (the only rip-tail TUs light enough to link —
+# CDRipper's TU never links into tests). Asserts both formats' outputs are
+# byte-identical on a fixed deterministic PCM fixture, both platforms. This
+# machine-enforces the transliteration; the Joan Osborne hardware gate remains
+# the integration oracle.
+add_executable(rip_encoder_seam_test
+    rip_encoder_seam_test.cpp
+    ${CMAKE_SOURCE_DIR}/src/FlacEncoder.cpp
+    ${CMAKE_SOURCE_DIR}/src/Mp3Encoder.cpp
+)
+target_include_directories(rip_encoder_seam_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/lib
+    ${FLAC_INCLUDE} ${LAME_INCLUDE})
+target_link_libraries(rip_encoder_seam_test PRIVATE ${FLAC_LIB} ${LAME_LIB}
+    ${OGG_LIB}   # static libFLAC.a (Option C probe) needs ogg spelled out
+    $<$<PLATFORM_ID:Linux>:m>)
+if(WIN32 AND REMOCT_STATIC_PROBE)
+    # Same as the remoct target: static libFLAC.a exports plain symbols, but
+    # FLAC_API defaults to dllimport (__imp_) without this define.
+    target_compile_definitions(rip_encoder_seam_test PRIVATE FLAC__NO_DLL)
+endif()
+add_test(NAME rip_encoder_seam_test COMMAND rip_encoder_seam_test)
+set_tests_properties(rip_encoder_seam_test PROPERTIES TIMEOUT 60)

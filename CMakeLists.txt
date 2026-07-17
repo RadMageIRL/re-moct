@@ -68,6 +68,8 @@ set(REMOCT_SOURCES
     src/WavPackDecoder.cpp        # libwavpack (.wv) backend
     src/VorbisDecoder.cpp         # libvorbis/libvorbisfile (.ogg) backend
     src/CustomBackends.cpp        # the shared custom-backend array (playback + BPM)
+    src/FlacEncoder.cpp           # rip-encoder-seam: FLAC output behind IEncoder
+    src/Mp3Encoder.cpp            # rip-encoder-seam: MP3 output behind IEncoder
     src/Mp4Chapters.cpp
     src/RadioBrowser.cpp
     src/LastFm.cpp

@@ -18,11 +18,12 @@
 #include <shlobj.h>
 #endif
 
-// FLAC C API
-#include <FLAC/stream_encoder.h>
-
-// LAME MP3
-#include <lame/lame.h>
+// Rip-output encoders (rip-encoder-seam): the FLAC/LAME code that lived
+// inline in ripTrack moved verbatim behind IEncoder — this TU no longer
+// touches either C API directly.
+#include "IEncoder.h"
+#include "FlacEncoder.h"
+#include "Mp3Encoder.h"
 
 // libebur128 for ReplayGain
 #include <ebur128.h>
@@ -59,8 +60,7 @@ static constexpr int SECTOR_SAMPLES   = 588;
 static constexpr int SECTORS_PER_READ = 27;
 static constexpr int SAMPLE_RATE      = 44100;
 static constexpr int CHANNELS         = 2;
-static constexpr int BIT_DEPTH        = 16;
-static constexpr int FLAC_COMPRESSION = 5;
+// (BIT_DEPTH / FLAC_COMPRESSION moved with the FLAC code into FlacEncoder.cpp)
 // C2 read: 2352 audio bytes + 294 C2 bytes = 2646 bytes per sector
 static constexpr int SECTOR_BYTES_C2  = 2352 + 294;
 
@@ -783,50 +783,23 @@ ARTrackResult CDRipper::ripTrack(core::ICdDevice&   dev,
     const uint32_t total_secs = (uint32_t)track.length_lba;
     if (total_secs == 0) return ar_result;
 
-    // ── FLAC setup ────────────────────────────────────────────────────────
-    FLAC__StreamEncoder* flac_enc = FLAC__stream_encoder_new();
-    if (!flac_enc) { ar_result.status = ARStatus::NotFound; return ar_result; }
-    FLAC__stream_encoder_set_verify(flac_enc, false);
-    FLAC__stream_encoder_set_compression_level(flac_enc, FLAC_COMPRESSION);
-    FLAC__stream_encoder_set_channels(flac_enc, CHANNELS);
-    FLAC__stream_encoder_set_bits_per_sample(flac_enc, BIT_DEPTH);
-    FLAC__stream_encoder_set_sample_rate(flac_enc, SAMPLE_RATE);
-    FLAC__stream_encoder_set_total_samples_estimate(flac_enc,
-        (FLAC__uint64)total_secs * SECTOR_SAMPLES);
-    FILE* flac_file = port::fopenUtf8(flac_path, "wb");
-    if (!flac_file) { FLAC__stream_encoder_delete(flac_enc); return ar_result; }
-    if (FLAC__stream_encoder_init_FILE(flac_enc, flac_file, nullptr, nullptr)
-            != FLAC__STREAM_ENCODER_INIT_STATUS_OK) {
-        fclose(flac_file); FLAC__stream_encoder_delete(flac_enc); return ar_result;
-    }
-
-    // ── LAME setup ────────────────────────────────────────────────────────
-    lame_global_flags* lame = lame_init();
-    if (!lame) {
-        FLAC__stream_encoder_finish(flac_enc);
-        FLAC__stream_encoder_delete(flac_enc);
-        return ar_result;
-    }
-    lame_set_in_samplerate(lame, SAMPLE_RATE);
-    lame_set_num_channels(lame, CHANNELS);
-    lame_set_VBR(lame, vbr_mtrh);
-    lame_set_VBR_q(lame, 0);
-    lame_set_quality(lame, 2);
-    lame_set_mode(lame, STEREO);
-    lame_set_write_id3tag_automatic(lame, 0);
-    lame_set_bWriteVbrTag(lame, 1);   // emit Xing/LAME info header (VBR duration)
-    if (lame_init_params(lame) < 0) {
-        lame_close(lame);
-        FLAC__stream_encoder_finish(flac_enc);
-        FLAC__stream_encoder_delete(flac_enc);
-        return ar_result;
-    }
-    FILE* mp3_file = port::fopenUtf8(mp3_path, "wb");
-    if (!mp3_file) {
-        lame_close(lame);
-        FLAC__stream_encoder_finish(flac_enc);
-        FLAC__stream_encoder_delete(flac_enc);
-        return ar_result;
+    // ── Encoder fan-out (rip-encoder-seam) ────────────────────────────────
+    // The hard-coded {FLAC, MP3} list, in the original inline open order.
+    // Each is a pure PCM consumer of the read loop's blocks; tags/art/RG
+    // happen later in tagFile, unchanged. On an open failure, unwind the
+    // already-opened encoders exactly as the inline code did: finalize
+    // (FLAC's finish flushes a valid-but-empty file, deliberately LEFT on
+    // disk — the worker's zero-CRC heuristic catches it) and return.
+    std::vector<std::unique_ptr<IEncoder>> encoders;
+    encoders.push_back(std::make_unique<FlacEncoder>());
+    encoders.push_back(std::make_unique<Mp3Encoder>());
+    const std::string* enc_paths[] = { &flac_path, &mp3_path };
+    for (size_t ei = 0; ei < encoders.size(); ++ei) {
+        if (!encoders[ei]->open(*enc_paths[ei],
+                                (uint64_t)total_secs * SECTOR_SAMPLES)) {
+            for (size_t j = 0; j < ei; ++j) encoders[j]->finalize(false);
+            return ar_result;
+        }
     }
 
     // ── libebur128 for ReplayGain ─────────────────────────────────────────
@@ -903,11 +876,8 @@ ARTrackResult CDRipper::ripTrack(core::ICdDevice&   dev,
     static constexpr int BUF_BYTES   = BUF_SECTORS * SECTOR_BYTES;
 
     uint8_t raw_buf[BUF_BYTES];
-    FLAC__int32 flac_buf[BUF_SECTORS * SECTOR_SAMPLES * 2];
-    int16_t lame_left[BUF_SECTORS * SECTOR_SAMPLES];
-    int16_t lame_right[BUF_SECTORS * SECTOR_SAMPLES];
-    uint8_t mp3_out[BUF_SECTORS * SECTOR_SAMPLES * 2 + 7200];
     float   ebur_interleaved[BUF_SECTORS * SECTOR_SAMPLES * 2]; // interleaved L+R
+    // (the per-format staging buffers moved into FlacEncoder/Mp3Encoder)
 
     // ── Drive + pressing offset correction ───────────────────────────────────
     // total_skip = drive_offset + pressing_offset. May span multiple sectors.
@@ -1036,10 +1006,6 @@ ARTrackResult CDRipper::ripTrack(core::ICdDevice&   dev,
 
         for (int i = 0; i < samples; ++i) {
             int16_t l = src[i*2], r = src[i*2+1];
-            flac_buf[i*2]            = (FLAC__int32)l;
-            flac_buf[i*2+1]          = (FLAC__int32)r;
-            lame_left[i]             = l;
-            lame_right[i]            = r;
             ebur_interleaved[i*2]    = (float)l / 32768.0f;
             ebur_interleaved[i*2+1]  = (float)r / 32768.0f;
 
@@ -1063,15 +1029,15 @@ ARTrackResult CDRipper::ripTrack(core::ICdDevice&   dev,
                 pcm_crc32 = crc32_table[(pcm_crc32 ^ b[n]) & 0xFF] ^ (pcm_crc32 >> 8);
         }
 
-        // FLAC encode
-        if (!FLAC__stream_encoder_process_interleaved(
-                flac_enc, flac_buf, (unsigned)samples)) { ok = false; break; }
-
-        // MP3 encode
-        int mp3b = lame_encode_buffer(lame, lame_left, lame_right,
-                                      samples, mp3_out, sizeof(mp3_out));
-        if (mp3b < 0) { ok = false; break; }
-        if (mp3b > 0) fwrite(mp3_out, 1, (size_t)mp3b, mp3_file);
+        // Encoders (FLAC then MP3 — the inline order). A failure breaks the
+        // rip exactly as the inline `ok=false; break` pairs did: later
+        // encoders in the list, ReplayGain, and CTDB are skipped this block.
+        {
+            bool enc_ok = true;
+            for (auto& e : encoders)
+                if (!e->writeFrames(src, (size_t)samples)) { enc_ok = false; break; }
+            if (!enc_ok) { ok = false; break; }
+        }
 
         // ReplayGain -- interleaved stereo. `samples` is already the stereo-frame
         // count (same value passed to FLAC/LAME), which is exactly what
@@ -1142,10 +1108,6 @@ ARTrackResult CDRipper::ripTrack(core::ICdDevice&   dev,
         int samples = corr_sub_skip;
         for (int i = 0; i < samples; ++i) {
             int16_t l = src[i*2], r = src[i*2+1];
-            flac_buf[i*2]           = (FLAC__int32)l;
-            flac_buf[i*2+1]         = (FLAC__int32)r;
-            lame_left[i]            = l;
-            lame_right[i]           = r;
             ebur_interleaved[i*2]   = (float)l / 32768.0f;
             ebur_interleaved[i*2+1] = (float)r / 32768.0f;
             arc.sample(l, r);
@@ -1156,35 +1118,18 @@ ARTrackResult CDRipper::ripTrack(core::ICdDevice&   dev,
             for (int n = 0; n < samples * 4; ++n)
                 pcm_crc32 = crc32_table[(pcm_crc32 ^ b[n]) & 0xFF] ^ (pcm_crc32 >> 8);
         }
-        if (!FLAC__stream_encoder_process_interleaved(flac_enc, flac_buf, (unsigned)samples))
-            ok = false;
-        if (ok) {
-            int mp3b = lame_encode_buffer(lame, lame_left, lame_right,
-                                          samples, mp3_out, sizeof(mp3_out));
-            if (mp3b < 0) ok = false;
-            else if (mp3b > 0) fwrite(mp3_out, 1, (size_t)mp3b, mp3_file);
-        }
+        // Encoders on the borrowed tail samples — FLAC-fail skips MP3, as the
+        // inline `if (ok)` gate did; ebur still runs after, also as before.
+        for (auto& e : encoders)
+            if (!e->writeFrames(src, (size_t)samples)) { ok = false; break; }
         if (ebur) ebur128_add_frames_float(ebur, ebur_interleaved,
                                            (size_t)samples);
     }
 
     // ── Flush encoders ────────────────────────────────────────────────────
-    FLAC__stream_encoder_finish(flac_enc);
-    FLAC__stream_encoder_delete(flac_enc);
-    if (ok) {
-        int fb = lame_encode_flush(lame, mp3_out, sizeof(mp3_out));
-        if (fb > 0) fwrite(mp3_out, 1, (size_t)fb, mp3_file);
-        // Overwrite the reserved first frame with the real Xing/LAME info tag so
-        // VBR MP3s report the correct duration (frame count) to every player.
-        unsigned char vbr_tag[2880];
-        size_t tag_n = lame_get_lametag_frame(lame, vbr_tag, sizeof(vbr_tag));
-        if (tag_n > 0 && tag_n <= sizeof(vbr_tag)) {
-            fseek(mp3_file, 0, SEEK_SET);
-            fwrite(vbr_tag, 1, tag_n, mp3_file);
-        }
-    }
-    fclose(mp3_file);
-    lame_close(lame);
+    // FLAC first (list order = the inline finish order). ok=false skips the
+    // LAME flush/Xing rewrite but still closes handles, exactly as before.
+    for (auto& e : encoders) e->finalize(ok);
 
     // ── ReplayGain result ─────────────────────────────────────────────────
     if (ebur && ok) {

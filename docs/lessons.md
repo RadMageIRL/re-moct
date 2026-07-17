@@ -1002,3 +1002,32 @@ runtime-discoverable, not compile-discoverable; a green build proves nothing abo
   Chained Ogg streams can also switch channel count per link: clamp to the
   CURRENT link's channels (ov_info(vf, bitstream)) before indexing pcm[], or a
   channel-count change mid-file reads a garbage plane pointer.
+
+## Rip encoder seam (rip-encoder-seam slice)
+- **The rip write tail was ALREADY a streaming fan-out** - one 27-sector block
+  fed FLAC -> LAME -> ebur128 -> AR/CTDB CRCs inside one loop iteration of
+  ripTrack, same thread as the read. The IEncoder seam (IEncoder.h +
+  FlacEncoder/Mp3Encoder) NAMES that structure; it did not create it. Tags,
+  art, and ReplayGain are NOT part of IEncoder and never can be: album gain
+  only exists after the last track (ebur128_loudness_global_multiple over
+  handed-back per-track states), so tagging is a post-loop worker pass
+  (tagFile) that the seam leaves at a zero-line diff.
+- **Byte-identity of the transliteration is machine-enforced** by
+  rip_encoder_seam_test: the pre-seam inline FLAC/LAME sequence is FROZEN
+  verbatim in the test as a reference arm and diffed against the seam classes
+  on a fixed PCM fixture. If you touch FlacEncoder/Mp3Encoder settings or call
+  order, that test failing is the point - do not update the reference arm to
+  match; the reference IS the contract until a slice deliberately changes the
+  output format (then move the gate).
+- **KNOWN, DELIBERATELY PRESERVED quirk: an MP3-side open failure leaves a
+  finished, valid-but-EMPTY .flac on disk** (the inline code FLAC-finished on
+  the LAME unwind path; the seam reproduces it via finalize(false)). The
+  worker's zero-CRC heuristic catches it downstream. Do NOT "helpfully" clean
+  it up in a refactor - changing error-path behavior couples a bug-fix to the
+  byte-identity gate. If it deserves fixing, it is its own slice.
+- One-bit simplification, analyzed as invisible: the inline code set
+  ARStatus::NotFound when FLAC__stream_encoder_new returned null (alloc
+  failure only) and NotQueried on every other open failure; the seam's bool
+  open() collapses both to NotQueried. The distinction was dead: the worker's
+  abort check keys on crc_v1==0 && crc_v2==0 (status not consulted), and the
+  Pass-2 NotFound gate is unreachable for a track that failed before reading.

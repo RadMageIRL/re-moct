@@ -33,7 +33,7 @@ enum class Pane      { DirBrowser, Playlist };
 enum class RightPane { Playlist, Visualizer, Help, TrackInfo, Bookmarks, Lyrics, About, Devices, EQ, Queue, Chapters, SearchResults };
 
 // Modal overlays drawn on top of the normal layout
-enum class UIOverlay { None, RipConfirm, MBSearch };
+enum class UIOverlay { None, RipConfirm, MBSearch, RecPanel };
 
 class UIManager {
 public:
@@ -108,6 +108,7 @@ private:
     void maybePreloadNext();
     void drawRipConfirm();
     void drawMBSearch();
+    void drawRecPanel();   // stream-record R2: the [Rec] panel (^E)
     void handleMBSearchInput(int ch);
     void drawProgress();
     void drawCmdLine();
@@ -216,7 +217,7 @@ private:
     void computeVizBins();
 
     // Input bar state (goto dir / save M3U / load M3U)
-    enum class InputMode { Goto, SaveM3U, LoadM3U, StreamURL, StreamName, RadioSearch, LastfmKey, LastfmSecret, ListenBrainzToken, PlaylistSearch };
+    enum class InputMode { Goto, SaveM3U, LoadM3U, StreamURL, StreamName, RadioSearch, LastfmKey, LastfmSecret, ListenBrainzToken, PlaylistSearch, RecDir };
     bool        goto_active_  = false;
     InputMode   input_mode_   = InputMode::Goto;
     std::string goto_input_;
@@ -432,6 +433,15 @@ private:
     // NEVER written back to config (the conf key is the default only).
     // Deliberately not reset on eject — user preference, not disc data.
     std::vector<RipFormat> rip_sel_;
+    // Stream-record R2: the [Rec] panel's SETTINGS (session state seeded from
+    // config, like rip_sel_ - config is load-once, the panel never writes
+    // back). Lifecycle state (recording/elapsed/cuts/dropped) is deliberately
+    // NOT mirrored here - every render reads the recorder's own atomic
+    // accessors, so panel/badge and engine can never drift.
+    RipFormat   rec_fmt_      = RipFormat::Opus;   // single-select: Opus | Mp3
+    bool        rec_split_on_ = true;              // split on title change
+    std::string rec_dir_;                          // "" = recordingsDir() at start
+    int         rec_panel_tick_ = 0;               // ~2 Hz live-state refresh
     std::string rip_status_;   // shown in cmdline during/after rip
     int         rip_msg_ticks_ = 0;  // auto-clear counter
 

@@ -226,6 +226,11 @@ UIManager::UIManager(PlaylistManager& playlist, AudioManager& audio,
     // Seed the session rip-format selection from the config default (config
     // is load-once; the modal toggles rip_sel_ and never writes it back).
     rip_sel_ = parseRipFormats(config_.rip_formats);
+    // Stream-record R2: seed the [Rec] panel settings the same way (config is
+    // load-once; the panel mutates session state and never writes back).
+    rec_fmt_      = (config_.rec_format == "mp3") ? RipFormat::Mp3 : RipFormat::Opus;
+    rec_split_on_ = config_.rec_split;
+    rec_dir_      = config_.rec_dir;
 #ifdef PDCURSES
     // wingui measures its font during initscr(), so choose the face FIRST.
     initWinguiFont(config_.wingui_font);
@@ -1110,6 +1115,16 @@ void UIManager::run() {
             std::chrono::steady_clock::now() - last_seek_apply_ >= std::chrono::milliseconds(100))
             flushPendingSeek();
         updateScrobbler();
+        // Stream-record R2: hand the polled now-playing to the recorder —
+        // onTitle dedups internally (a repeat can never cut twice) and
+        // no-ops when idle/split-off, so the unconditional per-tick call is
+        // safe; the fetch is one the scrobbler/art paths already make. The
+        // panel refreshes its live state at ~2 Hz (80 ms ticks x 6).
+        if (audio_.streamMode() && audio_.streamRecorder().recording()) {
+            audio_.streamRecorder().onTitle(audio_.streamNowPlaying());
+            if (ui_overlay_ == UIOverlay::RecPanel && (++rec_panel_tick_ % 6) == 0)
+                redraw_needed_.store(true);
+        }
         updateBookProgress();
         // Async stream connect/fail confirmation toasts. Un-gated at slice 5:
         // this was #ifdef _WIN32 slice-1 scaffolding from when notify was a
@@ -1459,6 +1474,7 @@ void UIManager::run() {
             if (ui_overlay_ != UIOverlay::None) {
                 if (ui_overlay_ == UIOverlay::RipConfirm) drawRipConfirm();
                 else if (ui_overlay_ == UIOverlay::MBSearch) drawMBSearch();
+                else if (ui_overlay_ == UIOverlay::RecPanel) drawRecPanel();
                 redraw_needed_.store(false);
             } else {
             drawAll();
@@ -1796,6 +1812,111 @@ void UIManager::drawRipConfirm() {   // slice 6: common (ncurses + portable CDSo
     delwin(w);
 }
 
+// Stream-record R2: the [Rec] panel (^E). The rip modal's window mechanics
+// cloned (centered newwin, themed bkgd, panelFrame + Classic manual title,
+// MAX_DIR truncation); rip-specific rows dropped. Two views on one overlay:
+// SETTINGS while idle, live STATE while recording (^E reopens to it). Every
+// lifecycle datum is read from the recorder's atomic accessors per render —
+// no UI-side copy exists to drift.
+void UIManager::drawRecPanel() {
+    const int BOX_W = 68;
+    const int BOX_H = 17;
+    int y0 = (screen_rows_ - BOX_H) / 2;
+    int x0 = (screen_cols_ - BOX_W) / 2;
+    if (y0 < 0) y0 = 0;
+    if (x0 < 0) x0 = 0;
+
+    WINDOW* w = newwin(BOX_H, BOX_W, y0, x0);
+    if (!w) return;
+    wbkgd(w, config_.awesome_mode ? COLOR_PAIR(CP_DIM) : COLOR_PAIR(0));
+    werase(w);
+
+    const char* title = " STREAM RECORDING ";
+    panelFrame(w, title, true);
+    if (!config_.awesome_mode)
+        mvwaddstr(w, 0, (BOX_W - (int)strlen(title)) / 2, title);
+
+    auto& rec = audio_.streamRecorder();
+
+    // Station display name (the "RADIO: " prefix is a pane affordance, not a name)
+    std::string st = stationLabel(audio_.streamUrl());
+    if (st.rfind("RADIO: ", 0) == 0) st = st.substr(7);
+
+    // Effective output dir: the recorder appends <Station>/ itself, so show
+    // the resolved station dir the cuts will actually land in.
+    const std::string base = rec_dir_.empty() ? CDRipper::recordingsDir() : rec_dir_;
+#ifdef _WIN32
+    const std::string dir  = base + "\\" + sanitizePathComponent(st);
+#else
+    const std::string dir  = base + "/" + sanitizePathComponent(st);
+#endif
+    const int MAX_DIR = BOX_W - 12;
+    std::string disp_dir = dir;
+    if ((int)disp_dir.size() > MAX_DIR)
+        disp_dir = "..." + disp_dir.substr(disp_dir.size() - (MAX_DIR - 3));
+
+    mvwprintw(w, 2, 3, "Station  %s", st.c_str());
+    mvwprintw(w, 3, 3, "Out      %s", disp_dir.c_str());
+
+    if (!rec.recording()) {
+        // ── SETTINGS view ────────────────────────────────────────────────
+        mvwaddstr(w, 5, 3, "Format");
+        mvwaddstr(w, 5, BOX_W - 15, "(1-2 select)");
+        struct { RipFormat id; const char* label; std::string quality; } rows[] = {
+            { RipFormat::Opus, "Opus", std::to_string(config_.opus_bitrate / 1000) + " kbps VBR" },
+            { RipFormat::Mp3,  "MP3",  "LAME " + config_.mp3 + " VBR" },
+        };
+        for (int i = 0; i < 2; ++i)
+            mvwprintw(w, 6 + i, 3, "  (%c) %d  %-6s %s",
+                      rec_fmt_ == rows[i].id ? '*' : ' ', i + 1,
+                      rows[i].label, rows[i].quality.c_str());
+        mvwprintw(w, 8, 3, "[S] Split on track change : %s",
+                  rec_split_on_ ? "ON" : "OFF (one continuous file)");
+        mvwaddstr(w, 9, 3, "[D] Output dir (edit)");
+
+        // The pause-gap notice — the R1 finding, stated plainly.
+        wattron(w, A_DIM);
+        mvwaddstr(w, 11, 3, "Note: pausing playback while recording leaves a");
+        mvwaddstr(w, 12, 3, "silence gap - the paused-over airtime is not captured.");
+        mvwaddstr(w, 13, 3, "Cuts split on station metadata (boundaries are +/-1-2s).");
+        wattroff(w, A_DIM);
+
+        mvwhline(w, BOX_H - 3, 1, ACS_HLINE, BOX_W - 2);
+        mvwaddstr(w, BOX_H - 2, 3, "[R] Record        [N/Esc] Close");
+    } else {
+        // ── RECORDING view (live state, all atomic reads) ───────────────
+        std::string np = audio_.streamNowPlaying();
+        if ((int)np.size() > BOX_W - 14) np = np.substr(0, BOX_W - 17) + "...";
+        wattron(w, COLOR_PAIR(CP_STATUS_ERR) | A_BOLD);
+        mvwaddstr(w, 5, 3, "* REC");
+        wattroff(w, COLOR_PAIR(CP_STATUS_ERR) | A_BOLD);
+        mvwprintw(w, 5, 10, "%s", np.c_str());
+
+        int es = rec.elapsedSec();
+        mvwprintw(w, 7, 3, "elapsed %d:%02d    cuts %d    written %.1f MB",
+                  es / 60, es % 60, rec.cutIndex(),
+                  (double)rec.bytesWritten() / (1024.0 * 1024.0));
+        uint64_t dropped = rec.droppedFrames();
+        if (dropped > 0) {
+            wattron(w, COLOR_PAIR(CP_STATUS_ERR) | A_BOLD);
+            mvwprintw(w, 8, 3, "dropped frames: %llu", (unsigned long long)dropped);
+            wattroff(w, COLOR_PAIR(CP_STATUS_ERR) | A_BOLD);
+        }
+        std::string err = rec.lastError();
+        if (!err.empty()) {
+            wattron(w, COLOR_PAIR(CP_STATUS_ERR) | A_BOLD);
+            mvwprintw(w, 9, 3, "error: %s", err.c_str());
+            wattroff(w, COLOR_PAIR(CP_STATUS_ERR) | A_BOLD);
+        }
+
+        mvwhline(w, BOX_H - 3, 1, ACS_HLINE, BOX_W - 2);
+        mvwaddstr(w, BOX_H - 2, 3, "[X] Stop          [N/Esc] Close (keeps recording)");
+    }
+
+    wrefresh(w);
+    delwin(w);
+}
+
 
 // Apply MusicBrainz/Discogs track titles to the current CD playlist. UI THREAD
 // ONLY: this reads and mutates playlist_ (its entries_ vector and the std::strings
@@ -1983,6 +2104,11 @@ void UIManager::drawTitleBar() {
         default: break;
     }
     if (playlist_.shuffle()) modes += " [SHUFFLE]";
+    // Stream-record R2: DERIVED from the recorder's own state (one relaxed
+    // atomic) — no stored UI flag exists, so a stale badge is impossible:
+    // every engine teardown path (stop/station switch/file/CD/quit) already
+    // clears recording() via the R1 hooks.
+    if (audio_.streamRecorder().recording()) modes += " [REC]";
     if (!playlist_.queueEmpty())
         modes += " [Q:" + std::to_string(playlist_.queueSize()) + "]";
     if (config_.toast_enabled) modes += " [TOAST]";
@@ -4393,6 +4519,7 @@ void UIManager::drawGotoBar() {
         case InputMode::LastfmSecret: prompt = " last.fm secret: ";  break;
         case InputMode::ListenBrainzToken: prompt = " listenbrainz token: "; break;
         case InputMode::PlaylistSearch: prompt = " search playlist: "; break;
+        case InputMode::RecDir: prompt = " recordings dir: "; break;
     }
     wattron(win_cmdline_, COLOR_PAIR(CP_TITLE) | A_BOLD);
     mvwaddstr(win_cmdline_, 0, 0, prompt.c_str());
@@ -4434,26 +4561,8 @@ std::string UIManager::stationLabel(const std::string& url) const {
 // Unstoppable") pass; ad/station-break markers and empty/Unknown fields are
 // dropped so neither Last.fm nor ListenBrainz gets polluted. Heuristic by
 // nature — extend the marker list as new junk patterns turn up in the log.
-// De-invert "Surname, The" -> "The Surname" for cleaner scrobble metadata.
-// Strict: only fires when the entire tail after the comma is a bare article, so
-// real comma-containing names ("Tyler, The Creator", "Earth, Wind & Fire") are
-// left untouched. Verified against an isolated test of both forms.
-static std::string deinvertArtist(const std::string& a) {
-    auto pos = a.rfind(',');
-    if (pos == std::string::npos || pos == 0) return a;
-    std::string head = a.substr(0, pos);
-    std::string tail = a.substr(pos + 1);
-    size_t ts = tail.find_first_not_of(" \t");
-    if (ts == std::string::npos) return a;             // nothing after the comma
-    tail = tail.substr(ts);
-    while (!head.empty() && (head.back() == ' ' || head.back() == '\t')) head.pop_back();
-    if (head.empty()) return a;
-    std::string low = tail;
-    for (auto& c : low) c = (char)std::tolower((unsigned char)c);
-    if (low == "the" || low == "a" || low == "an")
-        return tail + " " + head;                      // preserve article casing
-    return a;
-}
+// (deinvertArtist moved verbatim to StringUtils.h in stream-record R2 so the
+// recorder's parseNowPlaying shares it; the :4663 caller is unchanged.)
 
 static bool looksLikeRealTrack(const std::string& artist, const std::string& track) {
     auto lower = [](std::string s) {
@@ -4872,6 +4981,66 @@ void UIManager::handleInput(int ch) {
     // slice 6: overlay input is common. The RipConfirm modal (^Y) is live on Linux;
     // the MBSearch line is inert there (^F stays gated, so it never opens).
     if (ui_overlay_ == UIOverlay::MBSearch) { handleMBSearchInput(ch); return; }
+    // ── [Rec] panel (stream-record R2) — intercepts all input when active ──
+    // The rip modal's structural disambiguation, minus its empty-selection
+    // guard (a single-select radio always has exactly one format chosen):
+    // N/Esc first (close always works; recording continues), then the
+    // recording-view keys, then settings keys, then start.
+    if (ui_overlay_ == UIOverlay::RecPanel) {
+        auto& rec = audio_.streamRecorder();
+        if (ch == 'n' || ch == 'N' || ch == 27) {
+            ui_overlay_ = UIOverlay::None;      // close; [REC] badge carries state
+            redraw_needed_.store(true);
+            return;
+        }
+        if (rec.recording()) {
+            if (ch == 'x' || ch == 'X') {
+                rec.stop();                     // finalizes the in-flight cut
+                showTrackToast("Recording stopped",
+                               std::to_string(rec.cuts().size()) + " cut(s) saved", "");
+                redraw_needed_.store(true);     // panel flips to settings view
+            }
+            return;                             // settings keys inert while recording
+        }
+        if (ch == '1') { rec_fmt_ = RipFormat::Opus; redraw_needed_.store(true); return; }
+        if (ch == '2') { rec_fmt_ = RipFormat::Mp3;  redraw_needed_.store(true); return; }
+        if (ch == 's' || ch == 'S') {
+            rec_split_on_ = !rec_split_on_;
+            redraw_needed_.store(true);
+            return;
+        }
+        if (ch == 'd' || ch == 'D') {
+            // The goto bar and an overlay don't compose (drawGotoBar returns
+            // early) — close the panel, prompt, reopen on submit.
+            ui_overlay_ = UIOverlay::None;
+            openInputBar(InputMode::RecDir,
+                         rec_dir_.empty() ? CDRipper::recordingsDir() : rec_dir_);
+            return;
+        }
+        if (ch == 'r' || ch == 'R' || ch == '\n' || ch == '\r' || ch == KEY_ENTER) {
+            if (!audio_.streamMode()) {         // stream died while the panel was open
+                ui_overlay_ = UIOverlay::None;
+                showTrackToast("Stream recording", "Start a stream first (Ctrl+U)", "");
+                redraw_needed_.store(true);
+                return;
+            }
+            RecOptions opt;
+            opt.formats       = { rec_fmt_ };
+            opt.mp3_vbr_q     = parseMp3VbrQ(config_.mp3);
+            opt.opus_bitrate  = std::clamp(config_.opus_bitrate, 6000, 510000);
+            opt.split_on_meta = rec_split_on_;
+            std::string st = stationLabel(audio_.streamUrl());
+            if (st.rfind("RADIO: ", 0) == 0) st = st.substr(7);
+            if (rec.start(opt, st, rec_dir_.empty() ? CDRipper::recordingsDir()
+                                                    : rec_dir_))
+                rec.onTitle(audio_.streamNowPlaying());   // seed the first label
+            else
+                showTrackToast("Recording failed", rec.lastError(), "");
+            redraw_needed_.store(true);         // panel flips to recording view
+            return;
+        }
+        return;   // swallow everything else — the overlay is modal
+    }
     // ── Rip mode selection modal — intercepts all input when active ─────────
     // Input disambiguation is STRUCTURAL (rip-format-select): N/Esc first
     // (cancel always works), digits toggle and return inside their own case
@@ -5633,6 +5802,19 @@ void UIManager::handleInput(int ch) {
             if (ui_overlay_ == UIOverlay::None)
                 openInputBar(InputMode::StreamURL, "");
             break;
+        case 5:  // Ctrl+E — stream recording: the [Rec] panel (stream-record R2)
+            if (ui_overlay_ != UIOverlay::None) break;  // already showing a modal
+            if (audio_.streamMode() || audio_.streamRecorder().recording()) {
+                // Idle -> settings view; recording -> live-state view (the
+                // draw fn branches on the recorder's own state).
+                ui_overlay_ = UIOverlay::RecPanel;
+                redraw_needed_.store(true);
+            } else {
+                // Precondition: recording taps the playing stream — nothing
+                // to record from a CD/file/silence. Toast, no panel.
+                showTrackToast("Stream recording", "Start a stream first (Ctrl+U)", "");
+            }
+            break;
         case 25:  // Ctrl+Y — CD rip  (slice 6: common — CD path live on Linux)
             if (ui_overlay_ != UIOverlay::None) break;  // already showing modal
             if (cd_ripper_.isActive()) {
@@ -6244,6 +6426,15 @@ void UIManager::gotoClose(bool commit) {
                     in_drive_list_ = false;
                     refreshDir();
                 }
+                break;
+            }
+            case InputMode::RecDir: {
+                // Stream-record R2: [D] from the [Rec] panel. Session override
+                // only (never written back to config); empty submit keeps the
+                // derived default. Reopen the panel with the new value.
+                rec_dir_ = target;
+                ui_overlay_ = UIOverlay::RecPanel;
+                redraw_needed_.store(true);
                 break;
             }
             case InputMode::SaveM3U: {

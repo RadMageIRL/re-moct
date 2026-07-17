@@ -2,6 +2,7 @@
 #include <string>
 #include <vector>
 #include <utility>
+#include <cctype>    // deinvertArtist's tolower
 #include <cstdint>
 #include <ctime>
 #ifdef _WIN32
@@ -34,6 +35,31 @@ inline std::string sanitizePathComponent(const std::string& s) {
         o += (c < 32 || ill.find((char)c) != std::string::npos) ? '_' : (char)c;
     while (!o.empty() && (o.back()=='.'||o.back()==' ')) o.pop_back();
     return o.empty() ? "Unknown" : o;
+}
+
+// ─── Article de-inversion ─────────────────────────────────────────────────────
+// "Surname, The" -> "The Surname" for cleaner scrobble/tag metadata. Strict:
+// only fires when the ENTIRE tail after the last comma is a bare article
+// (the/a/an), so real comma-containing names ("Tyler, The Creator",
+// "Earth, Wind & Fire") are left untouched. Deliberately does NOT transform
+// "Lastname, Firstname" - too ambiguous to guess safely. Moved verbatim from
+// the UIManager file-static (stream-record R2) so StreamRecorder's
+// parseNowPlaying applies the same rule to filenames AND tags.
+inline std::string deinvertArtist(const std::string& a) {
+    auto pos = a.rfind(',');
+    if (pos == std::string::npos || pos == 0) return a;
+    std::string head = a.substr(0, pos);
+    std::string tail = a.substr(pos + 1);
+    size_t ts = tail.find_first_not_of(" \t");
+    if (ts == std::string::npos) return a;             // nothing after the comma
+    tail = tail.substr(ts);
+    while (!head.empty() && (head.back() == ' ' || head.back() == '\t')) head.pop_back();
+    if (head.empty()) return a;
+    std::string low = tail;
+    for (auto& c : low) c = (char)std::tolower((unsigned char)c);
+    if (low == "the" || low == "a" || low == "an")
+        return tail + " " + head;                      // preserve article casing
+    return a;
 }
 
 // ─── Wide string conversion ───────────────────────────────────────────────────

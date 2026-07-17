@@ -11,6 +11,25 @@ Feature release: Opus and WavPack playback.
 
 ### Added
 
+- **Stream recording** (Ctrl+E while a radio stream is playing): capture the
+  station you are listening to straight to disk. The panel picks the output
+  format (Opus at the configured bitrate, default, or MP3 - the broadcast is
+  already lossy, so lossless output is deliberately not offered), toggles
+  split-on-track-change, and sets the output folder (default:
+  Music/re-moct/recordings/, beside your rips - override with the new
+  "rec_dir" key; "rec_format" and "rec_split" set the startup defaults).
+  Each song is cut and tagged from the station's own now-playing metadata
+  (title, artist, per-track ReplayGain, a station credit) and named
+  Artist - Title; cuts with missing or unreadable metadata fall back to a
+  station-plus-timestamp name. Honest limits, stated up front: song
+  boundaries come from the broadcaster's metadata and typically land within
+  1-2 seconds of the real change, so edges can carry a moment of the
+  neighboring track; the first and last cuts of a session are partial
+  (marked in the filename); and pausing playback while recording leaves a
+  silence gap - the paused-over airtime is not captured. A [REC] indicator
+  shows in the title bar whenever a recording is running, and recording
+  stops cleanly (finishing its current file) when you stop the stream,
+  switch stations, or quit.
 - **Opus playback** (`.opus`): full decode/seek via libopus + libopusfile.
   Opus files were already browsable but silently failed to play; they now
   play, seek, show correct duration, and read tags. Opus ReplayGain

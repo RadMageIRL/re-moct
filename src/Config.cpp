@@ -207,6 +207,12 @@ void DigiConfig::load() {
                 val[1] >= '0' && val[1] <= '9')
                 mp3 = std::string("V") + val[1];
         }
+        else if (key == "rec_format") {
+            // Lossy-only by design (stream-record); anything else keeps opus.
+            if (val == "opus" || val == "mp3") rec_format = val;
+        }
+        else if (key == "rec_split")          rec_split          = (val == "1");
+        else if (key == "rec_dir")            rec_dir            = val;
         else if (key == "wingui_font")        wingui_font        = val;
         else if (key == "wingui_cols")        try { wingui_cols = std::stoi(val); } catch (...) {}
         else if (key == "wingui_rows")        try { wingui_rows = std::stoi(val); } catch (...) {}
@@ -327,6 +333,9 @@ void DigiConfig::save() const {
         f << "mp3="               << mp3         << "\n";
         f << "opus_bitrate="      << opus_bitrate << "\n";
         f << "wavpack_mode="      << wavpack_mode << "\n";
+        f << "rec_format="        << rec_format << "\n";
+        f << "rec_split="         << (rec_split ? "1" : "0") << "\n";
+        if (!rec_dir.empty())     f << "rec_dir=" << rec_dir << "\n";
         if (!wingui_font.empty()) f << "wingui_font="    << wingui_font << "\n";
         if (wingui_cols > 0)      f << "wingui_cols="    << wingui_cols << "\n";
         if (wingui_rows > 0)      f << "wingui_rows="    << wingui_rows << "\n";

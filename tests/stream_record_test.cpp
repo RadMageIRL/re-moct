@@ -293,6 +293,11 @@ int main() {
         CHECK(!StreamRecorder::parseNowPlaying("ArtistOnly - ").ok);
         p = StreamRecorder::parseNowPlaying("Bj\xc3\xb6rk - J\xc3\xb3ga");
         CHECK(p.ok && p.artist == "Bj\xc3\xb6rk");               // UTF-8 inert
+        // Article de-inversion (R2: shared deinvertArtist, filename+tag home)
+        p = StreamRecorder::parseNowPlaying("Shins, The - New Slang");
+        CHECK(p.ok && p.artist == "The Shins" && p.title == "New Slang");
+        p = StreamRecorder::parseNowPlaying("Tyler, The Creator - Earfquake");
+        CHECK(p.ok && p.artist == "Tyler, The Creator");         // guarded: not a bare article
         // Rejected format lists fail fast with a reason, not a crash.
         StreamRecorder rec;
         RecOptions opt; opt.formats = { RipFormat::Flac };

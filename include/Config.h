@@ -45,6 +45,14 @@ struct DigiConfig {
     int         opus_bitrate = 128000;     // Opus VBR bitrate, 6000-510000 (= kOpusDefaultBitrate)
     std::string wavpack_mode = "normal";   // fast|normal|high|very_high (= kWavPackDefaultMode)
 
+    // ── Stream recording (stream-record R2) ───────────────────────────────
+    // Session seeds only, like rip_formats - the [Rec] panel's toggles are
+    // never written back. Quality reuses opus_bitrate / mp3 above (one
+    // quality truth, no duplicate knobs).
+    std::string rec_format = "opus";  // opus | mp3 (single-select default)
+    bool        rec_split  = true;    // split on metadata title change
+    std::string rec_dir;              // "" = <music>/re-moct/recordings, resolved at record start
+
     // UI theme toggle (Ctrl+T): false = Classic, true = Awesome (rounded panels)
     bool  awesome_mode = false;
     int   awesome_theme = 0;   // index into kAwesomeThemes (Ctrl+T Awesome look; F8 cycles)

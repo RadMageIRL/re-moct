@@ -53,6 +53,10 @@ StreamRecorder::ParsedTitle StreamRecorder::parseNowPlaying(const std::string& r
         while (!x.empty() && (x.back()==' '||x.back()=='\t')) x.pop_back();
     };
     trim(p.artist); trim(p.title);
+    // Article de-inversion ("Shins, The" -> "The Shins"; "Tyler, The Creator"
+    // untouched) — applied HERE, not in the tag pass, so filename and tag get
+    // the same artist (stream-record R2; shared home in StringUtils.h).
+    p.artist = deinvertArtist(p.artist);
     p.ok = !p.artist.empty() && !p.title.empty();
     return p;
 }

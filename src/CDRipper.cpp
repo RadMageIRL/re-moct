@@ -1411,6 +1411,35 @@ void CDRipper::worker(std::string          drive_letter,
     std::string log_dir      = out_dir + kSep + "logs";
     std::string ar_cache_dir = out_dir + kSep + ".ar-db-info";
     std::string log_path;
+    // log-semantics: the master-vs-derived distinction, surfaced from the
+    // properties that already exist (kRipFormats[].lossless + opt.formats) —
+    // nothing computed. Precise framing, resisting the common overclaim:
+    // AR/CTDB verify the disc READ; lossless outputs RETAIN the verified
+    // bits, lossy ones transcode them away. Written in the header block and
+    // restated beside the Summary's AR totals so "did the read verify?" and
+    // "which file retains it?" sit together. The log has no parser (human-
+    // only, grep-confirmed at plan) — format is free.
+    auto joinFormats = [&](bool lossless) {
+        std::string s;
+        for (const auto& r : kRipFormats)
+            if (r.lossless == lossless &&
+                std::find(opt.formats.begin(), opt.formats.end(), r.id) != opt.formats.end())
+                s += (s.empty() ? "" : ", ") + std::string(r.label);
+        return s;
+    };
+    const std::string master_fmts  = joinFormats(true);
+    const std::string derived_fmts = joinFormats(false);
+    // The parenthetical stays FACTUAL per shape: mention lossy copies only
+    // when the rip actually produces some (caught by the lossless-only
+    // verification rip at implement — the fixed text must never overclaim).
+    const std::string master_line = !master_fmts.empty()
+        ? master_fmts + "  (AR/CTDB verdicts apply to the lossless master"
+          + (master_fmts.find(',') != std::string::npos ? "s" : "")
+          + (!derived_fmts.empty()
+                 ? "; lossy copies derive from the same verified read)"
+                 : ")")
+        : "NONE - lossy outputs only. AR/CTDB verdicts attest the disc READ, "
+          "but no output retains the verified bits.";
     {
         fs::create_directories(log_dir, ec);
         std::time_t t = std::time(nullptr);
@@ -1432,7 +1461,17 @@ void CDRipper::worker(std::string          drive_letter,
                 mode==RipMode::AccurateRip ? "AccurateRip"    :
                 mode==RipMode::CUETools    ? "CUETools"       :
                 mode==RipMode::LocalVerify ? "Local (2-pass)" : "Local");
-            fprintf(lf, "Output : %s\n\n", out_dir.c_str());
+            fprintf(lf, "Output : %s\n", out_dir.c_str());
+            bool first_fmt = true;
+            for (const auto& r : kRipFormats) {
+                if (std::find(opt.formats.begin(), opt.formats.end(), r.id) == opt.formats.end())
+                    continue;
+                fprintf(lf, "%s%-8s %s\n", first_fmt ? "Formats: " : "         ",
+                        r.label, r.lossless ? "lossless - verifiable master"
+                                            : "lossy - derived copy");
+                first_fmt = false;
+            }
+            fprintf(lf, "Master : %s\n\n", master_line.c_str());
             fclose(lf);
         }
     }
@@ -2297,6 +2336,9 @@ void CDRipper::worker(std::string          drive_letter,
                     i < (int)rg_results.size() ? rg_results[i].track_gain : 0.0,
                     ar_results[i].crc_v1, ar_results[i].crc_v2);
             }
+            // log-semantics: restate the master verdict beside the AR totals
+            // (computed once at the header — see the block above log_path).
+            fprintf(lf, "Master : %s\n", master_line.c_str());
             fclose(lf);
         }
     }

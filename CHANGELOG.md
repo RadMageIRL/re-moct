@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Feature release: Opus and WavPack playback.
 
+### Added (rip log)
+
+- **The rip log now states which outputs are the verifiable master.** Each
+  selected format is listed as "lossless - verifiable master" or "lossy -
+  derived copy", with a Master line in the header and summary. Precisely
+  worded: AccurateRip/CTDB verify the disc read; lossless outputs retain
+  the verified audio bit-for-bit, lossy outputs are transcoded copies of
+  the same verified read. A lossy-only rip says plainly that it has no
+  verifiable master.
+
 ### Fixed
 
 - **MP3 ReplayGain and AccurateRip tags are now written in the standard

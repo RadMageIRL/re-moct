@@ -92,6 +92,12 @@ bool StreamRecorder::start(const RecOptions& opt, const std::string& station,
     if (ec) return fail("cannot create the recordings directory");
 
     opt_ = opt;
+    if (opt_.split_offset_ms < 0) opt_.split_offset_ms = 0;   // lead RESERVED (plan doc)
+    hold_armed_ = false;
+    hold_frames_left_ = 0;
+    cut_is_ad_ = false;
+    suppressed_ = false;
+    ads_skipped_.store(0);
     wpos_.store(0); rpos_.store(0);
     dropped_.store(0); total_frames_.store(0); bytes_written_.store(0);
     cut_index_.store(0);
@@ -332,7 +338,37 @@ bool StreamRecorder::openCut() {
     ParsedTitle p = parseNowPlaying(cut_raw_);
     cut_artist_ = p.artist; cut_title_ = p.title;
 
-    std::string base = cutBasePath();
+    // ad-aware classification: parseable-but-junk = non-song (the LIVE floor
+    // is iHeart's STRUCTURAL ad signal surfacing as a string; the vocabulary
+    // is the ICY heuristic — one classifier, two signal qualities).
+    // Unparseable titles stay songs/main, deliberately conservative: a
+    // title-only station's real songs must never misroute or drop.
+    cut_is_ad_ = p.ok && !looksLikeRealTrack(p.artist, p.title);
+
+    if (cut_is_ad_ && opt_.ads_discard) {
+        // Suppressed cut (Discard): no encoders, no files — frames are counted
+        // (the skip is VISIBLE) but never written. The user's explicit opt-in.
+        suppressed_ = true;
+        outs_.clear();
+        ebur_ = nullptr;
+        cut_frames_ = 0;
+        cut_open_   = true;
+        return true;
+    }
+    suppressed_ = false;
+
+    std::string base;
+    if (cut_is_ad_) {
+        // Save: route to <Station>/ads/ with a sortable, self-describing name.
+        // No (partial) marking — the folder's semantic is "not a song, prune".
+        std::string ad_dir = station_dir_ + kSep + "ads";
+        std::error_code ec;
+        fs::create_directories(ad_dir, ec);
+        base = ad_dir + kSep + timestampNow() + " - " +
+               sanitizePathComponent(cut_raw_.empty() ? "ad" : cut_raw_);
+    } else {
+        base = cutBasePath();
+    }
     // Collision: the same song returning in rotation must never overwrite an
     // earlier cut — probe across ALL selected formats, suffix " (2)", " (3)"…
     std::string chosen = base;
@@ -368,6 +404,11 @@ bool StreamRecorder::processBlock(const float* f32, uint32_t frames) {
         failCut("cannot open output files");
         return false;
     }
+    if (suppressed_) {   // Discard: count (the honesty surface), never write
+        cut_frames_ += frames;
+        total_frames_.fetch_add(frames, std::memory_order_relaxed);
+        return true;
+    }
     if (ebur_)
         ebur128_add_frames_float(ebur_, f32, (size_t)frames);   // frames, NOT samples
 
@@ -391,10 +432,30 @@ bool StreamRecorder::processBlock(const float* f32, uint32_t frames) {
 void StreamRecorder::rollCut(bool partial_tail) {
     if (!cut_open_) return;
 
+    // Suppressed (Discard) cut: record the skip visibly, write nothing.
+    if (suppressed_) {
+        CutInfo info;
+        info.artist = cut_artist_; info.title = cut_title_; info.raw = cut_raw_;
+        info.frames = cut_frames_;
+        info.is_ad = true; info.discarded = true;
+        {
+            std::lock_guard<std::mutex> lk(cuts_mtx_);
+            cuts_.push_back(std::move(info));
+        }
+        ads_skipped_.fetch_add(1, std::memory_order_relaxed);
+        suppressed_ = false;
+        cut_open_   = false;
+        cut_frames_ = 0;
+        first_cut_  = false;
+        cut_index_.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+
     CutInfo info;
     info.artist = cut_artist_; info.title = cut_title_; info.raw = cut_raw_;
     info.frames = cut_frames_;
-    info.partial = first_cut_ || partial_tail;
+    info.is_ad  = cut_is_ad_;
+    info.partial = (first_cut_ || partial_tail) && !cut_is_ad_;
 
     bool ok = true;
     for (auto& o : outs_)
@@ -449,7 +510,8 @@ void StreamRecorder::rollCut(bool partial_tail) {
         // tagging so the suffix survives. The first cut's suffix was already
         // in the name at open; don't double-mark.
         for (auto& o : outs_) {
-            if (partial_tail && o.path.find(" (partial)") == std::string::npos) {
+            if (partial_tail && !cut_is_ad_ &&
+                o.path.find(" (partial)") == std::string::npos) {
                 const std::string ext = ripFormatRow(o.fmt)->ext;
                 std::string np = o.path.substr(0, o.path.size() - ext.size())
                                + " (partial)" + ext;
@@ -514,15 +576,43 @@ void StreamRecorder::workerLoop() {
         split_pending_.store(false, std::memory_order_release);
     };
 
+    // Finalize the current cut and adopt the pending title as the next cut's
+    // identity — the one roll path both the immediate (offset<=0) and the
+    // held (offset>0, countdown expired) splits share.
+    auto rollAndAdopt = [&]() {
+        rollCut(false);
+        std::lock_guard<std::mutex> lk(meta_mtx_);
+        cut_raw_ = pending_raw_;
+        split_pending_.store(false, std::memory_order_release);
+        hold_armed_ = false;
+    };
+
     while (healthy) {
         adoptIfCutEmpty();
+
+        // split-trim: arm the hold when a split is detected and an offset is
+        // configured. The flag STAYS SET while armed (the pending title is
+        // adopted at the roll); arriving audio keeps attributing to the OLD
+        // cut until exactly offset*44.1 frames have passed — protecting the
+        // outro the early metadata would have guillotined. A second title
+        // change during the hold overwrites the pending title (its would-be
+        // cut is sub-offset-length by definition). stop() outranks the hold:
+        // the session tail finalizes immediately at loop exit.
+        if (opt_.split_offset_ms > 0 && !hold_armed_ &&
+            split_pending_.load(std::memory_order_acquire) &&
+            cut_open_ && cut_frames_ > 0) {
+            hold_armed_ = true;
+            hold_frames_left_ =
+                (uint64_t)opt_.split_offset_ms * SAMPLE_RATE / 1000;
+        }
+
         uint64_t r = rpos_.load(std::memory_order_relaxed);
         uint64_t w = wpos_.load(std::memory_order_acquire);
         uint64_t avail = w - r;   // SNAPSHOT: frames queued as of now
 
-        // Drain the snapshot — it was broadcast BEFORE any pending title event
-        // surfaced, so it belongs to the OLD cut. Frames the callback pushes
-        // while we drain stay queued for the next pass (the new cut).
+        // Drain the snapshot — pre-event audio belongs to the OLD cut; under
+        // an armed hold the countdown decides frame-exactly where the old cut
+        // ends, splitting a chunk mid-block when the boundary lands inside it.
         while (avail > 0 && healthy) {
             uint32_t n = (uint32_t)std::min<uint64_t>(CHUNK, avail);
             uint32_t off   = (uint32_t)(r & (ring_frames_ - 1));
@@ -534,20 +624,32 @@ void StreamRecorder::workerLoop() {
                             (size_t)(n - first) * CHANNELS * sizeof(float));
             r += n;
             rpos_.store(r, std::memory_order_release);
-            healthy = processBlock(scratch.data(), n);
+            if (hold_armed_) {
+                uint32_t to_old = (uint32_t)std::min<uint64_t>(n, hold_frames_left_);
+                if (to_old > 0) {
+                    healthy = processBlock(scratch.data(), to_old);
+                    hold_frames_left_ -= to_old;
+                }
+                if (healthy && hold_frames_left_ == 0) {
+                    rollAndAdopt();
+                    if (to_old < n)   // the chunk's tail opens the NEW cut
+                        healthy = processBlock(scratch.data() + (size_t)to_old * CHANNELS,
+                                               n - to_old);
+                }
+            } else {
+                healthy = processBlock(scratch.data(), n);
+            }
             avail -= n;
         }
 
-        // Roll on a pending split — checked on EVERY pass, including an idle
-        // ring, so a split can never stall waiting for the next audio block
-        // (a live source silence-pads so the ring is rarely idle, but a split
-        // must not depend on that).
-        if (healthy && split_pending_.load(std::memory_order_acquire) &&
+        // Immediate roll (offset<=0 — today's behavior, the regression
+        // anchor) — checked on EVERY pass including an idle ring, so a split
+        // can never stall waiting for the next audio block. A held split
+        // rolls only through its countdown above.
+        if (healthy && opt_.split_offset_ms <= 0 &&
+            split_pending_.load(std::memory_order_acquire) &&
             cut_open_ && cut_frames_ > 0) {
-            rollCut(false);
-            std::lock_guard<std::mutex> lk(meta_mtx_);
-            cut_raw_ = pending_raw_;   // the new cut adopts the pending title
-            split_pending_.store(false, std::memory_order_release);
+            rollAndAdopt();
         }
 
         if (rpos_.load(std::memory_order_relaxed) ==

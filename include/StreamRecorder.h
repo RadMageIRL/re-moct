@@ -50,6 +50,22 @@ struct RecOptions {
     int  mp3_vbr_q     = 0;        // LAME VBR quality 0-9 (0 = V0)
     int  opus_bitrate  = 128000;   // = kOpusDefaultBitrate; caller clamps
     bool split_on_meta = true;     // false -> one continuous timestamp-named file
+    // split-trim: hold acting on a title change by this many ms so the closing
+    // cut keeps its outro (radio metadata tends to run EARLY - the trail is
+    // what gets guillotined). Applied as an exact frame count on the worker;
+    // audio keeps flowing to the OLD cut through the hold - arriving audio
+    // only, never ring lookback. The key is signed by design; negative (lead)
+    // is RESERVED - it needs a worker-side holdback delay line, specced in
+    // docs/split-trim-ad-aware-plan.md, clamped to 0 until a station needs it.
+    int  split_offset_ms = 1200;
+    // ad-aware: what to do with cuts classified NON-SONG (the LIVE floor -
+    // iHeart's structural ad signal - plus the junk vocabulary on parseable
+    // titles; unparseable titles always stay songs/main, deliberately
+    // conservative). false = Save: route to <Station>/ads/ (never destroys).
+    // true = Discard: the cut is not written at all - the user's explicit,
+    // informed opt-in (a real song mislabeled by bad station metadata is lost;
+    // the visible ads-skipped counter is the trust surface).
+    bool ads_discard = false;
 };
 
 class StreamRecorder {
@@ -68,6 +84,8 @@ public:
         uint64_t    frames  = 0;          // PCM frames encoded into it
         bool        partial = false;      // session-start / session-stop edge
         bool        failed  = false;      // write/finalize failure (files removed)
+        bool        is_ad   = false;      // ad-aware: classified non-song
+        bool        discarded = false;    // ad-aware: suppressed (Discard mode)
     };
 
     explicit StreamRecorder(uint32_t ring_frames = kDefaultRingFrames);
@@ -114,6 +132,9 @@ public:
     int      elapsedSec()    const { return (int)(totalFrames() / SAMPLE_RATE); }
     // Index of the cut currently being written (== finished-cut count).
     int      cutIndex()      const { return cut_index_.load(std::memory_order_relaxed); }
+    // ad-aware: cuts suppressed under Discard — the trust surface for the one
+    // mode that destroys data (shown live in the panel + the stop summary).
+    int      adsSkipped()    const { return ads_skipped_.load(std::memory_order_relaxed); }
     std::string currentTitle() const;         // the title the open cut will carry
     std::string lastError()    const;         // empty = healthy
     std::vector<CutInfo> cuts() const;        // finished cuts (copy)
@@ -170,6 +191,15 @@ private:
     uint64_t              cut_frames_ = 0;
     bool                  cut_open_ = false;
     bool                  first_cut_ = true;
+    // split-trim hold state (worker-owned): armed on split detection when
+    // offset > 0; counts down as frames attribute to the OLD cut; the roll
+    // fires frame-exactly when it expires (mid-chunk splits are honored).
+    bool                  hold_armed_ = false;
+    uint64_t              hold_frames_left_ = 0;
+    // ad-aware (worker-owned): the open cut's classification + suppression.
+    bool                  cut_is_ad_ = false;
+    bool                  suppressed_ = false;   // Discard: counted, not written
+    std::atomic<int>      ads_skipped_ { 0 };
     std::vector<int16_t>  s16_;            // f32->s16 staging (worker scratch)
 
     // ── results / counters ───────────────────────────────────────────────────

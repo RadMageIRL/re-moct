@@ -213,6 +213,10 @@ void DigiConfig::load() {
         }
         else if (key == "rec_split")          rec_split          = (val == "1");
         else if (key == "rec_dir")            rec_dir            = val;
+        else if (key == "split_offset_ms")    try { split_offset_ms = std::clamp(std::stoi(val), -5000, 5000); } catch (...) {}
+        else if (key == "rec_ads") {
+            if (val == "save" || val == "discard") rec_ads = val;
+        }
         else if (key == "wingui_font")        wingui_font        = val;
         else if (key == "wingui_cols")        try { wingui_cols = std::stoi(val); } catch (...) {}
         else if (key == "wingui_rows")        try { wingui_rows = std::stoi(val); } catch (...) {}
@@ -336,6 +340,8 @@ void DigiConfig::save() const {
         f << "rec_format="        << rec_format << "\n";
         f << "rec_split="         << (rec_split ? "1" : "0") << "\n";
         if (!rec_dir.empty())     f << "rec_dir=" << rec_dir << "\n";
+        f << "split_offset_ms="   << split_offset_ms << "\n";
+        f << "rec_ads="           << rec_ads << "\n";
         if (!wingui_font.empty()) f << "wingui_font="    << wingui_font << "\n";
         if (wingui_cols > 0)      f << "wingui_cols="    << wingui_cols << "\n";
         if (wingui_rows > 0)      f << "wingui_rows="    << wingui_rows << "\n";

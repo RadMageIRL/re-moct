@@ -62,6 +62,35 @@ inline std::string deinvertArtist(const std::string& a) {
     return a;
 }
 
+// ─── Junk-metadata gate ───────────────────────────────────────────────────────
+// Real radio tracks (e.g. "Sia - Unstoppable") pass; ad/station-break markers
+// and empty/Unknown fields are dropped. Heuristic by nature - extend the
+// marker list as new junk patterns turn up. Note the "live" check is an EXACT
+// match on the whole title (the "<station> - LIVE" floor - which is also how
+// iHeart's Song/Ad/Live state machine surfaces ad breaks host-side, so for
+// iHeart this gate is structural, not heuristic), sparing songs like "Live and
+// Let Die". Moved verbatim from the UIManager file-static (ad-aware slice) so
+// the scrobbler and StreamRecorder's ad classification share one vocabulary.
+inline bool looksLikeRealTrack(const std::string& artist, const std::string& track) {
+    auto lower = [](std::string s) {
+        for (auto& c : s) c = (char)std::tolower((unsigned char)c);
+        return s;
+    };
+    std::string a = lower(artist), t = lower(track);
+    if (a.empty() || t.empty()) return false;
+    if (a == "unknown" || t == "unknown" ||
+        a == "unknown artist" || a == "unknown_artist") return false;
+    if (t == "live") return false;   // "<station> - LIVE" floor (exact match; spares songs like "Live and Let Die")
+    static const char* junk[] = {
+        "ad|", "ad |", "commercial break", "commercial-break",
+        "advertisement", "station id", "station-id", "spot block", "spotblock"
+    };
+    for (const char* j : junk)
+        if (a.find(j) != std::string::npos || t.find(j) != std::string::npos)
+            return false;
+    return true;
+}
+
 // ─── Wide string conversion ───────────────────────────────────────────────────
 // Windows: MultiByteToWideChar (UTF-16, the baseline — astral glyphs become
 // surrogate pairs; the terminal folds them to '?', accepted in lessons.md).

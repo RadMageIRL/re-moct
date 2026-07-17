@@ -37,6 +37,24 @@ Feature release: Opus and WavPack playback.
 
 ### Added
 
+- **Split hold for recordings** - radio metadata tends to fire a little
+  early, guillotining the previous song's outro. The recorder now holds the
+  cut boundary by a configurable offset (default 1200 ms, "Split hold" in
+  the recording panel, "split_offset_ms" config key) so the closing cut
+  keeps its tail. Honest limit: cuts approximate the broadcast - the hold
+  trims typical metadata earliness but cannot create clean seams the
+  station's own segues and crossfades never had.
+- **Ad-aware recording** - the recording panel gains an "Ad segments"
+  choice. Save (default) routes segments the station marks or titles as
+  non-song (ad breaks, station IDs, live/talk stretches) into an ads/
+  subfolder with timestamped names, keeping your song folder clean without
+  deleting anything. Discard skips writing them entirely - and shows a
+  running "ads skipped" count while recording plus a summary at stop, so
+  you can tell it is working (and tell if it is over-firing). Heads up:
+  Discard trusts the station's metadata - on a station that mislabels
+  songs, a real song can be lost; that is the trade you opt into, and the
+  panel says so at the toggle. Titles that do not parse at all are always
+  kept in the main folder in both modes.
 - **Recorded cuts now embed cover art.** Stream recordings reuse the same
   cover lookup the radio Info pane already does (station art, then the
   iTunes/Deezer song search) and embed the image in each cut's tags - MP3

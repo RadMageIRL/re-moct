@@ -231,6 +231,8 @@ UIManager::UIManager(PlaylistManager& playlist, AudioManager& audio,
     rec_fmt_      = (config_.rec_format == "mp3") ? RipFormat::Mp3 : RipFormat::Opus;
     rec_split_on_ = config_.rec_split;
     rec_dir_      = config_.rec_dir;
+    rec_offset_ms_ = std::clamp(config_.split_offset_ms, 0, 5000);  // lead reserved: negative -> 0
+    rec_ads_discard_ = (config_.rec_ads == "discard");
 #ifdef PDCURSES
     // wingui measures its font during initscr(), so choose the face FIRST.
     initWinguiFont(config_.wingui_font);
@@ -1837,7 +1839,7 @@ void UIManager::drawRipConfirm() {   // slice 6: common (ncurses + portable CDSo
 // no UI-side copy exists to drift.
 void UIManager::drawRecPanel() {
     const int BOX_W = 68;
-    const int BOX_H = 17;
+    const int BOX_H = 20;   // split-trim [T] + ad-aware [A] (+its Discard note)
     int y0 = (screen_rows_ - BOX_H) / 2;
     int x0 = (screen_cols_ - BOX_W) / 2;
     if (y0 < 0) y0 = 0;
@@ -1889,13 +1891,19 @@ void UIManager::drawRecPanel() {
                       rows[i].label, rows[i].quality.c_str());
         mvwprintw(w, 8, 3, "[S] Split on track change : %s",
                   rec_split_on_ ? "ON" : "OFF (one continuous file)");
-        mvwaddstr(w, 9, 3, "[D] Output dir (edit)");
+        mvwprintw(w, 9, 3, "[T] Split hold : %d ms", rec_offset_ms_);
+        mvwprintw(w, 10, 3, "[A] Ad segments : %s",
+                  rec_ads_discard_ ? "DISCARD (not written)" : "Save (to ads/ folder)");
+        mvwaddstr(w, 11, 3, "[D] Output dir (edit)");
 
-        // The pause-gap notice — the R1 finding, stated plainly.
+        // The pause-gap notice — the R1 finding, stated plainly — plus the
+        // Discard cost AT THE TOGGLE (the informed opt-in, not buried in docs).
         wattron(w, A_DIM);
-        mvwaddstr(w, 11, 3, "Note: pausing playback while recording leaves a");
-        mvwaddstr(w, 12, 3, "silence gap - the paused-over airtime is not captured.");
-        mvwaddstr(w, 13, 3, "Cuts split on station metadata (boundaries are +/-1-2s).");
+        mvwaddstr(w, 13, 3, "Note: pausing playback while recording leaves a");
+        mvwaddstr(w, 14, 3, "silence gap - the paused-over airtime is not captured.");
+        mvwaddstr(w, 15, 3, "Cuts split on station metadata (boundaries are +/-1-2s).");
+        if (rec_ads_discard_)
+            mvwaddstr(w, 16, 3, "Discard trusts station metadata - a mislabeled song can be lost.");
         wattroff(w, A_DIM);
 
         mvwhline(w, BOX_H - 3, 1, ACS_HLINE, BOX_W - 2);
@@ -1913,6 +1921,10 @@ void UIManager::drawRecPanel() {
         mvwprintw(w, 7, 3, "elapsed %d:%02d    cuts %d    written %.1f MB",
                   es / 60, es % 60, rec.cutIndex(),
                   (double)rec.bytesWritten() / (1024.0 * 1024.0));
+        // ad-aware: the skip counter is the trust surface for Discard — the
+        // only evidence the mode is working, and the tell when it over-fires.
+        if (int skipped = rec.adsSkipped(); skipped > 0)
+            mvwprintw(w, 6, 3, "ads skipped: %d (Discard is on)", skipped);
         uint64_t dropped = rec.droppedFrames();
         if (dropped > 0) {
             wattron(w, COLOR_PAIR(CP_STATUS_ERR) | A_BOLD);
@@ -4558,6 +4570,7 @@ void UIManager::drawGotoBar() {
         case InputMode::ListenBrainzToken: prompt = " listenbrainz token: "; break;
         case InputMode::PlaylistSearch: prompt = " search playlist: "; break;
         case InputMode::RecDir: prompt = " recordings dir: "; break;
+        case InputMode::RecOffset: prompt = " split hold ms (0-5000): "; break;
     }
     wattron(win_cmdline_, COLOR_PAIR(CP_TITLE) | A_BOLD);
     mvwaddstr(win_cmdline_, 0, 0, prompt.c_str());
@@ -4602,25 +4615,9 @@ std::string UIManager::stationLabel(const std::string& url) const {
 // (deinvertArtist moved verbatim to StringUtils.h in stream-record R2 so the
 // recorder's parseNowPlaying shares it; the :4663 caller is unchanged.)
 
-static bool looksLikeRealTrack(const std::string& artist, const std::string& track) {
-    auto lower = [](std::string s) {
-        for (auto& c : s) c = (char)std::tolower((unsigned char)c);
-        return s;
-    };
-    std::string a = lower(artist), t = lower(track);
-    if (a.empty() || t.empty()) return false;
-    if (a == "unknown" || t == "unknown" ||
-        a == "unknown artist" || a == "unknown_artist") return false;
-    if (t == "live") return false;   // "<station> - LIVE" floor (exact match; spares songs like "Live and Let Die")
-    static const char* junk[] = {
-        "ad|", "ad |", "commercial break", "commercial-break",
-        "advertisement", "station id", "station-id", "spot block", "spotblock"
-    };
-    for (const char* j : junk)
-        if (a.find(j) != std::string::npos || t.find(j) != std::string::npos)
-            return false;
-    return true;
-}
+// (looksLikeRealTrack moved verbatim to StringUtils.h in the ad-aware slice so
+// the recorder's ad classification shares the scrobbler's vocabulary; the two
+// callers below are unchanged.)
 
 // Canonical track identity for scrobble dedup. iHeart sometimes relabels the SAME
 // song mid-play with a different EXTINF string — moving the featured artist between
@@ -5034,8 +5031,13 @@ void UIManager::handleInput(int ch) {
         if (rec.recording()) {
             if (ch == 'x' || ch == 'X') {
                 rec.stop();                     // finalizes the in-flight cut
-                showTrackToast("Recording stopped",
-                               std::to_string(rec.cuts().size()) + " cut(s) saved", "");
+                // Session-end summary: the ads-skipped count rides the toast —
+                // the Discard trust surface survives past the live panel.
+                std::string sum = std::to_string(rec.cuts().size() -
+                                                 (size_t)rec.adsSkipped()) + " cut(s) saved";
+                if (int sk = rec.adsSkipped(); sk > 0)
+                    sum += ", " + std::to_string(sk) + " ad(s) skipped";
+                showTrackToast("Recording stopped", sum, "");
                 redraw_needed_.store(true);     // panel flips to settings view
             }
             return;                             // settings keys inert while recording
@@ -5044,6 +5046,16 @@ void UIManager::handleInput(int ch) {
         if (ch == '2') { rec_fmt_ = RipFormat::Mp3;  redraw_needed_.store(true); return; }
         if (ch == 's' || ch == 'S') {
             rec_split_on_ = !rec_split_on_;
+            redraw_needed_.store(true);
+            return;
+        }
+        if (ch == 't' || ch == 'T') {   // split-trim: edit the hold (ms)
+            ui_overlay_ = UIOverlay::None;
+            openInputBar(InputMode::RecOffset, std::to_string(rec_offset_ms_));
+            return;
+        }
+        if (ch == 'a' || ch == 'A') {   // ad-aware: Save <-> Discard
+            rec_ads_discard_ = !rec_ads_discard_;
             redraw_needed_.store(true);
             return;
         }
@@ -5063,10 +5075,12 @@ void UIManager::handleInput(int ch) {
                 return;
             }
             RecOptions opt;
-            opt.formats       = { rec_fmt_ };
-            opt.mp3_vbr_q     = parseMp3VbrQ(config_.mp3);
-            opt.opus_bitrate  = std::clamp(config_.opus_bitrate, 6000, 510000);
-            opt.split_on_meta = rec_split_on_;
+            opt.formats         = { rec_fmt_ };
+            opt.mp3_vbr_q       = parseMp3VbrQ(config_.mp3);
+            opt.opus_bitrate    = std::clamp(config_.opus_bitrate, 6000, 510000);
+            opt.split_on_meta   = rec_split_on_;
+            opt.split_offset_ms = rec_offset_ms_;
+            opt.ads_discard     = rec_ads_discard_;
             std::string st = stationLabel(audio_.streamUrl());
             if (st.rfind("RADIO: ", 0) == 0) st = st.substr(7);
             if (rec.start(opt, st, rec_dir_.empty() ? CDRipper::recordingsDir()
@@ -6471,6 +6485,15 @@ void UIManager::gotoClose(bool commit) {
                 // only (never written back to config); empty submit keeps the
                 // derived default. Reopen the panel with the new value.
                 rec_dir_ = target;
+                ui_overlay_ = UIOverlay::RecPanel;
+                redraw_needed_.store(true);
+                break;
+            }
+            case InputMode::RecOffset: {
+                // split-trim: [T] from the [Rec] panel. Clamp 0-5000 (lead is
+                // reserved - negative folds to 0); junk keeps the prior value.
+                try { rec_offset_ms_ = std::clamp(std::stoi(target), 0, 5000); }
+                catch (...) {}
                 ui_overlay_ = UIOverlay::RecPanel;
                 redraw_needed_.store(true);
                 break;

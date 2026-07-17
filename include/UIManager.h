@@ -225,7 +225,7 @@ private:
     void computeVizBins();
 
     // Input bar state (goto dir / save M3U / load M3U)
-    enum class InputMode { Goto, SaveM3U, LoadM3U, StreamURL, StreamName, RadioSearch, LastfmKey, LastfmSecret, ListenBrainzToken, PlaylistSearch, RecDir };
+    enum class InputMode { Goto, SaveM3U, LoadM3U, StreamURL, StreamName, RadioSearch, LastfmKey, LastfmSecret, ListenBrainzToken, PlaylistSearch, RecDir, RecOffset };
     bool        goto_active_  = false;
     InputMode   input_mode_   = InputMode::Goto;
     std::string goto_input_;
@@ -449,6 +449,8 @@ private:
     RipFormat   rec_fmt_      = RipFormat::Opus;   // single-select: Opus | Mp3
     bool        rec_split_on_ = true;              // split on title change
     std::string rec_dir_;                          // "" = recordingsDir() at start
+    int         rec_offset_ms_ = 1200;             // split-trim hold (session, [T])
+    bool        rec_ads_discard_ = false;          // ad-aware: [A] Save/Discard
     int         rec_panel_tick_ = 0;               // ~2 Hz live-state refresh
     std::string rec_art_pushed_key_;               // rec-cover-art: dedupe onArt pushes
     std::string rip_status_;   // shown in cmdline during/after rip

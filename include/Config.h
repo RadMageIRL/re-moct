@@ -52,6 +52,13 @@ struct DigiConfig {
     std::string rec_format = "opus";  // opus | mp3 (single-select default)
     bool        rec_split  = true;    // split on metadata title change
     std::string rec_dir;              // "" = <music>/re-moct/recordings, resolved at record start
+    // split-trim: hold acting on a title change by this many ms so the closing
+    // cut keeps its outro. Signed by design; negative (lead) is RESERVED and
+    // clamps to 0 until implemented (docs/split-trim-ad-aware-plan.md).
+    int         split_offset_ms = 1200;
+    // ad-aware: save (route non-song cuts to <Station>/ads/) | discard (do not
+    // write them - trusts station metadata, the informed opt-in).
+    std::string rec_ads = "save";
 
     // UI theme toggle (Ctrl+T): false = Classic, true = Awesome (rounded panels)
     bool  awesome_mode = false;

@@ -154,6 +154,7 @@ int main() {
     {
         StreamRecorder rec;
         RecOptions opt;
+        opt.split_offset_ms = 0;   // split-trim regression anchor: today's timing
         opt.formats = { RipFormat::Mp3, RipFormat::Opus };
         CHECK(rec.start(opt, "Test FM", root));
         CHECK(rec.recording());
@@ -230,6 +231,7 @@ int main() {
     {
         StreamRecorder rec;
         RecOptions opt;
+        opt.split_offset_ms = 0;   // split-trim regression anchor: today's timing
         opt.formats = { RipFormat::Opus };
         CHECK(rec.start(opt, "Test FM", root));
         uint64_t phase = 0;
@@ -256,6 +258,7 @@ int main() {
     {
         StreamRecorder rec;
         RecOptions opt;
+        opt.split_offset_ms = 0;   // split-trim regression anchor: today's timing
         opt.formats = { RipFormat::Opus };
         opt.split_on_meta = false;
         CHECK(rec.start(opt, "Test FM", root));
@@ -279,6 +282,7 @@ int main() {
     {
         StreamRecorder rec(4096);          // ~93 ms ring — trivially floodable
         RecOptions opt;
+        opt.split_offset_ms = 0;   // split-trim regression anchor: today's timing
         opt.formats = { RipFormat::Opus };
         CHECK(rec.start(opt, "Test FM", root));
         uint64_t phase = 0;
@@ -310,7 +314,7 @@ int main() {
         // (a) matching key -> picture embedded in BOTH formats.
         {
             StreamRecorder rec;
-            RecOptions opt; opt.formats = { RipFormat::Mp3, RipFormat::Opus };
+            RecOptions opt; opt.formats = { RipFormat::Mp3, RipFormat::Opus }; opt.split_offset_ms = 0;
             CHECK(rec.start(opt, "Test FM", root));
             uint64_t phase = 0;
             rec.onTitle("Art Artist - Art Song");
@@ -335,7 +339,7 @@ int main() {
         //     cut still fully valid and tagged.
         {
             StreamRecorder rec;
-            RecOptions opt; opt.formats = { RipFormat::Opus };
+            RecOptions opt; opt.formats = { RipFormat::Opus }; opt.split_offset_ms = 0;
             CHECK(rec.start(opt, "Test FM", root));
             uint64_t phase = 0;
             rec.onTitle("Real Artist - Real Song");
@@ -351,6 +355,130 @@ int main() {
                 CHECK(!ot.has_art);
                 CHECK(ot.title == "Real Song" && ot.artist == "Real Artist");
             }
+        }
+    }
+
+    // ── 4c. split-trim: the hold defers the roll FRAME-EXACTLY ───────────────
+    {
+        // offset 500 ms = 22050 frames: the closing cut keeps exactly that
+        // much of the audio arriving after the title event (its outro).
+        StreamRecorder rec;
+        RecOptions opt; opt.formats = { RipFormat::Opus };
+        opt.split_offset_ms = 500;
+        CHECK(rec.start(opt, "Test FM", root));
+        uint64_t phase = 0;
+        rec.onTitle("Hold A - One");
+        pushSine(rec, phase, 44100, 440.0, 0.5);
+        CHECK(waitFor(15000, [&]{ return rec.totalFrames() == 44100; }));
+        rec.onTitle("Hold B - Two");              // flag set; hold arms
+        pushSine(rec, phase, 44100, 880.0, 0.5);  // 22050 -> old cut, 22050 -> new
+        CHECK(waitFor(15000, [&]{ return rec.totalFrames() == 2ull * 44100; }));
+        CHECK(waitFor(5000,  [&]{ return rec.cutIndex() == 1; }));
+        rec.stop();
+        auto cuts = rec.cuts();
+        CHECK(cuts.size() == 2);
+        if (cuts.size() == 2) {
+            CHECK(cuts[0].frames == 44100 + 22050);   // outro protected, exact
+            CHECK(cuts[1].frames == 44100 - 22050);
+            CHECK(cuts[0].artist == "Hold A" && cuts[1].artist == "Hold B");
+        }
+    }
+    {
+        // stop() outranks the hold: a split still owing frames finalizes the
+        // tail immediately, under the OLD title, as one cut.
+        StreamRecorder rec;
+        RecOptions opt; opt.formats = { RipFormat::Opus };
+        opt.split_offset_ms = 5000;
+        CHECK(rec.start(opt, "Test FM", root));
+        uint64_t phase = 0;
+        rec.onTitle("Hold C - Three");
+        pushSine(rec, phase, 22050, 440.0, 0.5);
+        CHECK(waitFor(15000, [&]{ return rec.totalFrames() == 22050; }));
+        rec.onTitle("Hold D - Four");
+        pushSine(rec, phase, 4410, 440.0, 0.5);   // 0.1 s: the hold cannot expire
+        CHECK(waitFor(15000, [&]{ return rec.totalFrames() == 26460; }));
+        rec.stop();
+        auto cuts = rec.cuts();
+        CHECK(cuts.size() == 1);
+        if (cuts.size() == 1) {
+            CHECK(cuts[0].frames == 26460);
+            CHECK(cuts[0].artist == "Hold C");
+        }
+    }
+
+    // ── 4d. ad-aware: classify + route (Save) / suppress (Discard) ──────────
+    {
+        // Save: non-song cuts route to <Station>/ads/ (sortable names, files
+        // exist — routing never destroys); songs stay in main.
+        StreamRecorder rec;
+        RecOptions opt; opt.formats = { RipFormat::Opus }; opt.split_offset_ms = 0;
+        CHECK(rec.start(opt, "Test FM", root));
+        uint64_t phase = 0;
+        rec.onTitle("Song Guy - Good Tune");
+        pushSine(rec, phase, 22050, 440.0, 0.5);
+        CHECK(waitFor(15000, [&]{ return rec.totalFrames() == 22050; }));
+        rec.onTitle("Test FM - LIVE");                    // iHeart structural floor
+        CHECK(waitFor(5000, [&]{ return rec.cutIndex() == 1; }));
+        pushSine(rec, phase, 22050, 440.0, 0.5);
+        CHECK(waitFor(15000, [&]{ return rec.totalFrames() == 44100; }));
+        rec.onTitle("Spot Break - Advertisement Hour");   // ICY vocabulary
+        CHECK(waitFor(5000, [&]{ return rec.cutIndex() == 2; }));
+        pushSine(rec, phase, 22050, 440.0, 0.5);
+        CHECK(waitFor(15000, [&]{ return rec.totalFrames() == 66150; }));
+        rec.onTitle("Song Gal - Next Tune");
+        CHECK(waitFor(5000, [&]{ return rec.cutIndex() == 3; }));
+        pushSine(rec, phase, 22050, 440.0, 0.5);
+        rec.stop();
+        auto cuts = rec.cuts();
+        CHECK(cuts.size() == 4);
+        CHECK(rec.adsSkipped() == 0);                     // Save never suppresses
+        if (cuts.size() == 4) {
+            auto inAds = [](const StreamRecorder::CutInfo& c) {
+                return !c.paths.empty() && c.paths[0].find("ads") != std::string::npos;
+            };
+            CHECK(!cuts[0].is_ad && !inAds(cuts[0]));
+            CHECK( cuts[1].is_ad &&  inAds(cuts[1]) && !cuts[1].discarded);
+            CHECK( cuts[2].is_ad &&  inAds(cuts[2]) && !cuts[2].discarded);
+            CHECK(!cuts[3].is_ad && !inAds(cuts[3]));
+            for (const auto& c : cuts)
+                for (const auto& p : c.paths) CHECK(fs::exists(p));
+        }
+    }
+    {
+        // Discard: suppressed cuts are counted (the trust surface) and never
+        // written; unparseable titles stay MAIN even under Discard; and the
+        // classification COMPOSES with a split-trim hold (trim = when,
+        // ad-aware = where).
+        StreamRecorder rec;
+        RecOptions opt; opt.formats = { RipFormat::Opus };
+        opt.split_offset_ms = 500;                        // 22050-frame hold
+        opt.ads_discard = true;
+        CHECK(rec.start(opt, "Test FM", root));
+        uint64_t phase = 0;
+        rec.onTitle("Song Guy - Good Tune");
+        pushSine(rec, phase, 44100, 440.0, 0.5);
+        CHECK(waitFor(15000, [&]{ return rec.totalFrames() == 44100; }));
+        rec.onTitle("Test FM - LIVE");                    // held, then suppressed
+        pushSine(rec, phase, 44100, 440.0, 0.5);
+        CHECK(waitFor(15000, [&]{ return rec.totalFrames() == 2ull * 44100; }));
+        CHECK(waitFor(5000,  [&]{ return rec.cutIndex() == 1; }));
+        rec.onTitle("PlainTitleNoDash");                  // unparseable -> MAIN
+        pushSine(rec, phase, 44100, 440.0, 0.5);
+        CHECK(waitFor(15000, [&]{ return rec.totalFrames() == 3ull * 44100; }));
+        CHECK(waitFor(5000,  [&]{ return rec.cutIndex() == 2; }));
+        rec.stop();
+        auto cuts = rec.cuts();
+        CHECK(cuts.size() == 3);
+        CHECK(rec.adsSkipped() == 1);
+        if (cuts.size() == 3) {
+            CHECK(!cuts[0].discarded && cuts[0].frames == 44100 + 22050); // trim held
+            CHECK( cuts[1].discarded && cuts[1].paths.empty());
+            CHECK( cuts[1].frames == 44100);              // counted, not written
+            CHECK(!cuts[2].discarded && !cuts[2].paths.empty());
+            CHECK( cuts[2].frames == 22050);
+            CHECK( cuts[2].paths[0].find("ads") == std::string::npos);
+            for (const auto& p : cuts[0].paths) CHECK(fs::exists(p));
+            for (const auto& p : cuts[2].paths) CHECK(fs::exists(p));
         }
     }
 

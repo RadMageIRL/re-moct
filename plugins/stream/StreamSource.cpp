@@ -1326,8 +1326,14 @@ bool StreamSource::rawReadExact(void* dst, uint32_t n) {
 }
 
 uint32_t StreamSource::readAudio(void* out, uint32_t want) {
-    if (icy_metaint_ <= 0)
-        return rawRead(out, want);     // no inline metadata — straight passthrough
+    if (icy_metaint_ <= 0) {
+        // No inline metadata — straight passthrough. HLS also lands here
+        // (metaint 0): hlsRawRead already served post-ID3-strip bytes, so the
+        // tee sees pure elementary stream on every path.
+        uint32_t got = rawRead(out, want);
+        teeWrite(out, got);            // copy/remux tee: post-transport bytes
+        return got;
+    }
 
     uint8_t* dst = static_cast<uint8_t*>(out);
     uint32_t produced = 0;
@@ -1351,7 +1357,78 @@ uint32_t StreamSource::readAudio(void* out, uint32_t want) {
         produced     += got;
         icy_counter_ -= (int)got;
     }
+    teeWrite(out, produced);           // copy/remux tee: metaint already stripped
     return produced;
+}
+
+// ─── copy/remux tee (abi-cluster slice B) ─────────────────────────────────────
+// See the header's threading contract. The writer never stalls (drop-oldest);
+// the reader detects being lapped and resyncs to the live tail.
+
+void StreamSource::teeWrite(const void* src, uint32_t n) {
+    if (n == 0 || !tee_armed_.load(std::memory_order_relaxed)) return;
+    const uint8_t* s = static_cast<const uint8_t*>(src);
+    uint64_t w   = tee_w_.load(std::memory_order_relaxed);
+    uint32_t off = (uint32_t)(w & (TEE_RING_BYTES - 1));
+    uint32_t first = (n < TEE_RING_BYTES - off) ? n : TEE_RING_BYTES - off;
+    std::memcpy(tee_.data() + off, s, first);
+    if (n > first) std::memcpy(tee_.data(), s + first, n - first);
+    tee_w_.store(w + n, std::memory_order_release);
+}
+
+void StreamSource::setEncodedCapture(bool on) {
+    if (on) {
+        if (tee_.empty()) tee_.resize(TEE_RING_BYTES);   // before arming: the
+        // producer only touches tee_ once tee_armed_ is observed true.
+        tee_r_ = tee_w_.load(std::memory_order_acquire); // fresh session: live tail
+        tee_discont_.store(false, std::memory_order_relaxed);
+        tee_armed_.store(true, std::memory_order_release);
+    } else {
+        tee_armed_.store(false, std::memory_order_release);
+    }
+}
+
+uint32_t StreamSource::readEncoded(uint8_t* dst, uint32_t cap,
+                                   int32_t* codec_out, int32_t* discont_out) {
+    int32_t codec = encodedCaps();
+    if (codec_out)   *codec_out = codec;
+    bool disc = tee_discont_.exchange(false, std::memory_order_acq_rel);
+    if (!tee_armed_.load(std::memory_order_acquire) || cap == 0 || !dst) {
+        if (discont_out) *discont_out = disc ? 1 : 0;
+        return 0;
+    }
+    uint64_t w = tee_w_.load(std::memory_order_acquire);
+    if (w - tee_r_ > TEE_RING_BYTES) {           // writer lapped us while idle
+        tee_r_ = w - TEE_RING_BYTES;             // drop-oldest: snap to live tail
+        disc = true;
+    }
+    uint32_t n = (uint32_t)((w - tee_r_ < cap) ? (w - tee_r_) : cap);
+    if (n > 0) {
+        uint32_t off   = (uint32_t)(tee_r_ & (TEE_RING_BYTES - 1));
+        uint32_t first = (n < TEE_RING_BYTES - off) ? n : TEE_RING_BYTES - off;
+        std::memcpy(dst, tee_.data() + off, first);
+        if (n > first) std::memcpy(dst + first, tee_.data(), n - first);
+        // Validate AFTER the copy: if the writer advanced past our read span
+        // while we copied, the bytes are torn — discard them, resync to the
+        // live tail, and report the gap instead of emitting garbage.
+        uint64_t w2 = tee_w_.load(std::memory_order_acquire);
+        if (w2 - tee_r_ > TEE_RING_BYTES) {
+            tee_r_ = w2 - TEE_RING_BYTES;
+            if (discont_out) *discont_out = 1;
+            if (disc) tee_discont_.store(true, std::memory_order_relaxed);
+            return 0;
+        }
+        tee_r_ += n;
+    }
+    if (discont_out) *discont_out = disc ? 1 : 0;
+    return n;
+}
+
+int32_t StreamSource::encodedCaps() const {
+    // 1=REMOCT_CODEC_MP3, 2=REMOCT_CODEC_AAC_ADTS (remoct_plugin.h; the
+    // adapter is the ABI boundary — these values are pinned by contract).
+    if (!producer_thread_.joinable()) return 0;   // what connect decided, 0 before
+    return codec_ == Codec::AAC ? 2 : 1;
 }
 
 void StreamSource::parseIcyMetadata(const std::string& block) {
@@ -1462,6 +1539,7 @@ void StreamSource::producerWorker() {
 
         if (hls_repin_pending_.exchange(false)) {
             slog("producer: ad-onset live-edge re-pin -> re-handshake");
+            tee_discont_.store(true, std::memory_order_relaxed);   // copy tee resyncs
             uninitDecoder();
             disconnect();
             prebuffered_.store(false);
@@ -1495,6 +1573,7 @@ void StreamSource::producerWorker() {
         // framesRead == 0 → stream ended or dropped. Tear down and reconnect.
         slog("producer: framesRead=0 -> reconnect (attempt %d)", reconnect_attempts + 1);
         if (stop_.load()) break;
+        tee_discont_.store(true, std::memory_order_relaxed);   // copy tee resyncs
         uninitDecoder();
         disconnect();
 
@@ -1540,6 +1619,7 @@ void StreamSource::producerWorkerAAC() {
         if (paused_.load() && !record_active_.load()) { port::sleepMs(20); continue; }
         if (hls_repin_pending_.exchange(false)) {
             slog("producerAAC: ad-onset live-edge re-pin -> re-handshake");
+            tee_discont_.store(true, std::memory_order_relaxed);   // copy tee resyncs
             disconnect();
             prebuffered_.store(false);
             ringClear();                      // drop stale buffered audio: jump to live + avoid backpressure deadlock
@@ -1556,6 +1636,7 @@ void StreamSource::producerWorkerAAC() {
             if (got == 0) {
                 slog("producerAAC: read ended -> reconnect (attempt %d)", reconnect_attempts + 1);
                 if (stop_.load()) break;
+                tee_discont_.store(true, std::memory_order_relaxed);   // copy tee resyncs
                 disconnect();
                 if (++reconnect_attempts > 10) {
                     last_error_ = "stream lost (max reconnect attempts)";

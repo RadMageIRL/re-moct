@@ -34,6 +34,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -41,6 +42,7 @@
 #include <vector>
 
 class IEncoder;
+class MuxWriter;
 
 // The capture request the caller hands to start() — copied in, like
 // RipOptions into CDRipper::start (no mutable cross-thread state). Defaults
@@ -66,6 +68,24 @@ struct RecOptions {
     // informed opt-in (a real song mislabeled by bad station metadata is lost;
     // the visible ads-skipped counter is the trust surface).
     bool ads_discard = false;
+    // ── copy mode (abi-cluster slice B) ──────────────────────────────────
+    // Capture the broadcast's own encoded frames instead of re-encoding
+    // PCM: the worker becomes a PUMP over the injected pull callback (the
+    // recorder stays plugin-ignorant — the standing linkage norm), frame-
+    // parses (FrameSync.h), and feeds a MuxWriter per cut. The container
+    // follows the live codec: MP3 -> .mp3 raw append, AAC/ADTS -> .m4a
+    // remux. formats/quality knobs are inert; split/trim/ad-aware compose
+    // unchanged at encoded-frame granularity (~23-26 ms, under the
+    // metadata slop). No ReplayGain on copy - re-encode remains the
+    // RG-bearing mode. Cuts keep the sample rate as aired (the point).
+    bool copy_mode = false;
+    // The byte source: fill dst up to cap; *codec = the flowing codec
+    // (1 = MP3, 2 = AAC ADTS - the REMOCT_CODEC_* numeric values, pinned
+    // by the plugin ABI contract); *discont = 1 when a reconnect/re-pin/
+    // overflow boundary occurred since the last pull (the parser resyncs
+    // and drops the orphaned partial frame). Called on the WORKER thread.
+    std::function<uint32_t(uint8_t* dst, uint32_t cap,
+                           int32_t* codec, int32_t* discont)> pull;
 };
 
 class StreamRecorder {
@@ -129,7 +149,13 @@ public:
     uint64_t droppedFrames() const { return dropped_.load(std::memory_order_relaxed); }
     uint64_t totalFrames()   const { return total_frames_.load(std::memory_order_relaxed); }
     uint64_t bytesWritten()  const { return bytes_written_.load(std::memory_order_relaxed); }
-    int      elapsedSec()    const { return (int)(totalFrames() / SAMPLE_RATE); }
+    // Copy mode counts frames in the BROADCAST's sample rate (cuts are not
+    // resampled - that's the point), published once the first frame parses;
+    // 0 == PCM mode or nothing flowed yet, where the fixed 44100 applies.
+    int      elapsedSec()    const {
+        uint32_t sr = copy_sr_.load(std::memory_order_relaxed);
+        return (int)(totalFrames() / (sr ? sr : SAMPLE_RATE));
+    }
     // Index of the cut currently being written (== finished-cut count).
     int      cutIndex()      const { return cut_index_.load(std::memory_order_relaxed); }
     // ad-aware: cuts suppressed under Discard — the trust surface for the one
@@ -194,8 +220,20 @@ private:
     // split-trim hold state (worker-owned): armed on split detection when
     // offset > 0; counts down as frames attribute to the OLD cut; the roll
     // fires frame-exactly when it expires (mid-chunk splits are honored).
+    // Copy mode reuses both, counting in BROADCAST samples (whole encoded
+    // frames - splits snap to frame boundaries by construction).
     bool                  hold_armed_ = false;
     uint64_t              hold_frames_left_ = 0;
+
+    // ── copy mode (abi-cluster slice B; all worker-owned unless noted) ──────
+    void copyLoop();                          // the pump: pull -> parse -> mux
+    bool openCopyCut(int32_t codec);          // lazy, on the first parsed frame
+    void rollCopyCut(bool partial_tail);      // finalize+tag current, ready next
+    void failCopyCut(const std::string& why); // remove file, record, stop
+    std::unique_ptr<MuxWriter> copy_out_;     // the open cut's writer
+    std::string                copy_path_;    // its path (single output)
+    int32_t                    copy_codec_ = 0;      // 1=MP3, 2=AAC ADTS
+    std::atomic<uint32_t>      copy_sr_ { 0 };       // broadcast rate (any thread)
     // ad-aware (worker-owned): the open cut's classification + suppression.
     bool                  cut_is_ad_ = false;
     bool                  suppressed_ = false;   // Discard: counted, not written

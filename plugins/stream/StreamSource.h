@@ -113,6 +113,32 @@ public:
     // byte-for-byte the old contract.
     void setRecordActive(bool on) { record_active_.store(on); }
 
+    // ── copy/remux tee (abi-cluster slice B) ─────────────────────────────────
+    // A 2 MiB byte ring the producers memcpy the POST-TRANSPORT compressed
+    // stream into when armed (ICY metaint stripped, HLS segment ID3 stripped —
+    // the one tap sits in readAudio(), where every codec/mode converges before
+    // any decoder). Disarmed cost is one relaxed atomic load; the producers
+    // are network threads, never the audio callback. Overflow = drop-oldest:
+    // the writer never stalls, the reader detects the lap, snaps to the live
+    // tail, and reports a discontinuity (the muxer resyncs on the next frame
+    // header — the same machinery the reconnect/re-pin discont uses).
+    //
+    // Threading: arm/disarm on the host/UI thread, readEncoded on the host's
+    // recorder WORKER thread, teeWrite on the producer thread. tee_r_ is
+    // reader-owned; setEncodedCapture(true) may reset it only because the
+    // host contract arms BEFORE the worker starts pulling and disarms after
+    // it stops (the beginRecording wrapper enforces that lifecycle).
+    void setEncodedCapture(bool on);
+    // Pull tee'd bytes. codec_out = REMOCT_CODEC_* value (what connect
+    // decided); discont_out = 1 when a reconnect/re-pin/overflow boundary
+    // occurred since the last read. Returns bytes copied (0 = nothing new or
+    // disarmed). Never blocks.
+    uint32_t readEncoded(uint8_t* dst, uint32_t cap,
+                         int32_t* codec_out, int32_t* discont_out);
+    // REMOCT_CODEC_* of the stream currently flowing; 0 before open()/after
+    // close() (the fn reports what connect decided).
+    int32_t encodedCaps() const;
+
     // Seconds of wall-clock playback since the first sample left the ring.
     // (double per core::ISource; the stored value is whole seconds.)
     double positionSec() const override { return (double)position_sec_.load(); }
@@ -304,6 +330,20 @@ private:
     std::vector<int16_t>    ring_;
     std::atomic<int>        ring_write_  { 0 };
     std::atomic<int>        ring_read_   { 0 };
+
+    // ── copy/remux tee state (slice B; see the public section's contract) ────
+    // Monotonic uint64 cursors (the recorder-ring discipline applied to bytes)
+    // — no wrap arithmetic exists to fall into the LP64 (long)(u32diff) trap.
+    // The writer only ever advances tee_w_; the reader owns tee_r_ and
+    // validates AFTER copying that the writer didn't lap it mid-copy
+    // (drop-oldest without a second writer on the read cursor).
+    static constexpr uint32_t TEE_RING_BYTES = 2u * 1024 * 1024;  // power of two
+    std::vector<uint8_t>    tee_;                  // allocated at first arm
+    std::atomic<bool>       tee_armed_   { false };
+    std::atomic<uint64_t>   tee_w_       { 0 };    // bytes, monotonic (producer)
+    uint64_t                tee_r_       = 0;      // bytes, monotonic (reader-owned)
+    std::atomic<bool>       tee_discont_ { false };// reconnect/re-pin/overflow latch
+    void teeWrite(const void* src, uint32_t n);    // producer thread; no-op disarmed
 
     std::thread             producer_thread_;
 

@@ -49,7 +49,8 @@ struct DigiConfig {
     // Session seeds only, like rip_formats - the [Rec] panel's toggles are
     // never written back. Quality reuses opus_bitrate / mp3 above (one
     // quality truth, no duplicate knobs).
-    std::string rec_format = "opus";  // opus | mp3 (single-select default)
+    std::string rec_format = "opus";  // opus | mp3 | copy (single-select default;
+                                      // copy = as-broadcast capture, slice B)
     bool        rec_split  = true;    // split on metadata title change
     std::string rec_dir;              // "" = <music>/re-moct/recordings, resolved at record start
     // split-trim: hold acting on a title change by this many ms so the closing

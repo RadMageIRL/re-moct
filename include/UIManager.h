@@ -451,6 +451,8 @@ private:
     // NOT mirrored here - every render reads the recorder's own atomic
     // accessors, so panel/badge and engine can never drift.
     RipFormat   rec_fmt_      = RipFormat::Opus;   // single-select: Opus | Mp3
+    bool        rec_copy_     = false;             // 3rd radio: Copy (as broadcast,
+                                                   // no re-encode); wins over rec_fmt_
     bool        rec_split_on_ = true;              // split on title change
     std::string rec_dir_;                          // "" = recordingsDir() at start
     int         rec_offset_ms_ = 1200;             // split-trim hold (session, [T])

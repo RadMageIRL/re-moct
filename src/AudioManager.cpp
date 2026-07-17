@@ -58,6 +58,29 @@ AudioManager::~AudioManager() {
 // can leave the plugin draining through pauses with nothing recording.
 bool AudioManager::beginRecording(const RecOptions& opt, const std::string& station,
                                   const std::string& out_dir) {
+    if (opt.copy_mode) {
+        // abi-cluster slice B: copy mode. Wire the recorder's pull callback
+        // to the plugin's read_encoded and arm the tee BEFORE the pump
+        // starts. The PCM tap never arms in copy mode (StreamRecorder::start
+        // owns that) — one lifecycle, one mode flag, the two tees can never
+        // arm together (the design doc's hazard 5.7, closed structurally).
+        if (!stream_plugin_.supportsEncodedCapture()) return false;  // old plugin:
+        // the panel greys Copy pre-start; this is the belt to that suspender.
+        RecOptions o = opt;
+        o.pull = [this](uint8_t* dst, uint32_t cap,
+                        int32_t* codec, int32_t* discont) {
+            return stream_plugin_.readEncoded(dst, cap, codec, discont);
+        };
+        stream_plugin_.setEncodedCapture(true);
+        if (!stream_recorder_.start(o, station, out_dir)) {
+            stream_plugin_.setEncodedCapture(false);
+            return false;
+        }
+        // Keep-draining composes: the tee sits producer-side, so a playback
+        // pause mid-copy stays gapless through the same slice-A signal.
+        stream_plugin_.setRecordActive(true);
+        return true;
+    }
     if (!stream_recorder_.start(opt, station, out_dir)) return false;
     // Best-effort: 1 = the plugin drains through playback pauses (gapless);
     // 0/absent = old plugin, the pause-gap behavior remains (the panel note
@@ -68,8 +91,12 @@ bool AudioManager::beginRecording(const RecOptions& opt, const std::string& stat
 
 void AudioManager::endRecording() {
     stream_recorder_.stop();               // idempotent; finalizes in-flight cut
-    if (stream_plugin_.valid())
+                                           // (the copy pump joins here, BEFORE
+                                           // the tee disarms — pull-while-armed)
+    if (stream_plugin_.valid()) {
+        stream_plugin_.setEncodedCapture(false); // no-op when never armed
         stream_plugin_.setRecordActive(false);   // no-op plugin-side when already off
+    }
 }
 
 void AudioManager::teardown() {

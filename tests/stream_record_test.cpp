@@ -19,6 +19,7 @@
 //   5. parseNowPlaying: the "Artist - Title" convention edge cases
 #include "StreamRecorder.h"
 #include "RipFormats.h"
+#include "FrameSync.h"     // slice B: synthetic frame construction (copy mode)
 #include "StringUtils.h"   // utf8_to_wide for the TagLib read-back on Windows
 #include "PortUtil.h"      // sleepMs / tickMs
 
@@ -28,11 +29,17 @@
 #include <taglib/attachedpictureframe.h>      // rec-cover-art: APIC read-back
 #include <taglib/opusfile.h>   // TagLib's own (collision-safe: taglib/ prefixed)
 #include <taglib/xiphcomment.h>
+#include <taglib/mp4file.h>    // slice B: the .m4a copy cut's tag read-back
+#include <taglib/mp4tag.h>
 
 #include <cmath>
 #include <cstdio>
+#include <cstring>
+#include <deque>
 #include <filesystem>
+#include <fstream>
 #include <functional>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -69,6 +76,94 @@ static void pushSine(StreamRecorder& rec, uint64_t& phase, uint32_t frames,
         phase += n;
         left  -= n;
     }
+}
+
+// ─── slice B: copy-mode fixtures ─────────────────────────────────────────────
+// Synthetic-but-VALID frame headers (FrameSync parses them; nothing decodes
+// them — the copy path never decodes, that's the claim under test).
+
+// MPEG-1 Layer III, 128 kbps, 44100 Hz, no padding -> 417 bytes, 1152 samples.
+static std::vector<uint8_t> mp3Frame(uint8_t fill) {
+    std::vector<uint8_t> f(417, fill);
+    f[0] = 0xFF; f[1] = 0xFB; f[2] = 0x90; f[3] = 0x00;
+    return f;
+}
+// ADTS AAC-LC, 44100 Hz (sr index 4), stereo, 256-byte payload -> 263 bytes.
+static std::vector<uint8_t> adtsFrame(uint8_t fill) {
+    const uint32_t len = 7 + 256;
+    std::vector<uint8_t> f(len, fill);
+    f[0] = 0xFF; f[1] = 0xF1;                       // sync, MPEG-4, no CRC
+    f[2] = (uint8_t)((1 << 6) | (4 << 2));          // LC profile, sr index 4
+    f[3] = (uint8_t)((2 << 6) | ((len >> 11) & 3)); // stereo, len hi
+    f[4] = (uint8_t)((len >> 3) & 0xFF);            // len mid
+    f[5] = (uint8_t)(((len & 7) << 5) | 0x1F);      // len lo, fullness hi
+    f[6] = 0xFC;                                    // fullness lo, 1 block
+    return f;
+}
+
+// The injected byte source: a scripted queue of (chunk, discont) pairs the
+// worker pump drains — exactly the shape AudioManager wires to read_encoded.
+struct FakePull {
+    std::mutex m;
+    std::deque<std::pair<std::vector<uint8_t>, int32_t>> q;
+    int32_t codec = 1;                              // 1=MP3, 2=AAC ADTS
+    void push(std::vector<uint8_t> b, int32_t disc = 0) {
+        std::lock_guard<std::mutex> lk(m);
+        q.emplace_back(std::move(b), disc);
+    }
+    void pushFrames(const std::vector<uint8_t>& fr, int n, int32_t disc = 0) {
+        std::vector<uint8_t> b;
+        b.reserve(fr.size() * (size_t)n);
+        for (int i = 0; i < n; ++i) b.insert(b.end(), fr.begin(), fr.end());
+        push(std::move(b), disc);
+    }
+    uint32_t pull(uint8_t* dst, uint32_t cap, int32_t* c, int32_t* d) {
+        std::lock_guard<std::mutex> lk(m);
+        *c = codec; *d = 0;
+        if (q.empty()) return 0;
+        auto& [bytes, disc] = q.front();
+        *d = disc;
+        uint32_t n = (uint32_t)std::min<size_t>(cap, bytes.size());
+        std::memcpy(dst, bytes.data(), n);
+        if (n == bytes.size()) q.pop_front();
+        else { bytes.erase(bytes.begin(), bytes.begin() + n); disc = 0; }
+        return n;
+    }
+    RecOptions wire(RecOptions opt) {               // convenience: bind + copy_mode
+        opt.copy_mode = true;
+        opt.pull = [this](uint8_t* dst, uint32_t cap, int32_t* c, int32_t* d) {
+            return pull(dst, cap, c, d);
+        };
+        return opt;
+    }
+};
+
+static std::vector<uint8_t> readAll(const std::string& p) {
+    std::ifstream f(fs::path(p), std::ios::binary);
+    return std::vector<uint8_t>((std::istreambuf_iterator<char>(f)),
+                                std::istreambuf_iterator<char>());
+}
+// Audio bytes of an MP3 copy cut: everything after the leading ID3v2 tag the
+// tag pass prepended (the byte-fidelity comparand).
+static std::vector<uint8_t> mp3AudioBytes(const std::string& p) {
+    auto all = readAll(p);
+    uint32_t skip = framesync::id3v2Size(all.data(), all.size());
+    return std::vector<uint8_t>(all.begin() + skip, all.end());
+}
+// mdat payload of an .m4a (scanned by box walk, position-independent — the
+// tag pass may shift boxes).
+static std::vector<uint8_t> m4aMdatBytes(const std::string& p) {
+    auto all = readAll(p);
+    size_t i = 0;
+    while (i + 8 <= all.size()) {
+        uint32_t sz = ((uint32_t)all[i] << 24) | ((uint32_t)all[i+1] << 16) |
+                      ((uint32_t)all[i+2] << 8) | all[i+3];
+        if (std::memcmp(&all[i+4], "mdat", 4) == 0 && sz >= 8 && i + sz <= all.size())
+            return std::vector<uint8_t>(all.begin() + i + 8, all.begin() + i + sz);
+        if (sz < 8) break;
+        i += sz;
+    }
+    return {};
 }
 
 // TagLib read-back helpers (ASCII test paths; wide on Windows anyway, matching
@@ -480,6 +575,190 @@ int main() {
             for (const auto& p : cuts[0].paths) CHECK(fs::exists(p));
             for (const auto& p : cuts[2].paths) CHECK(fs::exists(p));
         }
+    }
+
+    // ── 4e. copy mode (abi-cluster slice B): byte fidelity + frame-exact
+    // splits through the injected pull — no plugin, no network, no decode ────
+    {
+        // Three-cut MP3 copy session: every emitted cut's audio bytes are the
+        // EXACT bytes pushed for it (the copy claim, literal), splits land on
+        // frame boundaries by construction, partial marking matches PCM mode.
+        StreamRecorder rec;
+        FakePull fp;                                  // codec defaults to MP3
+        RecOptions opt = fp.wire(RecOptions{});
+        opt.split_offset_ms = 0;
+        CHECK(rec.start(opt, "Copy FM", root));
+        CHECK(rec.recording());
+
+        auto fr1 = mp3Frame(0x11), fr2 = mp3Frame(0x22), fr3 = mp3Frame(0x33);
+        rec.onTitle("Copy One - Song One");
+        fp.pushFrames(fr1, 100);
+        CHECK(waitFor(15000, [&]{ return rec.totalFrames() == 100ull * 1152; }));
+        rec.onTitle("Copy Two - Song Two");
+        CHECK(waitFor(5000, [&]{ return rec.cutIndex() == 1; }));
+        fp.pushFrames(fr2, 100);
+        CHECK(waitFor(15000, [&]{ return rec.totalFrames() == 200ull * 1152; }));
+        rec.onTitle("Copy Three - Song Three");
+        CHECK(waitFor(5000, [&]{ return rec.cutIndex() == 2; }));
+        fp.pushFrames(fr3, 50);
+        CHECK(waitFor(15000, [&]{ return rec.totalFrames() == 250ull * 1152; }));
+        rec.stop();
+        CHECK(rec.lastError().empty());
+        // elapsed uses the BROADCAST rate: 250*1152/44100 = 6.53.. -> 6
+        CHECK(rec.elapsedSec() == 6);
+
+        auto cuts = rec.cuts();
+        CHECK(cuts.size() == 3);
+        if (cuts.size() == 3) {
+            CHECK(cuts[0].frames == 100ull * 1152);
+            CHECK(cuts[1].frames == 100ull * 1152);
+            CHECK(cuts[2].frames ==  50ull * 1152);
+            CHECK(cuts[0].partial && !cuts[1].partial && cuts[2].partial);
+            for (const auto& c : cuts) {
+                CHECK(c.paths.size() == 1);
+                CHECK(!c.paths.empty() && c.paths[0].size() > 4 &&
+                      c.paths[0].substr(c.paths[0].size() - 4) == ".mp3");
+            }
+            // Byte fidelity on the clean middle cut: audio bytes == the 100
+            // pushed frames, verbatim.
+            std::vector<uint8_t> want;
+            for (int i = 0; i < 100; ++i) want.insert(want.end(), fr2.begin(), fr2.end());
+            CHECK(mp3AudioBytes(cuts[1].paths[0]) == want);
+            // ...and the tag pass ran (ID3v2, no RG frame by design).
+            Mp3Tags mt = readMp3(cuts[1].paths[0]);
+            CHECK(mt.title == "Song Two" && mt.artist == "Copy Two");
+            CHECK(!mt.has_rg);                        // no ReplayGain on copy
+        }
+    }
+    {
+        // Split-trim hold counts down in encoded-frame DURATIONS: 500 ms at
+        // 44100 = 22050 samples; MP3 frames carry 1152 -> the roll snaps to
+        // the 20th whole frame (19*1152=21888 < 22050 <= 20*1152).
+        StreamRecorder rec;
+        FakePull fp;
+        RecOptions opt = fp.wire(RecOptions{});
+        opt.split_offset_ms = 500;
+        CHECK(rec.start(opt, "Copy FM", root));
+        auto fr = mp3Frame(0x44);
+        rec.onTitle("Hold Copy A - One");
+        fp.pushFrames(fr, 100);
+        CHECK(waitFor(15000, [&]{ return rec.totalFrames() == 100ull * 1152; }));
+        rec.onTitle("Hold Copy B - Two");             // hold arms
+        fp.pushFrames(fr, 100);
+        CHECK(waitFor(15000, [&]{ return rec.totalFrames() == 200ull * 1152; }));
+        CHECK(waitFor(5000,  [&]{ return rec.cutIndex() == 1; }));
+        rec.stop();
+        auto cuts = rec.cuts();
+        CHECK(cuts.size() == 2);
+        if (cuts.size() == 2) {
+            CHECK(cuts[0].frames == 120ull * 1152);   // outro: whole-frame snap
+            CHECK(cuts[1].frames ==  80ull * 1152);
+            CHECK(cuts[0].artist == "Hold Copy A" && cuts[1].artist == "Hold Copy B");
+        }
+    }
+    {
+        // Discont resync: a flagged gap drops the orphaned partial frame and
+        // the cut carries ONLY whole clean frames — no torn frame ever lands.
+        StreamRecorder rec;
+        FakePull fp;
+        RecOptions opt = fp.wire(RecOptions{});
+        opt.split_offset_ms = 0;
+        CHECK(rec.start(opt, "Copy FM", root));
+        auto fr = mp3Frame(0x55);
+        rec.onTitle("Gap Artist - Gap Song");
+        fp.pushFrames(fr, 50);
+        // The gap chunk: 200 bytes of header-less tail (what a mid-frame
+        // reconnect leaves) then 50 clean frames, discont-flagged.
+        {
+            std::vector<uint8_t> b(fr.begin() + 4, fr.begin() + 204);   // no sync
+            for (int i = 0; i < 50; ++i) b.insert(b.end(), fr.begin(), fr.end());
+            fp.push(std::move(b), 1);
+        }
+        CHECK(waitFor(15000, [&]{ return rec.totalFrames() == 100ull * 1152; }));
+        rec.stop();
+        auto cuts = rec.cuts();
+        CHECK(cuts.size() == 1);
+        if (cuts.size() == 1) {
+            CHECK(cuts[0].frames == 100ull * 1152);   // garbage never counted
+            std::vector<uint8_t> want;
+            for (int i = 0; i < 100; ++i) want.insert(want.end(), fr.begin(), fr.end());
+            CHECK(mp3AudioBytes(cuts[0].paths[0]) == want);
+        }
+    }
+    {
+        // AAC copy -> .m4a: the mdat payload is the de-ADTS'd access units
+        // verbatim (byte fidelity through the mux), and TagLib::MP4 reads the
+        // tag pass's title/artist (decision #1: no untagged backlog). An
+        // in-stream ID3 block must be stripped, never muxed.
+        StreamRecorder rec;
+        FakePull fp;
+        fp.codec = 2;                                 // AAC ADTS
+        RecOptions opt = fp.wire(RecOptions{});
+        opt.split_offset_ms = 0;
+        CHECK(rec.start(opt, "Copy FM", root));
+        auto fr = adtsFrame(0x66);
+        rec.onTitle("M4A Artist - M4A Song");
+        fp.pushFrames(fr, 40);
+        {
+            // A stray in-stream ID3v2 tag between frames (transport metadata).
+            std::vector<uint8_t> tag = { 'I','D','3', 3, 0, 0, 0, 0, 0, 20 };
+            tag.resize(10 + 20, 0x00);
+            fp.push(std::move(tag));
+        }
+        fp.pushFrames(fr, 40);
+        CHECK(waitFor(15000, [&]{ return rec.totalFrames() == 80ull * 1024; }));
+        rec.stop();
+        CHECK(rec.lastError().empty());
+        auto cuts = rec.cuts();
+        CHECK(cuts.size() == 1);
+        if (cuts.size() == 1 && cuts[0].paths.size() == 1) {
+            const std::string& p = cuts[0].paths[0];
+            CHECK(p.size() > 4 && p.substr(p.size() - 4) == ".m4a");
+            std::vector<uint8_t> want;                // 80 AUs, headers stripped
+            for (int i = 0; i < 80; ++i) want.insert(want.end(), fr.begin() + 7, fr.end());
+            CHECK(m4aMdatBytes(p) == want);
+            TagLib::MP4::File f(TL_PATH(p), true);
+            CHECK(f.isValid() && f.tag());
+            if (f.isValid() && f.tag()) {
+                CHECK(f.tag()->title().to8Bit(true)  == "M4A Song");
+                CHECK(f.tag()->artist().to8Bit(true) == "M4A Artist");
+            }
+        }
+    }
+    {
+        // Ad-aware composes in copy mode: Discard suppresses (counted, no
+        // file), songs land tagged — the classifier is upstream of the writer.
+        StreamRecorder rec;
+        FakePull fp;
+        RecOptions opt = fp.wire(RecOptions{});
+        opt.split_offset_ms = 0;
+        opt.ads_discard = true;
+        CHECK(rec.start(opt, "Copy FM", root));
+        auto fr = mp3Frame(0x77);
+        rec.onTitle("Copy Guy - Fine Tune");
+        fp.pushFrames(fr, 50);
+        CHECK(waitFor(15000, [&]{ return rec.totalFrames() == 50ull * 1152; }));
+        rec.onTitle("Copy FM - LIVE");                // structural ad floor
+        CHECK(waitFor(5000, [&]{ return rec.cutIndex() == 1; }));
+        fp.pushFrames(fr, 50);
+        CHECK(waitFor(15000, [&]{ return rec.totalFrames() == 100ull * 1152; }));
+        rec.stop();
+        auto cuts = rec.cuts();
+        CHECK(cuts.size() == 2);
+        CHECK(rec.adsSkipped() == 1);
+        if (cuts.size() == 2) {
+            CHECK(!cuts[0].discarded && !cuts[0].paths.empty());
+            CHECK( cuts[1].discarded &&  cuts[1].paths.empty());
+            CHECK( cuts[1].frames == 50ull * 1152);   // counted, not written
+        }
+    }
+    {
+        // Copy-mode start() honesty: no pull -> a reasoned failure, not a crash.
+        StreamRecorder rec;
+        RecOptions opt;
+        opt.copy_mode = true;
+        CHECK(!rec.start(opt, "X", root));
+        CHECK(!rec.lastError().empty());
     }
 
     // ── 5. parseNowPlaying edge cases ─────────────────────────────────────────

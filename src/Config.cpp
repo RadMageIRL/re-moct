@@ -208,8 +208,8 @@ void DigiConfig::load() {
                 mp3 = std::string("V") + val[1];
         }
         else if (key == "rec_format") {
-            // Lossy-only by design (stream-record); anything else keeps opus.
-            if (val == "opus" || val == "mp3") rec_format = val;
+            // Lossy re-encode or the slice-B copy mode; anything else keeps opus.
+            if (val == "opus" || val == "mp3" || val == "copy") rec_format = val;
         }
         else if (key == "rec_split")          rec_split          = (val == "1");
         else if (key == "rec_dir")            rec_dir            = val;

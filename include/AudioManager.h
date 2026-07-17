@@ -159,6 +159,11 @@ public:
                         const std::string& out_dir);
     void endRecording();
     bool recordingDrainSupported() const { return stream_plugin_.supportsRecordActive(); }
+    // abi-cluster slice B: whether the plugin offers the copy tee (drives the
+    // [Rec] panel's Copy row — greyed when false), and the live codec for its
+    // quality column (REMOCT_CODEC_* numeric; 0 = none/unknown/not flowing).
+    bool    recordingCopySupported() const { return stream_plugin_.supportsEncodedCapture(); }
+    int32_t streamEncodedCaps()      const { return stream_plugin_.encodedCaps(); }
 
     // Called by track-end callback to pre-load next track for crossfade/gapless
     // Returns false if next track can't be opened

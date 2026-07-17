@@ -229,6 +229,8 @@ UIManager::UIManager(PlaylistManager& playlist, AudioManager& audio,
     // Stream-record R2: seed the [Rec] panel settings the same way (config is
     // load-once; the panel mutates session state and never writes back).
     rec_fmt_      = (config_.rec_format == "mp3") ? RipFormat::Mp3 : RipFormat::Opus;
+    rec_copy_     = (config_.rec_format == "copy");   // 3rd radio (slice B); falls
+                                                      // back live if the plugin lacks it
     rec_split_on_ = config_.rec_split;
     rec_dir_      = config_.rec_dir;
     rec_offset_ms_ = std::clamp(config_.split_offset_ms, 0, 5000);  // lead reserved: negative -> 0
@@ -1872,7 +1874,8 @@ void UIManager::drawRipConfirm() {   // slice 6: common (ncurses + portable CDSo
 // no UI-side copy exists to drift.
 void UIManager::drawRecPanel() {
     const int BOX_W = 68;
-    const int BOX_H = 20;   // split-trim [T] + ad-aware [A] (+its Discard note)
+    const int BOX_H = 22;   // split-trim [T] + ad-aware [A] + the Copy row
+                            // (slice B) and its no-RG note
     int y0 = (screen_rows_ - BOX_H) / 2;
     int x0 = (screen_cols_ - BOX_W) / 2;
     if (y0 < 0) y0 = 0;
@@ -1913,37 +1916,59 @@ void UIManager::drawRecPanel() {
     if (!rec.recording()) {
         // ── SETTINGS view ────────────────────────────────────────────────
         mvwaddstr(w, 5, 3, "Format");
-        mvwaddstr(w, 5, BOX_W - 15, "(1-2 select)");
+        mvwaddstr(w, 5, BOX_W - 15, "(1-3 select)");
         struct { RipFormat id; const char* label; std::string quality; } rows[] = {
             { RipFormat::Opus, "Opus", std::to_string(config_.opus_bitrate / 1000) + " kbps VBR" },
             { RipFormat::Mp3,  "MP3",  "LAME " + config_.mp3 + " VBR" },
         };
         for (int i = 0; i < 2; ++i)
             mvwprintw(w, 6 + i, 3, "  (%c) %d  %-6s %s",
-                      rec_fmt_ == rows[i].id ? '*' : ' ', i + 1,
+                      (!rec_copy_ && rec_fmt_ == rows[i].id) ? '*' : ' ', i + 1,
                       rows[i].label, rows[i].quality.c_str());
-        mvwprintw(w, 8, 3, "[S] Split on track change : %s",
+        // Copy row (abi-cluster slice B): as-broadcast capture. Quality
+        // column = the LIVE codec from the plugin's encoded_caps; greyed
+        // with a dim reason when the plugin lacks the tee (old plugin).
+        {
+            const bool copy_ok = audio_.recordingCopySupported();
+            std::string q;
+            if (!copy_ok) {
+                q = "unavailable (plugin lacks copy)";
+            } else {
+                int32_t caps = audio_.streamEncodedCaps();
+                q = caps == 2 ? "AAC as broadcast (no re-encode)"
+                  : caps == 1 ? "MP3 as broadcast (no re-encode)"
+                              : "as broadcast (no re-encode)";
+            }
+            if (!copy_ok) wattron(w, A_DIM);
+            mvwprintw(w, 8, 3, "  (%c) 3  %-6s %s",
+                      rec_copy_ ? '*' : ' ', "Copy", q.c_str());
+            if (!copy_ok) wattroff(w, A_DIM);
+        }
+        mvwprintw(w, 9, 3, "[S] Split on track change : %s",
                   rec_split_on_ ? "ON" : "OFF (one continuous file)");
-        mvwprintw(w, 9, 3, "[T] Split hold : %d ms", rec_offset_ms_);
-        mvwprintw(w, 10, 3, "[A] Ad segments : %s",
+        mvwprintw(w, 10, 3, "[T] Split hold : %d ms", rec_offset_ms_);
+        mvwprintw(w, 11, 3, "[A] Ad segments : %s",
                   rec_ads_discard_ ? "DISCARD (not written)" : "Save (to ads/ folder)");
-        mvwaddstr(w, 11, 3, "[D] Output dir (edit)");
+        mvwaddstr(w, 12, 3, "[D] Output dir (edit)");
 
         // The pause note — driven by the plugin's keep-draining capability
         // (abi-cluster slice A): with a capable plugin, pausing mutes playback
         // while the recording continues gaplessly; with an old plugin the R1
-        // pause-gap truth stays. Plus the Discard cost AT THE TOGGLE.
+        // pause-gap truth stays. Plus the Discard cost AT THE TOGGLE and the
+        // copy trade AT THE SELECTION.
         wattron(w, A_DIM);
         if (audio_.recordingDrainSupported()) {
-            mvwaddstr(w, 13, 3, "Note: pausing mutes playback - the recording");
-            mvwaddstr(w, 14, 3, "continues (you rejoin the live broadcast on resume).");
+            mvwaddstr(w, 14, 3, "Note: pausing mutes playback - the recording");
+            mvwaddstr(w, 15, 3, "continues (you rejoin the live broadcast on resume).");
         } else {
-            mvwaddstr(w, 13, 3, "Note: pausing playback while recording leaves a");
-            mvwaddstr(w, 14, 3, "silence gap - the paused-over airtime is not captured.");
+            mvwaddstr(w, 14, 3, "Note: pausing playback while recording leaves a");
+            mvwaddstr(w, 15, 3, "silence gap - the paused-over airtime is not captured.");
         }
-        mvwaddstr(w, 15, 3, "Cuts split on station metadata (boundaries are +/-1-2s).");
+        mvwaddstr(w, 16, 3, "Cuts split on station metadata (boundaries are +/-1-2s).");
+        if (rec_copy_)
+            mvwaddstr(w, 17, 3, "Copy keeps the broadcast bytes exactly - no ReplayGain tags.");
         if (rec_ads_discard_)
-            mvwaddstr(w, 16, 3, "Discard trusts station metadata - a mislabeled song can be lost.");
+            mvwaddstr(w, 18, 3, "Discard trusts station metadata - a mislabeled song can be lost.");
         wattroff(w, A_DIM);
 
         mvwhline(w, BOX_H - 3, 1, ACS_HLINE, BOX_W - 2);
@@ -5123,8 +5148,13 @@ void UIManager::handleInput(int ch) {
             }
             return;                             // settings keys inert while recording
         }
-        if (ch == '1') { rec_fmt_ = RipFormat::Opus; redraw_needed_.store(true); return; }
-        if (ch == '2') { rec_fmt_ = RipFormat::Mp3;  redraw_needed_.store(true); return; }
+        if (ch == '1') { rec_fmt_ = RipFormat::Opus; rec_copy_ = false; redraw_needed_.store(true); return; }
+        if (ch == '2') { rec_fmt_ = RipFormat::Mp3;  rec_copy_ = false; redraw_needed_.store(true); return; }
+        if (ch == '3') {   // Copy (slice B): selectable only when the plugin has the tee
+            if (audio_.recordingCopySupported()) rec_copy_ = true;
+            redraw_needed_.store(true);
+            return;
+        }
         if (ch == 's' || ch == 'S') {
             rec_split_on_ = !rec_split_on_;
             redraw_needed_.store(true);
@@ -5162,6 +5192,10 @@ void UIManager::handleInput(int ch) {
             opt.split_on_meta   = rec_split_on_;
             opt.split_offset_ms = rec_offset_ms_;
             opt.ads_discard     = rec_ads_discard_;
+            // Copy (slice B): the wrapper wires the pull + arms the tee; the
+            // selection can only be true when the capability probe passed,
+            // but a plugin swap mid-session falls back honestly here.
+            opt.copy_mode       = rec_copy_ && audio_.recordingCopySupported();
             std::string st = stationLabel(audio_.streamUrl());
             if (st.rfind("RADIO: ", 0) == 0) st = st.substr(7);
             // abi-cluster: start through the wrapper so the keep-draining

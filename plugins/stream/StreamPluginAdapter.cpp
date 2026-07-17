@@ -118,6 +118,21 @@ int32_t sp_set_record_active(void* self, int32_t on) noexcept {
     return 1;
 }
 
+// abi-cluster slice B: the copy/remux tee. encoded_caps reports what connect
+// decided (REMOCT_CODEC_*, 0 before open); set_encoded_capture arms/disarms
+// the plugin-side byte ring; read_encoded is the host WORKER-thread pull
+// (host buffer — nobody frees across the line).
+int32_t sp_encoded_caps(void* self) noexcept {
+    return inst(self)->src.encodedCaps();
+}
+void sp_set_encoded_capture(void* self, int32_t on) noexcept {
+    inst(self)->src.setEncodedCapture(on != 0);
+}
+uint32_t sp_read_encoded(void* self, uint8_t* dst, uint32_t cap,
+                         int32_t* codec_out, int32_t* discont_out) noexcept {
+    return inst(self)->src.readEncoded(dst, cap, codec_out, discont_out);
+}
+
 const RemoctPlugin STREAM_PLUGIN = {
     /* abi_version  */ REMOCT_ABI_VERSION,
     /* struct_size  */ static_cast<uint32_t>(sizeof(RemoctPlugin)),
@@ -139,13 +154,13 @@ const RemoctPlugin STREAM_PLUGIN = {
     /* art_url      */ sp_art_url,
     /* last_error   */ sp_last_error,
     /* set_config   */ sp_set_config,
-    /* ── the abi-cluster growth (design doc): drain implemented in slice A;
-     * the copy/remux tee is DECLARED-NULL until slice B — a valid state by
-     * the contract's per-fn null-check. ── */
+    /* ── the abi-cluster growth (design doc): drain in slice A, the
+     * copy/remux tee in slice B — the boundary grew exactly once and is now
+     * fully populated. ── */
     /* set_record_active   */ sp_set_record_active,
-    /* encoded_caps        */ nullptr,
-    /* set_encoded_capture */ nullptr,
-    /* read_encoded        */ nullptr,
+    /* encoded_caps        */ sp_encoded_caps,
+    /* set_encoded_capture */ sp_set_encoded_capture,
+    /* read_encoded        */ sp_read_encoded,
 };
 
 } // namespace

@@ -53,6 +53,16 @@ public:
     // the pause-gap note stays honest). ──
     bool supportsRecordActive() const;
     bool setRecordActive(bool on);
+    // Copy/remux tee (slice B). supportsEncodedCapture() is the pure
+    // capability probe (reach + all three fns non-null — the panel greys the
+    // Copy row on false); encodedCaps() feeds the quality column (0 when
+    // unsupported/not flowing); the arm/pull pair is consumed by
+    // AudioManager's beginRecording wiring, never the UI directly.
+    bool    supportsEncodedCapture() const;
+    int32_t encodedCaps() const;
+    void    setEncodedCapture(bool on);
+    uint32_t readEncoded(uint8_t* dst, uint32_t cap,
+                         int32_t* codec_out, int32_t* discont_out);
 
 private:
     const RemoctPlugin* plugin_ = nullptr;

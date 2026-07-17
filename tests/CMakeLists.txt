@@ -318,6 +318,7 @@ if(WIN32)
         # teardown ordering lives inside AudioManager), so this target carries
         # the recorder + its two encoders. Inert here — nothing arms it.
         ${CMAKE_SOURCE_DIR}/src/StreamRecorder.cpp
+        ${CMAKE_SOURCE_DIR}/src/MuxWriter.cpp
         ${CMAKE_SOURCE_DIR}/src/Mp3Encoder.cpp
         ${CMAKE_SOURCE_DIR}/src/OpusRipEncoder.cpp
         ${CMAKE_SOURCE_DIR}/src/LocalFileSource.cpp
@@ -508,6 +509,7 @@ set_tests_properties(rip_encoder_seam_test PROPERTIES TIMEOUT 60)
 add_executable(stream_record_test
     stream_record_test.cpp
     ${CMAKE_SOURCE_DIR}/src/StreamRecorder.cpp
+    ${CMAKE_SOURCE_DIR}/src/MuxWriter.cpp
     ${CMAKE_SOURCE_DIR}/src/Mp3Encoder.cpp
     ${CMAKE_SOURCE_DIR}/src/OpusRipEncoder.cpp
 )
@@ -522,6 +524,40 @@ target_link_libraries(stream_record_test PRIVATE
     $<$<PLATFORM_ID:Linux>:pthread> $<$<PLATFORM_ID:Linux>:m>)
 add_test(NAME stream_record_test COMMAND stream_record_test)
 set_tests_properties(stream_record_test PROPERTIES TIMEOUT 120)
+
+# copy_mux_test — abi-cluster slice B: FrameSync unit contract + the ADTS->M4A
+# mux writer round-tripped through the app's OWN decode path (LocalFileSource
+# over the FDK MP4 backend — the in-tree oracle). Real FDK-encoded ADTS in
+# (hls_fixture's encodeAdtsSine), a recorder copy-pump cut out, frame-exact
+# sample count + TagLib::MP4 tag read-back. Carries the LocalFileSource decode
+# stack exactly as mp3_rg_read_test does.
+add_executable(copy_mux_test
+    copy_mux_test.cpp
+    ${CMAKE_SOURCE_DIR}/src/StreamRecorder.cpp
+    ${CMAKE_SOURCE_DIR}/src/MuxWriter.cpp
+    ${CMAKE_SOURCE_DIR}/src/Mp3Encoder.cpp
+    ${CMAKE_SOURCE_DIR}/src/OpusRipEncoder.cpp
+    ${CMAKE_SOURCE_DIR}/src/LocalFileSource.cpp
+    ${CMAKE_SOURCE_DIR}/src/AacDecoder.cpp
+    ${CMAKE_SOURCE_DIR}/src/OpusDecoder.cpp
+    ${CMAKE_SOURCE_DIR}/src/WavPackDecoder.cpp
+    ${CMAKE_SOURCE_DIR}/src/VorbisDecoder.cpp
+    ${CMAKE_SOURCE_DIR}/src/CustomBackends.cpp
+    ${CMAKE_SOURCE_DIR}/src/Mp4Chapters.cpp
+    ${CMAKE_SOURCE_DIR}/src/Log.cpp
+)
+target_include_directories(copy_mux_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/lib
+    ${LAME_INCLUDE} ${EBUR128_INCLUDE} ${FDKAAC_INCLUDE}
+    ${OPUS_INCLUDE} ${OPUS_INCLUDE}/opus ${WAVPACK_INCLUDE}
+    ${TAGLIB_INCLUDE_DIRS})
+target_link_libraries(copy_mux_test PRIVATE
+    ${TAGLIB_LIBRARIES} ${LAME_LIB} ${EBUR128_LIB} ${FDKAAC_LIB}
+    ${OPUSENC_LIB} ${OPUSFILE_LIB} ${OPUS_LIB}
+    ${VORBISFILE_LIB} ${VORBIS_LIB} ${OGG_LIB} ${WAVPACK_LIB}
+    $<$<PLATFORM_ID:Linux>:dl> $<$<PLATFORM_ID:Linux>:pthread> $<$<PLATFORM_ID:Linux>:m>)
+add_test(NAME copy_mux_test COMMAND copy_mux_test)
+set_tests_properties(copy_mux_test PROPERTIES TIMEOUT 120)
 
 # mp3-rg-read — the MP3 ReplayGain read contract. A REAL Mp3Encoder fixture
 # tagged in all three shapes (the legacy RE-MOCT "KEY=value"-in-description

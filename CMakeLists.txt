@@ -74,6 +74,7 @@ set(REMOCT_SOURCES
     src/OpusRipEncoder.cpp        # rip-opus-encoder: Opus output (libopusenc)
     src/WavPackEncoder.cpp        # rip-wavpack-encoder: WavPack output (libwavpack, decode's lib)
     src/StreamRecorder.cpp        # stream-record R1: capture engine (ring/worker/split/tag)
+    src/MuxWriter.cpp             # abi-cluster slice B: copy-path MP3 append / ADTS->M4A mux
     src/GainScan.cpp              # batch-r128: folder ReplayGain scan engine
     src/Mp4Chapters.cpp
     src/RadioBrowser.cpp

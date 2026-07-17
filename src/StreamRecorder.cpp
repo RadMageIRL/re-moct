@@ -4,6 +4,8 @@
 // thread for start/stop/onTitle, which never touch audio or files).
 #include "StreamRecorder.h"
 #include "IEncoder.h"
+#include "FrameSync.h"     // copy mode: frame parse (abi-cluster slice B)
+#include "MuxWriter.h"     // copy mode: MP3 append / ADTS->M4A mux writers
 #include "Mp3Encoder.h"
 #include "OpusRipEncoder.h"
 #include "R128Gain.h"      // r128FromDb — the one home for the R128<->RG dialect
@@ -21,6 +23,9 @@
 #include <taglib/mpegfile.h>
 #include <taglib/xiphcomment.h>
 #include <taglib/opusfile.h>   // TagLib's own (collision-safe: taglib/ prefixed)
+#include <taglib/mp4file.h>    // copy mode: the .m4a tag pass
+#include <taglib/mp4tag.h>
+#include <taglib/mp4coverart.h>
 
 #include <algorithm>
 #include <bit>
@@ -80,10 +85,16 @@ bool StreamRecorder::start(const RecOptions& opt, const std::string& station,
     };
     if (running_.load()) return fail("already recording");
     if (worker_.joinable()) worker_.join();     // reap a self-stopped worker
-    if (opt.formats.empty()) return fail("no output format selected");
-    for (RipFormat f : opt.formats)
-        if (f != RipFormat::Mp3 && f != RipFormat::Opus)
-            return fail("stream capture offers lossy output only (MP3/Opus)");
+    if (opt.copy_mode) {
+        // Copy mode: the injected pull is the whole input path; the format
+        // list and quality knobs are inert (the container follows the codec).
+        if (!opt.pull) return fail("copy mode needs an encoded byte source");
+    } else {
+        if (opt.formats.empty()) return fail("no output format selected");
+        for (RipFormat f : opt.formats)
+            if (f != RipFormat::Mp3 && f != RipFormat::Opus)
+                return fail("stream capture offers lossy output only (MP3/Opus)");
+    }
 
     station_ = sanitizePathComponent(station.empty() ? "Stream" : station);
     station_dir_ = out_dir + kSep + station_;
@@ -115,11 +126,20 @@ bool StreamRecorder::start(const RecOptions& opt, const std::string& station,
     split_pending_.store(false);
     cut_artist_.clear(); cut_title_.clear(); cut_raw_.clear();
     cut_frames_ = 0; cut_open_ = false; first_cut_ = true;
+    copy_out_.reset(); copy_path_.clear(); copy_codec_ = 0;
+    copy_sr_.store(0);
 
     stop_req_.store(false);
     running_.store(true);
-    worker_ = std::thread(&StreamRecorder::workerLoop, this);
-    capturing_.store(true, std::memory_order_release);
+    // The tap exclusivity hazard, closed structurally: ONE start arms exactly
+    // one input. Copy mode runs the pull pump and never arms the PCM tap
+    // (capture() stays a no-op); PCM mode never constructs a copy writer.
+    if (opt_.copy_mode) {
+        worker_ = std::thread(&StreamRecorder::copyLoop, this);
+    } else {
+        worker_ = std::thread(&StreamRecorder::workerLoop, this);
+        capturing_.store(true, std::memory_order_release);
+    }
     return true;
 }
 
@@ -312,6 +332,48 @@ void tagCut(const std::string& path, RipFormat fmt,
     } catch (...) {
         // Tagging is best-effort exactly as the rip pass: the audio on disk is
         // already complete and valid; a tag failure must not fail the cut.
+    }
+}
+
+// The copy path's .m4a tag pass (abi-cluster slice B): title/artist/comment +
+// covr through TagLib::MP4 — library-supported, the reason the AAC container
+// decision landed on M4A (plan §1). No ReplayGain by design: copy cuts carry
+// the broadcast untouched; re-encode remains the RG-bearing mode. Scoped
+// tightly (the TagLib RW-by-default lesson): the File lives only inside this
+// call, after the writer finalized.
+void tagCutM4a(const std::string& path,
+               const std::string& artist, const std::string& title,
+               const std::string& raw, const std::string& station,
+               const std::vector<uint8_t>& art, const char* art_mime) {
+    try {
+#ifdef _WIN32
+        auto wp = utf8_to_wide(path);
+#else
+        const std::string& wp = path;
+#endif
+        TagLib::MP4::File f(wp.c_str(), false);
+        auto* tag = f.tag(); if (!tag) return;
+        const std::string& title_str = !title.empty() ? title : raw;
+        if (!title_str.empty())
+            tag->setTitle(TagLib::String(title_str, TagLib::String::UTF8));
+        if (!artist.empty())
+            tag->setArtist(TagLib::String(artist, TagLib::String::UTF8));
+        tag->setComment(TagLib::String("Recorded from " + station + " by RE-MOCT",
+                                       TagLib::String::UTF8));
+        tag->setItem("\251too", TagLib::MP4::Item(
+            TagLib::StringList(TagLib::String("RE-MOCT v" REMOCT_VERSION,
+                                              TagLib::String::UTF8))));
+        if (!art.empty() && art_mime) {
+            auto fmt = std::strcmp(art_mime, "image/png") == 0
+                       ? TagLib::MP4::CoverArt::PNG : TagLib::MP4::CoverArt::JPEG;
+            TagLib::MP4::CoverArtList covers;
+            covers.append(TagLib::MP4::CoverArt(
+                fmt, TagLib::ByteVector((const char*)art.data(), (unsigned)art.size())));
+            tag->setItem("covr", TagLib::MP4::Item(covers));
+        }
+        f.save();
+    } catch (...) {
+        // Best-effort, same as tagCut: the audio on disk is already valid.
     }
 }
 
@@ -660,5 +722,279 @@ void StreamRecorder::workerLoop() {
     }
 
     if (healthy && cut_open_) rollCut(true);   // session tail: partial cut
+    running_.store(false, std::memory_order_release);
+}
+
+// ─── copy mode (abi-cluster slice B) ──────────────────────────────────────────
+// The worker IS the pump: it polls the injected pull callback, frame-parses
+// (FrameSync.h), and feeds a MuxWriter per cut. Same cut lifecycle, split
+// triggers, ad-aware routing, and honesty surfaces as the PCM worker — the
+// unit is the encoded frame instead of the PCM chunk, so splits snap to
+// whole frames (~23-26 ms, under the broadcast metadata slop).
+
+bool StreamRecorder::openCopyCut(int32_t codec) {
+    ParsedTitle p = parseNowPlaying(cut_raw_);
+    cut_artist_ = p.artist; cut_title_ = p.title;
+    cut_is_ad_ = p.ok && !looksLikeRealTrack(p.artist, p.title);
+    copy_codec_ = codec;
+
+    if (cut_is_ad_ && opt_.ads_discard) {
+        // Suppressed (Discard): frames are pulled and counted, never written.
+        suppressed_ = true;
+        copy_out_.reset(); copy_path_.clear();
+        cut_frames_ = 0;
+        cut_open_   = true;
+        return true;
+    }
+    suppressed_ = false;
+
+    const char* ext = (codec == 2) ? ".m4a" : ".mp3";
+    std::string base;
+    if (cut_is_ad_) {
+        std::string ad_dir = station_dir_ + kSep + "ads";
+        std::error_code ec;
+        fs::create_directories(ad_dir, ec);
+        base = ad_dir + kSep + timestampNow() + " - " +
+               sanitizePathComponent(cut_raw_.empty() ? "ad" : cut_raw_);
+    } else {
+        base = cutBasePath();
+    }
+    std::string chosen = base;
+    for (int n = 2; ; ++n) {
+        std::error_code ec;
+        if (!fs::exists(chosen + ext, ec)) break;
+        chosen = base + " (" + std::to_string(n) + ")";
+    }
+
+    copy_out_ = (codec == 2)
+        ? std::unique_ptr<MuxWriter>(std::make_unique<M4aMuxWriter>())
+        : std::unique_ptr<MuxWriter>(std::make_unique<Mp3AppendWriter>());
+    copy_path_ = chosen + ext;
+    if (!copy_out_->open(copy_path_)) {
+        copy_out_.reset(); copy_path_.clear();
+        return false;
+    }
+    cut_frames_ = 0;
+    cut_open_   = true;
+    return true;
+}
+
+void StreamRecorder::rollCopyCut(bool partial_tail) {
+    if (!cut_open_) return;
+
+    if (suppressed_) {
+        CutInfo info;
+        info.artist = cut_artist_; info.title = cut_title_; info.raw = cut_raw_;
+        info.frames = cut_frames_;
+        info.is_ad = true; info.discarded = true;
+        {
+            std::lock_guard<std::mutex> lk(cuts_mtx_);
+            cuts_.push_back(std::move(info));
+        }
+        ads_skipped_.fetch_add(1, std::memory_order_relaxed);
+        suppressed_ = false;
+        cut_open_   = false;
+        cut_frames_ = 0;
+        first_cut_  = false;
+        cut_index_.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+
+    CutInfo info;
+    info.artist = cut_artist_; info.title = cut_title_; info.raw = cut_raw_;
+    info.frames = cut_frames_;
+    info.is_ad  = cut_is_ad_;
+    info.partial = (first_cut_ || partial_tail) && !cut_is_ad_;
+
+    bool ok = copy_out_ && copy_out_->finalize(true);
+    if (!ok) {
+        // Incomplete container = failed cut, removed — never left looking
+        // like a full capture (the fflush-and-check discipline).
+        std::error_code ec;
+        if (!copy_path_.empty()) fs::remove(copy_path_, ec);
+        info.failed = true;
+        {
+            std::lock_guard<std::mutex> lk(cuts_mtx_);
+            cuts_.push_back(std::move(info));
+            error_ = "finalize failed (disk full?)";
+        }
+        stop_req_.store(true, std::memory_order_release);
+    } else {
+        // Cover art: same key-match-at-tag-time contract as the PCM roll.
+        std::vector<uint8_t> art;
+        const char* art_mime = nullptr;
+        {
+            std::lock_guard<std::mutex> lk(meta_mtx_);
+            if (!pending_art_.empty() && pending_art_raw_ == cut_raw_) {
+                art      = pending_art_;
+                art_mime = pending_art_mime_;
+            }
+        }
+        if (copy_codec_ == 2)
+            tagCutM4a(copy_path_, cut_artist_, cut_title_, cut_raw_, station_,
+                      art, art_mime);
+        else
+            // The .mp3 copy rides the existing ID3v2 pass; rg_valid=false by
+            // design (no RG on copy — re-encode is the RG-bearing mode).
+            tagCut(copy_path_, RipFormat::Mp3, cut_artist_, cut_title_, cut_raw_,
+                   station_, false, 0.0, 0.0, art, art_mime);
+        if (partial_tail && !cut_is_ad_ &&
+            copy_path_.find(" (partial)") == std::string::npos) {
+            const std::string ext = (copy_codec_ == 2) ? ".m4a" : ".mp3";
+            std::string np = copy_path_.substr(0, copy_path_.size() - ext.size())
+                           + " (partial)" + ext;
+            std::error_code ec;
+            fs::rename(copy_path_, np, ec);
+            if (!ec) copy_path_ = np;
+        }
+        std::error_code ec;
+        auto sz = fs::file_size(copy_path_, ec);
+        if (!ec) bytes_written_.fetch_add(sz, std::memory_order_relaxed);
+        info.paths.push_back(copy_path_);
+        std::lock_guard<std::mutex> lk(cuts_mtx_);
+        cuts_.push_back(std::move(info));
+    }
+
+    copy_out_.reset();
+    copy_path_.clear();
+    cut_open_   = false;
+    cut_frames_ = 0;
+    first_cut_  = false;
+    cut_index_.fetch_add(1, std::memory_order_relaxed);
+}
+
+void StreamRecorder::failCopyCut(const std::string& why) {
+    if (copy_out_) copy_out_->finalize(false);
+    std::error_code ec;
+    if (!copy_path_.empty()) fs::remove(copy_path_, ec);
+    CutInfo info;
+    info.artist = cut_artist_; info.title = cut_title_; info.raw = cut_raw_;
+    info.frames = cut_frames_; info.failed = true;
+    {
+        std::lock_guard<std::mutex> lk(cuts_mtx_);
+        cuts_.push_back(std::move(info));
+        error_ = why;
+    }
+    copy_out_.reset();
+    copy_path_.clear();
+    cut_open_ = false;
+    cut_frames_ = 0;
+    // Same stance as failCut: a failed write is almost always persistent —
+    // stop honestly rather than looping new cuts into the same wall.
+    stop_req_.store(true, std::memory_order_release);
+}
+
+void StreamRecorder::copyLoop() {
+    std::vector<uint8_t> buf;               // parse accumulator (whole frames out)
+    std::vector<uint8_t> chunk(64 * 1024);  // per-pull scratch
+    uint64_t skip_left = 0;                 // in-stream ID3v2 remainder to drop
+    int32_t  codec = 0;                     // latched from the pull's codec_out
+    bool     healthy = true;
+
+    auto adoptIfCutEmpty = [&]() {
+        if (!split_pending_.load(std::memory_order_acquire)) return;
+        if (cut_open_ && cut_frames_ > 0) return;
+        std::lock_guard<std::mutex> lk(meta_mtx_);
+        cut_raw_ = pending_raw_;
+        split_pending_.store(false, std::memory_order_release);
+    };
+    auto rollAndAdopt = [&]() {
+        rollCopyCut(false);
+        std::lock_guard<std::mutex> lk(meta_mtx_);
+        cut_raw_ = pending_raw_;
+        split_pending_.store(false, std::memory_order_release);
+        hold_armed_ = false;
+    };
+
+    while (healthy) {
+        adoptIfCutEmpty();
+
+        // split-trim: arm exactly as the PCM worker, in BROADCAST samples
+        // (copy_sr_ is nonzero whenever cut_frames_ > 0 — a frame set it).
+        if (opt_.split_offset_ms > 0 && !hold_armed_ &&
+            split_pending_.load(std::memory_order_acquire) &&
+            cut_open_ && cut_frames_ > 0) {
+            hold_armed_ = true;
+            hold_frames_left_ = (uint64_t)opt_.split_offset_ms *
+                                copy_sr_.load(std::memory_order_relaxed) / 1000;
+        }
+
+        int32_t c = 0, disc = 0;
+        uint32_t got = opt_.pull(chunk.data(), (uint32_t)chunk.size(), &c, &disc);
+        if (c != 0) codec = c;
+        if (disc) {
+            // The gap sits at the APPEND point: buffered bytes are pre-gap
+            // and any partial frame tail will never complete — drop it; the
+            // next frame header resyncs (the plan's discont contract).
+            buf.clear();
+            skip_left = 0;
+        }
+        if (got > 0) buf.insert(buf.end(), chunk.data(), chunk.data() + got);
+
+        size_t pos = 0;
+        while (healthy && codec != 0) {
+            if (skip_left > 0) {                       // inside an in-stream tag
+                uint64_t take = buf.size() - pos;
+                if (take > skip_left) take = skip_left;
+                pos += (size_t)take; skip_left -= take;
+                if (skip_left > 0) break;              // tag continues past buffer
+                continue;
+            }
+            size_t avail = buf.size() - pos;
+            if (avail < 10) break;                     // header room (ID3 needs 10)
+            if (uint32_t s = framesync::id3v2Size(buf.data() + pos, avail)) {
+                skip_left = s;                         // transport metadata: never
+                continue;                              // reaches the writer
+            }
+            framesync::FrameInfo fi;
+            bool hdr = (codec == 2)
+                ? framesync::adtsParse(buf.data() + pos, avail, fi)
+                : framesync::mp3Parse(buf.data() + pos, avail, fi);
+            if (!hdr) { ++pos; continue; }             // resync scan, byte-wise
+            if (avail < fi.frame_len) break;           // incomplete: await bytes
+
+            if (!cut_open_ && !openCopyCut(codec)) {
+                failCopyCut("cannot open output file");
+                healthy = false;
+                break;
+            }
+            if (!suppressed_ && copy_out_ &&
+                !copy_out_->writeFrame(buf.data() + pos, fi.frame_len, fi)) {
+                failCopyCut("write failed (disk full?)");
+                healthy = false;
+                break;
+            }
+            pos += fi.frame_len;
+            cut_frames_ += fi.samples;
+            total_frames_.fetch_add(fi.samples, std::memory_order_relaxed);
+            if (copy_sr_.load(std::memory_order_relaxed) != fi.sample_rate)
+                copy_sr_.store(fi.sample_rate, std::memory_order_relaxed);
+
+            if (hold_armed_) {
+                hold_frames_left_ = (hold_frames_left_ > fi.samples)
+                                    ? hold_frames_left_ - fi.samples : 0;
+                if (hold_frames_left_ == 0) rollAndAdopt();   // snap: whole frames
+            }
+        }
+        if (pos > 0) buf.erase(buf.begin(), buf.begin() + (ptrdiff_t)pos);
+
+        // Immediate roll (offset<=0) — checked on EVERY pass including an
+        // idle pump, so a split can never stall waiting for bytes.
+        if (healthy && opt_.split_offset_ms <= 0 &&
+            split_pending_.load(std::memory_order_acquire) &&
+            cut_open_ && cut_frames_ > 0) {
+            rollAndAdopt();
+        }
+
+        // Stop drains best-effort: keep pumping while bytes still arrive so
+        // the tail cut carries everything the tee held, then exit on the
+        // first dry pull (mirrors the PCM loop's drained-ring exit).
+        if (got == 0) {
+            if (stop_req_.load(std::memory_order_acquire)) break;
+            port::sleepMs(50);                 // the pump cadence (plan §2)
+        }
+    }
+
+    if (healthy && cut_open_) rollCopyCut(true);   // session tail: partial cut
     running_.store(false, std::memory_order_release);
 }

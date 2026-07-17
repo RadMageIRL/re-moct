@@ -112,6 +112,21 @@ Feature release: Opus and WavPack playback.
   shows in the title bar whenever a recording is running, and recording
   stops cleanly (finishing its current file) when you stop the stream,
   switch stations, or quit.
+- **Record as broadcast (Copy mode).** A third recording format alongside
+  Opus and MP3: capture the station's own encoded audio to disk with no
+  re-encoding at all. The cut carries the exact broadcast bytes - MP3
+  stations save to `.mp3`, AAC stations to a tagged `.m4a` - so there is no
+  second-generation quality loss and the recording plays in RE-MOCT and any
+  standard player. Each cut is tagged from the now-playing metadata (title,
+  artist, station credit, cover art) just like the re-encode modes, and
+  split-on-track-change, the split hold, and ad handling all work the same;
+  boundaries snap to whole compressed frames (well under the metadata slop).
+  The panel shows the live codec next to the Copy row and greys it out on the
+  rare older streaming plugin that cannot supply the encoded feed. Two
+  deliberate notes: copy cuts carry no ReplayGain tags (re-encode mode
+  remains the one that computes and writes per-track gain), and they keep the
+  broadcast's own sample rate rather than resampling - that fidelity is the
+  point. Set it as the startup default with `rec_format=copy`.
 - **Opus playback** (`.opus`): full decode/seek via libopus + libopusfile.
   Opus files were already browsable but silently failed to play; they now
   play, seek, show correct duration, and read tags. Opus ReplayGain

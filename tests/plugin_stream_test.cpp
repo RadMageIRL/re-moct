@@ -107,14 +107,25 @@ int main() {
                       offsetof(RemoctPlugin, set_record_active),
                       "declared order is part of the contract");
 
-        // new host + NEW plugin: capability present, call honored (ack == 1).
+        // new host + NEW plugin: capabilities present, calls honored.
         {
             core::PluginSource ps(d, svc.table());
             CHECK(ps.supportsRecordActive(), "new plugin: supportsRecordActive()");
             CHECK(ps.setRecordActive(true),  "new plugin: set_record_active honored (ack)");
             CHECK(ps.setRecordActive(false), "new plugin: cleared (ack)");
-            CHECK(d->encoded_caps == nullptr && d->read_encoded == nullptr,
-                  "slice A: copy/remux fns declared-NULL until slice B");
+            // slice B: the copy/remux trio is now populated and safe to
+            // exercise before any open — caps report "nothing flowing" and
+            // an armed-but-dry tee reads zero (no crash, no fabrication).
+            CHECK(d->encoded_caps && d->set_encoded_capture && d->read_encoded,
+                  "slice B: copy/remux fns populated");
+            CHECK(ps.supportsEncodedCapture(), "new plugin: supportsEncodedCapture()");
+            CHECK(ps.encodedCaps() == 0, "encoded_caps == 0 before open (honest)");
+            ps.setEncodedCapture(true);
+            uint8_t tb[64]; int32_t codec = -1, disc = -1;
+            CHECK(ps.readEncoded(tb, sizeof tb, &codec, &disc) == 0,
+                  "read_encoded: dry tee reads zero");
+            CHECK(codec == 0 && disc == 0, "dry tee: codec none, no discont");
+            ps.setEncodedCapture(false);
         }
         // new host + OLD (v1) plugin: a v1-sized descriptor — the host must
         // refuse to even READ past struct_size (the pointer slot is left
@@ -126,7 +137,26 @@ int main() {
             CHECK(ps.valid(), "v1 fixture: instance still created");
             CHECK(!ps.supportsRecordActive(), "v1 fixture: capability ABSENT (reach check)");
             CHECK(!ps.setRecordActive(true),  "v1 fixture: call refused, no crash");
+            CHECK(!ps.supportsEncodedCapture(), "v1 fixture: copy tee ABSENT (reach check)");
+            CHECK(ps.encodedCaps() == 0, "v1 fixture: encoded_caps refused -> 0");
+            uint8_t tb[16]; int32_t codec = 7, disc = 7;
+            CHECK(ps.readEncoded(tb, sizeof tb, &codec, &disc) == 0 &&
+                  codec == 0 && disc == 0,
+                  "v1 fixture: read_encoded refused, outs zeroed, no crash");
             CHECK(ps.nowPlaying().empty() || true, "v1 fixture: v1 surface still works");
+            ps.close();
+        }
+        // slice-A/B intermediate: a CURRENT-size descriptor that ships the
+        // tee slots NULL (slice A's exact shipped state) — per-fn null-check
+        // must gate it off even though struct_size reaches the fields.
+        {
+            RemoctPlugin a = *d;
+            a.encoded_caps = nullptr; a.set_encoded_capture = nullptr;
+            a.read_encoded = nullptr;
+            core::PluginSource ps(&a, svc.table());
+            CHECK(ps.supportsRecordActive(), "slice-A fixture: drain still present");
+            CHECK(!ps.supportsEncodedCapture(), "slice-A fixture: Copy unavailable (per-fn null)");
+            CHECK(ps.encodedCaps() == 0, "slice-A fixture: encoded_caps -> 0");
             ps.close();
         }
         // old host + new plugin: not literally runnable here, but pinned by

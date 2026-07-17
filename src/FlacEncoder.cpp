@@ -11,19 +11,18 @@
 #include <cstdio>
 
 namespace {
-// The rip format constants, exactly as in CDRipper.cpp (compile-time by
-// design until the format-selection slice introduces config).
-constexpr int SAMPLE_RATE      = 44100;
-constexpr int CHANNELS         = 2;
-constexpr int BIT_DEPTH        = 16;
-constexpr int FLAC_COMPRESSION = 5;
+// The rip format constants, exactly as in CDRipper.cpp. The compression
+// level moved to the ctor (config-fed, default 5 = the old literal).
+constexpr int SAMPLE_RATE = 44100;
+constexpr int CHANNELS    = 2;
+constexpr int BIT_DEPTH   = 16;
 } // namespace
 
 bool FlacEncoder::open(const std::string& path, uint64_t total_frames) {
     enc_ = FLAC__stream_encoder_new();
     if (!enc_) return false;
     FLAC__stream_encoder_set_verify(enc_, false);
-    FLAC__stream_encoder_set_compression_level(enc_, FLAC_COMPRESSION);
+    FLAC__stream_encoder_set_compression_level(enc_, level_);
     FLAC__stream_encoder_set_channels(enc_, CHANNELS);
     FLAC__stream_encoder_set_bits_per_sample(enc_, BIT_DEPTH);
     FLAC__stream_encoder_set_sample_rate(enc_, SAMPLE_RATE);

@@ -1031,3 +1031,15 @@ runtime-discoverable, not compile-discoverable; a green build proves nothing abo
   open() collapses both to NotQueried. The distinction was dead: the worker's
   abort check keys on crc_v1==0 && crc_v2==0 (status not consulted), and the
   Pass-2 NotFound gate is unreachable for a track that failed before reading.
+- **Session rip-format selection vs config default are two different states
+  on purpose** (rip-format-select): `DigiConfig::rip_formats` is ONLY the
+  startup seed; `UIManager::rip_sel_` is the live session state, toggled by
+  the modal digits, normalized to kRipFormats TABLE order when building
+  RipOptions (fan-out order must not depend on toggle history), and never
+  written back to conf - config_.save() persists the unchanged default.
+  Not reset on eject: preference, not disc data (contrast mb_release_).
+  The modal's input disambiguation is structural: N/Esc handled first,
+  digit cases return inside themselves, commit letters guarded on a
+  non-empty selection - the wrong transition is unreachable, not guarded.
+  CUE/M3U8 entries follow the MASTER format (first selected lossless, else
+  first selected) so subset rips never emit playlists over absent files.

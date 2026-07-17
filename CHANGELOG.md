@@ -22,6 +22,16 @@ Feature release: Opus and WavPack playback.
   label. Hybrid (lossy) `.wv` files play at their encoded quality; `.wvc`
   correction sidecars are not read (planned).
 - **BPM detection** now works for `.opus` and `.wv` files too.
+- **Choose rip output formats**: the rip dialog now has a format list -
+  toggle FLAC and MP3 with the number keys (1, 2) before picking a rip mode.
+  The header shows a live "Out:" summary, lossless formats carry a "*"
+  master marker, and deselecting everything disables the rip keys until at
+  least one format is checked. The selection lasts for the session; set the
+  startup default with the new "rip_formats" config key.
+- **Rip quality is configurable**: new "flac_level" (FLAC compression 0-8,
+  default 5) and "mp3" (LAME VBR quality V0-V9, default V0) config keys.
+  Defaults match the previous fixed settings exactly, and the dialog shows
+  the active values next to each format.
 - **Ogg Vorbis playback** (`.ogg`): full decode/seek via libvorbis +
   libvorbisfile. Like Opus, `.ogg` files were already browsable but silently
   failed to play; they now play, seek, show correct duration, and read tags

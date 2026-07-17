@@ -20,7 +20,7 @@ bool Mp3Encoder::open(const std::string& path, uint64_t total_frames) {
     lame_set_in_samplerate(lame_, SAMPLE_RATE);
     lame_set_num_channels(lame_, CHANNELS);
     lame_set_VBR(lame_, vbr_mtrh);
-    lame_set_VBR_q(lame_, 0);
+    lame_set_VBR_q(lame_, vbr_q_);
     lame_set_quality(lame_, 2);
     lame_set_mode(lame_, STEREO);
     lame_set_write_id3tag_automatic(lame_, 0);

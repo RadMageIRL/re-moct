@@ -4,6 +4,7 @@
 #include "MBLookup.h"
 #include "StringUtils.h"
 #include "AudioManager.h"
+#include "RipFormats.h"   // RipFormat/RipOptions — the format-selection surface
 #include "core/ICdIo.h"   // device transport seam (slice 8) — no windows.h here
 
 #include <string>
@@ -73,11 +74,21 @@ public:
     explicit CDRipper(core::ICdIo* io = nullptr) : io_(io) {}
     ~CDRipper() { cancel(); }
 
+    // One rip output target: a format and its resolved path. The worker builds
+    // the ordered list per track from RipOptions.formats (table order = the
+    // pre-selection FLAC-then-MP3 operation order for the default set); a
+    // deselected format is simply ABSENT — never instantiated, no path built.
+    struct RipOutput {
+        RipFormat   fmt;
+        std::string path;
+    };
+
     bool start(AudioManager&               audio,
                const std::vector<CDTrack>& tracks,
                const std::string&          out_dir,
                const MBRelease&            rel,
                RipMode                     mode,
+               RipOptions                  opt,
                ProgressCb                  cb);
 
     void cancel();
@@ -98,6 +109,7 @@ private:
                 std::string          out_dir,
                 MBRelease            rel,
                 RipMode              mode,
+                RipOptions           opt,
                 ProgressCb           cb,
                 std::unique_ptr<core::ICdDevice> dev,
                 int                  drive_offset,
@@ -112,8 +124,8 @@ private:
                            bool               is_first,
                            bool               is_last,
                            bool               use_c2,
-                           const std::string& flac_path,
-                           const std::string& mp3_path,
+                           const std::vector<RipOutput>& outs,
+                           const RipOptions&  opt,
                            RGResult&          rg_out,
                            const ProgressCb&  cb,
                            const std::string& log_path,

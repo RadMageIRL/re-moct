@@ -34,6 +34,15 @@ struct DigiConfig {
     // Discord Rich Presence toggle (Ctrl+D)
     bool  discord_presence = false;
 
+    // ── Rip output (rip-format-select) ────────────────────────────────────
+    // rip_formats is the DEFAULT selection only: it seeds the session's
+    // format set once at startup; the modal's toggles are never written back.
+    // Defaults must equal the pre-config literals (both formats, FLAC level
+    // 5, LAME V0) so an absent/default config rips byte-identically.
+    std::string rip_formats = "flac,mp3";  // comma-separated kRipFormats labels
+    int         flac_level  = 5;           // FLAC compression 0-8
+    std::string mp3         = "V0";        // LAME VBR quality V0-V9
+
     // UI theme toggle (Ctrl+T): false = Classic, true = Awesome (rounded panels)
     bool  awesome_mode = false;
     int   awesome_theme = 0;   // index into kAwesomeThemes (Ctrl+T Awesome look; F8 cycles)

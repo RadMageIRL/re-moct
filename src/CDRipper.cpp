@@ -752,6 +752,38 @@ void CDRipper::tagFile(const std::string&         path,
 }
 
 // ─── Core track rip ───────────────────────────────────────────────────────────
+// ── Format-selection helpers (rip-format-select) ─────────────────────────────
+// The one place a RipFormat becomes a concrete IEncoder. Quality values come
+// from RipOptions (config-fed; defaults == the pre-config literals, pinned by
+// the seam oracle's argument-free constructions).
+static std::unique_ptr<IEncoder> makeEncoder(RipFormat f, const RipOptions& opt) {
+    switch (f) {
+        case RipFormat::Flac: return std::make_unique<FlacEncoder>(opt.flac_level);
+        case RipFormat::Mp3:  return std::make_unique<Mp3Encoder>(opt.mp3_vbr_q);
+    }
+    return nullptr;
+}
+
+// Per-track output list from the selection: table-ordered, absent formats
+// simply not present (no path, no encoder, no temp siblings — subset
+// correctness by construction).
+static std::vector<CDRipper::RipOutput> buildOuts(const RipOptions& opt,
+                                                  const std::string& out_dir,
+                                                  const std::string& prefix) {
+    std::vector<CDRipper::RipOutput> v;
+    for (RipFormat f : opt.formats)
+        if (const RipFormatRow* r = ripFormatRow(f))
+            v.push_back({ f, out_dir + kSep + prefix + r->ext });
+    return v;
+}
+
+// The .tmp/.det/.probe sibling lists the re-rip paths use.
+static std::vector<CDRipper::RipOutput> withSuffix(std::vector<CDRipper::RipOutput> outs,
+                                                   const char* sfx) {
+    for (auto& o : outs) o.path += sfx;
+    return outs;
+}
+
 ARTrackResult CDRipper::ripTrack(core::ICdDevice&   dev,
                                  const CDTrack&     track,
                                  int                track_idx,
@@ -759,8 +791,8 @@ ARTrackResult CDRipper::ripTrack(core::ICdDevice&   dev,
                                  bool               is_first,
                                  bool               is_last,
                                  bool               use_c2,
-                                 const std::string& flac_path,
-                                 const std::string& mp3_path,
+                                 const std::vector<RipOutput>& outs,
+                                 const RipOptions&  opt,
                                  RGResult&          rg_out,
                                  const ProgressCb&  cb,
                                  const std::string& log_path,
@@ -783,19 +815,20 @@ ARTrackResult CDRipper::ripTrack(core::ICdDevice&   dev,
     const uint32_t total_secs = (uint32_t)track.length_lba;
     if (total_secs == 0) return ar_result;
 
-    // ── Encoder fan-out (rip-encoder-seam) ────────────────────────────────
-    // The hard-coded {FLAC, MP3} list, in the original inline open order.
-    // Each is a pure PCM consumer of the read loop's blocks; tags/art/RG
-    // happen later in tagFile, unchanged. On an open failure, unwind the
-    // already-opened encoders exactly as the inline code did: finalize
-    // (FLAC's finish flushes a valid-but-empty file, deliberately LEFT on
+    // ── Encoder fan-out (rip-encoder-seam / rip-format-select) ────────────
+    // One IEncoder per SELECTED output, in list order (table order — the
+    // pre-selection FLAC-then-MP3 sequence for the default set). Each is a
+    // pure PCM consumer of the read loop's blocks; tags/art/RG happen later
+    // in tagFile, unchanged. On an open failure, unwind the already-opened
+    // encoders exactly as the inline code did: finalize (a lossless
+    // encoder's finish flushes a valid-but-empty file, deliberately LEFT on
     // disk — the worker's zero-CRC heuristic catches it) and return.
+    if (outs.empty()) return ar_result;   // UI guarantees >= 1; belt-and-suspenders
     std::vector<std::unique_ptr<IEncoder>> encoders;
-    encoders.push_back(std::make_unique<FlacEncoder>());
-    encoders.push_back(std::make_unique<Mp3Encoder>());
-    const std::string* enc_paths[] = { &flac_path, &mp3_path };
+    for (const auto& o : outs) encoders.push_back(makeEncoder(o.fmt, opt));
     for (size_t ei = 0; ei < encoders.size(); ++ei) {
-        if (!encoders[ei]->open(*enc_paths[ei],
+        if (!encoders[ei] ||
+            !encoders[ei]->open(outs[ei].path,
                                 (uint64_t)total_secs * SECTOR_SAMPLES)) {
             for (size_t j = 0; j < ei; ++j) encoders[j]->finalize(false);
             return ar_result;
@@ -1156,8 +1189,7 @@ ARTrackResult CDRipper::ripTrack(core::ICdDevice&   dev,
     if (ebur) ebur128_destroy(&ebur);
 
     if (!ok || cancel_.load()) {
-        fs::remove(flac_path);
-        fs::remove(mp3_path);
+        for (const auto& o : outs) fs::remove(o.path);
         return ar_result;
     }
 
@@ -1215,6 +1247,7 @@ void CDRipper::worker(std::string          drive_letter,
                       std::string          out_dir,
                       MBRelease            rel,
                       RipMode              mode,
+                      RipOptions           opt,
                       ProgressCb           cb,
                       std::unique_ptr<core::ICdDevice> dev,
                       int                  drive_offset,
@@ -1451,8 +1484,7 @@ void CDRipper::worker(std::string          drive_letter,
         std::string prefix = nn.str();
         if (mt && !mt->title.empty()) prefix += " - " + sanitizePath(mt->title);
 
-        std::string flac_path = out_dir + kSep + prefix + ".flac";
-        std::string mp3_path  = out_dir + kSep + prefix + ".mp3";
+        const std::vector<RipOutput> outs = buildOuts(opt, out_dir, prefix);
 
         // For track 1: only drive_offset (pressing not yet detected).
         // For all subsequent tracks: drive_offset + pressing_offset (once detected).
@@ -1463,7 +1495,7 @@ void CDRipper::worker(std::string          drive_letter,
         ARTrackResult ar = ripTrack(*dev, trk, i, total,
                                     i==0, i==total-1,
                                     use_c2,
-                                    flac_path, mp3_path, rg, cb,
+                                    outs, opt, rg, cb,
                                     log_path, mode, drive_offset,
                                     ctdb_state.ctdb_crc,
                                     ctdb_state.ctdb_bytes,
@@ -1615,13 +1647,12 @@ void CDRipper::worker(std::string          drive_letter,
                     for (int p : CANDIDATE_OFFSETS) {
                         if (cancel_.load()) break;
                         if (drive_offset + p < 0) continue;
-                        std::string probe_flac = flac_path + ".probe";
-                        std::string probe_mp3  = mp3_path  + ".probe";
+                        const auto probe_outs = withSuffix(outs, ".probe");
                         RGResult      rg_probe;
                         ARTrackResult ar_probe = ripTrack(*dev, trk, i, total,
                                                           true, total == 1,
                                                           use_c2,
-                                                          probe_flac, probe_mp3,
+                                                          probe_outs, opt,
                                                           rg_probe, nullptr,
                                                           log_path, mode,
                                                           drive_offset,
@@ -1629,8 +1660,7 @@ void CDRipper::worker(std::string          drive_letter,
                                                           ctdb_state.ctdb_bytes,
                                                           p);
                         std::error_code ec_probe;
-                        fs::remove(probe_flac, ec_probe);
-                        fs::remove(probe_mp3,  ec_probe);
+                        for (const auto& o : probe_outs) fs::remove(o.path, ec_probe);
                         ar_probe = checkAR(ar_probe);
                         if (ar_probe.status == ARStatus::Matched_v1 ||
                             ar_probe.status == ARStatus::Matched_v2) {
@@ -1682,15 +1712,14 @@ void CDRipper::worker(std::string          drive_letter,
             //   before we start reading again.
             port::sleepMs(500);
 
-            std::string tmp_flac = flac_path + ".tmp";
-            std::string tmp_mp3  = mp3_path  + ".tmp";
+            const auto tmp_outs = withSuffix(outs, ".tmp");
 
             RGResult      rg2;
             ebur128_state* ebur_p2 = nullptr;
             ARTrackResult ar2 = ripTrack(*dev, trk, i, total,
                                          i==0, i==total-1,
                                          use_c2,
-                                         tmp_flac, tmp_mp3, rg2, cb,
+                                         tmp_outs, opt, rg2, cb,
                                          log_path, mode, drive_offset,
                                          ctdb_state.ctdb_crc,
                                          ctdb_state.ctdb_bytes,
@@ -1716,10 +1745,10 @@ void CDRipper::worker(std::string          drive_letter,
                     ar2.status == ARStatus::Matched_v2) {
                     // Pass 2 verified — atomically replace Pass 1 files
                     std::error_code ec2;
-                    fs::remove(flac_path, ec2);
-                    fs::remove(mp3_path,  ec2);
-                    fs::rename(tmp_flac, flac_path, ec2);
-                    fs::rename(tmp_mp3,  mp3_path,  ec2);
+                    for (size_t k = 0; k < outs.size(); ++k) {
+                        fs::remove(outs[k].path, ec2);
+                        fs::rename(tmp_outs[k].path, outs[k].path, ec2);
+                    }
                     ar = ar2;
                     rg = rg2;
                     // Pass 2 audio is now the kept audio: its loudness state is
@@ -1730,14 +1759,12 @@ void CDRipper::worker(std::string          drive_letter,
                 } else {
                     // Pass 2 also failed — discard its audio, keep Pass 1
                     std::error_code ec2;
-                    fs::remove(tmp_flac, ec2);
-                    fs::remove(tmp_mp3,  ec2);
+                    for (const auto& o : tmp_outs) fs::remove(o.path, ec2);
                 }
             } else {
                 // Pass 2 hard read failure — clean up and keep Pass 1
                 std::error_code ec2;
-                fs::remove(tmp_flac, ec2);
-                fs::remove(tmp_mp3,  ec2);
+                for (const auto& o : tmp_outs) fs::remove(o.path, ec2);
             }
             // Pass 2's loudness state is discarded unless it won (handled above).
             if (ebur_p2) ebur128_destroy(&ebur_p2);
@@ -1752,11 +1779,10 @@ void CDRipper::worker(std::string          drive_letter,
         // which is why it's a separate mode from fast best-effort [Y].
         else if (mode == RipMode::LocalVerify) {
             flushDriveCache(*dev, trk.start_lba, full_leadout_lba, use_c2);
-            std::string det_flac = flac_path + ".det";
-            std::string det_mp3  = mp3_path  + ".det";
+            const auto det_outs = withSuffix(outs, ".det");
             RGResult      rgd;
             ARTrackResult ard = ripTrack(*dev, trk, i, total, i==0, i==total-1,
-                                         use_c2, det_flac, det_mp3, rgd, cb,
+                                         use_c2, det_outs, opt, rgd, cb,
                                          log_path, mode, drive_offset,
                                          ctdb_state.ctdb_crc, ctdb_state.ctdb_bytes,
                                          eff_pressing);
@@ -1770,7 +1796,8 @@ void CDRipper::worker(std::string          drive_letter,
                         ar.crc_v1, ar.crc_v2, ard.crc_v1, ard.crc_v2);
                 fclose(lf);
             }
-            std::error_code ec; fs::remove(det_flac, ec); fs::remove(det_mp3, ec);
+            std::error_code ec;
+            for (const auto& o : det_outs) fs::remove(o.path, ec);
         }
 
         ar_results[i]    = ar;
@@ -1895,9 +1922,19 @@ void CDRipper::worker(std::string          drive_letter,
         std::string prefix = nn.str();
         if (mt && !mt->title.empty()) prefix += " - " + sanitizePath(mt->title);
 
-        tagFile(out_dir+kSep+prefix+".flac", rel, mt, tnum, art, ar_results[i], rg_results[i], mode);
-        tagFile(out_dir+kSep+prefix+".mp3",  rel, mt, tnum, art, ar_results[i], rg_results[i], mode);
+        for (const auto& o : buildOuts(opt, out_dir, prefix))
+            tagFile(o.path, rel, mt, tnum, art, ar_results[i], rg_results[i], mode);
     }
+
+    // CUE/M3U8 entries must reference files that exist: point them at the
+    // MASTER — the first selected lossless format, else the first selected
+    // (lossy-only rips get a playlist over the lossy files). Default
+    // selection resolves to ".flac", byte-identical to before.
+    const RipFormatRow* master_row = nullptr;
+    for (RipFormat f : opt.formats)
+        if (const RipFormatRow* r = ripFormatRow(f); r && r->lossless) { master_row = r; break; }
+    if (!master_row && !opt.formats.empty()) master_row = ripFormatRow(opt.formats[0]);
+    const char* list_ext = master_row ? master_row->ext : ".flac";
 
     // ── Write CUE sheet ───────────────────────────────────────────────────
     // Standard Red Book CUE sheet for FLAC rip — compatible with foobar2000,
@@ -1929,8 +1966,8 @@ void CDRipper::worker(std::string          drive_letter,
                 std::string prefix2 = nn.str();
                 if (mt && !mt->title.empty()) prefix2 += " - " + sanitizePath(mt->title);
 
-                // FILE per track (non-embedded CUE)
-                fprintf(cf, "FILE \"%s.flac\" WAVE\r\n", prefix2.c_str());
+                // FILE per track (non-embedded CUE) — the master format (§ above)
+                fprintf(cf, "FILE \"%s%s\" WAVE\r\n", prefix2.c_str(), list_ext);
                 fprintf(cf, "  TRACK %02d AUDIO\r\n", tnum);
                 if (mt && !mt->title.empty())
                     fprintf(cf, "    TITLE \"%s\"\r\n", mt->title.c_str());
@@ -1974,7 +2011,7 @@ void CDRipper::worker(std::string          drive_letter,
                     ? (mt ? mt->title : prefix2)
                     : rel.artist + " - " + (mt ? mt->title : prefix2);
                 fprintf(mf, "#EXTINF:%d,%s\r\n", duration_sec, display.c_str());
-                fprintf(mf, "%s.flac\r\n", prefix2.c_str());
+                fprintf(mf, "%s%s\r\n", prefix2.c_str(), list_ext);
             }
             fclose(mf);
         }
@@ -2171,6 +2208,7 @@ bool CDRipper::start(AudioManager&               audio,
                      const std::string&           out_dir,
                      const MBRelease&             rel,
                      RipMode                      mode,
+                     RipOptions                   opt,
                      ProgressCb                   cb) {
     if (active_.load()) return false;
     active_.store(true);
@@ -2185,7 +2223,8 @@ bool CDRipper::start(AudioManager&               audio,
     std::vector<uint32_t> data_trk_lbas = audio.cdSource().dataTrackLbas();
     auto dev = openDrive(dl);   // may be null — worker reports the error (as baseline)
     thread_ = std::thread(&CDRipper::worker, this,
-                          dl, tracks, out_dir, rel, mode, cb, std::move(dev), drv_offset, drv_model,
+                          dl, tracks, out_dir, rel, mode, std::move(opt), cb,
+                          std::move(dev), drv_offset, drv_model,
                           full_leadout, data_trk_lbas);
     return true;
 }

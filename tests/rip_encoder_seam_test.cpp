@@ -151,6 +151,11 @@ bool encodeInline(const std::string& flac_path, const std::string& mp3_path,
 }
 
 // ── SEAM ARM ────────────────────────────────────────────────────────────────
+// Argument-free construction is deliberate and load-bearing: since the
+// rip-format-select slice the quality values are ctor parameters, and this
+// arm pins their DEFAULTS (level 5, V0) against the frozen inline reference.
+// A drifted default fails this test. (encodeSeamExplicit below documents that
+// explicitly passing the default values is the same thing.)
 bool encodeSeam(const std::string& flac_path, const std::string& mp3_path,
                 const std::vector<Block>& blocks, uint64_t total_frames) {
     FlacEncoder flac;
@@ -199,15 +204,34 @@ int main() {
     check(ref_ok,  "reference (frozen inline) arm encoded");
     check(seam_ok, "seam (FlacEncoder/Mp3Encoder) arm encoded");
 
+    // Explicit-default arm: FlacEncoder(5)/Mp3Encoder(0) must equal the
+    // argument-free construction — documents the config-default pin.
+    {
+        FlacEncoder flac(5);
+        Mp3Encoder  mp3(0);
+        bool ok = flac.open("seam_exp.flac", kFrames) && mp3.open("seam_exp.mp3", kFrames);
+        for (auto& blk : blocks) {
+            if (!ok) break;
+            ok = flac.writeFrames(blk.p, (size_t)blk.samples) &&
+                 mp3.writeFrames(blk.p, (size_t)blk.samples);
+        }
+        flac.finalize(ok);
+        mp3.finalize(ok);
+        check(ok, "explicit-default arm (level 5 / V0) encoded");
+    }
+
     auto rf = slurp("seam_ref.flac"), nf = slurp("seam_new.flac");
     auto rm = slurp("seam_ref.mp3"),  nm = slurp("seam_new.mp3");
+    auto ef = slurp("seam_exp.flac"), em = slurp("seam_exp.mp3");
     std::printf("  flac: ref=%zu bytes, seam=%zu bytes\n", rf.size(), nf.size());
     std::printf("  mp3:  ref=%zu bytes, seam=%zu bytes\n", rm.size(), nm.size());
     check(!rf.empty() && rf == nf, "FLAC output BYTE-IDENTICAL to inline");
     check(!rm.empty() && rm == nm, "MP3 output BYTE-IDENTICAL to inline");
+    check(ef == rf, "FLAC explicit level 5 == default == inline");
+    check(em == rm, "MP3 explicit V0 == default == inline");
 
-    std::remove("seam_ref.flac"); std::remove("seam_new.flac");
-    std::remove("seam_ref.mp3");  std::remove("seam_new.mp3");
+    std::remove("seam_ref.flac"); std::remove("seam_new.flac"); std::remove("seam_exp.flac");
+    std::remove("seam_ref.mp3");  std::remove("seam_new.mp3");  std::remove("seam_exp.mp3");
 
     if (failures) { std::printf("%d FAILURE(S)\n", failures); return 1; }
     std::printf("all checks passed\n");

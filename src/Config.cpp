@@ -194,6 +194,14 @@ void DigiConfig::load() {
         else if (key == "nerd_icons")         nerd_icons         = (val == "1");
         else if (key == "follow_playing")     follow_playing     = (val == "1");
         else if (key == "show_filetype")      show_filetype      = (val == "1");
+        else if (key == "rip_formats")        rip_formats        = val;
+        else if (key == "flac_level")         try { flac_level = std::clamp(std::stoi(val), 0, 8); } catch (...) {}
+        else if (key == "mp3") {
+            // Accept V0-V9 (case-insensitive); anything else keeps the default.
+            if (val.size() == 2 && (val[0] == 'V' || val[0] == 'v') &&
+                val[1] >= '0' && val[1] <= '9')
+                mp3 = std::string("V") + val[1];
+        }
         else if (key == "wingui_font")        wingui_font        = val;
         else if (key == "wingui_cols")        try { wingui_cols = std::stoi(val); } catch (...) {}
         else if (key == "wingui_rows")        try { wingui_rows = std::stoi(val); } catch (...) {}
@@ -309,6 +317,9 @@ void DigiConfig::save() const {
         f << "nerd_icons="        << (nerd_icons ? "1" : "0") << "\n";
         f << "follow_playing="    << (follow_playing ? "1" : "0") << "\n";
         f << "show_filetype="     << (show_filetype ? "1" : "0") << "\n";
+        f << "rip_formats="       << rip_formats << "\n";
+        f << "flac_level="        << flac_level  << "\n";
+        f << "mp3="               << mp3         << "\n";
         if (!wingui_font.empty()) f << "wingui_font="    << wingui_font << "\n";
         if (wingui_cols > 0)      f << "wingui_cols="    << wingui_cols << "\n";
         if (wingui_rows > 0)      f << "wingui_rows="    << wingui_rows << "\n";

@@ -427,6 +427,11 @@ private:
 
     CDRipper    cd_ripper_;
     UIOverlay   ui_overlay_    = UIOverlay::None;
+    // Session rip-format selection (rip-format-select): seeded ONCE from
+    // config_.rip_formats in the ctor, toggled by the modal's digit keys,
+    // NEVER written back to config (the conf key is the default only).
+    // Deliberately not reset on eject — user preference, not disc data.
+    std::vector<RipFormat> rip_sel_;
     std::string rip_status_;   // shown in cmdline during/after rip
     int         rip_msg_ticks_ = 0;  // auto-clear counter
 

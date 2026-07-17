@@ -45,6 +45,7 @@
 #include <cstdarg>
 #include <cstdio>
 #include <cstring>
+#include <cctype>
 #include <cstdlib>
 #include "Log.h"
 #include "Version.h"
@@ -179,12 +180,52 @@ void initWinguiFont(const std::string& configured_face) {
 // ─────────────────────────────────────────────────────────────────────────────
 // Construction
 // ─────────────────────────────────────────────────────────────────────────────
+// ── rip-format-select helpers ────────────────────────────────────────────────
+// config_.rip_formats ("flac,mp3") -> ordered selection. Case-insensitive
+// label match against kRipFormats, unknown tokens ignored (a future format
+// name degrades gracefully on an older build), duplicates dropped, empty
+// result -> the full default set (absent config = pre-slice behavior).
+static std::vector<RipFormat> parseRipFormats(const std::string& s) {
+    std::vector<RipFormat> sel;
+    std::string tok;
+    auto flush = [&] {
+        if (tok.empty()) return;
+        for (const auto& r : kRipFormats) {
+            if (tok.size() == strlen(r.label) &&
+                std::equal(tok.begin(), tok.end(), r.label,
+                           [](char a, char b) { return std::toupper((unsigned char)a) == b; }) &&
+                std::find(sel.begin(), sel.end(), r.id) == sel.end())
+                sel.push_back(r.id);
+        }
+        tok.clear();
+    };
+    for (char c : s) {
+        if (c == ',') flush();
+        else if (!std::isspace((unsigned char)c)) tok += c;
+    }
+    flush();
+    if (sel.empty())
+        for (const auto& r : kRipFormats) sel.push_back(r.id);
+    return sel;
+}
+
+// config_.mp3 "V0".."V9" -> LAME VBR_q int; anything unexpected -> 0 (V0,
+// the pre-config literal). Config::load already validates, this is defense.
+static int parseMp3VbrQ(const std::string& s) {
+    if (s.size() == 2 && (s[0] == 'V' || s[0] == 'v') && s[1] >= '0' && s[1] <= '9')
+        return s[1] - '0';
+    return 0;
+}
+
 UIManager::UIManager(PlaylistManager& playlist, AudioManager& audio,
                      DigiConfig& config, const std::string& initial_dir,
                      core::INotify* notify)
     : notify_(notify ? notify : &core::notifier()),
       playlist_(playlist), audio_(audio), config_(config)
 {
+    // Seed the session rip-format selection from the config default (config
+    // is load-once; the modal toggles rip_sel_ and never writes it back).
+    rip_sel_ = parseRipFormats(config_.rip_formats);
 #ifdef PDCURSES
     // wingui measures its font during initscr(), so choose the face FIRST.
     initWinguiFont(config_.wingui_font);
@@ -1624,7 +1665,7 @@ void UIManager::drawAll() {
 
 void UIManager::drawRipConfirm() {   // slice 6: common (ncurses + portable CDSource)
     const int BOX_W = 68;
-    const int BOX_H = 15;
+    const int BOX_H = 19;   // rip-format-select: +4 rows for the format block
     int y0 = (screen_rows_ - BOX_H) / 2;
     int x0 = (screen_cols_ - BOX_W) / 2;
     if (y0 < 0) y0 = 0;
@@ -1670,18 +1711,59 @@ void UIManager::drawRipConfirm() {   // slice 6: common (ncurses + portable CDSo
 
     mvwprintw(w, 2, 3, "Drive  %s\\   offset %+d samples",
               cd.driveLetter().c_str(), drive_offset);
-    // "Disc N tracks" left, "FLAC-5 + LAME V0 VBR" right-aligned on same line
-    const char* fmt_str = "FLAC-5 + LAME V0 VBR";
     mvwprintw(w, 3, 3, "Disc   %d tracks", ntracks);
-    mvwaddstr(w, 3, BOX_W - (int)strlen(fmt_str) - 3, fmt_str);
-    if (!album_str.empty())
-        mvwprintw(w, 4, 3, "%s", album_str.c_str());
 
-    // Divider
-    mvwhline(w, 5, 1, ACS_HLINE, BOX_W - 2);
+    // Album line + the live selection summary (or the deselect-all hint)
+    // right-aligned on the same row. The album truncates to keep the
+    // right-hand text intact (the MAX_DIR idiom above).
+    const bool none_selected = rip_sel_.empty();
+    std::string summary;
+    if (none_selected) {
+        summary = "select at least one format to rip";
+    } else {
+        summary = "Out: ";
+        bool first = true;
+        for (const auto& r : kRipFormats) {
+            if (std::find(rip_sel_.begin(), rip_sel_.end(), r.id) == rip_sel_.end()) continue;
+            if (!first) summary += " + ";
+            summary += r.label;
+            first = false;
+        }
+    }
+    {
+        int sum_x = BOX_W - (int)summary.size() - 3;
+        int max_album = sum_x - 5;
+        std::string a = album_str;
+        if ((int)a.size() > max_album && max_album > 3)
+            a = a.substr(0, (size_t)max_album - 3) + "...";
+        if (!a.empty()) mvwprintw(w, 4, 3, "%s", a.c_str());
+        if (none_selected) wattron(w, COLOR_PAIR(CP_STATUS_ERR) | A_BOLD);
+        mvwaddstr(w, 4, sum_x, summary.c_str());
+        if (none_selected) wattroff(w, COLOR_PAIR(CP_STATUS_ERR) | A_BOLD);
+    }
 
-    // Mode options — plain text, no color pairs on description lines
-    mvwaddstr(w, 6, 3, "Select ripping mode:");
+    // ── Output formats (digit-toggled; data-driven from kRipFormats) ──────
+    mvwaddstr(w, 6, 3, "Output formats");
+    {
+        char hint[24];
+        snprintf(hint, sizeof(hint), "(1-%d toggle)", kRipFormatCount);
+        mvwaddstr(w, 6, BOX_W - (int)strlen(hint) - 3, hint);
+    }
+    for (int i = 0; i < kRipFormatCount; ++i) {
+        const auto& r = kRipFormats[i];
+        bool on = std::find(rip_sel_.begin(), rip_sel_.end(), r.id) != rip_sel_.end();
+        std::string quality =
+            r.id == RipFormat::Flac ? "level " + std::to_string(config_.flac_level)
+          : r.id == RipFormat::Mp3  ? "LAME " + config_.mp3 + " VBR"
+          : "";
+        mvwprintw(w, 7 + i, 3, "  [%c] %d  %-8s %-14s %s",
+                  on ? 'x' : ' ', i + 1, r.label, quality.c_str(),
+                  r.lossless ? "*" : "");
+    }
+
+    // Mode options — plain text; dimmed while nothing is selected (commit
+    // keys are inert then; N stays live). Cancel row never dims.
+    mvwaddstr(w, 10, 3, "Select ripping mode");
     struct { const char* key; const char* label; const char* desc; } opts[] = {
         { "[A]", "AccurateRip ", "Network CRC verify + offset correction" },
         { "[C]", "CUETools    ", "Disc-wide CRC32, no network required" },
@@ -1689,13 +1771,17 @@ void UIManager::drawRipConfirm() {   // slice 6: common (ncurses + portable CDSo
         { "[B]", "Local 2-pass", "Best-effort + read-twice determinism check" },
         { "[N]", "Cancel      ", "Go back" },
     };
-    for (int i = 0; i < 5; ++i)
-        mvwprintw(w, 7 + i, 3, "%s %-12s  %s",
+    for (int i = 0; i < 5; ++i) {
+        bool dim = none_selected && i < 4;
+        if (dim) wattron(w, A_DIM);
+        mvwprintw(w, 11 + i, 3, "%s %-12s  %s",
                   opts[i].key, opts[i].label, opts[i].desc);
+        if (dim) wattroff(w, A_DIM);
+    }
 
     // Footer divider + output path
-    mvwhline(w, 12, 1, ACS_HLINE, BOX_W - 2);
-    mvwprintw(w, 13, 3, "Out  %s", disp_dir.c_str());
+    mvwhline(w, 16, 1, ACS_HLINE, BOX_W - 2);
+    mvwprintw(w, 17, 3, "Out  %s", disp_dir.c_str());
 
     wrefresh(w);
     delwin(w);
@@ -4778,18 +4864,38 @@ void UIManager::handleInput(int ch) {
     // the MBSearch line is inert there (^F stays gated, so it never opens).
     if (ui_overlay_ == UIOverlay::MBSearch) { handleMBSearchInput(ch); return; }
     // ── Rip mode selection modal — intercepts all input when active ─────────
+    // Input disambiguation is STRUCTURAL (rip-format-select): N/Esc first
+    // (cancel always works), digits toggle and return inside their own case
+    // (can never commit), letters carry the empty-selection guard (can never
+    // toggle, and commit is inert — not "commits with empty list" — while
+    // nothing is checked; the dimmed rows + red hint explain why).
     if (ui_overlay_ == UIOverlay::RipConfirm) {
+        // Cancel — always allowed, selection state irrelevant.
+        if (ch == 'n' || ch == 'N' || ch == 27) {
+            ui_overlay_ = UIOverlay::None;
+            redraw_needed_.store(true);
+            return;
+        }
+        // Digit toggles: '1'..'0'+kRipFormatCount flip a row and stay open.
+        if (ch > '0' && ch <= '0' + kRipFormatCount) {
+            RipFormat f = kRipFormats[ch - '1'].id;
+            auto it = std::find(rip_sel_.begin(), rip_sel_.end(), f);
+            if (it != rip_sel_.end()) rip_sel_.erase(it);
+            else                      rip_sel_.push_back(f);
+            redraw_needed_.store(true);
+            return;
+        }
         RipMode chosen = RipMode::None;
         switch (ch) {
             case 'a': case 'A': chosen = RipMode::AccurateRip; break;
             case 'c': case 'C': chosen = RipMode::CUETools;    break;
             case 'y': case 'Y': chosen = RipMode::Local;       break;
             case 'b': case 'B': chosen = RipMode::LocalVerify; break;
-            case 'n': case 'N': case 27:
-                ui_overlay_ = UIOverlay::None;
-                redraw_needed_.store(true);
-                return;
             default: return;  // ignore everything else
+        }
+        if (rip_sel_.empty()) {           // commit keys inert at zero selected
+            redraw_needed_.store(true);
+            return;
         }
         ui_overlay_ = UIOverlay::None;
         if (!audio_.cdMode()) return;
@@ -4805,7 +4911,18 @@ void UIManager::handleInput(int ch) {
         rip_status_    = "Initializing rip...  Output: " + out_dir;
         rip_msg_ticks_ = 0;
         redraw_needed_.store(true);
-        cd_ripper_.start(audio_, tracks, out_dir, rel, chosen,
+        // Build the rip request: selection normalized to TABLE order (the
+        // fan-out sequence must not depend on toggle history — default set
+        // always rips FLAC-then-MP3, byte-identical to pre-selection), plus
+        // the config-fed quality values (defaults == the old literals).
+        RipOptions opt;
+        opt.formats.clear();
+        for (const auto& r : kRipFormats)
+            if (std::find(rip_sel_.begin(), rip_sel_.end(), r.id) != rip_sel_.end())
+                opt.formats.push_back(r.id);
+        opt.flac_level = std::clamp(config_.flac_level, 0, 8);
+        opt.mp3_vbr_q  = parseMp3VbrQ(config_.mp3);
+        cd_ripper_.start(audio_, tracks, out_dir, rel, chosen, std::move(opt),
             [this](const RipProgress& p) {
                 rip_status_ = p.status_msg;
                 rip_msg_ticks_ = 0;

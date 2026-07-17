@@ -1053,3 +1053,18 @@ runtime-discoverable, not compile-discoverable; a green build proves nothing abo
   TOC-exact); with writeFrames strict it can never launder a write failure.
   Guarded by the /dev/full short-write check in rip_encoder_seam_test
   (Linux job). Do not "simplify" the strictness away.
+- **The R128<->RG dialect lives in include/R128Gain.h, both directions, and
+  nowhere else** (rip-opus-encoder): decode (LocalFileSource RG read) and
+  encode (CDRipper tagFile Opus branch) call the same two inline functions,
+  so the ~5 dB reference bug (decode slice, found in the wild) structurally
+  cannot reappear as a drift between the two sides. Round trip is EXACT for
+  every Q7.8 int (/256 and +/-5 are exact in binary FP over the range) -
+  asserted over the FULL range in rip_encoder_seam_test. Do not inline
+  either direction "for simplicity"; one home is the guard.
+- **Opus rip notes**: libopusenc accepts 44100 input and resamples to 48k
+  internally, sample-exact (probe-proven: 88200 in -> exactly 96000 @ 48k).
+  Wide paths go through ope_encoder_create_callbacks over port::fopenUtf8 -
+  ope_encoder_create_file's char* path is an ANSI trap on Windows. The class
+  is OpusRipEncoder because opus.h typedefs a C OpusEncoder and the TU sees
+  both. Header output gain is pinned 0 so the R128 tags are the only gain.
+  Opus tags carry NO REPLAYGAIN_* and NO peak keys - R128 defines none.

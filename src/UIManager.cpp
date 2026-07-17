@@ -1758,6 +1758,7 @@ void UIManager::drawRipConfirm() {   // slice 6: common (ncurses + portable CDSo
             r.id == RipFormat::Flac ? "level " + std::to_string(config_.flac_level)
           : r.id == RipFormat::Mp3  ? "LAME " + config_.mp3 + " VBR"
           : r.id == RipFormat::Wav  ? "16-bit PCM"
+          : r.id == RipFormat::Opus ? std::to_string(config_.opus_bitrate / 1000) + " kbps VBR"
           : "";
         // Marker and note are two separate signals (lossless master; format
         // limitation) — the note gets its own column with breathing room.
@@ -4927,8 +4928,9 @@ void UIManager::handleInput(int ch) {
         for (const auto& r : kRipFormats)
             if (std::find(rip_sel_.begin(), rip_sel_.end(), r.id) != rip_sel_.end())
                 opt.formats.push_back(r.id);
-        opt.flac_level = std::clamp(config_.flac_level, 0, 8);
-        opt.mp3_vbr_q  = parseMp3VbrQ(config_.mp3);
+        opt.flac_level   = std::clamp(config_.flac_level, 0, 8);
+        opt.mp3_vbr_q    = parseMp3VbrQ(config_.mp3);
+        opt.opus_bitrate = std::clamp(config_.opus_bitrate, 6000, 510000);
         cd_ripper_.start(audio_, tracks, out_dir, rel, chosen, std::move(opt),
             [this](const RipProgress& p) {
                 rip_status_ = p.status_msg;

@@ -42,6 +42,7 @@ struct DigiConfig {
     std::string rip_formats = "flac,mp3";  // comma-separated kRipFormats labels
     int         flac_level  = 5;           // FLAC compression 0-8
     std::string mp3         = "V0";        // LAME VBR quality V0-V9
+    int         opus_bitrate = 128000;     // Opus VBR bitrate, 6000-510000 (= kOpusDefaultBitrate)
 
     // UI theme toggle (Ctrl+T): false = Classic, true = Awesome (rounded panels)
     bool  awesome_mode = false;

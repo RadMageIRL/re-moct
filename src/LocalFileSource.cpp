@@ -6,6 +6,7 @@
 #include "LocalFileSource.h"
 #include "StringUtils.h"
 #include "CustomBackends.h" // the shared AAC/Opus/WavPack backend array
+#include "R128Gain.h"       // dbFromR128 — the one home for the R128<->RG dialect
 #include "Mp4Chapters.h"    // mp4AacChannelCount: true ASC channel count
 
 #include <taglib/fileref.h>
@@ -61,15 +62,15 @@ static void populate_track_info(TrackInfo& info, const std::string& path) {
         std::transform(rg_ext.begin(), rg_ext.end(), rg_ext.begin(), ::tolower);
         if (rg_ext == ".opus") {
             // Opus (RFC 7845) carries gain as R128_TRACK_GAIN: an INTEGER in
-            // Q7.8 fixed-point dB (value/256), referenced to -23 LUFS. Reading
-            // it as plain dB (the old fallback) turned an ordinary tag into
-            // hundreds of negative dB and muted the track. Rebase +5 dB to the
-            // ReplayGain -18 LUFS convention so the preamp in maDataCallback
-            // treats Opus like every other format. The tag is relative to the
-            // OpusHead output gain, which libopusfile already applies
-            // (OP_HEADER_GAIN default), so there is no header-gain term here.
+            // Q7.8 fixed-point dB. Reading it as plain dB (the old fallback)
+            // turned an ordinary tag into hundreds of negative dB and muted
+            // the track. The conversion (and its -23 -> -18 LUFS rebase) lives
+            // in R128Gain.h, SHARED with the rip encoder's tag-write direction
+            // so the dialect cannot drift. The tag is relative to the OpusHead
+            // output gain, which libopusfile already applies (OP_HEADER_GAIN
+            // default), so there is no header-gain term here.
             if (float q78 = tryRG("R128_TRACK_GAIN"); q78 != 0.0f)
-                rg_db = q78 / 256.0f + 5.0f;
+                rg_db = dbFromR128((int)q78);
         }
         if (rg_db == 0.0f) {
             rg_db = tryRG("REPLAYGAIN_TRACK_GAIN");

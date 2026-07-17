@@ -71,6 +71,7 @@ set(REMOCT_SOURCES
     src/FlacEncoder.cpp           # rip-encoder-seam: FLAC output behind IEncoder
     src/Mp3Encoder.cpp            # rip-encoder-seam: MP3 output behind IEncoder
     src/WavEncoder.cpp            # rip-wav-encoder: WAV output (no library)
+    src/OpusRipEncoder.cpp        # rip-opus-encoder: Opus output (libopusenc)
     src/Mp4Chapters.cpp
     src/RadioBrowser.cpp
     src/LastFm.cpp
@@ -218,7 +219,12 @@ find_path(OPUS_INCLUDE NAMES opus/opusfile.h PATHS "${MSYS2_PREFIX}/include" REQ
 # it spelled out — for every target that links opusfile, not just remoct
 # (whose probe block already added libogg.a for static libFLAC).
 find_library(OGG_LIB NAMES ogg PATHS "${MSYS2_PREFIX}/lib" REQUIRED)
+# libopusenc (rip-opus-encoder): Opus ENCODE for the rip path. Same family,
+# same include layout (opusenc.h pulls <opus.h> unprefixed — served by the
+# include/opus dir already on the path). Linked before opus (dependency).
+find_library(OPUSENC_LIB NAMES opusenc PATHS "${MSYS2_PREFIX}/lib" REQUIRED)
 message(STATUS "opusfile: ${OPUSFILE_LIB}")
+message(STATUS "opusenc: ${OPUSENC_LIB}")
 
 # ── libwavpack (WavPack decode: .wv) ───────────────────────────────────────
 find_library(WAVPACK_LIB NAMES wavpack PATHS "${MSYS2_PREFIX}/lib" REQUIRED)
@@ -306,7 +312,8 @@ target_link_libraries(remoct PRIVATE
     ${LAME_LIB}
     ${EBUR128_LIB}
     ${FDKAAC_LIB}
-    ${OPUSFILE_LIB}   # dependency order: opusfile -> opus, vorbisfile -> vorbis, both -> ogg
+    ${OPUSFILE_LIB}   # dependency order: opusfile/opusenc -> opus, vorbisfile -> vorbis, all -> ogg
+    ${OPUSENC_LIB}
     ${OPUS_LIB}
     ${VORBISFILE_LIB}
     ${VORBIS_LIB}

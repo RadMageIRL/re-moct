@@ -12,7 +12,7 @@
 
 #include <vector>
 
-enum class RipFormat { Flac, Mp3, Wav };
+enum class RipFormat { Flac, Mp3, Wav, Opus };
 
 struct RipFormatRow {
     RipFormat   id;
@@ -29,6 +29,7 @@ inline constexpr RipFormatRow kRipFormats[] = {
     { RipFormat::Flac, "FLAC", ".flac", true,  true,  ""           },
     { RipFormat::Mp3,  "MP3",  ".mp3",  false, true,  ""           },
     { RipFormat::Wav,  "WAV",  ".wav",  true,  false, "(untagged)" },
+    { RipFormat::Opus, "Opus", ".opus", false, true,  ""           },
 };
 inline constexpr int kRipFormatCount = (int)(sizeof(kRipFormats) / sizeof(kRipFormats[0]));
 
@@ -44,6 +45,7 @@ inline const RipFormatRow* ripFormatRow(RipFormat f) {
 // reference; these must stay in lockstep with those ctor defaults).
 struct RipOptions {
     std::vector<RipFormat> formats { RipFormat::Flac, RipFormat::Mp3 };
-    int flac_level = 5;   // FLAC compression 0-8
-    int mp3_vbr_q  = 0;   // LAME VBR quality 0-9 (0 = V0)
+    int flac_level   = 5;        // FLAC compression 0-8
+    int mp3_vbr_q    = 0;        // LAME VBR quality 0-9 (0 = V0)
+    int opus_bitrate = 128000;   // = kOpusDefaultBitrate; clamped 6k-510k at parse
 };

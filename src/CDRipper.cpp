@@ -25,6 +25,8 @@
 #include "FlacEncoder.h"
 #include "Mp3Encoder.h"
 #include "WavEncoder.h"
+#include "OpusRipEncoder.h"
+#include "R128Gain.h"       // r128FromDb — shared with the decode side (LocalFileSource)
 
 // libebur128 for ReplayGain
 #include <ebur128.h>
@@ -41,6 +43,10 @@
 #include <taglib/flacfile.h>
 #include <taglib/flacpicture.h>
 #include <taglib/xiphcomment.h>
+// TagLib's Ogg Opus reader/writer. The taglib/ prefix matters doubly here:
+// the CODEC header opus/opusfile.h shares the basename (the decode-slice
+// collision), and this TU must get TagLib's C++ class, not libopusfile's C API.
+#include <taglib/opusfile.h>
 
 #include <filesystem>
 #include <cstring>
@@ -660,6 +666,7 @@ void CDRipper::tagFile(const std::string&         path,
 #endif
         bool is_mp3  = path.size()>4 && path.substr(path.size()-4)==".mp3";
         bool is_flac = path.size()>5 && path.substr(path.size()-5)==".flac";
+        bool is_opus = path.size()>5 && path.substr(path.size()-5)==".opus";
 
         std::string title_str;
         if (mt && !mt->title.empty()) title_str = mt->title;
@@ -748,6 +755,44 @@ void CDRipper::tagFile(const std::string&         path,
                 f.addPicture(pic);
             }
             f.save();
+
+        } else if (is_opus) {
+            // Opus (rip-opus-encoder): Xiph comments like FLAC — standard
+            // fields, AR fields, and art (XiphComment carries pictures
+            // natively) are the FLAC branch's calls verbatim. ReplayGain is
+            // the R128 DIALECT ONLY (RFC 7845): Q7.8 integers via the shared
+            // R128Gain.h conversion — the exact inverse of the decode side.
+            // No REPLAYGAIN_* keys, no peaks (R128 defines none). The header
+            // output gain is 0 (OpusRipEncoder pins it), so these tags are
+            // the only gain.
+            TagLib::Ogg::Opus::File f(wp.c_str(), false);
+            auto* tag = f.tag(); if (!tag) return;
+            tag->setTitle (TagLib::String(title_str,  TagLib::String::UTF8));
+            tag->setArtist(TagLib::String(artist_str, TagLib::String::UTF8));
+            tag->setAlbum (TagLib::String(rel.title,  TagLib::String::UTF8));
+            tag->setTrack ((unsigned int)track_num);
+            if (rel.date.size()>=4) try { tag->setYear((unsigned)std::stoi(rel.date.substr(0,4))); } catch(...){}
+            tag->addField("ENCODER",TagLib::String("RE-MOCT v" REMOCT_VERSION,TagLib::String::UTF8),true);
+            if (!ar_str.empty()) {
+                tag->addField("ACCURATERIP",    TagLib::String(ar_str,       TagLib::String::UTF8),true);
+                tag->addField("ACCURATERIPCRC", TagLib::String(ar_crc_str,   TagLib::String::UTF8),true);
+                tag->addField("ACCURATERIPCOUNT",TagLib::String(ar_conf_str, TagLib::String::UTF8),true);
+            }
+            if (rg.valid) {
+                tag->addField("R128_TRACK_GAIN",
+                    TagLib::String(std::to_string(r128FromDb(rg.track_gain)),TagLib::String::UTF8),true);
+                tag->addField("R128_ALBUM_GAIN",
+                    TagLib::String(std::to_string(r128FromDb(rg.album_gain)),TagLib::String::UTF8),true);
+            }
+            if (!art.empty()) {
+                auto* pic = new TagLib::FLAC::Picture();
+                pic->setMimeType("image/jpeg");
+                pic->setType(TagLib::FLAC::Picture::FrontCover);
+                pic->setDescription(TagLib::String("Cover"));
+                pic->setData(TagLib::ByteVector((const char*)art.data(),(unsigned)art.size()));
+                tag->addPicture(pic);
+            }
+            f.save();
         }
     } catch(...) {}
 }
@@ -762,6 +807,7 @@ static std::unique_ptr<IEncoder> makeEncoder(RipFormat f, const RipOptions& opt)
         case RipFormat::Flac: return std::make_unique<FlacEncoder>(opt.flac_level);
         case RipFormat::Mp3:  return std::make_unique<Mp3Encoder>(opt.mp3_vbr_q);
         case RipFormat::Wav:  return std::make_unique<WavEncoder>();
+        case RipFormat::Opus: return std::make_unique<OpusRipEncoder>(opt.opus_bitrate);
     }
     return nullptr;
 }

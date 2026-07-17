@@ -16,6 +16,7 @@
 #include "FlacEncoder.h"
 #include "Mp3Encoder.h"
 #include "WavEncoder.h"
+#include "R128Gain.h"
 
 #include <FLAC/stream_encoder.h>
 #include <lame/lame.h>
@@ -290,6 +291,21 @@ int main() {
         }
     }
 #endif
+
+    // ── R128 <-> RG round trip (rip-opus-encoder) ──────────────────────────
+    // The encode direction (tagFile) must be the EXACT inverse of the decode
+    // direction (LocalFileSource) for every representable Q7.8 tag value —
+    // /256 and +/-5 are exact in binary floating point over the int range,
+    // so this is a machine proof, not a tolerance check. Full range.
+    {
+        bool rt = true;
+        for (int q = -32768; q <= 32767; ++q)
+            if (r128FromDb((double)dbFromR128(q)) != q) { rt = false; break; }
+        check(rt, "R128 round trip exact over full Q7.8 range");
+        check(dbFromR128(-2560) == -5.0f, "R128 -2560 -> -5.00 dB (decode-flight vector)");
+        check(r128FromDb(-5.0)  == -2560, "R128 -5.00 dB -> -2560 (encode inverse)");
+        check(r128FromDb(0.0)   == -1280, "RG 0 dB -> Q7.8 -1280 (the -5 rebase, sign right)");
+    }
 
     if (failures) { std::printf("%d FAILURE(S)\n", failures); return 1; }
     std::printf("all checks passed\n");

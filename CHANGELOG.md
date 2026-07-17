@@ -28,6 +28,12 @@ Feature release: Opus and WavPack playback.
   master marker, and deselecting everything disables the rip keys until at
   least one format is checked. The selection lasts for the session; set the
   startup default with the new "rip_formats" config key.
+- **Opus rip output**: the rip dialog gains a fourth format - Opus at a
+  configurable VBR bitrate (toggle with 4, config token "opus", new
+  "opus_bitrate" key, default 128 kbps). Fully tagged including cover art,
+  with ReplayGain written in Opus's native R128 dialect - the exact inverse
+  of the player's R128 read, so ripped Opus and FLAC land at the same
+  playback loudness.
 - **WAV rip output**: the rip dialog gains a third format - untagged
   bit-exact 16-bit PCM (toggle with 3, config token "wav"). WAV carries no
   tags, cover art, or ReplayGain by format; the dialog marks the row

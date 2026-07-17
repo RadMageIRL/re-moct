@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Feature release: Opus and WavPack playback.
 
+### Fixed
+
+- **MP3 files now honor their ReplayGain tags.** MP3s ripped by RE-MOCT
+  carried a correct gain value that the player never applied - MP3 tracks
+  played at full level while their FLAC and Opus siblings played
+  gain-adjusted. The stored gain is now read and applied on playback.
+  Heads up - this is audible: existing ripped MP3s will now play at their
+  corrected (usually lower) volume, matching their FLAC siblings.
+
 ### Added
 
 - **Stream recording** (Ctrl+E while a radio stream is playing): capture the

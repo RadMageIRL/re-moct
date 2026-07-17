@@ -13,6 +13,11 @@
 #include <taglib/tag.h>
 #include <taglib/audioproperties.h>
 #include <taglib/tpropertymap.h>
+// mp3-rg-read: the MP3 TXXX fallback walks ID3v2 frames directly (the
+// PropertyMap can't see the legacy blob shape — see the RG block below).
+#include <taglib/mpegfile.h>
+#include <taglib/id3v2tag.h>
+#include <taglib/textidentificationframe.h>
 
 #include <algorithm>
 #include <cstring>
@@ -75,6 +80,47 @@ static void populate_track_info(TrackInfo& info, const std::string& path) {
         if (rg_db == 0.0f) {
             rg_db = tryRG("REPLAYGAIN_TRACK_GAIN");
             if (rg_db == 0.0f) rg_db = tryRG("replaygain_track_gain");
+        }
+        // MP3 fallback (mp3-rg-read): RE-MOCT's own rips/recordings wrote the
+        // TXXX frame as ONE "KEY=value" text blob, which re-parses with the
+        // whole blob in the frame's DESCRIPTION and an empty value — so the
+        // PropertyMap above keys it as 'REPLAYGAIN_TRACK_GAIN=-6.92 DB' -> ''
+        // and the lookups miss (probe-proven on the rip baseline; plan doc
+        // docs/mp3-rg-read-plan.md). Walk the TXXX frames directly: match the
+        // TRACK_GAIN description prefix case-insensitively, prefer the VALUE
+        // field when non-empty (standard third-party files stay standard),
+        // else parse the description's "=..." tail (our legacy blob). Track
+        // gain only — mode parity with the FLAC/Opus reads above. The write
+        // shape is fixed in its own follow-up slice; this read handles both
+        // shapes so that change can land without breaking read-back.
+        if (rg_db == 0.0f && rg_ext == ".mp3") {
+            if (auto* mp3 = dynamic_cast<TagLib::MPEG::File*>(ref.file())) {
+                if (auto* id3 = mp3->ID3v2Tag(false)) {
+                    static const std::string kKey = "REPLAYGAIN_TRACK_GAIN";
+                    for (auto* fr : id3->frameList("TXXX")) {
+                        auto* u = dynamic_cast<TagLib::ID3v2::UserTextIdentificationFrame*>(fr);
+                        if (!u) continue;
+                        std::string desc = u->description().to8Bit(true);
+                        std::string up   = desc;
+                        std::transform(up.begin(), up.end(), up.begin(), ::toupper);
+                        if (up.rfind(kKey, 0) != 0) continue;
+                        std::string val;
+                        // fieldList()[0] repeats the description; the VALUE is
+                        // the first non-empty field after it.
+                        const auto& fl = u->fieldList();
+                        for (unsigned int i = 1; i < fl.size(); ++i)
+                            if (!fl[i].isEmpty()) { val = fl[i].to8Bit(true); break; }
+                        if (val.empty()) {                      // legacy blob
+                            if (auto eq = desc.find('='); eq != std::string::npos)
+                                val = desc.substr(eq + 1);
+                        }
+                        if (!val.empty()) {
+                            try { rg_db = std::stof(val); } catch (...) {}
+                            if (rg_db != 0.0f) break;
+                        }
+                    }
+                }
+            }
         }
         info.replaygain_db = rg_db;
     }

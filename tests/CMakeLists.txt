@@ -522,3 +522,34 @@ target_link_libraries(stream_record_test PRIVATE
     $<$<PLATFORM_ID:Linux>:pthread> $<$<PLATFORM_ID:Linux>:m>)
 add_test(NAME stream_record_test COMMAND stream_record_test)
 set_tests_properties(stream_record_test PROPERTIES TIMEOUT 120)
+
+# mp3-rg-read — the MP3 ReplayGain read contract. A REAL Mp3Encoder fixture
+# tagged in all three shapes (the legacy RE-MOCT "KEY=value"-in-description
+# blob, the standard desc/value TXXX, lowercase desc) + untagged, read back
+# through the REAL LocalFileSource::open() metadata path. Pins the read
+# across the legacy AND standard shapes so the follow-up write-shape fix
+# cannot silently break read-back (the seam-oracle move on a tag dialect).
+add_executable(mp3_rg_read_test
+    mp3_rg_read_test.cpp
+    ${CMAKE_SOURCE_DIR}/src/LocalFileSource.cpp
+    ${CMAKE_SOURCE_DIR}/src/AacDecoder.cpp
+    ${CMAKE_SOURCE_DIR}/src/OpusDecoder.cpp
+    ${CMAKE_SOURCE_DIR}/src/WavPackDecoder.cpp
+    ${CMAKE_SOURCE_DIR}/src/VorbisDecoder.cpp
+    ${CMAKE_SOURCE_DIR}/src/CustomBackends.cpp
+    ${CMAKE_SOURCE_DIR}/src/Mp4Chapters.cpp
+    ${CMAKE_SOURCE_DIR}/src/Log.cpp
+    ${CMAKE_SOURCE_DIR}/src/Mp3Encoder.cpp
+)
+target_include_directories(mp3_rg_read_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/lib
+    ${LAME_INCLUDE} ${FDKAAC_INCLUDE}
+    ${OPUS_INCLUDE} ${OPUS_INCLUDE}/opus ${WAVPACK_INCLUDE}
+    ${TAGLIB_INCLUDE_DIRS})
+target_link_libraries(mp3_rg_read_test PRIVATE
+    ${TAGLIB_LIBRARIES} ${LAME_LIB} ${FDKAAC_LIB}
+    ${OPUSFILE_LIB} ${OPUS_LIB} ${VORBISFILE_LIB} ${VORBIS_LIB} ${OGG_LIB}
+    ${WAVPACK_LIB}
+    $<$<PLATFORM_ID:Linux>:dl> $<$<PLATFORM_ID:Linux>:pthread> $<$<PLATFORM_ID:Linux>:m>)
+add_test(NAME mp3_rg_read_test COMMAND mp3_rg_read_test)
+set_tests_properties(mp3_rg_read_test PROPERTIES TIMEOUT 60)

@@ -1151,3 +1151,68 @@ runtime-discoverable, not compile-discoverable; a green build proves nothing abo
   gets a post-tap memset) - and the gapless proof was structural (the
   paused pipeline IS the unpaused pipeline) then confirmed empirically
   (0.00s silence across a 35s pause).
+
+## osmedia (SMTC + MPRIS OS media control) - 2026-07-17
+
+- **WinRT from MSYS2/UCRT64 GCC works via the RAW ABI - no cppwinrt, no WRL.**
+  mingw-w64's generated headers (windows.media.h, windows.storage.streams.h,
+  systemmediatransportcontrolsinterop.h, roapi.h, asyncinfo.h) expose every
+  interface in `ABI::Windows::...` with `__CRT_UUID_DECL`, so `__uuidof`
+  resolves them and a hand-rolled COM object (IUnknown + IAgileObject +
+  the typed method) compiles and runs. Gotchas found the hard way:
+    - A typed event delegate (ITypedEventHandler<Sender*, Args*>) is a C++
+      virtual interface here; its `Invoke` takes the ARGS INTERFACE
+      (I...EventArgs*), NOT the runtimeclass in the template param (that type
+      is incomplete). Parametrize the handler on the interface.
+    - Ref count must be a plain LONG for InterlockedIncrement(&ref) - NOT
+      std::atomic<LONG> (no matching overload).
+    - Timeline + PlaybackPositionChangeRequested live on
+      ISystemMediaTransportControls2 (QI from the base), not the base iface.
+    - IAsyncInfo / AsyncStatus are GLOBAL scope (asyncinfo.h), unscoped enum
+      (Started/Completed), not under ABI::Windows::Foundation. Await an async
+      op by polling get_Status (no completion-handler delegate needed) - fine
+      for a fast in-memory StoreAsync.
+    - SMTC thumbnail from bytes: InMemoryRandomAccessStream (RoActivateInstance)
+      + DataWriter (WriteBytes -> polled StoreAsync -> DetachStream) ->
+      RandomAccessStreamReference::CreateFromStream. `file://` is NOT a valid
+      CreateFromUri scheme, so a temp file will NOT work for SMTC - the
+      in-memory stream is required. (MPRIS, by contrast, WANTS a file:// URL.)
+    - Link set: -lruntimeobject -lole32 -luser32 -lgdi32; build plain main()
+      (NOT -municode - it forces wWinMain and fails to link a console app).
+    - The wingui top-level HWND is `extern "C" HWND PDC_hWnd` (PDCursesMod),
+      valid only AFTER initscr() and only in the REMOCT_PDCURSES build. Resolve
+      the SMTC production default at the END of the ctor, never in the init
+      list (which runs before initscr - GetForWindow on a null HWND).
+- **MPRIS via sd-bus (-lsystemd) needs no dedicated thread when the loop is a
+  getch()-timeout loop, not a poll().** Service the bus with a per-tick
+  sd_bus_process + non-blocking poll(0); the ~80ms getch timeout bounds
+  command latency (imperceptible). One thread touches the bus (outbound
+  updates + inbound callbacks both on the UI thread) so there is no sd-bus
+  concurrency to manage. mpris:artUrl wants a file:// URL - write cover bytes
+  to an XDG cache file and serve that.
+- **Bidirectional seam marshal**: OS callbacks (SMTC threadpool / MPRIS pump)
+  only ENQUEUE; the UI loop drains once per tick and routes to the EXISTING
+  homes (AudioManager fns; the manualNext/manualPrevious methods extracted
+  from the case 'n'/'p' bodies). Never a parallel transport layer. Transport
+  during an active CD rip is dropped (the ripper owns the drive) - the only
+  state that can't tolerate a background track-switch.
+- **Absolute seek does NOT fold to a delta at receive time**: an OS scrubber
+  drag emits many SetPositions in one coalescing window; folding each against
+  a stale (unflushed) position accumulates (30-then-60 lands at 80). Give the
+  coalescer an absolute lane, last-write-wins, resolved to a delta at FLUSH
+  time against the live position. Still through the one seekBy home.
+- **One radio-art home already existed**: radioArtKick -> radio_bytes_ (station
+  cover, then the iTunes/Deezer song-entity lookup) - the SAME resolution the
+  Info pane, recorder, AND Discord path use. Don't add a second lookup; drive
+  that machinery for the new consumer and read radio_bytes_. Art that resolves
+  a tick after the title re-publishes via an art-size term in the change
+  trigger (the Discord deferred-art-commit pattern).
+- **Edit-placement bug that cost a debug cycle**: an anchored Edit matched a
+  `status_msg_ticks_ = 0; redraw_needed_.store(true); #endif` pattern that
+  exists in BOTH the ctor and showTrackToast; the ctor-tail media init landed
+  in showTrackToast instead, so media_ stayed null and the loop segfaulted at
+  startup. Lesson: when an anchor pattern could be non-unique, include a
+  function-scoped landmark (a nearby unique line) in the old_string, and after
+  a structural insert re-read the exact region to confirm placement. File-based
+  trace milestones (fopen/fprintf to a fixed path, fflush) beat stderr for a
+  wingui crash where stdio may not reach the pipe.

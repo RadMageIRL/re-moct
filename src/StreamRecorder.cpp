@@ -16,6 +16,8 @@
 #include <taglib/tstring.h>
 #include <taglib/id3v2tag.h>
 #include <taglib/textidentificationframe.h>
+#include <taglib/attachedpictureframe.h>   // rec-cover-art: MP3 APIC
+#include <taglib/flacpicture.h>            // rec-cover-art: Opus picture block
 #include <taglib/mpegfile.h>
 #include <taglib/xiphcomment.h>
 #include <taglib/opusfile.h>   // TagLib's own (collision-safe: taglib/ prefixed)
@@ -100,6 +102,9 @@ bool StreamRecorder::start(const RecOptions& opt, const std::string& station,
     {
         std::lock_guard<std::mutex> lk(meta_mtx_);
         pending_raw_.clear();
+        pending_art_raw_.clear();
+        pending_art_.clear();
+        pending_art_mime_ = nullptr;
     }
     split_pending_.store(false);
     cut_artist_.clear(); cut_title_.clear(); cut_raw_.clear();
@@ -129,6 +134,28 @@ void StreamRecorder::onTitle(const std::string& raw) {
         pending_raw_ = raw;
     }
     split_pending_.store(true, std::memory_order_release);
+}
+
+// JPEG/PNG magic -> MIME; anything else rejected (a partial or non-image body
+// must never produce a broken picture block). Layered over CoverArt's own
+// raster guard on the fetch side.
+static const char* artMimeFromMagic(const std::vector<uint8_t>& b) {
+    if (b.size() > 3 && b[0] == 0xFF && b[1] == 0xD8 && b[2] == 0xFF)
+        return "image/jpeg";
+    if (b.size() > 8 && b[0] == 0x89 && b[1] == 0x50 && b[2] == 0x4E && b[3] == 0x47)
+        return "image/png";
+    return nullptr;
+}
+
+void StreamRecorder::onArt(const std::string& raw_now_playing,
+                           std::vector<uint8_t> bytes) {
+    if (!running_.load(std::memory_order_relaxed)) return;
+    const char* mime = artMimeFromMagic(bytes);
+    if (!mime) return;                 // reject early: no broken picture blocks
+    std::lock_guard<std::mutex> lk(meta_mtx_);
+    pending_art_raw_  = raw_now_playing;
+    pending_art_      = std::move(bytes);
+    pending_art_mime_ = mime;
 }
 
 std::string StreamRecorder::currentTitle() const {
@@ -198,7 +225,8 @@ std::string rgPeakStr(double peak) {
 void tagCut(const std::string& path, RipFormat fmt,
             const std::string& artist, const std::string& title,
             const std::string& raw, const std::string& station,
-            bool rg_valid, double rg_gain, double rg_peak) {
+            bool rg_valid, double rg_gain, double rg_peak,
+            const std::vector<uint8_t>& art, const char* art_mime) {
     try {
 #ifdef _WIN32
         auto wp = utf8_to_wide(path);        // TagLib::FileName is wide on Windows
@@ -238,6 +266,16 @@ void tagCut(const std::string& path, RipFormat fmt,
                 addUserTxt("REPLAYGAIN_TRACK_GAIN", rgStr(rg_gain));
                 addUserTxt("REPLAYGAIN_TRACK_PEAK", rgPeakStr(rg_peak));
             }
+            // Cover art (rec-cover-art): tagFile's MP3 APIC shape, MIME from
+            // the magic check instead of hardcoded jpeg.
+            if (!art.empty() && art_mime) {
+                auto* ap = new TagLib::ID3v2::AttachedPictureFrame();
+                ap->setMimeType(art_mime);
+                ap->setType(TagLib::ID3v2::AttachedPictureFrame::FrontCover);
+                ap->setDescription("Cover");
+                ap->setPicture(TagLib::ByteVector((const char*)art.data(), (unsigned)art.size()));
+                tag->addFrame(ap);
+            }
             f.save(TagLib::MPEG::File::ID3v2, TagLib::File::StripNone, TagLib::ID3v2::v4);
         } else if (fmt == RipFormat::Opus) {
             TagLib::Ogg::Opus::File f(wp.c_str(), false);
@@ -253,6 +291,16 @@ void tagCut(const std::string& path, RipFormat fmt,
                 tag->addField("R128_TRACK_GAIN",
                     TagLib::String(std::to_string(r128FromDb(rg_gain)),
                                    TagLib::String::UTF8), true);
+            // Cover art (rec-cover-art): tagFile's Opus picture shape
+            // (XiphComment carries FLAC::Picture natively).
+            if (!art.empty() && art_mime) {
+                auto* pic = new TagLib::FLAC::Picture();
+                pic->setMimeType(art_mime);
+                pic->setType(TagLib::FLAC::Picture::FrontCover);
+                pic->setDescription(TagLib::String("Cover"));
+                pic->setData(TagLib::ByteVector((const char*)art.data(), (unsigned)art.size()));
+                tag->addPicture(pic);
+            }
             f.save();
         }
     } catch (...) {
@@ -381,9 +429,22 @@ void StreamRecorder::rollCut(bool partial_tail) {
                 rg_valid = true;
             }
         }
+        // Cover art: key-match at tag time — the pending image embeds ONLY if
+        // it belongs to THIS cut's raw title (no art rather than wrong art;
+        // an edge cut under the metadata slop may miss a cover, never carry
+        // a neighbor's). One locked read; the fetch is never awaited.
+        std::vector<uint8_t> art;
+        const char* art_mime = nullptr;
+        {
+            std::lock_guard<std::mutex> lk(meta_mtx_);
+            if (!pending_art_.empty() && pending_art_raw_ == cut_raw_) {
+                art      = pending_art_;
+                art_mime = pending_art_mime_;
+            }
+        }
         for (auto& o : outs_)
             tagCut(o.path, o.fmt, cut_artist_, cut_title_, cut_raw_, station_,
-                   rg_valid, rg_gain, rg_peak);
+                   rg_valid, rg_gain, rg_peak, art, art_mime);
         // The session-stop cut is partial (stopped mid-song): rename AFTER
         // tagging so the suffix survives. The first cut's suffix was already
         // in the name at open; don't double-mark.

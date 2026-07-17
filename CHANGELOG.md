@@ -37,6 +37,13 @@ Feature release: Opus and WavPack playback.
 
 ### Added
 
+- **Recorded cuts now embed cover art.** Stream recordings reuse the same
+  cover lookup the radio Info pane already does (station art, then the
+  iTunes/Deezer song search) and embed the image in each cut's tags - MP3
+  and Opus both, and it works whether or not the art pane is open. Strictly
+  best-effort: a slow or failed lookup never delays or drops a capture, and
+  under the same 1-2 second metadata slop an edge cut may miss its cover -
+  it will never carry the wrong one.
 - **Stream recording** (Ctrl+E while a radio stream is playing): capture the
   station you are listening to straight to disk. The panel picks the output
   format (Opus at the configured bitrate, default, or MP3 - the broadcast is

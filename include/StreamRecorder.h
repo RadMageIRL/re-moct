@@ -91,6 +91,14 @@ public:
     // next worker drain boundary when split_on_meta is set; before any audio
     // has flowed it just (re)labels the pending first cut.
     void onTitle(const std::string& raw_now_playing);
+    // Cover art for the CURRENT song (rec-cover-art): bytes fetched by the
+    // caller's existing radio-art machinery, keyed by the RAW now-playing
+    // string so it matches cut_raw_ with exact string equality — no parse in
+    // the loop. Validated here (JPEG/PNG magic -> MIME; anything else
+    // rejected). Embedded at tag time ONLY if the key still matches the
+    // closing cut: no art rather than wrong art. Never fetches, never blocks
+    // a roll — the onTitle pattern (meta_mtx_, UI <-> worker only).
+    void onArt(const std::string& raw_now_playing, std::vector<uint8_t> bytes);
 
     // ── audio thread (lock-free; see push() for the full argument) ──────────
     void capture(const float* interleaved, uint32_t frames) {
@@ -148,6 +156,11 @@ private:
     mutable std::mutex    meta_mtx_;
     std::string           pending_raw_;
     std::atomic<bool>     split_pending_ { false };
+    // Pending cover art (rec-cover-art): raw-title key + validated bytes +
+    // magic-derived MIME. Consumed (by key match) at tag time.
+    std::string           pending_art_raw_;
+    std::vector<uint8_t>  pending_art_;
+    const char*           pending_art_mime_ = nullptr;
 
     // ── current cut (worker-owned between open/roll) ─────────────────────────
     struct Out { RipFormat fmt; std::string path; std::unique_ptr<IEncoder> enc; };

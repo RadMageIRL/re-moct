@@ -109,6 +109,14 @@ private:
     void drawRipConfirm();
     void drawMBSearch();
     void drawRecPanel();   // stream-record R2: the [Rec] panel (^E)
+    // rec-cover-art: the radio-art machinery's identity/pickup/trigger halves,
+    // extracted from refreshRadioArt so the recording wiring can drive the
+    // SAME fetch path (same guard, caches, providers) with the pane closed.
+    std::string radioSongIdentity(const std::string& np,
+                                  std::string& artist, std::string& title);
+    void radioArtPickup(const std::string& song_key);
+    void radioArtKick(const std::string& artist, const std::string& title,
+                      const std::string& song_key);
     void handleMBSearchInput(int ch);
     void drawProgress();
     void drawCmdLine();
@@ -442,6 +450,7 @@ private:
     bool        rec_split_on_ = true;              // split on title change
     std::string rec_dir_;                          // "" = recordingsDir() at start
     int         rec_panel_tick_ = 0;               // ~2 Hz live-state refresh
+    std::string rec_art_pushed_key_;               // rec-cover-art: dedupe onArt pushes
     std::string rip_status_;   // shown in cmdline during/after rip
     int         rip_msg_ticks_ = 0;  // auto-clear counter
 

@@ -1121,7 +1121,24 @@ void UIManager::run() {
         // safe; the fetch is one the scrobbler/art paths already make. The
         // panel refreshes its live state at ~2 Hz (80 ms ticks x 6).
         if (audio_.streamMode() && audio_.streamRecorder().recording()) {
-            audio_.streamRecorder().onTitle(audio_.streamNowPlaying());
+            std::string np = audio_.streamNowPlaying();
+            audio_.streamRecorder().onTitle(np);
+            // rec-cover-art: drive the SAME radio-art machinery the Info pane
+            // uses (same single-in-flight guard, negative cache, provider
+            // order) regardless of pane visibility, and hand a resolved image
+            // to the recorder keyed by the RAW now-playing string (matches
+            // cut_raw_ exactly at tag time). Pushed once per title.
+            {
+                std::string artist, title;
+                std::string key = radioSongIdentity(np, artist, title);
+                radioArtPickup(key);
+                if (!key.empty()) radioArtKick(artist, title, key);
+                if (!key.empty() && radio_bytes_key_ == key && radio_bytes_resolved_ &&
+                    !radio_bytes_.empty() && np != rec_art_pushed_key_) {
+                    rec_art_pushed_key_ = np;
+                    audio_.streamRecorder().onArt(np, radio_bytes_);
+                }
+            }
             if (ui_overlay_ == UIOverlay::RecPanel && (++rec_panel_tick_ % 6) == 0)
                 redraw_needed_.store(true);
         }
@@ -3810,29 +3827,34 @@ void UIManager::startRadioArtFetch(const std::string& artist, const std::string&
 // Resolve + decode the cover for the currently-committed radio song into the
 // Info-pane art box. Mirrors the Discord committed-song decision but runs
 // independently (so the pane's art works with Discord presence off). UI thread.
-void UIManager::refreshRadioArt(int box_cols, int box_rows) {
-    // Committed-song identity — same parse as updateScrobbler's radio branch.
-    std::string song_key, artist, title;
-    {
-        std::string np = audio_.streamNowPlaying();      // "Artist - Title"
-        auto dash = np.find(" - ");
-        if (dash != std::string::npos) {
-            artist = np.substr(0, dash);
-            title  = np.substr(dash + 3);
-            auto trim = [](std::string& x){
-                while (!x.empty() && (x.front()==' '||x.front()=='\t')) x.erase(x.begin());
-                while (!x.empty() && (x.back()==' '||x.back()=='\t')) x.pop_back();
-            };
-            trim(artist); trim(title);
-            if (!artist.empty() && !title.empty()) song_key = artist + "\t" + title;
-        }
+// rec-cover-art: the committed-song identity parse, one home for the pane and
+// the recording wiring (the RAW pane parse — deliberately NOT deinverted, so
+// the fetch key matches what the pane always used).
+std::string UIManager::radioSongIdentity(const std::string& np,
+                                         std::string& artist, std::string& title) {
+    std::string song_key;
+    auto dash = np.find(" - ");
+    if (dash != std::string::npos) {
+        artist = np.substr(0, dash);
+        title  = np.substr(dash + 3);
+        auto trim = [](std::string& x){
+            while (!x.empty() && (x.front()==' '||x.front()=='\t')) x.erase(x.begin());
+            while (!x.empty() && (x.back()==' '||x.back()=='\t')) x.pop_back();
+        };
+        trim(artist); trim(title);
+        if (!artist.empty() && !title.empty()) song_key = artist + "\t" + title;
     }
-    const std::string station_art = audio_.streamArtUrl();   // iHeart digital cover ("" -> logo/lookup)
+    return song_key;
+}
 
-    // Pick up a finished fetch for the still-current song. A confirmed miss on a
-    // urlBySong lookup is remembered in the shared negative cache so the same song
-    // returning in rotation keeps the logo without re-querying (station-art misses
-    // are NOT neg-cached: a late-landing station cover should still get a chance).
+// rec-cover-art: the pickup half of the radio-art machinery, extracted
+// VERBATIM from refreshRadioArt so the recording wiring can consume fetch
+// results with the Info pane closed. Pick up a finished fetch for the
+// still-current song. A confirmed miss on a urlBySong lookup is remembered in
+// the shared negative cache so the same song returning in rotation keeps the
+// logo without re-querying (station-art misses are NOT neg-cached: a
+// late-landing station cover should still get a chance).
+void UIManager::radioArtPickup(const std::string& song_key) {
     if (radio_art_done_.exchange(false)) {
         std::vector<uint8_t> bytes; std::string forkey; bool was_station = radio_fetch_station_;
         { std::lock_guard<std::mutex> lk(radio_art_mtx_);
@@ -3848,27 +3870,43 @@ void UIManager::refreshRadioArt(int box_cols, int box_rows) {
                 discord_art_neg_.insert(song_key);
             requestRedraw();                                 // cover landed -> repaint
         }
-        // else: the song moved on mid-fetch; the (re)trigger below handles the new one.
+        // else: the song moved on mid-fetch; the (re)trigger handles the new one.
     }
+}
 
-    // (Re)start resolution on a committed song-change, or when the station supplies
-    // a new non-empty cover URL for the same song (iHeart digital art can land a
-    // tick after the title commits). While a fetch is in flight we hold off so the
-    // in-flight result isn't discarded; once it clears we re-evaluate and catch up.
+// rec-cover-art: the trigger half, extracted VERBATIM from refreshRadioArt.
+// (Re)start resolution on a committed song-change, or when the station
+// supplies a new non-empty cover URL for the same song (iHeart digital art
+// can land a tick after the title commits). While a fetch is in flight we
+// hold off so the in-flight result isn't discarded; once it clears we
+// re-evaluate and catch up.
+void UIManager::radioArtKick(const std::string& artist, const std::string& title,
+                             const std::string& song_key) {
+    if (song_key.empty()) return;
+    const std::string station_art = audio_.streamArtUrl();
+    const bool song_changed    = (song_key != radio_bytes_key_);
+    const bool station_changed = (!station_art.empty() && station_art != radio_last_station_art_);
+    if ((song_changed || station_changed) && !radio_art_active_.load()) {
+        radio_last_station_art_ = station_art;
+        radio_bytes_key_        = song_key;
+        radio_bytes_resolved_   = false;                 // show the logo floor while we fetch
+        radio_render_key_.clear();
+        if (!station_art.empty())
+            startRadioArtFetch(artist, title, station_art);
+        else if (discord_art_neg_.find(song_key) == discord_art_neg_.end())
+            startRadioArtFetch(artist, title, "");       // song-entity lookup
+        else { radio_bytes_.clear(); radio_bytes_resolved_ = true; }   // known miss -> floor
+    }
+}
+
+void UIManager::refreshRadioArt(int box_cols, int box_rows) {
+    // Committed-song identity — same parse as updateScrobbler's radio branch.
+    std::string artist, title;
+    std::string song_key = radioSongIdentity(audio_.streamNowPlaying(), artist, title);
+
+    radioArtPickup(song_key);
     if (!song_key.empty()) {
-        const bool song_changed    = (song_key != radio_bytes_key_);
-        const bool station_changed = (!station_art.empty() && station_art != radio_last_station_art_);
-        if ((song_changed || station_changed) && !radio_art_active_.load()) {
-            radio_last_station_art_ = station_art;
-            radio_bytes_key_        = song_key;
-            radio_bytes_resolved_   = false;                 // show the logo floor while we fetch
-            radio_render_key_.clear();
-            if (!station_art.empty())
-                startRadioArtFetch(artist, title, station_art);
-            else if (discord_art_neg_.find(song_key) == discord_art_neg_.end())
-                startRadioArtFetch(artist, title, "");       // song-entity lookup
-            else { radio_bytes_.clear(); radio_bytes_resolved_ = true; }   // known miss -> floor
-        }
+        radioArtKick(artist, title, song_key);
     } else if (song_key != radio_bytes_key_) {
         // No parseable now-playing (ad break / LIVE / pre-title): float on the logo.
         radio_bytes_key_ = song_key;   // ""

@@ -25,6 +25,7 @@
 #include <taglib/mpegfile.h>
 #include <taglib/id3v2tag.h>
 #include <taglib/textidentificationframe.h>   // UserTextIdentificationFrame (readMp3)
+#include <taglib/attachedpictureframe.h>      // rec-cover-art: APIC read-back
 #include <taglib/opusfile.h>   // TagLib's own (collision-safe: taglib/ prefixed)
 #include <taglib/xiphcomment.h>
 
@@ -82,6 +83,8 @@ struct Mp3Tags {
     std::string title, artist;
     bool has_rg = false;       // a PROPER standard-shape RG frame was found
     std::string rg_gain;       // its VALUE field, e.g. "-6.92 dB"
+    bool has_art = false;      // rec-cover-art: an APIC frame is present
+    unsigned art_size = 0;
 };
 // Strengthened for mp3-rg-write: the RG frame must be a genuine
 // UserTextIdentificationFrame with a CLEAN description (exactly
@@ -105,6 +108,10 @@ static Mp3Tags readMp3(const std::string& path) {
         for (unsigned int i = 1; i < fl.size(); ++i)
             if (!fl[i].isEmpty()) { out.has_rg = true; out.rg_gain = fl[i].to8Bit(true); break; }
     }
+    for (auto* fr : tag->frameList("APIC")) {
+        auto* ap = dynamic_cast<TagLib::ID3v2::AttachedPictureFrame*>(fr);
+        if (ap) { out.has_art = true; out.art_size = ap->picture().size(); }
+    }
     return out;
 }
 
@@ -113,6 +120,8 @@ struct OpusTags {
     bool has_r128 = false;
     int  r128 = 0;
     int  length_sec = -1;
+    bool has_art = false;      // rec-cover-art: a picture block is present
+    unsigned art_size = 0;
 };
 static OpusTags readOpus(const std::string& path) {
     OpusTags out;
@@ -129,6 +138,8 @@ static OpusTags readOpus(const std::string& path) {
         try { out.r128 = std::stoi(it->second.front().to8Bit(true)); } catch (...) {}
     }
     if (f.audioProperties()) out.length_sec = f.audioProperties()->lengthInSeconds();
+    const auto pics = tag->pictureList();
+    if (!pics.isEmpty()) { out.has_art = true; out.art_size = pics.front()->data().size(); }
     return out;
 }
 
@@ -285,6 +296,61 @@ int main() {
             CHECK(cuts[0].frames == rec.totalFrames());
             CHECK(fs::exists(cuts[0].paths[0]));
             CHECK(readOpus(cuts[0].paths[0]).title == "Flood Song");
+        }
+    }
+
+    // ── 4b. cover art (rec-cover-art): key-match embed, both dialects ────────
+    // No network anywhere: onArt is driven directly with synthetic bytes, the
+    // way the UI tick feeds it from the radio-art cache in production.
+    {
+        std::vector<uint8_t> jpeg = { 0xFF, 0xD8, 0xFF, 0xE0 };
+        jpeg.resize(256, 0x42);                       // magic + padding = "a jpeg"
+        std::vector<uint8_t> junk(256, 0x00);         // no magic: must be rejected
+
+        // (a) matching key -> picture embedded in BOTH formats.
+        {
+            StreamRecorder rec;
+            RecOptions opt; opt.formats = { RipFormat::Mp3, RipFormat::Opus };
+            CHECK(rec.start(opt, "Test FM", root));
+            uint64_t phase = 0;
+            rec.onTitle("Art Artist - Art Song");
+            rec.onArt("Art Artist - Art Song", jpeg);
+            pushSine(rec, phase, 22050, 440.0, 0.5);
+            CHECK(waitFor(15000, [&]{ return rec.totalFrames() == 22050; }));
+            rec.stop();
+            auto cuts = rec.cuts();
+            CHECK(cuts.size() == 1 && cuts[0].paths.size() == 2);
+            if (cuts.size() == 1 && cuts[0].paths.size() == 2) {
+                std::string mp3p, opusp;
+                for (const auto& p : cuts[0].paths)
+                    (p.size() > 4 && p.substr(p.size()-4) == ".mp3" ? mp3p : opusp) = p;
+                Mp3Tags mt = readMp3(mp3p);
+                CHECK(mt.has_art && mt.art_size == jpeg.size());
+                OpusTags ot = readOpus(opusp);
+                CHECK(ot.has_art && ot.art_size == jpeg.size());
+            }
+        }
+        // (b) mismatched key -> NO picture (no art rather than wrong art);
+        // (c) garbage bytes on a matching key -> rejected at onArt, NO picture,
+        //     cut still fully valid and tagged.
+        {
+            StreamRecorder rec;
+            RecOptions opt; opt.formats = { RipFormat::Opus };
+            CHECK(rec.start(opt, "Test FM", root));
+            uint64_t phase = 0;
+            rec.onTitle("Real Artist - Real Song");
+            rec.onArt("Somebody Else - Other Song", jpeg);   // (b) stale/mismatch
+            rec.onArt("Real Artist - Real Song", junk);      // (c) not an image
+            pushSine(rec, phase, 22050, 440.0, 0.5);
+            CHECK(waitFor(15000, [&]{ return rec.totalFrames() == 22050; }));
+            rec.stop();
+            auto cuts = rec.cuts();
+            CHECK(cuts.size() == 1 && !cuts[0].failed);
+            if (cuts.size() == 1 && !cuts[0].paths.empty()) {
+                OpusTags ot = readOpus(cuts[0].paths[0]);
+                CHECK(!ot.has_art);
+                CHECK(ot.title == "Real Song" && ot.artist == "Real Artist");
+            }
         }
     }
 

@@ -24,6 +24,7 @@
 #include "IEncoder.h"
 #include "FlacEncoder.h"
 #include "Mp3Encoder.h"
+#include "WavEncoder.h"
 
 // libebur128 for ReplayGain
 #include <ebur128.h>
@@ -760,6 +761,7 @@ static std::unique_ptr<IEncoder> makeEncoder(RipFormat f, const RipOptions& opt)
     switch (f) {
         case RipFormat::Flac: return std::make_unique<FlacEncoder>(opt.flac_level);
         case RipFormat::Mp3:  return std::make_unique<Mp3Encoder>(opt.mp3_vbr_q);
+        case RipFormat::Wav:  return std::make_unique<WavEncoder>();
     }
     return nullptr;
 }
@@ -1922,8 +1924,14 @@ void CDRipper::worker(std::string          drive_letter,
         std::string prefix = nn.str();
         if (mt && !mt->title.empty()) prefix += " - " + sanitizePath(mt->title);
 
-        for (const auto& o : buildOuts(opt, out_dir, prefix))
+        for (const auto& o : buildOuts(opt, out_dir, prefix)) {
+            // Untaggable formats (WAV: no tags/art/RG by format) are skipped
+            // here — tagFile itself and the taggable formats' calls are
+            // unchanged (the guard is false for FLAC/MP3).
+            if (const RipFormatRow* r = ripFormatRow(o.fmt); r && !r->taggable)
+                continue;
             tagFile(o.path, rel, mt, tnum, art, ar_results[i], rg_results[i], mode);
+        }
     }
 
     // CUE/M3U8 entries must reference files that exist: point them at the

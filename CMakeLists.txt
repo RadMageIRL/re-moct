@@ -70,6 +70,7 @@ set(REMOCT_SOURCES
     src/CustomBackends.cpp        # the shared custom-backend array (playback + BPM)
     src/FlacEncoder.cpp           # rip-encoder-seam: FLAC output behind IEncoder
     src/Mp3Encoder.cpp            # rip-encoder-seam: MP3 output behind IEncoder
+    src/WavEncoder.cpp            # rip-wav-encoder: WAV output (no library)
     src/Mp4Chapters.cpp
     src/RadioBrowser.cpp
     src/LastFm.cpp

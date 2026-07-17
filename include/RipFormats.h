@@ -12,18 +12,23 @@
 
 #include <vector>
 
-enum class RipFormat { Flac, Mp3 };
+enum class RipFormat { Flac, Mp3, Wav };
 
 struct RipFormatRow {
     RipFormat   id;
     const char* label;      // modal row + rip_formats config token (case-insensitive)
     const char* ext;        // output extension, dot included
     bool        lossless;
+    bool        taggable;   // false -> the tag/R128 pass skips this output
+    const char* note;       // row annotation shown after the marker ("" = none)
 };
 
+// APPEND-ONLY: the digit key is the row index + 1 and must stay stable once
+// shipped (WAV is 3 forever; Opus takes 4, WavPack 5). Do not reorder.
 inline constexpr RipFormatRow kRipFormats[] = {
-    { RipFormat::Flac, "FLAC", ".flac", true  },
-    { RipFormat::Mp3,  "MP3",  ".mp3",  false },
+    { RipFormat::Flac, "FLAC", ".flac", true,  true,  ""           },
+    { RipFormat::Mp3,  "MP3",  ".mp3",  false, true,  ""           },
+    { RipFormat::Wav,  "WAV",  ".wav",  true,  false, "(untagged)" },
 };
 inline constexpr int kRipFormatCount = (int)(sizeof(kRipFormats) / sizeof(kRipFormats[0]));
 

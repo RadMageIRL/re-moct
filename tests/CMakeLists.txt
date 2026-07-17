@@ -466,6 +466,7 @@ add_executable(rip_encoder_seam_test
     rip_encoder_seam_test.cpp
     ${CMAKE_SOURCE_DIR}/src/FlacEncoder.cpp
     ${CMAKE_SOURCE_DIR}/src/Mp3Encoder.cpp
+    ${CMAKE_SOURCE_DIR}/src/WavEncoder.cpp
 )
 target_include_directories(rip_encoder_seam_test PRIVATE
     ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/lib

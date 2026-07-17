@@ -15,6 +15,7 @@
 
 #include "FlacEncoder.h"
 #include "Mp3Encoder.h"
+#include "WavEncoder.h"
 
 #include <FLAC/stream_encoder.h>
 #include <lame/lame.h>
@@ -232,6 +233,63 @@ int main() {
 
     std::remove("seam_ref.flac"); std::remove("seam_new.flac"); std::remove("seam_exp.flac");
     std::remove("seam_ref.mp3");  std::remove("seam_new.mp3");  std::remove("seam_exp.mp3");
+
+    // ── WAV bit-exact oracle (rip-wav-encoder) ─────────────────────────────
+    // WAV is lossless AND uncompressed, so the whole output is machine-
+    // checkable: canonical header fields + data chunk == input PCM verbatim.
+    {
+        WavEncoder wav;
+        bool ok = wav.open("seam_wav.wav", kFrames);
+        for (auto& blk : blocks) {
+            if (!ok) break;
+            ok = wav.writeFrames(blk.p, (size_t)blk.samples);
+        }
+        wav.finalize(ok);
+        check(ok, "WAV arm encoded");
+
+        auto wf = slurp("seam_wav.wav");
+        const uint32_t data_bytes = (uint32_t)(kFrames * 4);
+        check(wf.size() == 44 + (size_t)data_bytes, "WAV file size == 44 + data");
+        auto u16 = [&](size_t o) { return (uint32_t)wf[o] | ((uint32_t)wf[o+1] << 8); };
+        auto u32 = [&](size_t o) { return u16(o) | (u16(o+2) << 16); };
+        bool hdr =
+            std::memcmp(wf.data(),      "RIFF", 4) == 0 &&
+            u32(4)  == 36 + data_bytes &&
+            std::memcmp(wf.data() + 8,  "WAVE", 4) == 0 &&
+            std::memcmp(wf.data() + 12, "fmt ", 4) == 0 &&
+            u32(16) == 16 && u16(20) == 1 && u16(22) == 2 &&
+            u32(24) == 44100 && u32(28) == 176400 &&
+            u16(32) == 4 && u16(34) == 16 &&
+            std::memcmp(wf.data() + 36, "data", 4) == 0 &&
+            u32(40) == data_bytes;
+        check(hdr, "WAV header canonical (all 11 fields)");
+        check(wf.size() >= 44 &&
+              std::memcmp(wf.data() + 44, pcm.data(), (size_t)data_bytes) == 0,
+              "WAV data chunk == input PCM byte-for-byte");
+        std::remove("seam_wav.wav");
+    }
+
+#ifndef _WIN32
+    // ── WAV strict-short-write contract (Linux: /dev/full forces ENOSPC) ──
+    // A lenient write + the finalize back-patch would turn disk-full into a
+    // valid-looking truncated file marked success; strict writeFrames makes
+    // the track abort so the caller's cleanup removes the partial instead.
+    {
+        WavEncoder wav;
+        bool opened = wav.open("/dev/full", 588);
+        if (opened) {
+            int16_t buf[588 * 2] = {};
+            // fwrite may buffer; the failure must surface by the time the
+            // stdio buffer flushes — write enough to force it through.
+            bool w = true;
+            for (int i = 0; i < 64 && w; ++i) w = wav.writeFrames(buf, 588);
+            check(!w, "WAV short write returns false (ENOSPC surfaces)");
+            wav.finalize(false);
+        } else {
+            check(true, "WAV /dev/full open refused (also acceptable)");
+        }
+    }
+#endif
 
     if (failures) { std::printf("%d FAILURE(S)\n", failures); return 1; }
     std::printf("all checks passed\n");

@@ -1665,7 +1665,9 @@ void UIManager::drawAll() {
 
 void UIManager::drawRipConfirm() {   // slice 6: common (ncurses + portable CDSource)
     const int BOX_W = 68;
-    const int BOX_H = 19;   // rip-format-select: +4 rows for the format block
+    // rip-format-select: the format block is data-driven, so the box and
+    // everything below it grow with the table (2 rows -> 19, 3 -> 20, ...).
+    const int BOX_H = 17 + kRipFormatCount;
     int y0 = (screen_rows_ - BOX_H) / 2;
     int x0 = (screen_cols_ - BOX_W) / 2;
     if (y0 < 0) y0 = 0;
@@ -1755,15 +1757,20 @@ void UIManager::drawRipConfirm() {   // slice 6: common (ncurses + portable CDSo
         std::string quality =
             r.id == RipFormat::Flac ? "level " + std::to_string(config_.flac_level)
           : r.id == RipFormat::Mp3  ? "LAME " + config_.mp3 + " VBR"
+          : r.id == RipFormat::Wav  ? "16-bit PCM"
           : "";
-        mvwprintw(w, 7 + i, 3, "  [%c] %d  %-8s %-14s %s",
+        // Marker and note are two separate signals (lossless master; format
+        // limitation) — the note gets its own column with breathing room.
+        mvwprintw(w, 7 + i, 3, "  [%c] %d  %-8s %-14s %-3s%s",
                   on ? 'x' : ' ', i + 1, r.label, quality.c_str(),
-                  r.lossless ? "*" : "");
+                  r.lossless ? "*" : "", r.note);
     }
 
     // Mode options — plain text; dimmed while nothing is selected (commit
-    // keys are inert then; N stays live). Cancel row never dims.
-    mvwaddstr(w, 10, 3, "Select ripping mode");
+    // keys are inert then; N stays live). Cancel row never dims. Rows below
+    // the format block are table-size-relative.
+    const int mode_y = 8 + kRipFormatCount;
+    mvwaddstr(w, mode_y, 3, "Select ripping mode");
     struct { const char* key; const char* label; const char* desc; } opts[] = {
         { "[A]", "AccurateRip ", "Network CRC verify + offset correction" },
         { "[C]", "CUETools    ", "Disc-wide CRC32, no network required" },
@@ -1774,14 +1781,14 @@ void UIManager::drawRipConfirm() {   // slice 6: common (ncurses + portable CDSo
     for (int i = 0; i < 5; ++i) {
         bool dim = none_selected && i < 4;
         if (dim) wattron(w, A_DIM);
-        mvwprintw(w, 11 + i, 3, "%s %-12s  %s",
+        mvwprintw(w, mode_y + 1 + i, 3, "%s %-12s  %s",
                   opts[i].key, opts[i].label, opts[i].desc);
         if (dim) wattroff(w, A_DIM);
     }
 
     // Footer divider + output path
-    mvwhline(w, 16, 1, ACS_HLINE, BOX_W - 2);
-    mvwprintw(w, 17, 3, "Out  %s", disp_dir.c_str());
+    mvwhline(w, mode_y + 6, 1, ACS_HLINE, BOX_W - 2);
+    mvwprintw(w, mode_y + 7, 3, "Out  %s", disp_dir.c_str());
 
     wrefresh(w);
     delwin(w);

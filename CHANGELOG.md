@@ -28,6 +28,10 @@ Feature release: Opus and WavPack playback.
   master marker, and deselecting everything disables the rip keys until at
   least one format is checked. The selection lasts for the session; set the
   startup default with the new "rip_formats" config key.
+- **WAV rip output**: the rip dialog gains a third format - untagged
+  bit-exact 16-bit PCM (toggle with 3, config token "wav"). WAV carries no
+  tags, cover art, or ReplayGain by format; the dialog marks the row
+  "(untagged)". Lossless, so it carries the "*" master marker.
 - **Rip quality is configurable**: new "flac_level" (FLAC compression 0-8,
   default 5) and "mp3" (LAME VBR quality V0-V9, default V0) config keys.
   Defaults match the previous fixed settings exactly, and the dialog shows

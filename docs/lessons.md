@@ -1043,3 +1043,13 @@ runtime-discoverable, not compile-discoverable; a green build proves nothing abo
   non-empty selection - the wrong transition is unreachable, not guarded.
   CUE/M3U8 entries follow the MASTER format (first selected lossless, else
   first selected) so subset rips never emit playlists over absent files.
+- **WavEncoder's strict writeFrames is load-bearing, not defensive**
+  (rip-wav-encoder): a short fwrite returns false so the track aborts and
+  the caller removes the partial. A lenient write would combine with the
+  finalize size back-patch into "disk-full produces a valid-looking,
+  silently TRUNCATED .wav marked success" - the header would honestly
+  describe the truncated data and even pass a bit-exact check of what
+  remains. The back-patch exists only for non-exact callers (the CD path is
+  TOC-exact); with writeFrames strict it can never launder a write failure.
+  Guarded by the /dev/full short-write check in rip_encoder_seam_test
+  (Linux job). Do not "simplify" the strictness away.

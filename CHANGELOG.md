@@ -46,6 +46,20 @@ Feature release: Opus and WavPack playback.
 
 ### Added
 
+- **Batch ReplayGain scan** (Ctrl+O in the file browser): point it at a
+  folder and it computes and writes track gain for every supported audio
+  file - FLAC, MP3, Opus, WavPack, and M4A/M4B - using the same loudness
+  math as the CD ripper, so batch-tagged and ripped files agree exactly.
+  Runs in the background with progress and cancel; already-tagged files
+  are skipped (re-runs only touch new files) unless you choose force
+  re-tag at the prompt. WAV files are noted and skipped (the format goes
+  untagged, matching rip behavior). One-time heads up: MP3s tagged by
+  RE-MOCT before the tag-format fix carry their gain in a form other
+  players cannot read - the scan detects those as untagged and rewrites
+  them in the standard form, so a first run may touch MP3s you thought
+  were already tagged. That is the fix reaching your existing library.
+  Track gain only; album gain is a possible follow-up. This is a
+  decode-bound scan - expect a few seconds per track on a first full run.
 - **Recording continues through a playback pause.** Pausing while recording
   now mutes only what you hear - the broadcast keeps being captured, with no
   silence gap and nothing lost; on resume you rejoin the live broadcast.

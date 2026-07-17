@@ -560,3 +560,41 @@ add_executable(art_miss_cache_test art_miss_cache_test.cpp)
 target_include_directories(art_miss_cache_test PRIVATE ${CMAKE_SOURCE_DIR}/include)
 add_test(NAME art_miss_cache_test COMMAND art_miss_cache_test)
 set_tests_properties(art_miss_cache_test PROPERTIES TIMEOUT 30)
+
+# batch-r128 — the GainScan engine contract: the same sine through the four
+# production encoders, then the REAL engine over the folder (dialect tags,
+# cross-format gain agreement, skip/force, the legacy-blob MP3 heal, wav
+# note, error isolation, cancel-leaves-whole-files). The artifact-parity leg
+# (vs the retained rip artifacts) runs locally via GAIN_SCAN_ARTIFACTS.
+add_executable(gain_scan_test
+    gain_scan_test.cpp
+    ${CMAKE_SOURCE_DIR}/src/GainScan.cpp
+    ${CMAKE_SOURCE_DIR}/src/LocalFileSource.cpp
+    ${CMAKE_SOURCE_DIR}/src/AacDecoder.cpp
+    ${CMAKE_SOURCE_DIR}/src/OpusDecoder.cpp
+    ${CMAKE_SOURCE_DIR}/src/WavPackDecoder.cpp
+    ${CMAKE_SOURCE_DIR}/src/VorbisDecoder.cpp
+    ${CMAKE_SOURCE_DIR}/src/CustomBackends.cpp
+    ${CMAKE_SOURCE_DIR}/src/Mp4Chapters.cpp
+    ${CMAKE_SOURCE_DIR}/src/Log.cpp
+    ${CMAKE_SOURCE_DIR}/src/FlacEncoder.cpp
+    ${CMAKE_SOURCE_DIR}/src/Mp3Encoder.cpp
+    ${CMAKE_SOURCE_DIR}/src/OpusRipEncoder.cpp
+    ${CMAKE_SOURCE_DIR}/src/WavPackEncoder.cpp
+)
+target_include_directories(gain_scan_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/lib
+    ${FLAC_INCLUDE} ${LAME_INCLUDE} ${EBUR128_INCLUDE} ${FDKAAC_INCLUDE}
+    ${OPUS_INCLUDE} ${OPUS_INCLUDE}/opus ${WAVPACK_INCLUDE}
+    ${TAGLIB_INCLUDE_DIRS})
+target_link_libraries(gain_scan_test PRIVATE
+    ${TAGLIB_LIBRARIES} ${EBUR128_LIB} ${FLAC_LIB} ${LAME_LIB}
+    ${OPUSENC_LIB} ${OPUSFILE_LIB} ${OPUS_LIB}
+    ${VORBISFILE_LIB} ${VORBIS_LIB} ${OGG_LIB}
+    ${WAVPACK_LIB} ${FDKAAC_LIB}
+    $<$<PLATFORM_ID:Linux>:dl> $<$<PLATFORM_ID:Linux>:pthread> $<$<PLATFORM_ID:Linux>:m>)
+if(WIN32 AND REMOCT_STATIC_PROBE)
+    target_compile_definitions(gain_scan_test PRIVATE FLAC__NO_DLL)
+endif()
+add_test(NAME gain_scan_test COMMAND gain_scan_test)
+set_tests_properties(gain_scan_test PROPERTIES TIMEOUT 300)

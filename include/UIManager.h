@@ -25,6 +25,7 @@
 #include "AwesomeThemes.h"
 #include "CoverArtRender.h"
 #include "ArtMissCache.h"   // time-bounded art negative cache (radio-art-refresh-fix)
+#include "GainScan.h"       // batch ReplayGain over a folder (batch-r128)
 #include "core/INotify.h"
 
 class PlaylistManager;
@@ -456,6 +457,15 @@ private:
     bool        rec_ads_discard_ = false;          // ad-aware: [A] Save/Discard
     int         rec_panel_tick_ = 0;               // ~2 Hz live-state refresh
     std::string rec_art_pushed_key_;               // rec-cover-art: dedupe onArt pushes
+    // batch-r128: the folder ReplayGain scan (worker-threaded engine) + the
+    // ^O tag/force/cancel prompt state (the prompt text lives in rip_status_,
+    // the app's de-facto status line; no new draw plumbing).
+    GainScan    gain_scan_;
+    bool        rgscan_prompt_ = false;
+    std::string rgscan_dir_;
+    // [REC] badge pulse: phase advanced ~every 0.64s by the tick loop while
+    // recording; drawTitleBar overpaints the badge in red with the phase attr.
+    int         rec_pulse_ = 0, rec_pulse_tick_ = 0;
     std::string rip_status_;   // shown in cmdline during/after rip
     int         rip_msg_ticks_ = 0;  // auto-clear counter
 

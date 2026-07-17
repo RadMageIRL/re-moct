@@ -1148,6 +1148,35 @@ void UIManager::run() {
             if (ui_overlay_ == UIOverlay::RecPanel && (++rec_panel_tick_ % 6) == 0)
                 redraw_needed_.store(true);
         }
+        // [REC] pulse driver: a redraw every ~0.64s while recording so the
+        // badge breathes (one atomic read per tick when idle).
+        if (audio_.streamRecorder().recording() && (++rec_pulse_tick_ % 8) == 0) {
+            ++rec_pulse_;
+            redraw_needed_.store(true);
+        }
+        // batch-r128: scan progress on the status line (~1 Hz) + the summary
+        // toast when the worker finishes. All reads are cheap atomics.
+        if (gain_scan_.running()) {
+            static int rg_tick = 0;
+            if ((++rg_tick % 12) == 0) {
+                rip_status_ = "ReplayGain " + std::to_string(gain_scan_.index()) + "/" +
+                              std::to_string(gain_scan_.total()) + "  " +
+                              sanitizeForDisplay(gain_scan_.currentFile());
+                rip_msg_ticks_ = 0;
+                redraw_needed_.store(true);
+            }
+        }
+        if (gain_scan_.takeFinished()) {
+            std::string sum = std::to_string(gain_scan_.tagged()) + " tagged, " +
+                              std::to_string(gain_scan_.skipped()) + " already had gain, " +
+                              std::to_string(gain_scan_.errors()) + " error(s)";
+            if (gain_scan_.wavNoted() > 0)
+                sum += ", " + std::to_string(gain_scan_.wavNoted()) + " wav skipped";
+            showTrackToast(gain_scan_.cancelled() ? "ReplayGain scan cancelled"
+                                                  : "ReplayGain scan done", sum, "");
+            rip_status_.clear();
+            redraw_needed_.store(true);
+        }
         updateBookProgress();
         // Async stream connect/fail confirmation toasts. Un-gated at slice 5:
         // this was #ifdef _WIN32 slice-1 scaffolding from when notify was a
@@ -2254,6 +2283,26 @@ void UIManager::drawTitleBar() {
     std::wstring wtitle = utf8_to_wide(padToWidth(line, screen_cols_));
     mvwaddnwstr(win_title_, 0, 0, wtitle.c_str(), (int)wtitle.size());
     wattroff(win_title_, COLOR_PAIR(CP_TITLE) | A_BOLD);
+
+    // [REC] pulse: overpaint the badge in slow-pulsing red (phase advanced by
+    // the tick loop ~every 0.64s while recording). Column math: `right` is
+    // right-aligned at the true edge, and everything BEFORE [REC] in it is
+    // ASCII (repeat/shuffle tags), so byte offset == columns for the prefix;
+    // dispWidth handles any UTF-8 (MB album) that follows. ASCII overpaint,
+    // both curses builds, both themes (CP_STATUS_ERR is the red pair).
+    if (audio_.streamRecorder().recording()) {
+        size_t p = right.find(" [REC]");
+        if (p != std::string::npos) {
+            int col = screen_cols_ - dispWidth(right) + (int)p + 1;
+            if (col >= 0 && col + 5 <= screen_cols_) {
+                static const attr_t kPulse[4] = { A_BOLD, A_NORMAL, A_DIM, A_NORMAL };
+                attr_t a = COLOR_PAIR(CP_STATUS_ERR) | kPulse[rec_pulse_ & 3];
+                wattron(win_title_, a);
+                mvwaddstr(win_title_, 0, col, "[REC]");
+                wattroff(win_title_, a);
+            }
+        }
+    }
 }
 
 void UIManager::drawCwd() {
@@ -2781,6 +2830,11 @@ void UIManager::drawHelp() {
         { "Ctrl+N",         "Toggle Nerd Font icons (needs Nerd Font)" },
         { "Ctrl+A",         "Toggle deep-analysis iHeart log (diagnostic)" },
         { "Ctrl+K",         "Stream mode: Web Player (fewer ads) / Raw broadcast" },
+        { "Ctrl+U",         "Play an internet-radio stream URL" },
+        { "Ctrl+E",         "Record the playing stream ([Rec] panel)" },
+        { "Ctrl+O",         "Normalize folder (batch ReplayGain scan)" },
+        { "Ctrl+G",         "Last.fm login (scrobbling)" },
+        { "Ctrl+B",         "ListenBrainz login (paste user token)" },
     };
 
     const int n    = (int)(sizeof(entries) / sizeof(entries[0]));
@@ -5122,6 +5176,30 @@ void UIManager::handleInput(int ch) {
         }
         return;   // swallow everything else — the overlay is modal
     }
+    // ── batch-r128: the ^O tag/force prompt intercepts until answered ────────
+    if (rgscan_prompt_) {
+        if (ch == '\n' || ch == '\r' || ch == KEY_ENTER || ch == 'f' || ch == 'F') {
+            const bool force = (ch == 'f' || ch == 'F');
+            rgscan_prompt_ = false;
+            if (gain_scan_.start(rgscan_dir_, force)) {
+                rip_status_ = std::string("ReplayGain scan started") +
+                              (force ? " (force re-tag)" : "") + "...";
+            } else {
+                rip_status_ = "ReplayGain scan: could not read the folder.";
+            }
+            rip_msg_ticks_ = 0;
+            redraw_needed_.store(true);
+            return;
+        }
+        if (ch == 27) {
+            rgscan_prompt_ = false;
+            rip_status_.clear();
+            redraw_needed_.store(true);
+            return;
+        }
+        rip_msg_ticks_ = 0;   // keep the prompt line alive while undecided
+        return;               // modal until answered
+    }
     // ── Rip mode selection modal — intercepts all input when active ─────────
     // Input disambiguation is STRUCTURAL (rip-format-select): N/Esc first
     // (cancel always works), digits toggle and return inside their own case
@@ -5882,6 +5960,25 @@ void UIManager::handleInput(int ch) {
         case 21:  // Ctrl+U — input an internet-radio stream URL
             if (ui_overlay_ == UIOverlay::None)
                 openInputBar(InputMode::StreamURL, "");
+            break;
+        case 15:  // Ctrl+O — batch ReplayGain scan over the browsed folder (batch-r128)
+            if (gain_scan_.running()) {
+                gain_scan_.cancel();
+                rip_status_ = "ReplayGain scan: cancelling (finishing nothing mid-file)...";
+                rip_msg_ticks_ = 0;
+                redraw_needed_.store(true);
+            } else if (cd_ripper_.isActive()) {
+                showTrackToast("ReplayGain scan", "Wait for the rip to finish", "");
+            } else {
+                // The prompt names the folder — no fat-fingered scans on the
+                // wrong directory. Enter = tag untagged, F = force re-tag all.
+                rgscan_prompt_ = true;
+                rgscan_dir_    = current_dir_;
+                rip_status_ = "ReplayGain scan '" + sanitizeForDisplay(rgscan_dir_) +
+                              "': [Enter] tag untagged  [F] force re-tag  [Esc] cancel";
+                rip_msg_ticks_ = 0;
+                redraw_needed_.store(true);
+            }
             break;
         case 5:  // Ctrl+E — stream recording: the [Rec] panel (stream-record R2)
             if (ui_overlay_ != UIOverlay::None) break;  // already showing a modal

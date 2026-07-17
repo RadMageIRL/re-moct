@@ -1092,3 +1092,33 @@ runtime-discoverable, not compile-discoverable; a green build proves nothing abo
   (WavPack, Opus, and WAV's tail). This is why the chain test exists: the
   strict callback alone was NOT enough, and no amount of reasoning about
   libwavpack's propagation would have caught stdio's layer.
+- **Pause loses the broadcast - for ANY host-side tap (stream-record R1,
+  probe-proven)**: while playback is paused the device callback keeps firing
+  and readFrames keeps delivering full blocks, but they are silence pads
+  (readFrames short-circuits pre-ring), and BOTH stream producers stop
+  consuming the network (`if (paused_) sleepMs(20); continue;` - fixture
+  probe: segment_gets frozen across the pause, output rms exactly 0). So a
+  recording through a pause captures a real silence gap and the paused-over
+  airtime is unrecoverable host-side - no tap placement can fix it, because
+  the plugin never decodes it. Making pause not poison a cut is a PLUGIN
+  behavior change (keep draining while paused), recorded as its own later
+  conversation. R2's panel states the gap plainly.
+- **A split trigger must not depend on audio flowing (stream-record R1,
+  found BY the headless test before any UI existed)**: the recorder worker
+  originally checked the split flag only on the has-audio drain path -
+  correct-looking because a live source silence-pads and the ring is
+  "never" idle. The contract test deadlocked instantly: a title event
+  landing on an idle ring never rolled. The roll check now runs on EVERY
+  worker pass. The probe-first payoff in its purest form - the UI would
+  have masked this until a buffering gap coincided with a title change in
+  the field.
+- **Linkage norms shape API placement (stream-record R1)**: "CDRipper's TU
+  never links into tests" (the rip_encoder_seam_test comment) is a real
+  constraint, not a habit - StreamRecorder needed sanitizePath, so the BODY
+  moved to header-inline StringUtils.h (sanitizePathComponent) with
+  CDRipper::sanitizePath delegating; musicRoot() stayed a CDRipper static
+  (the trimmed CD gate proves extraction inertness) and the recorder takes
+  its output dir from the CALLER, so neither the engine nor its test ever
+  name a CDRipper symbol. When a helper wants sharing across TU-heavy
+  boundaries, move the body to a header home and delegate - do not link the
+  heavy TU.

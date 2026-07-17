@@ -168,6 +168,17 @@ byte-identical). Next recorded: log-semantics slice (lossless=master marking).
 See `docs/session-handoff-2026-07-16-rip-overhaul-complete.md` + the five
 `docs/rip-*-plan.md` design-of-record docs.
 
+**2026-07-17: stream-record R1 SHIPPED (`c333428`, CI green) - "rip the
+radio", engine half.** StreamRecorder (SPSC ring tap in the stream callback
+pre-volume/EQ, dedicated worker, split-on-title via the polled published
+nowPlaying, MP3/Opus lossy-only, per-cut RG, timestamp fallback naming,
+partial marking) + CDRipper::musicRoot()/recordingsDir() extraction (CD-gate
+proven inert) + stream_record_test both platforms. Live-gated on SomaFM +
+KKJO with real on-air splits, 0 drops. KEY FINDING: pause loses broadcast
+(producers halt) - recording states the gap, doesn't fix it. **R2 (panel/^E/
+[REC] badge) PLANNED, awaiting review: `docs/stream-record-r2-plan.md`.**
+Handoff: `docs/session-handoff-2026-07-17-stream-record-r1.md`.
+
 ## Deep knowledge - read the matching file when a task touches it
 - Roadmap, phases, parked items, decisions → `docs/roadmap.md`
 - Plugin/Source interface, platform abstraction, Linux port, GitHub strategy → `docs/architecture.md`

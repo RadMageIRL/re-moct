@@ -590,6 +590,16 @@ target_link_libraries(mp3_rg_read_test PRIVATE
 add_test(NAME mp3_rg_read_test COMMAND mp3_rg_read_test)
 set_tests_properties(mp3_rg_read_test PROPERTIES TIMEOUT 60)
 
+# osmedia-seam — the OS media routing + marshal + seek-coalescing contract
+# (header-only cores, no platform/curses/audio deps): SeekCoalescer's abs/rel
+# lanes incl the absolute-drag regression gate, and MediaRouter's split sink +
+# off-thread marshal.
+add_executable(media_control_test media_control_test.cpp)
+target_include_directories(media_control_test PRIVATE ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(media_control_test PRIVATE
+    $<$<PLATFORM_ID:Linux>:pthread>)
+add_test(NAME media_control_test COMMAND media_control_test)
+
 # radio-art-refresh-fix — the time-bounded art negative cache (header-only,
 # no deps): rate-limits within the TTL, self-heals at it, wrap-safe ticks.
 add_executable(art_miss_cache_test art_miss_cache_test.cpp)

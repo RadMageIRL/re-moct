@@ -34,6 +34,11 @@ struct DigiConfig {
     // Discord Rich Presence toggle (Ctrl+D)
     bool  discord_presence = false;
 
+    // OS media control (osmedia-seam): publish now-playing to the OS media
+    // surface (Windows SMTC / Linux MPRIS) and accept its transport keys /
+    // scrubber. Default on; config-only toggle (no keybinding).
+    bool  os_media_control = true;
+
     // ── Rip output (rip-format-select) ────────────────────────────────────
     // rip_formats is the DEFAULT selection only: it seeds the session's
     // format set once at startup; the modal's toggles are never written back.

@@ -27,6 +27,9 @@
 #include "ArtMissCache.h"   // time-bounded art negative cache (radio-art-refresh-fix)
 #include "GainScan.h"       // batch ReplayGain over a folder (batch-r128)
 #include "core/INotify.h"
+#include "core/IMediaControl.h"   // OS media control seam (osmedia-seam)
+#include "MediaRouter.h"          // OS-command marshal + split sink
+#include "SeekCoalescer.h"        // shared seek lanes (TUI [/] + OS SetPosition/Seek)
 
 class PlaylistManager;
 struct DigiConfig;
@@ -41,10 +44,13 @@ class UIManager {
 public:
     // notify == nullptr -> the production platform notifier (core::notifier());
     // tests inject a fake here (constructor injection — no setNotify global).
+    // media == nullptr -> the production platform impl (core::mediaControl());
+    // tests inject a fake here (constructor injection, the notify_ pattern).
     UIManager(PlaylistManager& playlist, AudioManager& audio,
               DigiConfig& config,
               const std::string& initial_dir = "",
-              core::INotify* notify = nullptr);
+              core::INotify* notify = nullptr,
+              core::IMediaControl* media = nullptr);
     ~UIManager();
 
     void run();
@@ -64,6 +70,28 @@ public:
 private:
     // Notifications seam (slice 7): injected fake in tests, core::notifier() in prod.
     core::INotify* notify_;
+    // OS media control seam (osmedia-seam): SMTC / MPRIS, injected fake in tests,
+    // core::mediaControl() in prod. Bidirectional - outbound now-playing +
+    // inbound transport via media_router_ (marshalled to the UI-loop drain).
+    core::IMediaControl* media_;
+    MediaRouter         media_router_;
+    void wireMediaControl();           // ctor: register sinks + command handler
+    // updateScrobbler tail: publish now-playing to the OS on a real change
+    // (the resolved Discord-feed values, reused - no second assembler).
+    void publishMedia(const std::string& artist, const std::string& track,
+                      const std::string& album, const std::string& art_url,
+                      const std::vector<uint8_t>& art_bytes, int pos, int dur);
+    // Local-file embedded cover, extracted once per file (path-keyed) so the
+    // per-tick OS-media publish never re-reads the tag (osmedia-art-floor).
+    std::string          media_art_path_;
+    std::vector<uint8_t> media_art_cache_;
+    core::MediaStatus   mediaStatus() const;
+    // Last-published OS-media identity (independent of the Discord toggle so the
+    // two features are orthogonal).
+    std::string media_last_artist_, media_last_track_, media_last_art_;
+    bool        media_last_valid_ = false;
+    void        manualNext();         // the case 'n' body, one home (OS Next routes here too)
+    void        manualPrevious();     // the case 'p' body, one home
     // Same name/arity as the pre-slice-7 free function, so every toast call site
     // in UIManager.cpp compiles unchanged (class scope hides the 4-arg adapter in
     // Toast.h); forwards to that adapter with the injected notifier. Defined in
@@ -587,12 +615,14 @@ private:
     // stop/seek/start per repeat is choppy on MP3 (bit-reservoir warm-up after each
     // seek). Coalesce rapid repeats into ~one seek per cooldown while keeping single
     // taps instant. The run loop flushes the tail after the key is released.
-    double      pending_seek_    = 0.0;
-    bool        seek_dirty_      = false;
-    int         seek_stamp_      = -1;   // playlist index the pending seek belongs to
+    // The lanes (relative [/] + absolute OS SetPosition) live in SeekCoalescer,
+    // shared so both routes flush through the one seekBy home (osmedia-seam).
+    SeekCoalescer seek_;
     std::chrono::steady_clock::time_point last_seek_apply_ {};
-    void        requestSeek(double delta);
+    void        requestSeek(double delta);      // relative ([/] + MPRIS Seek)
+    void        requestSeekAbs(double target);  // absolute (OS SetPosition)
     void        flushPendingSeek();
+    bool        seekPending() const { return seek_.pending(); }
     int         marquee_ticks_   = 0;
     std::string marquee_last_path_;  // detect track change to reset offset
     static constexpr int MARQUEE_PAUSE  = 20;

@@ -186,6 +186,7 @@ void DigiConfig::load() {
         else if (key == "toast_enabled")    toast_enabled     = (val == "1");
         else if (key == "eq_enabled")       eq_enabled        = (val == "1");
         else if (key == "discord_presence") discord_presence  = (val == "1");
+        else if (key == "os_media_control") os_media_control   = (val != "0");
         else if (key == "awesome_mode")      awesome_mode       = (val == "1");
         else if (key == "viz_led")            viz_led            = (val == "1");
         else if (key == "awesome_theme")     try { awesome_theme = std::stoi(val); } catch (...) {}
@@ -324,6 +325,7 @@ void DigiConfig::save() const {
         f << "toast_enabled="    << (toast_enabled ? "1" : "0") << "\n";
         f << "eq_enabled="       << (eq_enabled ? "1" : "0") << "\n";
         f << "discord_presence=" << (discord_presence ? "1" : "0") << "\n";
+        f << "os_media_control=" << (os_media_control ? "1" : "0") << "\n";
         f << "awesome_mode="      << (awesome_mode ? "1" : "0") << "\n";
         f << "viz_led="           << (viz_led ? "1" : "0") << "\n";
         f << "awesome_theme="     << awesome_theme << "\n";

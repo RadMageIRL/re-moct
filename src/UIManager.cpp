@@ -220,8 +220,9 @@ static int parseMp3VbrQ(const std::string& s) {
 
 UIManager::UIManager(PlaylistManager& playlist, AudioManager& audio,
                      DigiConfig& config, const std::string& initial_dir,
-                     core::INotify* notify)
+                     core::INotify* notify, core::IMediaControl* media)
     : notify_(notify ? notify : &core::notifier()),
+      media_(media),   // default resolved AFTER initscr (SMTC needs a live HWND)
       playlist_(playlist), audio_(audio), config_(config)
 {
     // Seed the session rip-format selection from the config default (config
@@ -316,6 +317,16 @@ UIManager::UIManager(PlaylistManager& playlist, AudioManager& audio,
     refreshDir();
     audio_.setPreferDigital(config_.prefer_digital_stream);   // apply saved stream-mode pref
     audio_.setProbeMinted(config_.iheart_probe_minted);       // apply saved identity A/B arm (probe)
+
+    // OS media control (osmedia-seam): resolve the production default HERE, at the
+    // END of the ctor - after initscr() so the SMTC impl has the live wingui HWND
+    // (PDC_hWnd), which does not exist until the screen is open. Tests inject a
+    // fake, so mediaControl() (SMTC/MPRIS) is never constructed under test. Then
+    // register the inbound sinks + handler; outbound publish rides updateScrobbler
+    // and the loop pumps+drains.
+    if (!media_) media_ = &core::mediaControl();
+    wireMediaControl();
+
     running_ = true;
 }
 
@@ -339,6 +350,7 @@ void UIManager::showTrackToast(const std::string& title, const std::string& arti
 }
 
 UIManager::~UIManager() {
+    if (media_) media_->clear();   // drop the OS now-playing surface on exit
     flushBookProgress();       // persist resume position if quitting mid-book
     running_ = false;
     lf_poll_active_.store(false);
@@ -918,28 +930,144 @@ void UIManager::maybePreloadNext() {
 }
 
 void UIManager::flushPendingSeek() {
-    if (!seek_dirty_) return;
-    double d = pending_seek_;
-    pending_seek_ = 0.0;
-    seek_dirty_   = false;
-    // Drop the buffered seek if the track changed since it was requested (e.g. n/p or
-    // auto-advance landed within the coalescing window) so it can't leak onto the new
-    // track and start it mid-way.
-    if ((int)playlist_.current() != seek_stamp_) return;
+    if (!seek_.pending()) return;
+    // The coalescer resolves to a DELTA (absolute target - live position, or the
+    // accumulated relative delta) and drops it if the track changed since the seek
+    // was requested (n/p or auto-advance inside the window) so it can't leak onto
+    // a new track. Absolute is resolved HERE against the live position - never
+    // folded at receive time (a drag stream would accumulate against a stale pos).
+    auto d = seek_.resolve((int)playlist_.current(), audio_.positionSec());
+    if (!d) return;
     last_seek_apply_ = std::chrono::steady_clock::now();
-    audio_.seekBy(d);
+    audio_.seekBy(*d);              // the one seekBy home (the MP3 bit-reservoir fix)
     redraw_needed_.store(true);
 }
 
 void UIManager::requestSeek(double delta) {
-    if (!seek_dirty_) seek_stamp_ = (int)playlist_.current();  // tie this seek to the current track
-    pending_seek_ += delta;
-    seek_dirty_    = true;
+    seek_.addRelative(delta, (int)playlist_.current());
     // Apply immediately when outside the cooldown (so a single tap is instant);
     // otherwise accumulate and let the run loop flush once the window elapses.
     using namespace std::chrono;
     if (steady_clock::now() - last_seek_apply_ >= milliseconds(100))
         flushPendingSeek();
+}
+
+void UIManager::requestSeekAbs(double target) {
+    // OS scrubber SetPosition. Last-write-wins absolute lane; NOT folded to a
+    // delta now (a drag emits many SetPositions in one window). Same immediate/
+    // coalesce timing as the relative path.
+    seek_.setAbsolute(target, (int)playlist_.current());
+    using namespace std::chrono;
+    if (steady_clock::now() - last_seek_apply_ >= milliseconds(100))
+        flushPendingSeek();
+}
+
+// ─── OS media control (osmedia-seam) ──────────────────────────────────────────
+core::MediaStatus UIManager::mediaStatus() const {
+    switch (audio_.state()) {
+        case PlaybackState::Playing: return core::MediaStatus::Playing;
+        case PlaybackState::Paused:  return core::MediaStatus::Paused;
+        default:                     return core::MediaStatus::Stopped;
+    }
+}
+
+// Register the inbound split sink + the command handler. Each sink routes to the
+// EXACT function the keyboard uses (no parallel transport); seek goes through the
+// coalescer, never a raw seekTo. The handler only enqueues (the marshal).
+void UIManager::wireMediaControl() {
+    MediaRouter::Sinks s;
+    s.play        = [this]{ if (audio_.state() == PlaybackState::Paused) audio_.togglePause(); };
+    s.pause       = [this]{ if (audio_.state() == PlaybackState::Playing) audio_.togglePause(); };
+    s.togglePause = [this]{ if (audio_.state() != PlaybackState::Stopped) audio_.togglePause(); };
+    s.stop        = [this]{ audio_.stop(); };
+    s.next        = [this]{ manualNext(); };
+    s.prev        = [this]{ manualPrevious(); };
+    s.seekAbs     = [this](double t){ requestSeekAbs(t); };
+    s.seekRel     = [this](double d){ requestSeek(d); };
+    media_router_.setSinks(std::move(s));
+    media_->setCommandHandler([this](core::MediaEvent e){ media_router_.post(e); });
+    // Hand the impl the bundled logo bytes ONCE for the empty-art floor
+    // (osmedia-art-floor). logoBytes() lazy-loads remoct_logo.jpg here.
+    media_->setDefaultArt(logoBytes());
+}
+
+// Publish now-playing to the OS on a real change. Called from updateScrobbler's
+// tail with the SAME resolved values Discord uses (no second assembler). The
+// change-trigger is independent of the Discord toggle.
+void UIManager::publishMedia(const std::string& artist, const std::string& track,
+                             const std::string& album, const std::string& art_url,
+                             const std::vector<uint8_t>& art_bytes, int pos, int dur) {
+    if (!config_.os_media_control) return;
+    // Art precedence (osmedia-art-floor): resolved cover BYTES first (a local
+    // file's embedded picture, or radio's resolved cover from the shared
+    // radio-art machinery), then a URL, then the RE-MOCT logo floor. The
+    // DECISION lives once, consumer-side.
+    std::string art_eff = art_bytes.empty() ? core::floorArt(art_url) : std::string();
+    // The art size joins the change trigger so a cover that RESOLVES a tick after
+    // the title (the radio song-entity lookup) re-publishes on the still-current
+    // song - the Discord path's deferred-art-commit, expressed via the trigger.
+    std::string art_id = std::to_string(art_bytes.size()) + "|" + art_eff;
+    if (artist != media_last_artist_ || track != media_last_track_ || art_id != media_last_art_) {
+        media_last_artist_ = artist; media_last_track_ = track; media_last_art_ = art_id;
+        media_last_valid_  = true;
+        core::MediaMeta m;
+        m.artist = artist; m.title = track; m.album = album;
+        m.art = art_eff; m.art_bytes = art_bytes;
+        media_->updateNowPlaying(m, mediaStatus(), (double)pos, (double)dur);
+    }
+}
+
+// Manual next/previous, extracted VERBATIM from the case 'n'/'p' bodies so the
+// keyboard AND an OS Next/Previous command route through the IDENTICAL logic
+// (queue priority, playlist next/prev, CD reopen, follow-mode cursor, preload).
+// One home; the switch cases now just call these. (The two inner switch-breaks
+// on the CD-ejected path became returns.)
+void UIManager::manualNext() {
+    auto play_next = [&](const std::string& path, bool from_queue = false) {
+        if (!from_queue && config_.follow_playing) pl_cursor_ = (int)playlist_.current();
+        std::string drive; int track_num;
+        if (parseCDPath(path, drive, track_num)) {
+            if (!reopenCDForAction(drive)) return;   // ejected while stopped
+            audio_.playCDTrack(track_num);
+            return;
+        }
+        if (audio_.cdMode()) audio_.closeCD();
+        audio_.play(path);
+        maybePreloadNext();
+    };
+    if (!playlist_.queueEmpty()) {
+        if (auto qe = playlist_.queuePop(); qe.has_value()) {
+            audio_.clearNext();
+            const std::string& qpath = qe->path;
+            std::string drive; int track_num;
+            if (parseCDPath(qpath, drive, track_num)) {
+                if (!reopenCDForAction(drive)) return;   // ejected while stopped
+                audio_.playCDTrack(track_num);
+                return;                                  // queue item has no playlist row
+            }
+            if (audio_.cdMode()) audio_.closeCD();
+            play_next(qpath, true);  // from_queue=true — don't move cursor
+        }
+    } else if (auto p = playlist_.next(); p.has_value())
+        play_next(p.value());
+    else
+        audio_.stop();
+}
+
+void UIManager::manualPrevious() {
+    auto play_prev = [&](const std::string& path) {
+        if (config_.follow_playing) pl_cursor_ = (int)playlist_.current();   // gated like manual next
+        std::string drive; int track_num;
+        if (parseCDPath(path, drive, track_num)) {
+            if (!reopenCDForAction(drive)) return;   // ejected while stopped
+            audio_.playCDTrack(track_num);
+            return;
+        }
+        if (audio_.cdMode()) audio_.closeCD();
+        audio_.play(path);
+    };
+    if (auto p = playlist_.previous(); p.has_value())
+        play_prev(p.value());
 }
 
 // Remove every playlist + queued row for a CD drive letter and keep the cursor
@@ -1114,41 +1242,80 @@ void UIManager::run() {
 
     while (running_) {
         audio_.pollEvents();
+        // OS media control (osmedia-seam): service the transport (Linux MPRIS bus;
+        // Windows no-op) then drain queued transport commands on THIS (UI) thread,
+        // beside the seek flush. Commands from an OS callback are applied here, not
+        // inline in the callback - the marshal. pump()/drain() are cheap no-ops when
+        // media is disabled or idle.
+        if (config_.os_media_control) {
+            media_->pump();
+            // Transport applies regardless of any open modal - a media key should
+            // work whatever the TUI is showing - EXCEPT during an active CD rip,
+            // where the ripper owns the drive and a background track-switch
+            // (manualNext -> closeCD/playCDTrack) would corrupt it. Drop queued
+            // commands for that window only (osmedia-seam, the modal confirm).
+            if (cd_ripper_.isActive()) media_router_.clear();
+            else                       media_router_.drain();
+        }
         // Flush a coalesced seek once the user stops hammering [/] (the cooldown
         // makes single taps instant and turns held repeats into a few seeks, not many).
-        if (seek_dirty_ &&
+        if (seek_.pending() &&
             std::chrono::steady_clock::now() - last_seek_apply_ >= std::chrono::milliseconds(100))
             flushPendingSeek();
-        updateScrobbler();
+        updateScrobbler();   // publishes now-playing to the OS on change (publishMedia)
+        // OS media control: per-tick position refresh (cheap; the impl throttles
+        // its own signal emission) + clear on the transition to stopped so the OS
+        // surface does not keep a dead track. Metadata itself is pushed on change
+        // by publishMedia from updateScrobbler.
+        if (config_.os_media_control) {
+            core::MediaStatus st = mediaStatus();
+            if (st == core::MediaStatus::Stopped) {
+                if (media_last_valid_) {
+                    media_->clear();
+                    media_last_valid_ = false;
+                    media_last_artist_.clear(); media_last_track_.clear(); media_last_art_.clear();
+                }
+            } else {
+                double pos = audio_.streamMode() ? (double)audio_.streamPositionSec()
+                                                 : audio_.positionSec();
+                double dur = audio_.streamMode() ? 0.0 : audio_.durationSec();
+                media_->updatePosition(pos, dur, st);
+            }
+        }
         // Stream-record R2: hand the polled now-playing to the recorder —
         // onTitle dedups internally (a repeat can never cut twice) and
         // no-ops when idle/split-off, so the unconditional per-tick call is
         // safe; the fetch is one the scrobbler/art paths already make. The
         // panel refreshes its live state at ~2 Hz (80 ms ticks x 6).
-        if (audio_.streamMode() && audio_.streamRecorder().recording()) {
-            std::string np = audio_.streamNowPlaying();
-            audio_.streamRecorder().onTitle(np);
-            // rec-cover-art: drive the SAME radio-art machinery the Info pane
-            // uses (same single-in-flight guard, negative cache, provider
-            // order) regardless of pane visibility, and hand a resolved image
-            // to the recorder keyed by the RAW now-playing string (matches
-            // cut_raw_ exactly at tag time). Pushed once per title.
-            {
+        if (audio_.streamMode()) {
+            const bool recording = audio_.streamRecorder().recording();
+            // Drive the SAME radio-art machinery the Info pane uses (single-
+            // in-flight guard, negative cache, provider order: station cover
+            // then an iTunes/Deezer song-entity lookup) whenever radio art is
+            // WANTED - for the recorder OR the OS media card - so radio_bytes_
+            // resolves even with the pane closed and nothing recording. This is
+            // the same resolution the Discord path does; radio_bytes_ is the one
+            // home, reused here instead of a second lookup.
+            if (recording || config_.os_media_control) {
+                std::string np = audio_.streamNowPlaying();
                 std::string artist, title;
                 std::string key = radioSongIdentity(np, artist, title);
                 radioArtPickup(key);
                 if (!key.empty()) radioArtKick(artist, title, key);
-                else radioArtFloor(key);   // radio-art-refresh-fix: the branch this
-                                           // driver was missing — a dip now resets
-                                           // radio_bytes_key_ so the song's return
-                                           // re-kicks instead of being suppressed
-                if (!key.empty() && radio_bytes_key_ == key && radio_bytes_resolved_ &&
-                    !radio_bytes_.empty() && np != rec_art_pushed_key_) {
-                    rec_art_pushed_key_ = np;
-                    audio_.streamRecorder().onArt(np, radio_bytes_);
+                else radioArtFloor(key);   // metadata dip: reset so the song's
+                                           // return re-kicks (radio-art-refresh-fix)
+                if (recording) {
+                    audio_.streamRecorder().onTitle(np);
+                    // Hand the resolved image to the recorder keyed by the RAW
+                    // now-playing (matches cut_raw_ at tag time). Once per title.
+                    if (!key.empty() && radio_bytes_key_ == key && radio_bytes_resolved_ &&
+                        !radio_bytes_.empty() && np != rec_art_pushed_key_) {
+                        rec_art_pushed_key_ = np;
+                        audio_.streamRecorder().onArt(np, radio_bytes_);
+                    }
                 }
             }
-            if (ui_overlay_ == UIOverlay::RecPanel && (++rec_panel_tick_ % 6) == 0)
+            if (recording && ui_overlay_ == UIOverlay::RecPanel && (++rec_panel_tick_ % 6) == 0)
                 redraw_needed_.store(true);
         }
         // [REC] pulse driver: a redraw every ~0.64s while recording so the
@@ -4910,6 +5077,29 @@ void UIManager::updateScrobbler() {
         return;
     }
     artist = deinvertArtist(artist);   // "Shins, The" -> "The Shins" for both services
+    // OS media control (osmedia-seam): publish to SMTC / MPRIS on a real change,
+    // reusing these resolved values (no second assembler) and independent of the
+    // Discord toggle. Radio art is the stream cover URL; local-file cover via the
+    // OS surface is a v1 follow-up (title/artist/status/scrubber are full).
+    // Resolve the OS-card cover BYTES, reusing existing machinery (no new lookup):
+    //  - radio: radio_bytes_ from the shared radio-art machinery (station cover or
+    //    the iTunes/Deezer song lookup - the same the pane/recorder/Discord use),
+    //    driven each tick above; resolved+non-empty means it belongs to this song.
+    //  - local file: the embedded picture, extracted ONCE per file (path-cached).
+    static const std::vector<uint8_t> kNoArt;
+    const std::vector<uint8_t>* art_bytes = &kNoArt;
+    std::string art_url;
+    if (audio_.streamMode()) {
+        if (radio_bytes_resolved_ && !radio_bytes_.empty()) art_bytes = &radio_bytes_;
+    } else {
+        const std::string& p = audio_.currentTrack().path;
+        if (p != media_art_path_) {   // extract once per file, not per tick
+            media_art_path_  = p;
+            media_art_cache_ = p.empty() ? std::vector<uint8_t>{} : extractEmbeddedArt(p);
+        }
+        if (!media_art_cache_.empty()) art_bytes = &media_art_cache_;
+    }
+    publishMedia(artist, track, album, art_url, *art_bytes, pos, dur);
     // Discord Rich Presence — same resolved metadata, independent of scrobbling.
     // Portable since slice 4 (Unix-socket IIpc twin).
     if (config_.discord_presence) {
@@ -6394,58 +6584,10 @@ void UIManager::handleInput(int ch) {
             break;
         case 'z':
             playlist_.toggleShuffle(); break;
-        case 'n': case 'N': {
-            auto play_next = [&](const std::string& path, bool from_queue = false) {
-                // Follow-mode gates the cursor move (like the auto-advance sync block):
-                // OFF => manual next plays the track but leaves the cursor browsing.
-                if (!from_queue && config_.follow_playing) pl_cursor_ = (int)playlist_.current();
-                std::string drive; int track_num;
-                if (parseCDPath(path, drive, track_num)) {
-                    if (!reopenCDForAction(drive)) return;   // ejected while stopped
-                    audio_.playCDTrack(track_num);
-                    return;
-                }
-                if (audio_.cdMode()) audio_.closeCD();
-                audio_.play(path);
-                maybePreloadNext();
-            };
-            // Queue takes priority over playlist on manual next
-            if (!playlist_.queueEmpty()) {
-                if (auto qe = playlist_.queuePop(); qe.has_value()) {
-                    audio_.clearNext();
-                    const std::string& qpath = qe->path;
-                    std::string drive; int track_num;
-                    if (parseCDPath(qpath, drive, track_num)) {
-                        if (!reopenCDForAction(drive)) break;   // ejected while stopped
-                        audio_.playCDTrack(track_num);
-                        // pl_cursor_ stays where it is — queue item has no playlist row
-                        break;
-                    }
-                    if (audio_.cdMode()) audio_.closeCD();
-                    play_next(qpath, true);  // from_queue=true — don't move cursor
-                }
-            } else if (auto p = playlist_.next(); p.has_value())
-                play_next(p.value());
-            else
-                audio_.stop();
-            break;
-        }
-        case 'p': case 'P': {
-            auto play_prev = [&](const std::string& path) {
-                if (config_.follow_playing) pl_cursor_ = (int)playlist_.current();   // gated like manual next
-                std::string drive; int track_num;
-                if (parseCDPath(path, drive, track_num)) {
-                    if (!reopenCDForAction(drive)) return;   // ejected while stopped
-                    audio_.playCDTrack(track_num);
-                    return;
-                }
-                if (audio_.cdMode()) audio_.closeCD();
-                audio_.play(path);
-            };
-            if (auto p = playlist_.previous(); p.has_value())
-                play_prev(p.value());
-            break;
-        }
+        // Manual next/prev - one home (manualNext/manualPrevious); an OS
+        // Next/Previous command routes through the same methods (osmedia-seam).
+        case 'n': case 'N': manualNext();     break;
+        case 'p': case 'P': manualPrevious(); break;
         case '[': requestSeek(-5.0); break;
         case ']': requestSeek(+5.0); break;
         case ',': jumpChapter(-1); break;

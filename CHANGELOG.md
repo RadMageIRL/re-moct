@@ -53,6 +53,19 @@ Feature release: Opus and WavPack playback.
 
 ### Added
 
+- **OS media controls.** RE-MOCT now appears in the operating system's own
+  media surface and responds to its transport keys. On Windows the now-playing
+  title, artist, and cover show in the volume/media overlay and on the lock
+  screen, and the keyboard media keys (play/pause, next, previous, stop) and
+  the on-screen scrubber drive playback. On Linux it exports the standard MPRIS
+  interface, so playerctl and desktop media widgets read the now-playing and
+  drive playback the same way. Position and duration are reported so the
+  scrubber tracks and can seek. Seeks route through the same smoothing the
+  in-app seek keys use. On by default; turn it off with "os_media_control=0" in
+  the config. Cover art shows on the card: a local file's embedded picture, or a
+  radio track's cover (the station's own art, or the same iTunes/Deezer lookup
+  the Info pane uses), falling back to the RE-MOCT logo when a track has none.
+
 - **Batch ReplayGain scan** (Ctrl+O in the file browser): point it at a
   folder and it computes and writes track gain for every supported audio
   file - FLAC, MP3, Opus, WavPack, and M4A/M4B - using the same loudness

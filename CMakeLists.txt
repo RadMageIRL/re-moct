@@ -95,6 +95,7 @@ if(WIN32)
         ${CMAKE_SOURCE_DIR}/src/platform/win/NotifyWinToast.cpp
         ${CMAKE_SOURCE_DIR}/src/platform/win/CdIoWin.cpp
         ${CMAKE_SOURCE_DIR}/src/platform/win/PluginLoaderWin.cpp  # slice c: LoadLibrary seam in the host
+        ${CMAKE_SOURCE_DIR}/src/platform/win/MediaControlSmtc.cpp # osmedia-seam: SMTC (wingui) / no-op
     )
 endif()
 
@@ -110,6 +111,7 @@ if(UNIX)
         ${CMAKE_SOURCE_DIR}/src/platform/linux/NotifyNotifySend.cpp
         ${CMAKE_SOURCE_DIR}/src/platform/linux/CdIoSgIo.cpp
         ${CMAKE_SOURCE_DIR}/src/platform/linux/PluginLoaderPosix.cpp  # slice c: dlopen seam in the host
+        ${CMAKE_SOURCE_DIR}/src/platform/linux/MediaControlMpris.cpp  # osmedia-seam: MPRIS over sd-bus
     )
     # Module-mode search only: under WSL2 the appended Windows PATH would let
     # config-mode find MSYS2's CURLConfig.cmake at /mnt/c (CMake treats PATH
@@ -330,11 +332,14 @@ target_link_libraries(remoct PRIVATE
     $<$<PLATFORM_ID:Windows>:shell32>
     $<$<PLATFORM_ID:Windows>:advapi32>
     $<$<PLATFORM_ID:Windows>:dwmapi>   # DwmSetWindowAttribute: OS dark title bar (wingui)
+    $<$<PLATFORM_ID:Windows>:runtimeobject>  # osmedia-seam: WinRT ABI for SMTC (RoInitialize/RoGetActivationFactory)
+    $<$<PLATFORM_ID:Windows>:gdi32>          # osmedia-seam: SMTC HWND path (also via pdcurses_wingui in the wingui build)
     # Linux: miniaudio's runtime backend loading (dlopen) + threads + libm;
     # libcurl backs the core::IHttp seam (slice 2).
     $<$<PLATFORM_ID:Linux>:pthread>
     $<$<PLATFORM_ID:Linux>:dl>
     $<$<PLATFORM_ID:Linux>:m>
+    $<$<PLATFORM_ID:Linux>:systemd>          # osmedia-seam: MPRIS over sd-bus
 )
 if(UNIX)
     target_link_libraries(remoct PRIVATE CURL::libcurl)

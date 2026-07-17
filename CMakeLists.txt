@@ -72,6 +72,7 @@ set(REMOCT_SOURCES
     src/Mp3Encoder.cpp            # rip-encoder-seam: MP3 output behind IEncoder
     src/WavEncoder.cpp            # rip-wav-encoder: WAV output (no library)
     src/OpusRipEncoder.cpp        # rip-opus-encoder: Opus output (libopusenc)
+    src/WavPackEncoder.cpp        # rip-wavpack-encoder: WavPack output (libwavpack, decode's lib)
     src/Mp4Chapters.cpp
     src/RadioBrowser.cpp
     src/LastFm.cpp

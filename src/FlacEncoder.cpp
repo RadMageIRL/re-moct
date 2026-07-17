@@ -53,10 +53,11 @@ bool FlacEncoder::writeFrames(const int16_t* interleaved, size_t frames) {
                                                     (unsigned)frames) != 0;
 }
 
-void FlacEncoder::finalize(bool ok) {
+bool FlacEncoder::finalize(bool ok) {
     (void)ok;   // FLAC finish ran unconditionally in the inline code
-    if (!enc_) return;
+    if (!enc_) return true;
     FLAC__stream_encoder_finish(enc_);
     FLAC__stream_encoder_delete(enc_);
     enc_ = nullptr;
+    return true;   // best-effort, exactly the pre-seam inline behavior
 }

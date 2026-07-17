@@ -13,9 +13,17 @@
 // The fixture mimics the real call shape: 27-sector blocks, a short final
 // block, then a small odd-length "tail" call (the corr_sub_skip borrow).
 
+// MINIAUDIO_IMPLEMENTATION: the WavPack round-trip decodes through the
+// SHIPPING WavPackDecoder (a miniaudio custom backend), so this test carries
+// the miniaudio implementation. No other test TU does; no clash.
+#define MINIAUDIO_IMPLEMENTATION
+#include "miniaudio.h"
+
 #include "FlacEncoder.h"
 #include "Mp3Encoder.h"
 #include "WavEncoder.h"
+#include "WavPackEncoder.h"
+#include "WavPackDecoder.h"
 #include "R128Gain.h"
 
 #include <FLAC/stream_encoder.h>
@@ -288,6 +296,67 @@ int main() {
             wav.finalize(false);
         } else {
             check(true, "WAV /dev/full open refused (also acceptable)");
+        }
+    }
+#endif
+
+    // ── WavPack bit-exact round-trip (rip-wavpack-encoder) ─────────────────
+    // WavPack COMPRESSES, so "lossless" must be demonstrated, not assumed:
+    // encode the fixture, decode through the SHIPPING WavPackDecoder, and
+    // require bit-identity. This also pins the 16-bit CD-DA config — a wrong
+    // bits/bytes value cannot survive it.
+    {
+        WavPackEncoder wv;   // default mode (normal) — the named constant
+        bool ok = wv.open("seam_wv.wv", kFrames);
+        for (auto& blk : blocks) {
+            if (!ok) break;
+            ok = wv.writeFrames(blk.p, (size_t)blk.samples);
+        }
+        ok = wv.finalize(ok) && ok;
+        check(ok, "WavPack arm encoded (finalize completed)");
+
+        ma_data_source* ds = nullptr;
+        ma_decoding_backend_config bc = ma_decoding_backend_config_init(ma_format_unknown, 0);
+        ma_result r = ma_wavpack_backend_vtable()->onInitFile(
+            nullptr, "seam_wv.wv", &bc, nullptr, &ds);
+        check(r == MA_SUCCESS, "shipping WavPackDecoder opens the rip output");
+        if (r == MA_SUCCESS) {
+            // The decoder emits f32 = int/2^15 for 16-bit sources; the input
+            // s16 scaled by 1/32768 is exactly representable — compare bits.
+            std::vector<float> dec(kFrames * 2);
+            ma_uint64 got = 0;
+            ma_data_source_read_pcm_frames(ds, dec.data(), kFrames, &got);
+            bool bit_exact = (got == kFrames);
+            for (size_t i = 0; bit_exact && i < kFrames * 2; ++i)
+                if (dec[i] != (float)pcm[i] / 32768.0f) bit_exact = false;
+            check(got == kFrames, "WavPack round-trip frame count exact");
+            check(bit_exact, "WavPack round-trip BIT-EXACT through the decoder");
+            ma_wavpack_backend_vtable()->onUninit(nullptr, ds, nullptr);
+        }
+        std::remove("seam_wv.wv");
+    }
+
+#ifndef _WIN32
+    // ── WavPack strict-block-callback chain (Linux: /dev/full ENOSPC) ─────
+    // The WAV laundering trap one level deeper: libwavpack writes through a
+    // BLOCK callback, and the finalize insurance is blind to write failures
+    // (sample index counts SUBMITTED samples). The whole safety is: strict
+    // callback -> propagated returns (probe-proven through PackSamples AND
+    // FlushSamples) -> writeFrames/finalize false -> track aborts. Prove the
+    // chain end-to-end under a real ENOSPC.
+    {
+        WavPackEncoder wv;
+        bool opened = wv.open("/dev/full", 44100 * 4);
+        if (opened) {
+            std::vector<int16_t> buf((size_t)44100 * 2, 12345);
+            bool all_writes_ok = true;
+            for (int s = 0; s < 4 && all_writes_ok; ++s)
+                all_writes_ok = wv.writeFrames(buf.data(), 44100);
+            bool fin_ok = wv.finalize(all_writes_ok);
+            check(!(all_writes_ok && fin_ok),
+                  "WavPack ENOSPC cannot yield success (write or finalize fails)");
+        } else {
+            check(true, "WavPack /dev/full open refused (also acceptable)");
         }
     }
 #endif

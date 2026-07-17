@@ -20,7 +20,7 @@ public:
 
     bool open(const std::string& path, uint64_t total_frames) override;
     bool writeFrames(const int16_t* interleaved, size_t frames) override;
-    void finalize(bool ok) override;
+    bool finalize(bool ok) override;
 
 private:
     int                      level_ = 5;

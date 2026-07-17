@@ -196,6 +196,10 @@ void DigiConfig::load() {
         else if (key == "show_filetype")      show_filetype      = (val == "1");
         else if (key == "rip_formats")        rip_formats        = val;
         else if (key == "opus_bitrate")       try { opus_bitrate = std::clamp(std::stoi(val), 6000, 510000); } catch (...) {}
+        else if (key == "wavpack_mode") {
+            if (val == "fast" || val == "normal" || val == "high" || val == "very_high")
+                wavpack_mode = val;
+        }
         else if (key == "flac_level")         try { flac_level = std::clamp(std::stoi(val), 0, 8); } catch (...) {}
         else if (key == "mp3") {
             // Accept V0-V9 (case-insensitive); anything else keeps the default.
@@ -322,6 +326,7 @@ void DigiConfig::save() const {
         f << "flac_level="        << flac_level  << "\n";
         f << "mp3="               << mp3         << "\n";
         f << "opus_bitrate="      << opus_bitrate << "\n";
+        f << "wavpack_mode="      << wavpack_mode << "\n";
         if (!wingui_font.empty()) f << "wingui_font="    << wingui_font << "\n";
         if (wingui_cols > 0)      f << "wingui_cols="    << wingui_cols << "\n";
         if (wingui_rows > 0)      f << "wingui_rows="    << wingui_rows << "\n";

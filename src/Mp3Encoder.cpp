@@ -54,8 +54,8 @@ bool Mp3Encoder::writeFrames(const int16_t* interleaved, size_t frames) {
     return true;
 }
 
-void Mp3Encoder::finalize(bool ok) {
-    if (!lame_ && !file_) return;
+bool Mp3Encoder::finalize(bool ok) {
+    if (!lame_ && !file_) return true;
     if (ok && lame_ && file_) {
         out_.resize(out_.size() > 7200 ? out_.size() : 7200);
         int fb = lame_encode_flush(lame_, out_.data(), (int)out_.size());
@@ -71,4 +71,5 @@ void Mp3Encoder::finalize(bool ok) {
     }
     if (file_) { fclose(file_); file_ = nullptr; }
     if (lame_) { lame_close(lame_); lame_ = nullptr; }
+    return true;   // best-effort, exactly the pre-seam inline behavior
 }

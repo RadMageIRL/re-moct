@@ -53,12 +53,22 @@ bool OpusRipEncoder::writeFrames(const int16_t* interleaved, size_t frames) {
     return ope_encoder_write(enc_, interleaved, (int)frames) == OPE_OK;
 }
 
-void OpusRipEncoder::finalize(bool ok) {
+bool OpusRipEncoder::finalize(bool ok) {
+    bool completed = true;
     if (enc_) {
-        if (ok) ope_encoder_drain(enc_);
+        // drain flushes the final pages through the write callback — the same
+        // buffering-encoder trap as WavPack's flush: a disk-full here must
+        // fail the track, not ship a truncated file marked success.
+        if (ok) completed = ope_encoder_drain(enc_) == OPE_OK;
         ope_encoder_destroy(enc_);
         enc_ = nullptr;
     }
     if (cmts_) { ope_comments_destroy(cmts_); cmts_ = nullptr; }
-    if (f_)    { fclose(f_); f_ = nullptr; }
+    if (f_) {
+        // Same stdio-buffer layer as WavPack: the drained pages may still sit
+        // in the FILE* buffer — flush and check before declaring completion.
+        if (completed && fflush(f_) != 0) completed = false;
+        fclose(f_); f_ = nullptr;
+    }
+    return completed;
 }

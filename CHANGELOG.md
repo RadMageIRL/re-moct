@@ -28,6 +28,12 @@ Feature release: Opus and WavPack playback.
   master marker, and deselecting everything disables the rip keys until at
   least one format is checked. The selection lasts for the session; set the
   startup default with the new "rip_formats" config key.
+- **WavPack rip output**: the fifth and final rip format - lossless
+  compressed audio with a "*" master marker (toggle with 5, config token
+  "wavpack", new "wavpack_mode" key: fast/normal/high/very_high, default
+  normal). Fully tagged in APEv2 including cover art and standard
+  ReplayGain. With this the rip dialog reaches its full form: five formats,
+  any combination, all written from a single verified disc read.
 - **Opus rip output**: the rip dialog gains a fourth format - Opus at a
   configurable VBR bitrate (toggle with 4, config token "opus", new
   "opus_bitrate" key, default 128 kbps). Fully tagged including cover art,

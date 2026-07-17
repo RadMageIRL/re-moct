@@ -26,6 +26,7 @@
 #include "Mp3Encoder.h"
 #include "WavEncoder.h"
 #include "OpusRipEncoder.h"
+#include "WavPackEncoder.h"
 #include "R128Gain.h"       // r128FromDb — shared with the decode side (LocalFileSource)
 
 // libebur128 for ReplayGain
@@ -47,6 +48,10 @@
 // the CODEC header opus/opusfile.h shares the basename (the decode-slice
 // collision), and this TU must get TagLib's C++ class, not libopusfile's C API.
 #include <taglib/opusfile.h>
+// TagLib's WavPack APEv2 reader/writer (same basename story: wavpack/wavpack.h
+// is the codec header; taglib/wavpackfile.h is the tagger).
+#include <taglib/wavpackfile.h>
+#include <taglib/apetag.h>
 
 #include <filesystem>
 #include <cstring>
@@ -667,6 +672,7 @@ void CDRipper::tagFile(const std::string&         path,
         bool is_mp3  = path.size()>4 && path.substr(path.size()-4)==".mp3";
         bool is_flac = path.size()>5 && path.substr(path.size()-5)==".flac";
         bool is_opus = path.size()>5 && path.substr(path.size()-5)==".opus";
+        bool is_wv   = path.size()>3 && path.substr(path.size()-3)==".wv";
 
         std::string title_str;
         if (mt && !mt->title.empty()) title_str = mt->title;
@@ -793,6 +799,40 @@ void CDRipper::tagFile(const std::string&         path,
                 tag->addPicture(pic);
             }
             f.save();
+
+        } else if (is_wv) {
+            // WavPack (rip-wavpack-encoder): APEv2 — the tag home of the
+            // PLAIN ReplayGain dialect (the decode side already reads it back
+            // via the generic path), so the FLAC/MP3 formatters are reused
+            // verbatim. No R128 keys here. Art is the APEv2 convention: a
+            // Binary item keyed "Cover Art (Front)" whose payload is
+            // "<filename>\0<image bytes>".
+            TagLib::WavPack::File f(wp.c_str(), false);
+            auto* tag = f.APETag(true); if (!tag) return;
+            tag->setTitle (TagLib::String(title_str,  TagLib::String::UTF8));
+            tag->setArtist(TagLib::String(artist_str, TagLib::String::UTF8));
+            tag->setAlbum (TagLib::String(rel.title,  TagLib::String::UTF8));
+            tag->setTrack ((unsigned int)track_num);
+            if (rel.date.size()>=4) try { tag->setYear((unsigned)std::stoi(rel.date.substr(0,4))); } catch(...){}
+            tag->addValue("ENCODER", TagLib::String("RE-MOCT v" REMOCT_VERSION, TagLib::String::UTF8), true);
+            if (!ar_str.empty()) {
+                tag->addValue("ACCURATERIP",     TagLib::String(ar_str,      TagLib::String::UTF8), true);
+                tag->addValue("ACCURATERIPCRC",  TagLib::String(ar_crc_str,  TagLib::String::UTF8), true);
+                tag->addValue("ACCURATERIPCOUNT",TagLib::String(ar_conf_str, TagLib::String::UTF8), true);
+            }
+            if (rg.valid) {
+                tag->addValue("REPLAYGAIN_TRACK_GAIN",TagLib::String(rg_str(rg.track_gain),TagLib::String::UTF8),true);
+                tag->addValue("REPLAYGAIN_TRACK_PEAK",TagLib::String(rg_peak_str(rg.track_peak),TagLib::String::UTF8),true);
+                tag->addValue("REPLAYGAIN_ALBUM_GAIN",TagLib::String(rg_str(rg.album_gain),TagLib::String::UTF8),true);
+                tag->addValue("REPLAYGAIN_ALBUM_PEAK",TagLib::String(rg_peak_str(rg.album_peak),TagLib::String::UTF8),true);
+            }
+            if (!art.empty()) {
+                TagLib::ByteVector payload("cover.jpg");
+                payload.append('\0');
+                payload.append(TagLib::ByteVector((const char*)art.data(),(unsigned)art.size()));
+                tag->setData("Cover Art (Front)", payload);
+            }
+            f.save();
         }
     } catch(...) {}
 }
@@ -808,6 +848,7 @@ static std::unique_ptr<IEncoder> makeEncoder(RipFormat f, const RipOptions& opt)
         case RipFormat::Mp3:  return std::make_unique<Mp3Encoder>(opt.mp3_vbr_q);
         case RipFormat::Wav:  return std::make_unique<WavEncoder>();
         case RipFormat::Opus: return std::make_unique<OpusRipEncoder>(opt.opus_bitrate);
+        case RipFormat::WavPack: return std::make_unique<WavPackEncoder>(opt.wavpack_mode);
     }
     return nullptr;
 }
@@ -1209,8 +1250,12 @@ ARTrackResult CDRipper::ripTrack(core::ICdDevice&   dev,
 
     // ── Flush encoders ────────────────────────────────────────────────────
     // FLAC first (list order = the inline finish order). ok=false skips the
-    // LAME flush/Xing rewrite but still closes handles, exactly as before.
-    for (auto& e : encoders) e->finalize(ok);
+    // quality-tail work but still closes handles, exactly as before. A
+    // finalize returning false (a buffering encoder's final flush failed —
+    // WavPack/Opus disk-full) fails the track: the cleanup below removes the
+    // files and the worker's zero-CRC heuristic reports it.
+    for (auto& e : encoders)
+        if (!e->finalize(ok)) ok = false;
 
     // ── ReplayGain result ─────────────────────────────────────────────────
     if (ebur && ok) {

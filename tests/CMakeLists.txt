@@ -467,12 +467,17 @@ add_executable(rip_encoder_seam_test
     ${CMAKE_SOURCE_DIR}/src/FlacEncoder.cpp
     ${CMAKE_SOURCE_DIR}/src/Mp3Encoder.cpp
     ${CMAKE_SOURCE_DIR}/src/WavEncoder.cpp
+    ${CMAKE_SOURCE_DIR}/src/WavPackEncoder.cpp
+    ${CMAKE_SOURCE_DIR}/src/WavPackDecoder.cpp
 )
 target_include_directories(rip_encoder_seam_test PRIVATE
     ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/lib
     ${FLAC_INCLUDE} ${LAME_INCLUDE})
 target_link_libraries(rip_encoder_seam_test PRIVATE ${FLAC_LIB} ${LAME_LIB}
     ${OGG_LIB}   # static libFLAC.a (Option C probe) needs ogg spelled out
+    ${WAVPACK_LIB}   # rip-wavpack-encoder: encode + the round-trip decode
+    $<$<PLATFORM_ID:Linux>:dl>   # miniaudio impl in this TU (WavPack round-trip)
+    $<$<PLATFORM_ID:Linux>:pthread>
     $<$<PLATFORM_ID:Linux>:m>)
 if(WIN32 AND REMOCT_STATIC_PROBE)
     # Same as the remoct target: static libFLAC.a exports plain symbols, but

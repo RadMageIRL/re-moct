@@ -35,6 +35,13 @@ struct IEncoder {
 
     // ok=false skips quality-tail work (e.g. LAME's flush + Xing rewrite) but
     // still closes handles/state — mirroring the original inline behavior.
-    // Best-effort: finish/flush results are not checked, as before.
-    virtual void finalize(bool ok) = 0;
+    //
+    // Returns whether the output was COMPLETED: false means the file on disk
+    // is not the full track (e.g. WavPack's final-block flush hit disk-full)
+    // and the caller must treat the track as failed (its cleanup removes the
+    // file). FLAC/MP3/WAV return true unconditionally — their finish/flush
+    // remain best-effort exactly as the pre-seam inline code was; the return
+    // exists because a buffering encoder (WavPack) can only learn about a
+    // failed write at flush time, after every writeFrames already succeeded.
+    virtual bool finalize(bool ok) = 0;
 };

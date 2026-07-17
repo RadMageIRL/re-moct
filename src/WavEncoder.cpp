@@ -62,8 +62,8 @@ bool WavEncoder::writeFrames(const int16_t* interleaved, size_t frames) {
     return true;
 }
 
-void WavEncoder::finalize(bool ok) {
-    if (!f_) return;
+bool WavEncoder::finalize(bool ok) {
+    if (!f_) return true;
     // Insurance for non-exact callers only: the CD path's frame count is
     // TOC-exact (kept files always match their header), and a short WRITE
     // already failed the track via the strict writeFrames above.
@@ -73,6 +73,11 @@ void WavEncoder::finalize(bool ok) {
         fseek(f_, 0, SEEK_SET);
         fwrite(h, 1, sizeof(h), f_);
     }
+    // Strict writeFrames guarantees fwrite accepted every byte — but a final
+    // sub-buffer tail can still sit in stdio (the ENOSPC chain-test lesson
+    // from the WavPack slice); flush and check before declaring completion.
+    bool completed = !ok || fflush(f_) == 0;
     fclose(f_);
     f_ = nullptr;
+    return completed;
 }

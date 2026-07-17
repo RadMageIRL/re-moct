@@ -1068,3 +1068,27 @@ runtime-discoverable, not compile-discoverable; a green build proves nothing abo
   is OpusRipEncoder because opus.h typedefs a C OpusEncoder and the TU sees
   both. Header output gain is pinned 0 so the R128 tags are the only gain.
   Opus tags carry NO REPLAYGAIN_* and NO peak keys - R128 defines none.
+- **The block-callback laundering trap (rip-wavpack-encoder), one level
+  deeper than WAV's**: libwavpack writes through a BLOCK callback, and its
+  finalize-time insurance (sample-index-vs-declared) counts samples
+  SUBMITTED, not bytes written - so a lenient callback turns disk-full into
+  a complete-looking truncated .wv marked success, and no downstream check
+  can see it. The safety chain is: strict blockOut (short fwrite -> return
+  0 + sticky write_failed_) -> propagation (probe-proven: PackSamples AND
+  FlushSamples both return 0 after a failed block; note WavpackGetNumErrors
+  stays 0 - it counts decode CRC errors, NEVER write failures, do not rely
+  on it) -> IEncoder::finalize now returns bool so the final block's flush
+  failure can fail the track (ripTrack folds finalize returns into ok
+  before the cleanup). Same treatment applied to Opus's drain (the same
+  buffering-encoder class). FLAC/MP3/WAV finalize return true
+  unconditionally - their best-effort semantics are the pre-seam baseline,
+  unchanged. Guarded end-to-end by the /dev/full chain test (Linux job).
+- **Third layer of the same trap, found BY the ENOSPC chain test on its
+  first run**: highly-compressible audio makes WavPack blocks smaller than
+  the stdio buffer - fwrite "succeeds" into the buffer, the library flush
+  "succeeds" (its callback never reached the disk), and the real ENOSPC
+  would only surface at an unchecked fclose. Every FILE*-owning buffering
+  encoder's finalize now does fflush-and-check before declaring completion
+  (WavPack, Opus, and WAV's tail). This is why the chain test exists: the
+  strict callback alone was NOT enough, and no amount of reasoning about
+  libwavpack's propagation would have caught stdio's layer.

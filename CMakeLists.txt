@@ -73,6 +73,7 @@ set(REMOCT_SOURCES
     src/WavEncoder.cpp            # rip-wav-encoder: WAV output (no library)
     src/OpusRipEncoder.cpp        # rip-opus-encoder: Opus output (libopusenc)
     src/WavPackEncoder.cpp        # rip-wavpack-encoder: WavPack output (libwavpack, decode's lib)
+    src/StreamRecorder.cpp        # stream-record R1: capture engine (ring/worker/split/tag)
     src/Mp4Chapters.cpp
     src/RadioBrowser.cpp
     src/LastFm.cpp

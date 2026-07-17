@@ -314,6 +314,12 @@ if(WIN32)
     add_executable(xfade_handoff_test
         xfade_handoff_test.cpp
         ${CMAKE_SOURCE_DIR}/src/AudioManager.cpp
+        # stream-record R1: AudioManager owns the capture engine (the tap's
+        # teardown ordering lives inside AudioManager), so this target carries
+        # the recorder + its two encoders. Inert here — nothing arms it.
+        ${CMAKE_SOURCE_DIR}/src/StreamRecorder.cpp
+        ${CMAKE_SOURCE_DIR}/src/Mp3Encoder.cpp
+        ${CMAKE_SOURCE_DIR}/src/OpusRipEncoder.cpp
         ${CMAKE_SOURCE_DIR}/src/LocalFileSource.cpp
         ${CMAKE_SOURCE_DIR}/src/PluginSource.cpp
         ${CMAKE_SOURCE_DIR}/src/PluginHostServices.cpp
@@ -335,9 +341,12 @@ if(WIN32)
         ${FDKAAC_INCLUDE} ${OPUS_INCLUDE} ${OPUS_INCLUDE}/opus ${WAVPACK_INCLUDE}
         ${TAGLIB_INCLUDE_DIRS})
     target_compile_definitions(xfade_handoff_test PRIVATE UNICODE _UNICODE)
+    target_include_directories(xfade_handoff_test PRIVATE
+        ${LAME_INCLUDE} ${EBUR128_INCLUDE})   # stream-record R1: recorder deps
     target_link_libraries(xfade_handoff_test PRIVATE
-        ${TAGLIB_LIBRARIES} ${FDKAAC_LIB} ${OPUSFILE_LIB} ${OPUS_LIB}
+        ${TAGLIB_LIBRARIES} ${FDKAAC_LIB} ${OPUSENC_LIB} ${OPUSFILE_LIB} ${OPUS_LIB}
         ${VORBISFILE_LIB} ${VORBIS_LIB} ${OGG_LIB}
+        ${LAME_LIB} ${EBUR128_LIB}            # stream-record R1: recorder deps
         ${WAVPACK_LIB} wininet winmm ole32)
     add_test(NAME xfade_handoff_test COMMAND xfade_handoff_test)
     set_tests_properties(xfade_handoff_test PROPERTIES TIMEOUT 180 SKIP_RETURN_CODE 77)
@@ -486,3 +495,30 @@ if(WIN32 AND REMOCT_STATIC_PROBE)
 endif()
 add_test(NAME rip_encoder_seam_test COMMAND rip_encoder_seam_test)
 set_tests_properties(rip_encoder_seam_test PROPERTIES TIMEOUT 60)
+
+# stream-record R1 — the frozen StreamRecorder engine contract, headless-proven
+# BEFORE any UI exists (probe-first). Synthetic f32 PCM through capture() (the
+# audio-thread entry) + scripted onTitle() splits, real Mp3Encoder/
+# OpusRipEncoder output read back with TagLib: frame-exact split boundaries,
+# partial marking, both tag dialects (RG TXXX / R128 Q7.8), per-cut ReplayGain,
+# timestamp-fallback naming, split-off single file, the ring-overflow honesty
+# counter (drops counted + accounted, file stays valid), parseNowPlaying edges.
+# CDRipper's TU stays out (the norm): sanitizePathComponent lives in
+# StringUtils.h and the recorder takes its output dir from the caller.
+add_executable(stream_record_test
+    stream_record_test.cpp
+    ${CMAKE_SOURCE_DIR}/src/StreamRecorder.cpp
+    ${CMAKE_SOURCE_DIR}/src/Mp3Encoder.cpp
+    ${CMAKE_SOURCE_DIR}/src/OpusRipEncoder.cpp
+)
+target_include_directories(stream_record_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/lib
+    ${LAME_INCLUDE} ${EBUR128_INCLUDE}
+    ${OPUS_INCLUDE} ${OPUS_INCLUDE}/opus
+    ${TAGLIB_INCLUDE_DIRS})
+target_link_libraries(stream_record_test PRIVATE
+    ${TAGLIB_LIBRARIES} ${LAME_LIB} ${EBUR128_LIB}
+    ${OPUSENC_LIB} ${OPUS_LIB} ${OGG_LIB}
+    $<$<PLATFORM_ID:Linux>:pthread> $<$<PLATFORM_ID:Linux>:m>)
+add_test(NAME stream_record_test COMMAND stream_record_test)
+set_tests_properties(stream_record_test PROPERTIES TIMEOUT 120)

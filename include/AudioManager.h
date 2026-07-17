@@ -23,6 +23,7 @@
 #include "PluginSource.h"
 #include "PluginHostServices.h"
 #include "PluginHost.h"        // core::loadPlugin / LoadedPlugin / PluginLoad (slice c)
+#include "StreamRecorder.h"    // stream-record R1: the host-side capture engine
 
 enum class PlaybackState { Stopped, Playing, Paused };
 
@@ -145,6 +146,11 @@ public:
     std::string streamUrl()      const { return stream_plugin_.url(); }   // URL actually streaming
     int      streamPositionSec() const { return (int)stream_plugin_.positionSec(); }
 
+    // Stream capture (stream-record R1). The engine is host-side and headless
+    // here — R2's [Rec] panel drives it through this accessor (start/stop/
+    // onTitle/state); the audio callback taps into it in the stream branch.
+    StreamRecorder& streamRecorder() { return stream_recorder_; }
+
     // Called by track-end callback to pre-load next track for crossfade/gapless
     // Returns false if next track can't be opened
     bool preloadNext(const std::string& path);
@@ -245,6 +251,12 @@ private:
     core::PluginSource         stream_plugin_{
         loaded_plugin_ ? loaded_plugin_->plugin() : nullptr,
         host_services_.table() };
+    // Stream capture (stream-record R1): the recorder the callback taps into.
+    // Inert (capturing_ false, no worker) until something calls start() — in R1
+    // only the test/harness do; the [Rec] panel arrives in R2. Every stream-
+    // teardown site stops it BEFORE stream_plugin_.close() so an in-flight
+    // capture finalizes its current cut instead of truncating it.
+    StreamRecorder             stream_recorder_;
 
     // ── Async stream connect (StreamSource::open runs off the UI thread) ──
     // beginStream() stops current playback and spawns a worker that runs the slow

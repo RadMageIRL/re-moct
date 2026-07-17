@@ -96,6 +96,11 @@ public:
     RipState state()    const { return state_.load(); }
 
     static std::string buildOutputDir(const MBRelease& rel);
+    // The user's music root (extracted verbatim from buildOutputDir,
+    // stream-record R1) and the stream-capture sibling of the rip output dir:
+    // <music>/re-moct/recordings. One root — relocating Music moves both.
+    static std::string musicRoot();
+    static std::string recordingsDir();
 
 private:
     core::ICdIo*          io_ = nullptr;  // injected; nullptr = core::cdio()

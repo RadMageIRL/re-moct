@@ -98,15 +98,16 @@ static constexpr int MAX_PRESSING_OFFSET = 700;
 
 // ─── Path helpers ─────────────────────────────────────────────────────────────
 std::string CDRipper::sanitizePath(const std::string& s) {
-    static const std::string ill = R"(\/:*?"<>|)";
-    std::string o; o.reserve(s.size());
-    for (unsigned char c : s)
-        o += (c < 32 || ill.find((char)c) != std::string::npos) ? '_' : (char)c;
-    while (!o.empty() && (o.back()=='.'||o.back()==' ')) o.pop_back();
-    return o.empty() ? "Unknown" : o;
+    // Body moved verbatim to StringUtils.h sanitizePathComponent (stream-record
+    // R1) so StreamRecorder shares it without linking this TU into tests.
+    return sanitizePathComponent(s);
 }
 
-std::string CDRipper::buildOutputDir(const MBRelease& rel) {
+// The user's music root — extracted verbatim from buildOutputDir (stream-record
+// R1) so recordings derive from the SAME root as rips: relocating the music
+// folder moves both together. Behavior-identical by construction (a pure move);
+// the trimmed CD gate re-proves the rip path.
+std::string CDRipper::musicRoot() {
     std::string music;
 #ifdef _WIN32
     // The baseline block, verbatim: the user's known Music folder, USERPROFILE
@@ -149,6 +150,18 @@ std::string CDRipper::buildOutputDir(const MBRelease& rel) {
         std::fclose(f);
     }
 #endif
+    return music;
+}
+
+// Stream captures live beside rips under the one re-moct root (stream-record
+// plan §5): <music>/re-moct/recordings — lowercase/plural to match re-moct's
+// own casing. R2's panel (and the R1 harness) call this for the default dir.
+std::string CDRipper::recordingsDir() {
+    return musicRoot() + kSep + "re-moct" + kSep + "recordings";
+}
+
+std::string CDRipper::buildOutputDir(const MBRelease& rel) {
+    std::string music = musicRoot();
     std::string folder;
     if (!rel.title.empty()) {
         std::string yr = rel.date.size()>=4 ? " ("+rel.date.substr(0,4)+")" : "";

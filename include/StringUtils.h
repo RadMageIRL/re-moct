@@ -20,6 +20,22 @@ inline bool localtimeSafe(std::time_t t, std::tm& out) {
 #endif
 }
 
+// ─── Filesystem-safe path component ──────────────────────────────────────────
+// One path COMPONENT (a file or directory name), never a full path: strips the
+// characters Windows forbids (superset of POSIX) plus control bytes, and the
+// trailing dots/spaces Windows silently drops. Empty in -> "Unknown" so a
+// caller can never produce a nameless file. Moved verbatim from
+// CDRipper::sanitizePath (stream-record R1) so StreamRecorder can share it
+// without linking CDRipper's TU into tests; CDRipper::sanitizePath delegates.
+inline std::string sanitizePathComponent(const std::string& s) {
+    static const std::string ill = R"(\/:*?"<>|)";
+    std::string o; o.reserve(s.size());
+    for (unsigned char c : s)
+        o += (c < 32 || ill.find((char)c) != std::string::npos) ? '_' : (char)c;
+    while (!o.empty() && (o.back()=='.'||o.back()==' ')) o.pop_back();
+    return o.empty() ? "Unknown" : o;
+}
+
 // ─── Wide string conversion ───────────────────────────────────────────────────
 // Windows: MultiByteToWideChar (UTF-16, the baseline — astral glyphs become
 // surrogate pairs; the terminal folds them to '?', accepted in lessons.md).

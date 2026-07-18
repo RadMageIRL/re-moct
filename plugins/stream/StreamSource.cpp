@@ -2,6 +2,7 @@
 #include "Log.h"
 #include "Version.h"     // REMOCT_VERSION (single source) for the raw ICY/HLS User-Agent
 #include "StringUtils.h"
+#include "HlsPrime.h"    // hlsFirstMusicBoundary — prime-to-music-boundary scan (clip fix)
 #include "IHeartDeepLog.h"
 #include "PortUtil.h"   // sleepMs/tickMs — expand to the baseline ::Sleep/::GetTickCount on Windows
 #include <cstring>
@@ -505,7 +506,13 @@ bool StreamSource::hlsPollMedia() {
     // discontinuity, then suppress for a cooldown (covers a whole pod, which
     // contains several discontinuities), then re-arm for the next break.
     if (digital_active_.load()) {
-        if (disc && hls_repin_armed_) {
+        // F6 re-pin mode gates the immediate ad-onset re-pin. Only 'on' (1) fires it;
+        // 'smart' (2) rides the break out and lets the SM's longer floor timer catch
+        // genuine long pods; 'off' (0) never re-pins. The arm/cooldown bookkeeping is
+        // left untouched so a live mode switch stays coherent (armed stays true for the
+        // SM stall path in smart/off).
+        const int rmode = repin_mode_.load();
+        if (disc && hls_repin_armed_ && rmode == 1) {
             hls_repin_pending_.store(true);
             hls_repin_armed_ = false;
             hls_repin_cooldown_until_ = port::tickMs() + 90000;   // ~one ad pod
@@ -539,6 +546,11 @@ bool StreamSource::hlsPollMedia() {
         i = e + 1;
     }
     hls_.last_poll = port::tickMs();
+    // Prime-to-music-boundary (clip fix): during a re-pin's connect poll only, record
+    // where the first in-window ad->music boundary sits so hlsConnect can prime from
+    // the song start. Gated on hls_priming_ so normal (non-connect) polls are untouched.
+    if (hls_priming_)
+        hls_prime_boundary_ = hlsFirstMusicBoundary(body);
     if (is_iheart_) updateIHeartNowPlaying(body);   // reconcile manifest + trackHistory
     // Diagnostic: live-edge offset. newest = last seq advertised in the manifest;
     // next_play ≈ the segment we're about to play (front of pending). edgeLag is
@@ -694,6 +706,8 @@ bool StreamSource::hlsConnect() {
     // Resolve + initial poll. If a requested DIGITAL attempt fails at any step, fall
     // back to the raw broadcast URL once, so a changed/blocked handshake degrades to
     // exactly today's behavior (never worse).
+    hls_priming_        = true;    // arm the prime-to-boundary scan for the connect poll(s)
+    hls_prime_boundary_ = -1;
     bool resolved_ok = hlsResolveMaster() && hlsPollMedia();
     if (want_digital && resolved_ok) {
         digital_active_.store(true);
@@ -715,11 +729,25 @@ bool StreamSource::hlsConnect() {
     } else {
         slog("hlsConnect: raw rendition active (seq=%d)", connect_seq_.load());
     }
-    // Prime near the live edge: keep only the last ~2 queued segments so we start
-    // close to live instead of ~a full window behind. last_seq is already at the
-    // window top from the full poll, so subsequent polls only pick up newer ones.
-    if (hls_.pending.size() > 2)
+    // Prime near the live edge. On a re-pin (Section A clip fix), if the fresh manifest
+    // showed a clean ad->music boundary in-window, prime from the song's first segment
+    // so audio lands at the song start instead of ~2 segments behind live. Otherwise
+    // (first tune-in, no clean boundary visible, or scan ambiguous) keep the last ~2
+    // queued segments -- the unchanged, working live-edge prime. Fail toward current
+    // behaviour whenever the boundary is not unambiguous (hls_prime_boundary_ <= 0).
+    bool primed_boundary = false;
+    if (hls_repin_active_ && digital_active_.load() &&
+        hls_prime_boundary_ > 0 &&
+        (size_t)hls_prime_boundary_ < hls_.pending.size()) {
+        hls_.pending.erase(hls_.pending.begin(),
+                           hls_.pending.begin() + hls_prime_boundary_);
+        primed_boundary = true;
+        slog("hlsConnect: re-pin primed to music boundary (idx=%d) pending=%zu",
+             hls_prime_boundary_, hls_.pending.size());
+    }
+    if (!primed_boundary && hls_.pending.size() > 2)   // unchanged live-edge fallback
         hls_.pending.erase(hls_.pending.begin(), hls_.pending.end() - 2);
+    hls_priming_ = false;
     icy_metaint_ = 0;                   // HLS metadata isn't ICY — readAudio passes straight through
     icy_counter_ = 0;
     raw_buf_.clear(); raw_pos_ = 0;
@@ -893,6 +921,7 @@ void StreamSource::updateIHeartNowPlaying(const std::string& body) {
     tk.ctmEndedSecsAgo = iheart_ctm_.endedSecsAgo;
     tk.stationName     = iheart_.stationName();
     tk.repinArmed      = hls_repin_armed_;
+    tk.repinMode       = repin_mode_.load();   // F6: 0 off / 1 on / 2 smart (floor-timer threshold)
     IHeartDecision d   = ih_sm_.tick(tk);
 
     // ── Deep-analysis capture (opt-in, Ctrl+A; no-op unless enabled). Records the
@@ -1624,7 +1653,10 @@ void StreamSource::producerWorkerAAC() {
             prebuffered_.store(false);
             ringClear();                      // drop stale buffered audio: jump to live + avoid backpressure deadlock
             if (stop_.load()) break;
-            if (!connect()) { port::sleepMs(500); continue; }
+            hls_repin_active_ = true;         // this connect() is a re-pin: allow prime-to-music-boundary
+            const bool ok = connect();
+            hls_repin_active_ = false;
+            if (!ok) { port::sleepMs(500); continue; }
             bytes_in_buf = 0;                 // fresh session — drop stale partial frame
             continue;
         }

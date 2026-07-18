@@ -192,6 +192,7 @@ void DigiConfig::load() {
         else if (key == "awesome_theme")     try { awesome_theme = std::stoi(val); } catch (...) {}
         else if (key == "prefer_digital_stream") prefer_digital_stream = (val == "1");
         else if (key == "iheart_probe_minted")   iheart_probe_minted   = (val == "1");
+        else if (key == "repin_mode")            try { repin_mode = std::clamp(std::stoi(val), 0, 2); } catch (...) {}
         else if (key == "nerd_icons")         nerd_icons         = (val == "1");
         else if (key == "follow_playing")     follow_playing     = (val == "1");
         else if (key == "show_filetype")      show_filetype      = (val == "1");
@@ -349,6 +350,7 @@ void DigiConfig::save() const {
         f << "awesome_theme="     << awesome_theme << "\n";
         f << "prefer_digital_stream=" << (prefer_digital_stream ? "1" : "0") << "\n";
         f << "iheart_probe_minted="   << (iheart_probe_minted ? "1" : "0") << "\n";
+        f << "repin_mode="            << repin_mode << "\n";
         f << "nerd_icons="        << (nerd_icons ? "1" : "0") << "\n";
         f << "follow_playing="    << (follow_playing ? "1" : "0") << "\n";
         f << "show_filetype="     << (show_filetype ? "1" : "0") << "\n";

@@ -53,6 +53,23 @@ int main(){
       IHeartTick t=base(40000); t.repinArmed=false;
       CHECK(!sm.tick(t).liveStallFired); }
 
+    // 7) F6 off mode (repinMode=0): never fires, even far past the window
+    { IHeartNowPlayingSM sm;
+      IHeartTick a=base(1000);   a.repinMode=0; sm.tick(a);
+      IHeartTick b=base(2000);   b.repinMode=0; sm.tick(b);
+      IHeartTick c=base(400000); c.repinMode=0;      // 399s on the floor
+      CHECK(!sm.tick(c).liveStallFired); }
+
+    // 8) F6 smart mode (repinMode=2): rides out a short break (no fire at 39s), fires
+    //    only once the floor passes the longer SMART_STALL_MS (~150s).
+    { IHeartNowPlayingSM sm;
+      IHeartTick a=base(1000);   a.repinMode=2; sm.tick(a);
+      IHeartTick b=base(2000);   b.repinMode=2; sm.tick(b);
+      IHeartTick c=base(40000);  c.repinMode=2;      // 39s -> below smart threshold
+      CHECK(!sm.tick(c).liveStallFired);
+      IHeartTick e=base(160000); e.repinMode=2;      // 159s -> past smart threshold
+      CHECK(sm.tick(e).liveStallFired); }
+
     if(!g_fail) std::printf("ALL PASS\n");
     return g_fail ? 1 : 0;
 }

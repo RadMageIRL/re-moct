@@ -319,6 +319,7 @@ UIManager::UIManager(PlaylistManager& playlist, AudioManager& audio,
     refreshDir();
     audio_.setPreferDigital(config_.prefer_digital_stream);   // apply saved stream-mode pref
     audio_.setProbeMinted(config_.iheart_probe_minted);       // apply saved identity A/B arm (probe)
+    audio_.setRepinMode(config_.repin_mode);                  // apply saved iHeart re-pin mode (F6)
 
     // OS media control (osmedia-seam): resolve the production default HERE, at the
     // END of the ctor - after initscr() so the SMTC impl has the live wingui HWND
@@ -597,6 +598,9 @@ void UIManager::initColours() {
     init_pair(CP_VIZ_LOW_B,  fg[CP_VIZ_LOW],  -1);
     init_pair(CP_VIZ_MID_B,  fg[CP_VIZ_MID],  -1);
     init_pair(CP_VIZ_HIGH_B, fg[CP_VIZ_HIGH], -1);
+    // iHeart feed/re-pin mode indicator: fixed basic yellow on the default bg, theme
+    // independent, so the status tag reads the same in Classic and Awesome.
+    init_pair(CP_MODE, COLOR_YELLOW, -1);
 #ifdef REMOCT_PROBE
     probeLogCaps("classic");
 #endif
@@ -686,6 +690,10 @@ void UIManager::applyAwesomeTheme() {
         for (const auto& d : defs)
             init_pair(d.pair, nearest(d.fg), nearest(d.bg));
     }
+
+    // iHeart feed/re-pin mode indicator: fixed basic yellow on the default bg (theme
+    // independent, matching the Classic path), so the status tag reads the same in both.
+    init_pair(CP_MODE, COLOR_YELLOW, -1);
 
     // stdscr base fill: the pane/title/cwd/cmdline subwindows get a base bg via
     // wbkgd(CP_DIM) in createWindows(), but the inter-pane gutter, outer insets, and
@@ -4685,18 +4693,38 @@ void UIManager::drawProgress() {
         right += "  vol:" + std::to_string((int)(audio_.volume()*100.0f+0.5f)) + "%";
         std::string left = title.empty() ? "(live stream)" : title;
 
+        // iHeart feed/re-pin mode indicator (Section C): a persistent yellow tag at the
+        // lower-left, "<feed> - <repin>" e.g. "digital - smart" / "raw - off". iHeart
+        // streams only (host sniff on the revma HLS domain); the now-playing title is
+        // shifted right by the tag width. Empty tag -> byte-identical to the old layout.
+        std::string modeTag;
+        if (audio_.streamUrl().find("ihrhls") != std::string::npos) {   // iHeart HLS host
+            const char* rp = config_.repin_mode == 0 ? "off"
+                           : config_.repin_mode == 1 ? "on" : "smart";
+            modeTag = std::string(config_.prefer_digital_stream ? "digital" : "raw")
+                    + " - " + rp;
+        }
+        const int tag_x   = 1;
+        const int tag_w   = modeTag.empty() ? 0 : (int)modeTag.size() + 2;  // +2 gap after the tag
+        const int title_x = tag_x + tag_w;              // title starts past the tag (== 1 when no tag)
+
         const int right_w = (int)right.size();          // ASCII -> byte width == display width
         const int right_x = cols - right_w - 1;         // first col of the right block
-        int left_cap = right_x - 2;                     // keep >=1 blank col before the right block
+        int left_cap = right_x - 1 - title_x;           // keep >=1 blank col before the right block
         if (left_cap < 0) left_cap = 0;
         if (dispWidth(left) > left_cap) left = truncateToWidth(left, left_cap);   // keep the head
         const int left_w   = dispWidth(left);
-        const int left_end = 1 + left_w;                // first free col past the title
+        const int left_end = title_x + left_w;          // first free col past the title
 
+        if (!modeTag.empty()) {
+            wattron(win_progress_, COLOR_PAIR(CP_MODE) | A_BOLD);
+            mvwaddstr(win_progress_, 0, tag_x, modeTag.c_str());
+            wattroff(win_progress_, COLOR_PAIR(CP_MODE) | A_BOLD);
+        }
         wattron(win_progress_, COLOR_PAIR(CP_TITLE));
         if (left_w > 0) {
             std::wstring wl = utf8_to_wide(left);
-            mvwaddnwstr(win_progress_, 0, 1, wl.c_str(), (int)wl.size());
+            mvwaddnwstr(win_progress_, 0, title_x, wl.c_str(), (int)wl.size());
         }
         if (right_x >= left_end)
             mvwaddstr(win_progress_, 0, right_x, right.c_str());
@@ -6270,9 +6298,9 @@ void UIManager::handleInput(int ch) {
             config_.prefer_digital_stream = !config_.prefer_digital_stream;
             config_.save();
             audio_.setPreferDigital(config_.prefer_digital_stream);
-            showTrackToast(config_.prefer_digital_stream
-                               ? "Stream: Web Player mode (fewer ads)"
-                               : "Stream: Raw broadcast (direct)", "", "");
+            // Feed state is now shown persistently by the lower-left mode indicator
+            // (drawProgress), so no transient toast; just force a redraw.
+            redraw_needed_.store(true);
             if (audio_.streamMode())                 // reconnect now so it takes effect
                 audio_.beginStream(audio_.streamUrl());
             break;
@@ -6334,6 +6362,15 @@ void UIManager::handleInput(int ch) {
             redraw_needed_.store(true);
             showTrackToast(config_.follow_playing ? "Follow playing: ON"
                                                   : "Follow playing: OFF", "", "");
+            break;
+        case KEY_F(6):    // cycle iHeart re-pin mode: off -> on -> smart (persisted)
+            // Feed (Ctrl+K) and re-pin behaviour are independent axes; F6 changes only
+            // the re-pin half. Read live by the producer/SM, so no reconnect is needed.
+            // The persistent lower-left indicator (drawProgress) reflects the new mode.
+            config_.repin_mode = (config_.repin_mode + 1) % 3;
+            config_.save();
+            audio_.setRepinMode(config_.repin_mode);
+            redraw_needed_.store(true);
             break;
         case KEY_F(7):    // previous Awesome named palette (F7)
         case KEY_F(8): {  // next Awesome named palette (F8)

@@ -126,6 +126,9 @@ public:
     // Identity A/B arm (probe): use a minted anonymous profileId on the digital
     // handshake (deep-log only). Same config-passthrough shape as setDeepLog.
     void     setProbeMinted(bool on) { stream_plugin_.setConfig("iheart_probe_minted", on ? "1" : "0"); }
+    // iHeart re-pin behaviour (F6): 0 off / 1 on / 2 smart. Config-passthrough shape,
+    // read live by the producer/SM so it takes effect without a reconnect.
+    void     setRepinMode(int m) { stream_plugin_.setConfig("repin_mode", std::to_string(m).c_str()); }
     // Whether the streaming plugin loaded (slice c). false => streaming disabled
     // (missing/incompatible .so/.dll). beginStream() guards on this and surfaces a
     // failure toast; the UI may also preflight streamPluginError() for the specific

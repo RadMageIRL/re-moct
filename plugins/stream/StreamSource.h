@@ -90,6 +90,11 @@ public:
     // time so it can be flipped between reconnects; forced OFF unless the deep log is
     // enabled (probe context). Default false == shipped behavior. Thread-safe.
     void setProbeMinted(bool b) { probe_minted_.store(b); }
+    // iHeart re-pin behaviour (F6): 0 = off (play through ads, no re-pin), 1 = on
+    // (re-pin on every long break, the original behaviour), 2 = smart (ride out
+    // short breaks, re-pin only long pods). Read live by the producer/SM, so a
+    // change takes effect without a reconnect. Default smart. Thread-safe.
+    void setRepinMode(int m) { repin_mode_.store(m); }
     void close() override;
 
     bool isOpen()     const { return producer_thread_.joinable(); }
@@ -220,6 +225,18 @@ private:
     std::atomic<bool> hls_repin_pending_{ false };  // producer should re-handshake at next safe point
     bool              hls_repin_armed_ = true;      // one-shot: fire once per ad break, then re-arm
     uint32_t          hls_repin_cooldown_until_ = 0;// re-arm only after this tick (suppress mid-pod)
+    std::atomic<int>  repin_mode_{ 2 };             // F6 re-pin mode: 0 off / 1 on / 2 smart (default)
+    // Prime-to-music-boundary (clip fix): on a re-pin, if the fresh manifest shows a
+    // clean ad->music boundary in-window, prime from the song's first segment so
+    // audio lands at the song start instead of ~2 segments behind live. All three are
+    // producer/connect-thread-owned (like hls_), so no lock. hls_repin_active_ marks
+    // the current connect() as a re-pin (vs first tune-in); hls_priming_ gates the
+    // boundary scan to the connect poll only; hls_prime_boundary_ is that scan's
+    // result (segment index of the first in-window music boundary, or -1 = none ->
+    // keep the unchanged live-edge-minus-2 prime).
+    bool              hls_repin_active_  = false;
+    bool              hls_priming_       = false;
+    int               hls_prime_boundary_ = -1;
 
     // ── Staging lane (dual-stream smooth re-pin) ─────────────────────────────
     // The coordinator (a normal is_lane_=false instance) owns ONE staging

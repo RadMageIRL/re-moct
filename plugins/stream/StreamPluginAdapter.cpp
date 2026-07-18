@@ -18,6 +18,7 @@
 #include "IHeartDeepLog.h"     // set_config("deeplog", ...) — deep-log toggle across the ABI
 
 #include <cstring>
+#include <cstdlib>   // std::atoi (repin_mode config passthrough)
 #include <string>
 
 namespace {
@@ -109,6 +110,10 @@ void sp_set_config(void* self, const char* key, const char* value) noexcept {
         // Read at hlsConnect time + forced anon unless the deep log is on, so this is inert
         // outside a probe session (see StreamSource::hlsConnect).
         inst(self)->src.setProbeMinted(on);
+    else if (std::strcmp(key, "repin_mode") == 0)
+        // iHeart re-pin behaviour (F6): 0 off / 1 on / 2 smart. Read live by the
+        // producer/SM, so it takes effect without a reconnect.
+        inst(self)->src.setRepinMode(value ? std::atoi(value) : 2);
 }
 
 // abi-cluster slice A: keep-draining. Returns 1 = honored (the ack drives the

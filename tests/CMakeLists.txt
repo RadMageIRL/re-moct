@@ -50,6 +50,13 @@ target_include_directories(iheart_sm_test PRIVATE
     ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/plugins/stream)
 add_test(NAME iheart_sm_test COMMAND iheart_sm_test)
 
+# hls_prime_test: pure prime-to-music-boundary scan (re-pin clip fix, Section A).
+# Header-only (HlsPrime.h), so no source to link.
+add_executable(hls_prime_test hls_prime_test.cpp)
+target_include_directories(hls_prime_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/plugins/stream)
+add_test(NAME hls_prime_test COMMAND hls_prime_test)
+
 add_executable(ar_crc_test
     ar_crc_test.cpp
     ${CMAKE_SOURCE_DIR}/src/ar_crc.cpp

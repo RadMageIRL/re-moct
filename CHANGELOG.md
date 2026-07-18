@@ -5,9 +5,32 @@ All notable changes to RE-MOCT are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.3.0] - UNRELEASED
+## [1.3.1] - UNRELEASED
 
-Feature release: Opus and WavPack playback.
+Feature release: Opus and WavPack playback, plus iHeart re-pin controls.
+
+### Added (iHeart re-pin control)
+
+- **F6 cycles the iHeart re-pin mode: off, on, smart.** off plays through ads
+  continuously like the web player; on re-pins out of every long break (the
+  previous always-on behaviour); smart rides out short breaks and re-pins only
+  long ad pods. The mode persists across restarts and is independent of the
+  Ctrl+K feed toggle (raw vs web-player), so you can pair, e.g., web-player feed
+  with smart re-pin.
+- **Persistent feed and re-pin indicator.** The lower-left of the now-playing row
+  shows the current iHeart modes in yellow, e.g. "digital - smart" or "raw - off",
+  replacing the transient Ctrl+K toast. iHeart streams only.
+- **Re-pin lands closer to the song start.** On a re-pin out of an ad, if the
+  fresh stream shows a clean ad-to-music boundary, playback now primes from the
+  song's first segment instead of a couple of segments behind the live edge, so
+  less of the incoming song's opening is lost. Falls back to the previous
+  live-edge behaviour when no clean boundary is visible.
+
+### Changed (iHeart re-pin default)
+
+- **The default re-pin mode is now smart** (previously the re-pin always fired on
+  every long break). On upgrade, iHeart playback rides out short ad breaks and
+  re-pins only long pods. Press F6 to choose off or on.
 
 ### Added (AAC/M4A output)
 

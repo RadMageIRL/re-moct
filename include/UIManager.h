@@ -692,6 +692,7 @@ private:
     static constexpr short CP_VIZ_LOW_B  = 15;
     static constexpr short CP_VIZ_MID_B  = 16;
     static constexpr short CP_VIZ_HIGH_B = 17;
+    static constexpr short CP_MODE       = 18;  // iHeart feed/re-pin indicator: yellow on default bg
 
     // Art half-block cells allocate curses colours and pairs above the theme's
     // fixed CP_* range. The pair table is global; a collision here would let a

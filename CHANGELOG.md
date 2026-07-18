@@ -21,6 +21,11 @@ Feature release: Opus and WavPack playback.
 
 ### Fixed
 
+- **Long station names no longer clip the recording panel.** A station name
+  wider than the recording panel used to overrun the modal's right border into
+  the pane behind it. The Station and output-directory fields now clamp to the
+  panel width, and a long station name scrolls within its field so the whole
+  name is readable.
 - **Recorded cuts keep their cover art when split-hold is on.** A recorded
   song could ship without its cover even though the art showed correctly in
   the now-playing pane. With the split hold active (the default), a cut stays

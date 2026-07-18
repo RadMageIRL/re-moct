@@ -2073,12 +2073,18 @@ void UIManager::drawRecPanel() {
 #else
     const std::string dir  = base + "/" + sanitizePathComponent(st);
 #endif
-    const int MAX_DIR = BOX_W - 12;
+    // Both fields' content starts at column 12 (col 3 + the 9-char prefix); the
+    // last interior column is BOX_W - 2, so the budget from col 12 is BOX_W - 12 - 1.
+    const int FIELD_W = BOX_W - 12 - 1;
     std::string disp_dir = dir;
-    if ((int)disp_dir.size() > MAX_DIR)
-        disp_dir = "..." + disp_dir.substr(disp_dir.size() - (MAX_DIR - 3));
+    if ((int)disp_dir.size() > FIELD_W)
+        disp_dir = "..." + disp_dir.substr(disp_dir.size() - (FIELD_W - 3));
 
-    mvwprintw(w, 2, 3, "Station  %s", st.c_str());
+    // Station marquees through the shared scrollToWidth tick (pads if it fits,
+    // scrolls if it does not) so a long station name stays inside the border. Out
+    // keeps the head-truncation idiom (the meaningful tail of a path) at the
+    // corrected budget - a scrolling path in a settings modal is noise.
+    mvwprintw(w, 2, 3, "Station  %s", scrollToWidth(st, FIELD_W, text_scroll_offset_).c_str());
     mvwprintw(w, 3, 3, "Out      %s", disp_dir.c_str());
 
     if (!rec.recording()) {

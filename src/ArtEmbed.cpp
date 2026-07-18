@@ -172,6 +172,16 @@ bool embedArt(const std::string& path, RipFormat fmt, const ArtBlob& blob) {
                 tag->setData("Cover Art (Front)", payload);
                 return f.save();
             }
+            case RipFormat::M4a: {
+                TagLib::MP4::File f(TL_PATH(path), false);
+                if (!f.isValid() || !f.tag()) return false;
+                auto cf = (mime == "image/png") ? TagLib::MP4::CoverArt::PNG
+                                                : TagLib::MP4::CoverArt::JPEG;
+                TagLib::MP4::CoverArtList covers;
+                covers.append(TagLib::MP4::CoverArt(cf, bv));
+                f.tag()->setItem("covr", TagLib::MP4::Item(covers));
+                return f.save();
+            }
             case RipFormat::Wav:
             default:
                 return false;   // WAV: no embedded-art concept

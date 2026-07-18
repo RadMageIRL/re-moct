@@ -231,8 +231,9 @@ UIManager::UIManager(PlaylistManager& playlist, AudioManager& audio,
     rip_sel_ = parseRipFormats(config_.rip_formats);
     // Stream-record R2: seed the [Rec] panel settings the same way (config is
     // load-once; the panel mutates session state and never writes back).
-    rec_fmt_      = (config_.rec_format == "mp3") ? RipFormat::Mp3 : RipFormat::Opus;
-    rec_copy_     = (config_.rec_format == "copy");   // 3rd radio (slice B); falls
+    rec_fmt_      = config_.rec_format == "mp3" ? RipFormat::Mp3
+                  : config_.rec_format == "m4a" ? RipFormat::M4a : RipFormat::Opus;
+    rec_copy_     = (config_.rec_format == "copy");   // 4th radio (slice B); falls
                                                       // back live if the plugin lacks it
     rec_split_on_ = config_.rec_split;
     rec_dir_      = config_.rec_dir;
@@ -2016,13 +2017,15 @@ void UIManager::drawRipConfirm() {   // slice 6: common (ncurses + portable CDSo
         const auto& r = kRipFormats[i];
         bool on = std::find(rip_sel_.begin(), rip_sel_.end(), r.id) != rip_sel_.end();
         // encoder-bitrate-mode: the ONE label home, fed the RIP config fields.
-        // alt_mode = "is CBR" (MP3 mp3_cbr; Opus !opus_vbr).
+        // alt_mode = "is CBR" (MP3 mp3_cbr; Opus !opus_vbr; M4A !aac_vbr).
         bool alt = r.id == RipFormat::Mp3  ? config_.mp3_cbr
-                 : r.id == RipFormat::Opus ? !config_.opus_vbr : false;
+                 : r.id == RipFormat::Opus ? !config_.opus_vbr
+                 : r.id == RipFormat::M4a  ? !config_.aac_vbr : false;
         std::string quality = encoderQualityLabel(
             r.id, alt, config_.mp3,
-            r.id == RipFormat::Mp3 ? config_.mp3_cbr_bitrate : config_.opus_bitrate,
-            config_.flac_level, config_.wavpack_mode);
+            r.id == RipFormat::Mp3 ? config_.mp3_cbr_bitrate
+            : r.id == RipFormat::M4a ? config_.aac_cbr_bitrate : config_.opus_bitrate,
+            config_.flac_level, config_.wavpack_mode, config_.aac_vbr_level);
         // Focus cursor (>) marks the row Left/Right/[M] edit. Marker and note are
         // two separate signals (lossless master; format limitation).
         const char* cur = (i == rip_focus_) ? "> " : "  ";
@@ -2035,7 +2038,8 @@ void UIManager::drawRipConfirm() {   // slice 6: common (ncurses + portable CDSo
     if (rip_focus_ >= 0 && rip_focus_ < kRipFormatCount) {
         const auto& fr = kRipFormats[rip_focus_];
         bool alt = fr.id == RipFormat::Mp3  ? config_.mp3_cbr
-                 : fr.id == RipFormat::Opus ? !config_.opus_vbr : false;
+                 : fr.id == RipFormat::Opus ? !config_.opus_vbr
+                 : fr.id == RipFormat::M4a  ? !config_.aac_vbr : false;
         if (const char* hint = encoderAxisHint(fr.id, alt))
             mvwaddstr(w, 7 + kRipFormatCount, 5, hint);
     }
@@ -2076,7 +2080,7 @@ void UIManager::drawRipConfirm() {   // slice 6: common (ncurses + portable CDSo
 // no UI-side copy exists to drift.
 void UIManager::drawRecPanel() {
     const int BOX_W = 68;
-    const int BOX_H = 22;   // split-trim [T] + ad-aware [A] + the Copy row
+    const int BOX_H = 23;   // split-trim [T] + ad-aware [A] + the M4A and Copy rows
                             // (slice B) and its no-RG note
     int y0 = (screen_rows_ - BOX_H) / 2;
     int x0 = (screen_cols_ - BOX_W) / 2;
@@ -2124,7 +2128,7 @@ void UIManager::drawRecPanel() {
     if (!rec.recording()) {
         // ── SETTINGS view ────────────────────────────────────────────────
         mvwaddstr(w, 5, 3, "Format");
-        mvwaddstr(w, 5, BOX_W - 15, "(1-3 select)");
+        mvwaddstr(w, 5, BOX_W - 15, "(1-4 select)");
         // encoder-bitrate-mode: the shared label home, fed the REC fields
         // (rec_*), independent of the rip knobs. alt_mode = "is CBR".
         struct { RipFormat id; const char* label; std::string quality; } rows[] = {
@@ -2134,8 +2138,12 @@ void UIManager::drawRecPanel() {
             { RipFormat::Mp3,  "MP3",
               encoderQualityLabel(RipFormat::Mp3, config_.rec_mp3_cbr,
                                   config_.rec_mp3, config_.rec_mp3_cbr_bitrate) },
+            { RipFormat::M4a,  "M4A",
+              encoderQualityLabel(RipFormat::M4a, !config_.rec_aac_vbr,
+                                  config_.rec_mp3, config_.rec_aac_cbr_bitrate,
+                                  5, "normal", config_.rec_aac_vbr_level) },
         };
-        for (int i = 0; i < 2; ++i) {
+        for (int i = 0; i < 3; ++i) {
             const char* cur = (i == rec_focus_) ? "> " : "  ";
             mvwprintw(w, 6 + i, 3, "%s(%c) %d  %-6s %s",
                       cur, (!rec_copy_ && rec_fmt_ == rows[i].id) ? '*' : ' ', i + 1,
@@ -2156,8 +2164,8 @@ void UIManager::drawRecPanel() {
                               : "as broadcast (no re-encode)";
             }
             if (!copy_ok) wattron(w, A_DIM);
-            mvwprintw(w, 8, 3, "%s(%c) 3  %-6s %s",
-                      (rec_focus_ == 2) ? "> " : "  ",
+            mvwprintw(w, 9, 3, "%s(%c) 4  %-6s %s",
+                      (rec_focus_ == 3) ? "> " : "  ",
                       rec_copy_ ? '*' : ' ', "Copy", q.c_str());
             if (!copy_ok) wattroff(w, A_DIM);
         }
@@ -2165,18 +2173,20 @@ void UIManager::drawRecPanel() {
         // has no quality axis, so it shows nothing (like FLAC/WAV in the rip modal).
         {
             RipFormat ff = rec_focus_ == 1 ? RipFormat::Mp3
-                         : rec_focus_ == 0 ? RipFormat::Opus : RipFormat::Wav;
+                         : rec_focus_ == 0 ? RipFormat::Opus
+                         : rec_focus_ == 2 ? RipFormat::M4a : RipFormat::Wav;
             bool alt = ff == RipFormat::Mp3  ? config_.rec_mp3_cbr
-                     : ff == RipFormat::Opus ? !config_.rec_opus_vbr : false;
+                     : ff == RipFormat::Opus ? !config_.rec_opus_vbr
+                     : ff == RipFormat::M4a  ? !config_.rec_aac_vbr : false;
             if (const char* hint = encoderAxisHint(ff, alt))
-                mvwaddstr(w, 13, 5, hint);
+                mvwaddstr(w, 14, 5, hint);
         }
-        mvwprintw(w, 9, 3, "[S] Split on track change : %s",
+        mvwprintw(w, 10, 3, "[S] Split on track change : %s",
                   rec_split_on_ ? "ON" : "OFF (one continuous file)");
-        mvwprintw(w, 10, 3, "[T] Split hold : %d ms", rec_offset_ms_);
-        mvwprintw(w, 11, 3, "[A] Ad segments : %s",
+        mvwprintw(w, 11, 3, "[T] Split hold : %d ms", rec_offset_ms_);
+        mvwprintw(w, 12, 3, "[A] Ad segments : %s",
                   rec_ads_discard_ ? "DISCARD (not written)" : "Save (to ads/ folder)");
-        mvwaddstr(w, 12, 3, "[D] Output dir (edit)");
+        mvwaddstr(w, 13, 3, "[D] Output dir (edit)");
 
         // The pause note — driven by the plugin's keep-draining capability
         // (abi-cluster slice A): with a capable plugin, pausing mutes playback
@@ -2185,17 +2195,17 @@ void UIManager::drawRecPanel() {
         // copy trade AT THE SELECTION.
         wattron(w, A_DIM);
         if (audio_.recordingDrainSupported()) {
-            mvwaddstr(w, 14, 3, "Note: pausing mutes playback - the recording");
-            mvwaddstr(w, 15, 3, "continues (you rejoin the live broadcast on resume).");
+            mvwaddstr(w, 15, 3, "Note: pausing mutes playback - the recording");
+            mvwaddstr(w, 16, 3, "continues (you rejoin the live broadcast on resume).");
         } else {
-            mvwaddstr(w, 14, 3, "Note: pausing playback while recording leaves a");
-            mvwaddstr(w, 15, 3, "silence gap - the paused-over airtime is not captured.");
+            mvwaddstr(w, 15, 3, "Note: pausing playback while recording leaves a");
+            mvwaddstr(w, 16, 3, "silence gap - the paused-over airtime is not captured.");
         }
-        mvwaddstr(w, 16, 3, "Cuts split on station metadata (boundaries are +/-1-2s).");
+        mvwaddstr(w, 17, 3, "Cuts split on station metadata (boundaries are +/-1-2s).");
         if (rec_copy_)
-            mvwaddstr(w, 17, 3, "Copy keeps the broadcast bytes exactly - no ReplayGain tags.");
+            mvwaddstr(w, 18, 3, "Copy keeps the broadcast bytes exactly - no ReplayGain tags.");
         if (rec_ads_discard_)
-            mvwaddstr(w, 18, 3, "Discard trusts station metadata - a mislabeled song can be lost.");
+            mvwaddstr(w, 19, 3, "Discard trusts station metadata - a mislabeled song can be lost.");
         wattroff(w, A_DIM);
 
         mvwhline(w, BOX_H - 3, 1, ACS_HLINE, BOX_W - 2);
@@ -5416,18 +5426,19 @@ void UIManager::handleInput(int ch) {
         }
         if (ch == '1') { rec_fmt_ = RipFormat::Opus; rec_copy_ = false; redraw_needed_.store(true); return; }
         if (ch == '2') { rec_fmt_ = RipFormat::Mp3;  rec_copy_ = false; redraw_needed_.store(true); return; }
-        if (ch == '3') {   // Copy (slice B): selectable only when the plugin has the tee
+        if (ch == '3') { rec_fmt_ = RipFormat::M4a;  rec_copy_ = false; redraw_needed_.store(true); return; }
+        if (ch == '4') {   // Copy (slice B): selectable only when the plugin has the tee
             if (audio_.recordingCopySupported()) rec_copy_ = true;
             redraw_needed_.store(true);
             return;
         }
         // encoder-bitrate-mode: per-row quality editor for the REC fields.
-        // Up/Down focus over Opus(0)/MP3(1)/Copy(2); Left/Right cycle the focused
-        // row's axis; [M] flips its mode. The Copy row has no axis (inert).
+        // Up/Down focus over Opus(0)/MP3(1)/M4A(2)/Copy(3); Left/Right cycle the
+        // focused row's axis; [M] flips its mode. The Copy row has no axis (inert).
         if (ch == KEY_UP || ch == KEY_DOWN) {
             rec_focus_ += (ch == KEY_DOWN) ? 1 : -1;
-            if (rec_focus_ < 0) rec_focus_ = 2;
-            if (rec_focus_ > 2) rec_focus_ = 0;
+            if (rec_focus_ < 0) rec_focus_ = 3;
+            if (rec_focus_ > 3) rec_focus_ = 0;
             redraw_needed_.store(true);
             return;
         }
@@ -5440,6 +5451,11 @@ void UIManager::handleInput(int ch) {
                     config_.rec_mp3_cbr_bitrate = cycleBitrate(config_.rec_mp3_cbr_bitrate, dir);
                 else
                     config_.rec_mp3 = cycleMp3Vbr(config_.rec_mp3, dir);
+            } else if (rec_focus_ == 2) {               // M4A: VBR ladder or CBR bitrate
+                if (config_.rec_aac_vbr)
+                    config_.rec_aac_vbr_level = cycleAacVbr(config_.rec_aac_vbr_level, dir);
+                else
+                    config_.rec_aac_cbr_bitrate = cycleBitrate(config_.rec_aac_cbr_bitrate, dir);
             }
             redraw_needed_.store(true);
             return;
@@ -5447,6 +5463,7 @@ void UIManager::handleInput(int ch) {
         if (ch == 'm' || ch == 'M') {
             if (rec_focus_ == 0)      config_.rec_opus_vbr = !config_.rec_opus_vbr;
             else if (rec_focus_ == 1) config_.rec_mp3_cbr  = !config_.rec_mp3_cbr;
+            else if (rec_focus_ == 2) config_.rec_aac_vbr  = !config_.rec_aac_vbr;
             redraw_needed_.store(true);
             return;
         }
@@ -5489,6 +5506,9 @@ void UIManager::handleInput(int ch) {
             opt.mp3_cbr_bitrate = std::clamp(config_.rec_mp3_cbr_bitrate, 6000, 510000);
             opt.opus_bitrate    = std::clamp(config_.rec_opus_bitrate, 6000, 510000);
             opt.opus_vbr        = config_.rec_opus_vbr;
+            opt.aac_vbr         = config_.rec_aac_vbr;
+            opt.aac_vbr_level   = std::clamp(config_.rec_aac_vbr_level, 1, 5);
+            opt.aac_cbr_bitrate = std::clamp(config_.rec_aac_cbr_bitrate, 6000, 510000);
             opt.split_on_meta   = rec_split_on_;
             opt.split_offset_ms = rec_offset_ms_;
             opt.ads_discard     = rec_ads_discard_;
@@ -5580,6 +5600,13 @@ void UIManager::handleInput(int ch) {
                     config_.opus_bitrate = cycleBitrate(config_.opus_bitrate, dir);
                     redraw_needed_.store(true);
                     break;
+                case RipFormat::M4a:
+                    if (config_.aac_vbr)
+                        config_.aac_vbr_level = cycleAacVbr(config_.aac_vbr_level, dir);
+                    else
+                        config_.aac_cbr_bitrate = cycleBitrate(config_.aac_cbr_bitrate, dir);
+                    redraw_needed_.store(true);
+                    break;
                 default: break;   // no axis on the lossless rows
             }
             return;
@@ -5588,6 +5615,7 @@ void UIManager::handleInput(int ch) {
             switch (kRipFormats[rip_focus_].id) {
                 case RipFormat::Mp3:  config_.mp3_cbr  = !config_.mp3_cbr;  redraw_needed_.store(true); break;
                 case RipFormat::Opus: config_.opus_vbr = !config_.opus_vbr; redraw_needed_.store(true); break;
+                case RipFormat::M4a:  config_.aac_vbr  = !config_.aac_vbr;  redraw_needed_.store(true); break;
                 default: break;
             }
             return;
@@ -5636,6 +5664,9 @@ void UIManager::handleInput(int ch) {
         opt.wavpack_mode = config_.wavpack_mode == "fast"      ? 0
                          : config_.wavpack_mode == "high"      ? 2
                          : config_.wavpack_mode == "very_high" ? 3 : 1;
+        opt.aac_vbr      = config_.aac_vbr;
+        opt.aac_vbr_level = std::clamp(config_.aac_vbr_level, 1, 5);
+        opt.aac_cbr_bitrate = std::clamp(config_.aac_cbr_bitrate, 6000, 510000);
         cd_ripper_.start(audio_, tracks, out_dir, rel, chosen, std::move(opt),
             [this](const RipProgress& p) {
                 rip_status_ = p.status_msg;
@@ -5706,6 +5737,12 @@ void UIManager::handleInput(int ch) {
                     config_.wavpack_mode = modes[mi];
                     redraw_needed_.store(true); break;
                 }
+                case RipFormat::M4a:
+                    if (config_.aac_vbr)
+                        config_.aac_vbr_level = cycleAacVbr(config_.aac_vbr_level, dir);
+                    else
+                        config_.aac_cbr_bitrate = cycleBitrate(config_.aac_cbr_bitrate, dir);
+                    redraw_needed_.store(true); break;
                 default: break;   // WAV: no axis
             }
             return;
@@ -5714,6 +5751,7 @@ void UIManager::handleInput(int ch) {
             switch (kRipFormats[convert_focus_].id) {
                 case RipFormat::Mp3:  config_.mp3_cbr  = !config_.mp3_cbr;  redraw_needed_.store(true); break;
                 case RipFormat::Opus: config_.opus_vbr = !config_.opus_vbr; redraw_needed_.store(true); break;
+                case RipFormat::M4a:  config_.aac_vbr  = !config_.aac_vbr;  redraw_needed_.store(true); break;
                 default: break;
             }
             return;
@@ -5730,6 +5768,9 @@ void UIManager::handleInput(int ch) {
             opt.wavpack_mode    = config_.wavpack_mode == "fast" ? 0
                                 : config_.wavpack_mode == "high" ? 2
                                 : config_.wavpack_mode == "very_high" ? 3 : 1;
+            opt.aac_vbr         = config_.aac_vbr;
+            opt.aac_vbr_level   = std::clamp(config_.aac_vbr_level, 1, 5);
+            opt.aac_cbr_bitrate = std::clamp(config_.aac_cbr_bitrate, 6000, 510000);
             bool started = false;
             if (convert_scope_ == 1 && !convert_single_.empty()) {
                 std::string dst = convertDstPath(convert_single_, convert_fmt_);
@@ -8166,14 +8207,16 @@ void UIManager::drawConvertConfirm() {
     mvwaddnstr(w, 2, 3, sanitizeForDisplay(scope).c_str(), BOX_W - 5);
 
     mvwaddstr(w, 4, 3, "Output format");
-    mvwaddstr(w, 4, BOX_W - 15, "(1-5 select)");
+    mvwaddstr(w, 4, BOX_W - 15, "(1-6 select)");
     for (int i = 0; i < kRipFormatCount; ++i) {
         const auto& r = kRipFormats[i];
         bool alt = r.id == RipFormat::Mp3 ? config_.mp3_cbr
-                 : r.id == RipFormat::Opus ? !config_.opus_vbr : false;
+                 : r.id == RipFormat::Opus ? !config_.opus_vbr
+                 : r.id == RipFormat::M4a ? !config_.aac_vbr : false;
         std::string q = encoderQualityLabel(r.id, alt, config_.mp3,
-            r.id == RipFormat::Mp3 ? config_.mp3_cbr_bitrate : config_.opus_bitrate,
-            config_.flac_level, config_.wavpack_mode);
+            r.id == RipFormat::Mp3 ? config_.mp3_cbr_bitrate
+            : r.id == RipFormat::M4a ? config_.aac_cbr_bitrate : config_.opus_bitrate,
+            config_.flac_level, config_.wavpack_mode, config_.aac_vbr_level);
         const char* cur = (i == convert_focus_) ? "> " : "  ";
         mvwprintw(w, 5 + i, 3, "%s(%c) %d  %-8s %s",
                   cur, (convert_fmt_ == r.id) ? '*' : ' ', i + 1, r.label, q.c_str());
@@ -8181,7 +8224,8 @@ void UIManager::drawConvertConfirm() {
     {
         const auto& fr = kRipFormats[convert_focus_];
         bool alt = fr.id == RipFormat::Mp3 ? config_.mp3_cbr
-                 : fr.id == RipFormat::Opus ? !config_.opus_vbr : false;
+                 : fr.id == RipFormat::Opus ? !config_.opus_vbr
+                 : fr.id == RipFormat::M4a ? !config_.aac_vbr : false;
         if (const char* hint = encoderAxisHint(fr.id, alt))
             mvwaddstr(w, 5 + kRipFormatCount, 5, hint);
     }

@@ -321,6 +321,7 @@ if(WIN32)
         ${CMAKE_SOURCE_DIR}/src/MuxWriter.cpp
         ${CMAKE_SOURCE_DIR}/src/Mp3Encoder.cpp
         ${CMAKE_SOURCE_DIR}/src/OpusRipEncoder.cpp
+        ${CMAKE_SOURCE_DIR}/src/M4aEncoder.cpp
         ${CMAKE_SOURCE_DIR}/src/LocalFileSource.cpp
         ${CMAKE_SOURCE_DIR}/src/PluginSource.cpp
         ${CMAKE_SOURCE_DIR}/src/PluginHostServices.cpp
@@ -542,6 +543,7 @@ add_executable(convert_core_test
     ${CMAKE_SOURCE_DIR}/src/WavEncoder.cpp
     ${CMAKE_SOURCE_DIR}/src/OpusRipEncoder.cpp
     ${CMAKE_SOURCE_DIR}/src/WavPackEncoder.cpp
+    ${CMAKE_SOURCE_DIR}/src/M4aEncoder.cpp
     ${CMAKE_SOURCE_DIR}/src/LocalFileSource.cpp
     ${CMAKE_SOURCE_DIR}/src/AacDecoder.cpp
     ${CMAKE_SOURCE_DIR}/src/OpusDecoder.cpp
@@ -580,6 +582,7 @@ add_executable(art_embed_test
     ${CMAKE_SOURCE_DIR}/src/WavEncoder.cpp
     ${CMAKE_SOURCE_DIR}/src/OpusRipEncoder.cpp
     ${CMAKE_SOURCE_DIR}/src/WavPackEncoder.cpp
+    ${CMAKE_SOURCE_DIR}/src/M4aEncoder.cpp
     ${CMAKE_SOURCE_DIR}/src/LocalFileSource.cpp
     ${CMAKE_SOURCE_DIR}/src/AacDecoder.cpp
     ${CMAKE_SOURCE_DIR}/src/OpusDecoder.cpp
@@ -620,14 +623,15 @@ add_executable(stream_record_test
     ${CMAKE_SOURCE_DIR}/src/MuxWriter.cpp
     ${CMAKE_SOURCE_DIR}/src/Mp3Encoder.cpp
     ${CMAKE_SOURCE_DIR}/src/OpusRipEncoder.cpp
+    ${CMAKE_SOURCE_DIR}/src/M4aEncoder.cpp   # aac-m4a-encoder: makeRecEncoder M4A case
 )
 target_include_directories(stream_record_test PRIVATE
     ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/lib
-    ${LAME_INCLUDE} ${EBUR128_INCLUDE}
+    ${LAME_INCLUDE} ${EBUR128_INCLUDE} ${FDKAAC_INCLUDE}
     ${OPUS_INCLUDE} ${OPUS_INCLUDE}/opus
     ${TAGLIB_INCLUDE_DIRS})
 target_link_libraries(stream_record_test PRIVATE
-    ${TAGLIB_LIBRARIES} ${LAME_LIB} ${EBUR128_LIB}
+    ${TAGLIB_LIBRARIES} ${LAME_LIB} ${EBUR128_LIB} ${FDKAAC_LIB}
     ${OPUSENC_LIB} ${OPUS_LIB} ${OGG_LIB}
     $<$<PLATFORM_ID:Linux>:pthread> $<$<PLATFORM_ID:Linux>:m>)
 add_test(NAME stream_record_test COMMAND stream_record_test)
@@ -645,6 +649,7 @@ add_executable(copy_mux_test
     ${CMAKE_SOURCE_DIR}/src/MuxWriter.cpp
     ${CMAKE_SOURCE_DIR}/src/Mp3Encoder.cpp
     ${CMAKE_SOURCE_DIR}/src/OpusRipEncoder.cpp
+    ${CMAKE_SOURCE_DIR}/src/M4aEncoder.cpp
     ${CMAKE_SOURCE_DIR}/src/LocalFileSource.cpp
     ${CMAKE_SOURCE_DIR}/src/AacDecoder.cpp
     ${CMAKE_SOURCE_DIR}/src/OpusDecoder.cpp
@@ -752,3 +757,33 @@ if(WIN32 AND REMOCT_STATIC_PROBE)
 endif()
 add_test(NAME gain_scan_test COMMAND gain_scan_test)
 set_tests_properties(gain_scan_test PROPERTIES TIMEOUT 300)
+
+# aac-m4a-encoder — the M4aEncoder + Mp4Mux contract, headless. Encode a
+# frequency-stepped PCM fixture (VBR + CBR) via M4aEncoder, open the .m4a through
+# the SHIPPING AacDecoder/custom-backend stack, assert length + seek (25/50/75%
+# thirds - the sample-table gate), tags/covr/ReplayGain round-trip (the ---- RG
+# read via PropertyMap - plan F3), and the ENOSPC finalize=false path. The decode
+# stack + its libs mirror copy_mux_test; the TU provides the miniaudio impl.
+add_executable(m4a_encoder_test
+    m4a_encoder_test.cpp
+    ${CMAKE_SOURCE_DIR}/src/M4aEncoder.cpp
+    ${CMAKE_SOURCE_DIR}/src/LocalFileSource.cpp
+    ${CMAKE_SOURCE_DIR}/src/AacDecoder.cpp
+    ${CMAKE_SOURCE_DIR}/src/OpusDecoder.cpp
+    ${CMAKE_SOURCE_DIR}/src/WavPackDecoder.cpp
+    ${CMAKE_SOURCE_DIR}/src/VorbisDecoder.cpp
+    ${CMAKE_SOURCE_DIR}/src/CustomBackends.cpp
+    ${CMAKE_SOURCE_DIR}/src/Mp4Chapters.cpp
+    ${CMAKE_SOURCE_DIR}/src/Log.cpp
+)
+target_include_directories(m4a_encoder_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/lib
+    ${FDKAAC_INCLUDE} ${OPUS_INCLUDE} ${OPUS_INCLUDE}/opus ${WAVPACK_INCLUDE}
+    ${TAGLIB_INCLUDE_DIRS})
+target_link_libraries(m4a_encoder_test PRIVATE
+    ${TAGLIB_LIBRARIES} ${FDKAAC_LIB}
+    ${OPUSENC_LIB} ${OPUSFILE_LIB} ${OPUS_LIB}
+    ${VORBISFILE_LIB} ${VORBIS_LIB} ${OGG_LIB} ${WAVPACK_LIB}
+    $<$<PLATFORM_ID:Linux>:dl> $<$<PLATFORM_ID:Linux>:pthread> $<$<PLATFORM_ID:Linux>:m>)
+add_test(NAME m4a_encoder_test COMMAND m4a_encoder_test)
+set_tests_properties(m4a_encoder_test PROPERTIES TIMEOUT 120)

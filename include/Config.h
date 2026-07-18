@@ -52,6 +52,9 @@ struct DigiConfig {
     int         opus_bitrate = 128000;     // Opus bitrate, 6000-510000 (= kOpusDefaultBitrate)
     bool        opus_vbr    = true;        // Opus mode: true = VBR (default), false = CBR
     std::string wavpack_mode = "normal";   // fast|normal|high|very_high (= kWavPackDefaultMode)
+    bool        aac_vbr     = true;        // AAC/M4A mode: true = VBR ladder (default), false = CBR
+    int         aac_vbr_level = 4;         // AAC VBR quality 1-5 (5 best; = kAacDefaultVbrLevel)
+    int         aac_cbr_bitrate = 128000;  // AAC CBR bitrate, snapped to {96,128,256,320}k
 
     // ── Stream recording (stream-record R2 / encoder-bitrate-mode) ─────────
     // Session seeds only, like rip_formats - the [Rec] panel's toggles are
@@ -59,13 +62,16 @@ struct DigiConfig {
     // rec_opus_* below): the earlier "reuses the rip mp3 / opus_bitrate knobs"
     // invariant is intentionally retired so radio can be right-sized (Opus 96)
     // independently of a high-quality CD rip (V0).
-    std::string rec_format = "opus";  // opus | mp3 | copy (single-select default;
+    std::string rec_format = "opus";  // opus | mp3 | m4a | copy (single-select default;
                                       // copy = as-broadcast capture, slice B)
     std::string rec_mp3          = "V5";    // rec MP3 V-scale (right-sized default)
     bool        rec_mp3_cbr      = false;   // rec MP3 mode: false = VBR, true = CBR
     int         rec_mp3_cbr_bitrate = 256000; // rec MP3 CBR bitrate, snapped to ladder
     int         rec_opus_bitrate = 96000;   // rec Opus bitrate (right-sized default)
     bool        rec_opus_vbr     = true;    // rec Opus mode: true = VBR, false = CBR
+    bool        rec_aac_vbr      = true;    // rec AAC/M4A mode: true = VBR, false = CBR
+    int         rec_aac_vbr_level = 4;      // rec AAC VBR quality 1-5 (5 best)
+    int         rec_aac_cbr_bitrate = 128000; // rec AAC CBR bitrate, snapped to ladder
     bool        rec_split  = true;    // split on metadata title change
     std::string rec_dir;              // "" = <music>/re-moct/recordings, resolved at record start
     // split-trim: hold acting on a title change by this many ms so the closing

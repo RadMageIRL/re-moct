@@ -9,6 +9,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Feature release: Opus and WavPack playback.
 
+### Added (AAC/M4A output)
+
+- **Rip, convert, and record to AAC in an MP4 (.m4a) container.** M4A joins the
+  output formats as row 6 (digit key 6) in the rip and convert pickers and as a
+  Format choice in the recording panel. AAC-LC only. It uses the FDK-AAC encoder
+  already bundled with RE-MOCT, so no new library or DLL ships. Output is a
+  standard, seekable, tagged .m4a that plays in RE-MOCT and other players.
+- **Per-format AAC quality, VBR or CBR.** The rip and convert format editor and
+  the recording panel expose an AAC quality axis: VBR on a 1-5 ladder (5 best,
+  default 4), or CBR at 96/128/256/320 kbps via the [M] mode toggle - the same
+  editor MP3 and Opus already use. Rip and recording keep independent AAC
+  settings, saved to the config.
+- **Tags, cover art, and ReplayGain on .m4a.** Title, artist, album, track,
+  AccurateRip, and ReplayGain are written as MP4 atoms; cover art is written as a
+  covr atom (rip, convert carryover, and recording).
+
+### Changed
+
+- **The recording panel's Copy option moved from key 3 to key 4.** The Format
+  rows are now Opus (1), MP3 (2), M4A (3), and Copy (4); Copy stays the last,
+  as-broadcast option. For an AAC broadcast, Copy remains the better choice than
+  recording to M4A - it captures the original frames with no re-encode.
+
 ### Added (rip log)
 
 - **The rip log now states which outputs are the verifiable master.** Each

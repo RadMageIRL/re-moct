@@ -8,6 +8,7 @@
 #include "MuxWriter.h"     // copy mode: MP3 append / ADTS->M4A mux writers
 #include "Mp3Encoder.h"
 #include "OpusRipEncoder.h"
+#include "M4aEncoder.h"
 #include "R128Gain.h"      // r128FromDb — the one home for the R128<->RG dialect
 #include "StringUtils.h"   // sanitizePathComponent / localtimeSafe / utf8_to_wide
 #include "PortUtil.h"      // sleepMs
@@ -23,8 +24,9 @@
 #include <taglib/mpegfile.h>
 #include <taglib/xiphcomment.h>
 #include <taglib/opusfile.h>   // TagLib's own (collision-safe: taglib/ prefixed)
-#include <taglib/mp4file.h>    // copy mode: the .m4a tag pass
+#include <taglib/mp4file.h>    // copy mode + re-encode M4A: the .m4a tag pass
 #include <taglib/mp4tag.h>
+#include <taglib/mp4item.h>
 #include <taglib/mp4coverart.h>
 
 #include <algorithm>
@@ -92,8 +94,8 @@ bool StreamRecorder::start(const RecOptions& opt, const std::string& station,
     } else {
         if (opt.formats.empty()) return fail("no output format selected");
         for (RipFormat f : opt.formats)
-            if (f != RipFormat::Mp3 && f != RipFormat::Opus)
-                return fail("stream capture offers lossy output only (MP3/Opus)");
+            if (f != RipFormat::Mp3 && f != RipFormat::Opus && f != RipFormat::M4a)
+                return fail("stream capture offers lossy output only (MP3/Opus/M4A)");
     }
 
     station_ = sanitizePathComponent(station.empty() ? "Stream" : station);
@@ -341,6 +343,38 @@ void tagCut(const std::string& path, RipFormat fmt,
                 tag->addPicture(pic);
             }
             f.save();
+        } else if (fmt == RipFormat::M4a) {
+            // Re-encode M4A cut (aac-m4a-encoder): MP4 atoms, tagFile's is_m4a
+            // shape trimmed to a stream capture's honest fields. TRACK gain only
+            // (no album on a live cut), as the PLAIN ReplayGain (----) dialect
+            // TagLib surfaces through PropertyMap. Distinct from the copy path's
+            // tagCutM4a (which carries the broadcast untouched, so no RG).
+            TagLib::MP4::File f(wp.c_str(), false);
+            auto* tag = f.tag(); if (!tag) return;
+            if (!title_str.empty())
+                tag->setTitle(TagLib::String(title_str, TagLib::String::UTF8));
+            if (!artist.empty())
+                tag->setArtist(TagLib::String(artist, TagLib::String::UTF8));
+            tag->setComment(TagLib::String(comment, TagLib::String::UTF8));
+            tag->setItem("\251too", TagLib::MP4::Item(TagLib::StringList(
+                TagLib::String("RE-MOCT v" REMOCT_VERSION, TagLib::String::UTF8))));
+            if (rg_valid) {
+                tag->setItem("----:com.apple.iTunes:REPLAYGAIN_TRACK_GAIN",
+                    TagLib::MP4::Item(TagLib::StringList(
+                        TagLib::String(rgStr(rg_gain), TagLib::String::UTF8))));
+                tag->setItem("----:com.apple.iTunes:REPLAYGAIN_TRACK_PEAK",
+                    TagLib::MP4::Item(TagLib::StringList(
+                        TagLib::String(rgPeakStr(rg_peak), TagLib::String::UTF8))));
+            }
+            if (!art.empty() && art_mime) {
+                auto cf = std::strcmp(art_mime, "image/png") == 0
+                          ? TagLib::MP4::CoverArt::PNG : TagLib::MP4::CoverArt::JPEG;
+                TagLib::MP4::CoverArtList covers;
+                covers.append(TagLib::MP4::CoverArt(
+                    cf, TagLib::ByteVector((const char*)art.data(), (unsigned)art.size())));
+                tag->setItem("covr", TagLib::MP4::Item(covers));
+            }
+            f.save();
         }
     } catch (...) {
         // Tagging is best-effort exactly as the rip pass: the audio on disk is
@@ -394,6 +428,7 @@ std::unique_ptr<IEncoder> makeRecEncoder(RipFormat f, const RecOptions& opt) {
     switch (f) {
         case RipFormat::Mp3:  return std::make_unique<Mp3Encoder>(opt.mp3_vbr_q, opt.mp3_cbr, opt.mp3_cbr_bitrate);
         case RipFormat::Opus: return std::make_unique<OpusRipEncoder>(opt.opus_bitrate, opt.opus_vbr);
+        case RipFormat::M4a:  return std::make_unique<M4aEncoder>(opt.aac_vbr, opt.aac_vbr_level, opt.aac_cbr_bitrate);
         default:              return nullptr;   // start() rejected everything else
     }
 }

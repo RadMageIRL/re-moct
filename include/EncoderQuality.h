@@ -58,6 +58,15 @@ inline std::string cycleMp3Vbr(const std::string& v, int dir) {
     return std::string("V") + (char)('0' + q);
 }
 
+// Step the AAC VBR quality level 1..5 (5 best) by dir (-1/+1), wrapping. Out-of-
+// range input clamps into the ladder first (config may load anything).
+inline int cycleAacVbr(int level, int dir) {
+    if (level < 1) level = 1; else if (level > 5) level = 5;
+    int i = (level - 1);                                  // 0..4
+    i = ((i + dir) % 5 + 5) % 5;
+    return i + 1;
+}
+
 // The quality string shown in a format row. alt_mode is "is CBR" for both lossy
 // codecs (MP3 default VBR, Opus default VBR, so alt_mode=false is each default).
 // mp3_v is the LAME V-scale ("V0".."V9"); bitrate_bps is the CBR/Opus bitrate.
@@ -66,7 +75,8 @@ inline std::string cycleMp3Vbr(const std::string& v, int dir) {
 inline std::string encoderQualityLabel(RipFormat f, bool alt_mode,
                                        const std::string& mp3_v, int bitrate_bps,
                                        int flac_level = 5,
-                                       const std::string& wavpack_mode = "normal") {
+                                       const std::string& wavpack_mode = "normal",
+                                       int aac_vbr_level = 4) {
     switch (f) {
         case RipFormat::Flac:    return "level " + std::to_string(flac_level);
         case RipFormat::Wav:     return "16-bit PCM";
@@ -77,6 +87,9 @@ inline std::string encoderQualityLabel(RipFormat f, bool alt_mode,
         case RipFormat::Opus:
             return std::to_string(bitrate_bps / 1000) + " kbps  "
                  + (alt_mode ? "CBR" : "VBR");
+        case RipFormat::M4a:
+            return alt_mode ? std::to_string(bitrate_bps / 1000) + " kbps  CBR"
+                            : "VBR " + std::to_string(aac_vbr_level);
     }
     return "";
 }
@@ -91,6 +104,9 @@ inline const char* encoderAxisHint(RipFormat f, bool alt_mode) {
                             : "<-/-> quality (V0-V9)   [M] mode";
         case RipFormat::Opus:
             return "<-/-> bitrate (96/128/256/320)   [M] mode";
+        case RipFormat::M4a:
+            return alt_mode ? "<-/-> bitrate (96/128/256/320)   [M] mode"
+                            : "<-/-> quality (VBR 1-5)   [M] mode";
         default:
             return nullptr;
     }

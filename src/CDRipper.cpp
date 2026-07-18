@@ -53,6 +53,10 @@
 // is the codec header; taglib/wavpackfile.h is the tagger).
 #include <taglib/wavpackfile.h>
 #include <taglib/apetag.h>
+#include <taglib/mp4file.h>
+#include <taglib/mp4tag.h>
+#include <taglib/mp4item.h>
+#include <taglib/mp4coverart.h>
 
 #include <filesystem>
 #include <cstring>
@@ -687,6 +691,7 @@ void CDRipper::tagFile(const std::string&         path,
         bool is_flac = path.size()>5 && path.substr(path.size()-5)==".flac";
         bool is_opus = path.size()>5 && path.substr(path.size()-5)==".opus";
         bool is_wv   = path.size()>3 && path.substr(path.size()-3)==".wv";
+        bool is_m4a  = path.size()>4 && path.substr(path.size()-4)==".m4a";
 
         std::string title_str;
         if (mt && !mt->title.empty()) title_str = mt->title;
@@ -861,6 +866,45 @@ void CDRipper::tagFile(const std::string&         path,
                 payload.append('\0');
                 payload.append(TagLib::ByteVector((const char*)art.data(),(unsigned)art.size()));
                 tag->setData("Cover Art (Front)", payload);
+            }
+            f.save();
+
+        } else if (is_m4a) {
+            // AAC/M4A (aac-m4a-encoder): MP4 atoms. Standard fields, then the
+            // iTunes freeform (----) convention for AR and the PLAIN ReplayGain
+            // dialect (REPLAYGAIN_*). TagLib surfaces those freeform atoms through
+            // PropertyMap, so the decode side reads the gain with NO MP4-specific
+            // path (proven, aac-m4a-encoder plan F3). Cover art is the covr atom,
+            // JPEG like the rip cover the other branches write.
+            TagLib::MP4::File f(wp.c_str(), false);
+            auto* tag = f.tag(); if (!tag) return;
+            tag->setTitle (TagLib::String(title_str,  TagLib::String::UTF8));
+            tag->setArtist(TagLib::String(artist_str, TagLib::String::UTF8));
+            tag->setAlbum (TagLib::String(rel.title,  TagLib::String::UTF8));
+            tag->setTrack ((unsigned int)track_num);
+            if (rel.date.size()>=4) try { tag->setYear((unsigned)std::stoi(rel.date.substr(0,4))); } catch(...){}
+            auto setFree = [&](const char* name, const std::string& val) {
+                tag->setItem(std::string("----:com.apple.iTunes:") + name,
+                    TagLib::MP4::Item(TagLib::StringList(TagLib::String(val, TagLib::String::UTF8))));
+            };
+            tag->setItem("\251too", TagLib::MP4::Item(TagLib::StringList(
+                TagLib::String("RE-MOCT v" REMOCT_VERSION, TagLib::String::UTF8))));
+            if (!ar_str.empty()) {
+                setFree("ACCURATERIP",      ar_str);
+                setFree("ACCURATERIPCRC",   std::string(ar_crc_str));
+                setFree("ACCURATERIPCOUNT", std::string(ar_conf_str));
+            }
+            if (rg.valid) {
+                setFree("REPLAYGAIN_TRACK_GAIN", rg_str(rg.track_gain));
+                setFree("REPLAYGAIN_TRACK_PEAK", rg_peak_str(rg.track_peak));
+                setFree("REPLAYGAIN_ALBUM_GAIN", rg_str(rg.album_gain));
+                setFree("REPLAYGAIN_ALBUM_PEAK", rg_peak_str(rg.album_peak));
+            }
+            if (!art.empty()) {
+                TagLib::MP4::CoverArtList covers;
+                covers.append(TagLib::MP4::CoverArt(TagLib::MP4::CoverArt::JPEG,
+                    TagLib::ByteVector((const char*)art.data(), (unsigned)art.size())));
+                tag->setItem("covr", TagLib::MP4::Item(covers));
             }
             f.save();
         }

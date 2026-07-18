@@ -25,7 +25,7 @@
 // The engine contract is frozen by stream_record_test before any UI exists.
 #pragma once
 
-#include "RipFormats.h"   // RipFormat (Mp3/Opus rows only are accepted here)
+#include "RipFormats.h"   // RipFormat (re-encode: Mp3/Opus/M4A; + copy mode)
 
 // libebur128 for the per-cut ReplayGain state — included, not forward-declared:
 // ebur128_state is an anonymous-struct typedef (the same fact CDRipper.h
@@ -55,6 +55,9 @@ struct RecOptions {
     int  mp3_cbr_bitrate = 256000; // MP3 CBR bitrate (bps) when mp3_cbr
     int  opus_bitrate  = 128000;   // = kOpusDefaultBitrate; caller clamps
     bool opus_vbr      = true;     // Opus mode: true = VBR (default), false = CBR
+    bool aac_vbr       = true;     // AAC/M4A mode: true = VBR ladder, false = CBR
+    int  aac_vbr_level = 4;        // AAC VBR quality 1-5 (5 best)
+    int  aac_cbr_bitrate = 128000; // AAC CBR bitrate (bps) when !aac_vbr
     bool split_on_meta = true;     // false -> one continuous timestamp-named file
     // split-trim: hold acting on a title change by this many ms so the closing
     // cut keeps its outro (radio metadata tends to run EARLY - the trail is

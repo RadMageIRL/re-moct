@@ -48,9 +48,11 @@ and a playlist/rip view. The public feature guide is [`docs/index.html`](docs/in
   - **[C] CUETools Database** - offset-immune whole-disc CRC32 (cue.tools/db)
   - **[Y] Local** - best-effort offline rip
   - **[B] Local 2-pass** - best-effort plus a read-twice determinism check
-- Selectable output - **FLAC, MP3, WAV, Opus, WavPack**, any combination - with
-  per-format quality on a per-row editor (FLAC level; MP3 V-scale or a CBR bitrate;
-  Opus bitrate; CBR/VBR toggle). Every tagged format carries embedded cover art
+- Selectable output - **FLAC, MP3, WAV, Opus, WavPack, M4A** (AAC-LC), any
+  combination - with per-format quality on a per-row editor (FLAC level; MP3
+  V-scale or a CBR bitrate; Opus bitrate; AAC VBR 1-5 ladder or a CBR bitrate;
+  CBR/VBR toggle). M4A uses the bundled FDK-AAC encoder, so no extra library
+  ships. Every tagged format carries embedded cover art
   (Cover Art Archive) and EBU R128 ReplayGain tags. C2 error-pointer detection,
   dual-pass on mismatch, per-rip logs (with lossless-master vs lossy-derived notes)
 
@@ -58,10 +60,11 @@ and a playlist/rip view. The public feature guide is [`docs/index.html`](docs/in
 - RadioBrowser (radio-browser.info) station search (Ctrl+U to add by URL)
 - ICY/SHOUTcast streaming with live StreamTitle metadata
 - iHeartRadio via HLS, with now-playing reconciliation and a digital (web-player) path
-- Record the playing stream to disk (`Ctrl+E`): per-song split from the station's
-  metadata, a pulsing `[REC]` badge, cover-art per cut, a split-hold that keeps
-  outros, ad-aware routing, and an as-broadcast copy mode (no re-encode); recording
-  continues gaplessly through a playback pause
+- Record the playing stream to disk (`Ctrl+E`): re-encode to Opus, MP3, or M4A, or
+  an as-broadcast copy mode (no re-encode - the better choice for an AAC broadcast);
+  per-song split from the station's metadata, a pulsing `[REC]` badge, cover-art per
+  cut, a split-hold that keeps outros, and ad-aware routing; recording continues
+  gaplessly through a playback pause
 
 **Scrobbling & presence**
 - Last.fm (Ctrl+G) and ListenBrainz (Ctrl+B) scrobbling + now-playing

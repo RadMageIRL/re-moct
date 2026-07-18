@@ -12,7 +12,7 @@
 
 #include <vector>
 
-enum class RipFormat { Flac, Mp3, Wav, Opus, WavPack };
+enum class RipFormat { Flac, Mp3, Wav, Opus, WavPack, M4a };
 
 struct RipFormatRow {
     RipFormat   id;
@@ -24,13 +24,14 @@ struct RipFormatRow {
 };
 
 // APPEND-ONLY: the digit key is the row index + 1 and must stay stable once
-// shipped (WAV is 3 forever; Opus takes 4, WavPack 5). Do not reorder.
+// shipped (WAV is 3 forever; Opus takes 4, WavPack 5, M4A 6). Do not reorder.
 inline constexpr RipFormatRow kRipFormats[] = {
     { RipFormat::Flac, "FLAC", ".flac", true,  true,  ""           },
     { RipFormat::Mp3,  "MP3",  ".mp3",  false, true,  ""           },
     { RipFormat::Wav,  "WAV",  ".wav",  true,  false, "(untagged)" },
     { RipFormat::Opus, "Opus", ".opus", false, true,  ""           },
     { RipFormat::WavPack, "WavPack", ".wv", true, true, ""         },
+    { RipFormat::M4a,  "M4A",  ".m4a",  false, true,  ""           },
 };
 inline constexpr int kRipFormatCount = (int)(sizeof(kRipFormats) / sizeof(kRipFormats[0]));
 
@@ -53,4 +54,7 @@ struct RipOptions {
     int opus_bitrate = 128000;   // = kOpusDefaultBitrate; clamped 6k-510k at parse
     bool opus_vbr    = true;     // Opus mode: true = VBR (default), false = CBR
     int wavpack_mode = 1;        // = kWavPackDefaultMode; 0 fast / 1 normal / 2 high / 3 very high
+    bool aac_vbr     = true;     // AAC/M4A mode: true = VBR ladder (default), false = CBR
+    int aac_vbr_level = 4;       // AAC VBR quality 1-5 (5 best; = kAacDefaultVbrLevel)
+    int aac_cbr_bitrate = 128000; // AAC CBR bitrate (bps) when !aac_vbr
 };

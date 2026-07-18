@@ -13,6 +13,7 @@
 #include "WavEncoder.h"
 #include "OpusRipEncoder.h"
 #include "WavPackEncoder.h"
+#include "M4aEncoder.h"
 
 #include <memory>
 
@@ -23,6 +24,7 @@ std::unique_ptr<IEncoder> makeEncoder(RipFormat f, const RipOptions& opt) {
         case RipFormat::Wav:  return std::make_unique<WavEncoder>();
         case RipFormat::Opus: return std::make_unique<OpusRipEncoder>(opt.opus_bitrate, opt.opus_vbr);
         case RipFormat::WavPack: return std::make_unique<WavPackEncoder>(opt.wavpack_mode);
+        case RipFormat::M4a:  return std::make_unique<M4aEncoder>(opt.aac_vbr, opt.aac_vbr_level, opt.aac_cbr_bitrate);
     }
     return nullptr;
 }

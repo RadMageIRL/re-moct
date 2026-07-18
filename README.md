@@ -128,12 +128,13 @@ truecolor + Alt+Enter fullscreen); see [BUILD.md](BUILD.md).
 | `F12` | Refresh drive list | `;` | Audiobook chapter list |
 | `x` / `u` / `U` | Convert / mark / clear marks | `Ctrl+E` | Record playing stream |
 | `Ctrl+O` | Batch ReplayGain (normalize folder) | `Alt+Enter` | Fullscreen (Windows wingui) |
+| `Ctrl+N` | Nerd Font title icons toggle |  |  |
 
 ## Configuration
 
 Config file:
-- **Windows:** `%APPDATA%\re-moct\remoct.conf`
-- **Linux:** `$XDG_CONFIG_HOME/re-moct/remoct.conf` (falls back to `~/.config/re-moct/`)
+- **Windows:** `%APPDATA%\RE-MOCT\remoct.conf`
+- **Linux:** `~/.config/RE-MOCT/remoct.conf`
 
 > ⚠ **`remoct.conf` stores scrobbling credentials in plaintext** (Last.fm session key,
 > ListenBrainz token). It is machine-local; keep it private and do not commit it - it is
@@ -150,6 +151,65 @@ theme=dark
 fav=C:\Music\No Doubt
 bookmark=C:\Music\Lossless
 ```
+
+## Fonts and Nerd Font icons
+
+Font selection works **differently on each platform**, because the two builds render
+differently. The one thing to know: **on Windows RE-MOCT picks its own font (the
+`wingui_font` config key); on Linux it uses your terminal emulator's font.** They are
+not the same mechanism, and a terminal font set on Windows has no effect.
+
+### Windows (wingui build)
+
+RE-MOCT draws into its own GDI window and chooses its **own** font. Your PowerShell,
+cmd, or Windows Terminal font setting does **not** affect it - changing the terminal
+font does nothing.
+
+- **Out of the box:** the default is a bundled JetBrains Mono Nerd Font, so the title
+  icons, rounded panel corners, and visualizer blocks all render with no setup.
+- **To use a different font:** set `wingui_font` in `%APPDATA%\RE-MOCT\remoct.conf` to
+  the exact GDI face name (the key is written to the config by default, so you can find
+  it there). Tested example:
+
+  ```ini
+  wingui_font=3270 Nerd Font Mono
+  ```
+
+  Use the **Mono** / **NFM** width variant so glyphs stay single-cell. An empty
+  `wingui_font=` keeps the bundled JetBrains Mono default.
+- **Get the exact face name** (the GDI family name, not the filename) from Settings >
+  Fonts, or PowerShell:
+
+  ```powershell
+  Add-Type -AssemblyName System.Drawing
+  (New-Object System.Drawing.Text.InstalledFontCollection).Families |
+    Where-Object { $_.Name -like "*Nerd*" } | Select-Object Name
+  ```
+
+- If the font is not installed system-wide, drop its `.ttf`/`.otf` into a `fonts\`
+  folder beside `remoct.exe` and RE-MOCT loads it privately (no install needed).
+- **Relaunch RE-MOCT to apply** - the font is chosen before the screen opens, so a
+  redraw is not enough.
+
+### Linux (ncursesw build)
+
+RE-MOCT renders through your **terminal emulator**, so it uses **the terminal's font**
+(Alacritty, kitty, GNOME Terminal, and so on). `wingui_font` does nothing on Linux.
+
+- Install a Nerd Font and set your terminal emulator to use it (the **Mono** variant is
+  recommended). Any mainstream Nerd Font works.
+- The terminal font must also carry **box-drawing and block glyphs**, or the panel
+  borders and the visualizer render as empty boxes. This is a separate requirement from
+  the optional Nerd icons - mainstream Nerd Fonts include all of it.
+
+### Both platforms
+
+- Any mainstream Nerd Font works: JetBrains Mono, Hack, FiraCode, Meslo, Cascadia Code.
+  Unusual patches (for example 3270) can render icons poorly - that is the font, not
+  RE-MOCT.
+- `Ctrl+N` toggles the Nerd Font title icons. **Without a Nerd Font, toggle icons off
+  with `Ctrl+N` and RE-MOCT displays fine** - the icons are optional and every one
+  falls back to plain text when off.
 
 ## Documentation
 

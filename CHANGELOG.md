@@ -32,6 +32,15 @@ Feature release: Opus and WavPack playback.
   every long break). On upgrade, iHeart playback rides out short ad breaks and
   re-pins only long pods. Press F6 to choose off or on.
 
+### Documentation
+
+- **Clarified font selection per platform, and made `wingui_font` discoverable.** On
+  Windows RE-MOCT sets its own font via the `wingui_font` config key (default a bundled
+  JetBrains Mono Nerd Font); on Linux it uses the terminal emulator's font. README and
+  BUILD.md now document both mechanisms and the Ctrl+N icon toggle. `wingui_font` is now
+  written to the config (empty by default, with the same bundled-default behaviour) so
+  it can be found and set. No behaviour change.
+
 ### Added (AAC/M4A output)
 
 - **Rip, convert, and record to AAC in an MP4 (.m4a) container.** M4A joins the

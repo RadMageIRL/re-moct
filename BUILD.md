@@ -83,6 +83,11 @@ configure time:
   opusenc, vorbis, wavpack) is common to both. The two configs use separate build
   directories, so you can keep both around.
 
+**Fonts differ by backend.** The wingui build sets its own GDI font (config key
+`wingui_font`, default a bundled JetBrains Mono Nerd Font); the ncursesw build - like
+the Linux build - renders with the terminal emulator's font. See the README section
+"Fonts and Nerd Font icons" for the per-platform details.
+
 ---
 
 ## Linux (Debian Trixie)

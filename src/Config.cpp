@@ -378,7 +378,10 @@ void DigiConfig::save() const {
         if (!rec_dir.empty())     f << "rec_dir=" << rec_dir << "\n";
         f << "split_offset_ms="   << split_offset_ms << "\n";
         f << "rec_ads="           << rec_ads << "\n";
-        if (!wingui_font.empty()) f << "wingui_font="    << wingui_font << "\n";
+        // Always written (even empty) so users can discover it. Empty = the bundled
+        // JetBrains Mono default (read path + initWinguiFont treat empty == absent).
+        f << "# wingui_font: Windows only. Exact GDI face name, e.g. 3270 Nerd Font Mono. Empty = bundled default.\n";
+        f << "wingui_font="       << wingui_font << "\n";
         if (wingui_cols > 0)      f << "wingui_cols="    << wingui_cols << "\n";
         if (wingui_rows > 0)      f << "wingui_rows="    << wingui_rows << "\n";
         if (!lastfm_key.empty())     f << "lastfm-key="     << nl(lastfm_key)     << "\n";

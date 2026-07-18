@@ -11,7 +11,7 @@ web player takes the same ads). RE-MOCT's advantage over a naive poller is the
 ACTIVE RE-PIN. This slice refines that re-pin. It does NOT touch identity or add
 keepalive/session machinery, and does NOT build a dual-stream handoff.
 
-Branch: experimental/win-pdcurses. Version bumped 1.3.0 -> 1.3.1 (see Divergences).
+Branch: experimental/win-pdcurses. Version stays 1.3.0 (one unreleased cycle; no 1.3.1).
 
 ---
 
@@ -92,16 +92,24 @@ a long pod). `SMART_STALL_MS = 150000` is conservative; Dos tunes on-air.
 
 ---
 
-## Section C - persistent lower-left mode indicator
+## Section C - confirm-on-change mode indicator
 
 - Drawn in `drawProgress` stream row, at the row's left inset, in yellow (`CP_MODE`,
   COLOR_YELLOW), format `<feed> - <repin>` e.g. `digital - smart` / `raw - off`. iHeart
   streams only (host sniff for `ihrhls`); the now-playing title shifts right by the tag
-  width. Empty tag (non-iHeart) -> byte-identical to the previous layout.
+  width WHILE it shows. Empty tag (idle or non-iHeart) -> byte-identical to the plain layout.
+- Confirm-on-change, NOT always-on: a Ctrl+K or F6 toggle stamps `mode_tag_at_` with the
+  wall-clock; the tag shows for `kModeTagMs` (~5s) then clears so the now-playing text
+  reoccupies the lower-left. Non-blocking: the window is checked in the normal draw loop
+  (the live-stream row already redraws on the scanner heartbeat), never a sleep/wait.
+  Revised from the first always-on design after seeing it live: an always-on mode tag
+  competes permanently with the now-playing text for lower-left space, and the mode only
+  matters at the moment you toggle it -- so confirm-then-fade (the old toast behaviour,
+  in the persistent location) is correct.
 - `CP_MODE = 18` registered in both `initColours` (Classic) and `applyAwesomeTheme`
   (Awesome) as basic yellow on default bg, theme-independent.
-- Replaces the transient Ctrl+K toast: Ctrl+K updates the feed half, F6 the re-pin half,
-  both now shown persistently.
+- Replaces the transient Ctrl+K toast: Ctrl+K flashes the feed half, F6 the re-pin half,
+  each showing the current combined state for ~5s.
 
 ---
 
@@ -123,6 +131,12 @@ a long pod). `SMART_STALL_MS = 150000` is conservative; Dos tunes on-air.
    is absent on the primary mid-break; smart uses floor duration as the proxy instead.
 3. `docs/repin-refine-plan.md` did not exist at implementation time (this file); created
    from the reviewed diagnosis + this brief.
-4. Version: 1.3.0 was UNRELEASED. Bumped to 1.3.1 per the brief and renamed the single
-   UNRELEASED CHANGELOG bucket 1.3.0 -> 1.3.1 (nothing shipped as 1.3.0). If 1.3.0 was
-   meant to ship first with this as a follow-on, split the CHANGELOG - trivial to redo.
+4. Version: 1.3.0 was UNRELEASED. First bumped to 1.3.1, then reverted to 1.3.0 on Dos's
+   call - this whole cycle (AAC/M4A, convert, art-embed, encoder-bitrate, repin-refine)
+   is one unreleased 1.3.0; there is no 1.3.1. CHANGELOG kept in the single 1.3.0 bucket.
+
+## Follow-up (post first commit 87ff1a2)
+
+- Indicator changed from always-on to confirm-on-change-then-fade (Section C above).
+- Version reverted 1.3.1 -> 1.3.0; CHANGELOG merged back to the single 1.3.0 bucket.
+- Neither touches the audio path; Section A stays exactly as committed in 87ff1a2.

@@ -4693,16 +4693,25 @@ void UIManager::drawProgress() {
         right += "  vol:" + std::to_string((int)(audio_.volume()*100.0f+0.5f)) + "%";
         std::string left = title.empty() ? "(live stream)" : title;
 
-        // iHeart feed/re-pin mode indicator (Section C): a persistent yellow tag at the
-        // lower-left, "<feed> - <repin>" e.g. "digital - smart" / "raw - off". iHeart
-        // streams only (host sniff on the revma HLS domain); the now-playing title is
-        // shifted right by the tag width. Empty tag -> byte-identical to the old layout.
+        // iHeart feed/re-pin mode indicator (Section C): a yellow tag at the lower-left,
+        // "<feed> - <repin>" e.g. "digital - smart" / "raw - off". Confirm-on-change: it
+        // shows only for ~kModeTagMs after a Ctrl+K/F6 toggle (mode_tag_at_), then clears
+        // so the now-playing title reoccupies the space. iHeart streams only (host sniff
+        // on the revma HLS domain); the title is shifted right by the tag width while it
+        // shows. Empty tag (idle, or non-iHeart) -> byte-identical to the plain layout.
         std::string modeTag;
-        if (audio_.streamUrl().find("ihrhls") != std::string::npos) {   // iHeart HLS host
-            const char* rp = config_.repin_mode == 0 ? "off"
-                           : config_.repin_mode == 1 ? "on" : "smart";
-            modeTag = std::string(config_.prefer_digital_stream ? "digital" : "raw")
-                    + " - " + rp;
+        {
+            using namespace std::chrono;
+            const long sinceMs = (mode_tag_at_.time_since_epoch().count() == 0)
+                ? kModeTagMs + 1   // never toggled -> outside the window
+                : (long)duration_cast<milliseconds>(steady_clock::now() - mode_tag_at_).count();
+            if (sinceMs < kModeTagMs &&
+                audio_.streamUrl().find("ihrhls") != std::string::npos) {   // iHeart HLS host, within window
+                const char* rp = config_.repin_mode == 0 ? "off"
+                               : config_.repin_mode == 1 ? "on" : "smart";
+                modeTag = std::string(config_.prefer_digital_stream ? "digital" : "raw")
+                        + " - " + rp;
+            }
         }
         const int tag_x   = 1;
         const int tag_w   = modeTag.empty() ? 0 : (int)modeTag.size() + 2;  // +2 gap after the tag
@@ -6298,8 +6307,9 @@ void UIManager::handleInput(int ch) {
             config_.prefer_digital_stream = !config_.prefer_digital_stream;
             config_.save();
             audio_.setPreferDigital(config_.prefer_digital_stream);
-            // Feed state is now shown persistently by the lower-left mode indicator
-            // (drawProgress), so no transient toast; just force a redraw.
+            // Flash the lower-left feed/re-pin mode indicator for ~5s (confirm-on-change),
+            // then it clears and the now-playing text reoccupies the space.
+            mode_tag_at_ = std::chrono::steady_clock::now();
             redraw_needed_.store(true);
             if (audio_.streamMode())                 // reconnect now so it takes effect
                 audio_.beginStream(audio_.streamUrl());
@@ -6366,10 +6376,11 @@ void UIManager::handleInput(int ch) {
         case KEY_F(6):    // cycle iHeart re-pin mode: off -> on -> smart (persisted)
             // Feed (Ctrl+K) and re-pin behaviour are independent axes; F6 changes only
             // the re-pin half. Read live by the producer/SM, so no reconnect is needed.
-            // The persistent lower-left indicator (drawProgress) reflects the new mode.
+            // Flash the lower-left mode indicator for ~5s (confirm-on-change).
             config_.repin_mode = (config_.repin_mode + 1) % 3;
             config_.save();
             audio_.setRepinMode(config_.repin_mode);
+            mode_tag_at_ = std::chrono::steady_clock::now();
             redraw_needed_.store(true);
             break;
         case KEY_F(7):    // previous Awesome named palette (F7)

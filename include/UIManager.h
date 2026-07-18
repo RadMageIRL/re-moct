@@ -666,6 +666,12 @@ private:
     int    scanner_dir_ = 1;         // +1 / -1 sweep direction
     std::chrono::steady_clock::time_point scanner_last_ {};  // last wall-clock advance
 
+    // iHeart feed/re-pin mode indicator (drawProgress): a Ctrl+K or F6 toggle stamps
+    // this with the wall-clock; the tag shows for kModeTagMs then clears, giving the
+    // lower-left back to the now-playing text. Non-blocking (checked in the draw loop).
+    static constexpr long kModeTagMs = 5000;   // ~5s confirm-on-change window
+    std::chrono::steady_clock::time_point mode_tag_at_ {};   // last mode toggle (epoch == never)
+
     // Drive browser
     bool in_drive_list_ = false;
     static std::vector<std::string> listDrives();

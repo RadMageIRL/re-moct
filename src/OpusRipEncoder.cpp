@@ -40,6 +40,9 @@ bool OpusRipEncoder::open(const std::string& path, uint64_t total_frames) {
         return false;
     }
     ope_encoder_ctl(enc_, OPUS_SET_BITRATE(bitrate_));   // VBR is libopusenc's default
+    // encoder-bitrate-mode: enforce the mode explicitly. vbr_=true reasserts the
+    // libopusenc default (output unchanged); vbr_=false is constrained CBR.
+    ope_encoder_ctl(enc_, OPUS_SET_VBR(vbr_ ? 1 : 0));
     // Header output gain 0: the R128 tags are the ONLY gain (RFC 7845; the
     // decode side applies OP_HEADER_GAIN and defines the tags relative to it).
     ope_encoder_ctl(enc_, OPE_SET_HEADER_GAIN(0));

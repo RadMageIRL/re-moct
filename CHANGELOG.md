@@ -58,7 +58,17 @@ Feature release: Opus and WavPack playback.
 
 ### Added
 
-- **OS media controls.** RE-MOCT now appears in the operating system's own
+- **Per-format bitrate and a CBR/VBR toggle for MP3 and Opus.** The rip
+  confirmation modal and the recording panel now let you tune each lossy
+  format's quality on its own row. Move the row cursor with Up/Down, change the
+  value with Left/Right, and press M to switch a row between constant and
+  variable bitrate. MP3 offers the V0-V9 quality scale in VBR mode and a
+  96/128/256/320 kbps choice in CBR mode; Opus offers the same bitrate choice in
+  either mode. FLAC, WAV, and WavPack rows have no bitrate and are unaffected.
+- **Recording keeps its own quality settings, separate from ripping.** Recorded
+  radio can be right-sized (for example Opus 96 kbps) without changing the
+  high-quality settings a CD rip uses, and the reverse. The recording panel
+  defaults to Opus 96 kbps and MP3 V5.
   media surface and responds to its transport keys. On Windows the now-playing
   title, artist, and cover show in the volume/media overlay and on the lock
   screen, and the keyboard media keys (play/pause, next, previous, stop) and

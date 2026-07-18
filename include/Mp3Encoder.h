@@ -13,10 +13,13 @@
 
 class Mp3Encoder : public IEncoder {
 public:
-    // Default MUST stay 0 (V0) — the pre-seam literal; pinned by the seam
-    // oracle's argument-free construction. vbr_mtrh + quality 2 remain fixed
-    // literals in open() by design. Caller clamps (0-9); this ctor trusts it.
-    explicit Mp3Encoder(int vbr_q = 0) : vbr_q_(vbr_q) {}
+    // vbr_q FIRST, defaulting to the pre-seam VBR-V0 literal: the arg-free and
+    // Mp3Encoder(0) constructions the seam oracle uses stay byte-identical VBR.
+    // The CBR path (encoder-bitrate-mode) is strictly ADDITIVE - cbr defaults
+    // false, so nothing about the VBR sequence changes. vbr_mtrh + quality 2
+    // remain fixed literals in open(). Caller clamps vbr_q (0-9) + bitrate.
+    explicit Mp3Encoder(int vbr_q = 0, bool cbr = false, int cbr_bitrate_bps = 256000)
+        : vbr_q_(vbr_q), cbr_(cbr), cbr_bitrate_bps_(cbr_bitrate_bps) {}
     ~Mp3Encoder() override { finalize(false); }
 
     bool open(const std::string& path, uint64_t total_frames) override;
@@ -25,6 +28,8 @@ public:
 
 private:
     int                  vbr_q_ = 0;
+    bool                 cbr_ = false;             // true = CBR (drops the Xing path)
+    int                  cbr_bitrate_bps_ = 256000;
     lame_global_flags*   lame_ = nullptr;
     FILE*                file_ = nullptr;
     std::vector<int16_t> left_, right_;   // deinterleave staging

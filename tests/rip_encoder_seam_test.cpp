@@ -243,6 +243,38 @@ int main() {
     std::remove("seam_ref.flac"); std::remove("seam_new.flac"); std::remove("seam_exp.flac");
     std::remove("seam_ref.mp3");  std::remove("seam_new.mp3");  std::remove("seam_exp.mp3");
 
+    // ── MP3 CBR branch (encoder-bitrate-mode) ──────────────────────────────
+    // CBR is strictly ADDITIVE: the VBR arms above stay byte-identical. There
+    // is no byte-oracle for a lossy CBR stream, so this asserts the structural
+    // facts that distinguish the branch: it encodes, it differs from the VBR
+    // output, it starts on an MPEG frame sync, and it carries NO Xing/Info
+    // duration frame (CBR does not set bWriteVbrTag, and finalize skips the tag
+    // rewrite - a Xing/Info frame would be a VBR leak into the CBR path).
+    {
+        Mp3Encoder mp3(0, /*cbr=*/true, /*cbr_bitrate_bps=*/256000);
+        bool ok = mp3.open("seam_cbr.mp3", kFrames);
+        for (auto& blk : blocks) {
+            if (!ok) break;
+            ok = mp3.writeFrames(blk.p, (size_t)blk.samples);
+        }
+        mp3.finalize(ok);
+        check(ok, "MP3 CBR arm encoded");
+        auto cbr = slurp("seam_cbr.mp3");
+        check(!cbr.empty(), "MP3 CBR output non-empty");
+        check(!rm.empty() && cbr != rm, "MP3 CBR output differs from VBR");
+        auto has_magic = [&](const char* m) {
+            size_t n = cbr.size() < 512 ? cbr.size() : 512;
+            for (size_t i = 0; i + 4 <= n; ++i)
+                if (std::memcmp(cbr.data() + i, m, 4) == 0) return true;
+            return false;
+        };
+        check(!has_magic("Xing") && !has_magic("Info"),
+              "MP3 CBR head carries no Xing/Info duration frame");
+        check(cbr.size() >= 2 && cbr[0] == 0xFF && (cbr[1] & 0xE0) == 0xE0,
+              "MP3 CBR starts with an MPEG frame sync");
+        std::remove("seam_cbr.mp3");
+    }
+
     // ── WAV bit-exact oracle (rip-wav-encoder) ─────────────────────────────
     // WAV is lossless AND uncompressed, so the whole output is machine-
     // checkable: canonical header fields + data chunk == input PCM verbatim.

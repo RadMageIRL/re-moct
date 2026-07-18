@@ -17,6 +17,7 @@
 #include <unistd.h>
 #endif
 #include "StringUtils.h"
+#include "EncoderQuality.h"
 #include "AudioManager.h"
 #include "PlaylistManager.h"
 #include "Mp4Chapters.h"
@@ -1992,18 +1993,29 @@ void UIManager::drawRipConfirm() {   // slice 6: common (ncurses + portable CDSo
     for (int i = 0; i < kRipFormatCount; ++i) {
         const auto& r = kRipFormats[i];
         bool on = std::find(rip_sel_.begin(), rip_sel_.end(), r.id) != rip_sel_.end();
-        std::string quality =
-            r.id == RipFormat::Flac ? "level " + std::to_string(config_.flac_level)
-          : r.id == RipFormat::Mp3  ? "LAME " + config_.mp3 + " VBR"
-          : r.id == RipFormat::Wav  ? "16-bit PCM"
-          : r.id == RipFormat::Opus ? std::to_string(config_.opus_bitrate / 1000) + " kbps VBR"
-          : r.id == RipFormat::WavPack ? config_.wavpack_mode
-          : "";
-        // Marker and note are two separate signals (lossless master; format
-        // limitation) — the note gets its own column with breathing room.
-        mvwprintw(w, 7 + i, 3, "  [%c] %d  %-8s %-14s %-3s%s",
-                  on ? 'x' : ' ', i + 1, r.label, quality.c_str(),
+        // encoder-bitrate-mode: the ONE label home, fed the RIP config fields.
+        // alt_mode = "is CBR" (MP3 mp3_cbr; Opus !opus_vbr).
+        bool alt = r.id == RipFormat::Mp3  ? config_.mp3_cbr
+                 : r.id == RipFormat::Opus ? !config_.opus_vbr : false;
+        std::string quality = encoderQualityLabel(
+            r.id, alt, config_.mp3,
+            r.id == RipFormat::Mp3 ? config_.mp3_cbr_bitrate : config_.opus_bitrate,
+            config_.flac_level, config_.wavpack_mode);
+        // Focus cursor (>) marks the row Left/Right/[M] edit. Marker and note are
+        // two separate signals (lossless master; format limitation).
+        const char* cur = (i == rip_focus_) ? "> " : "  ";
+        mvwprintw(w, 7 + i, 3, "%s[%c] %d  %-8s %-14s %-3s%s",
+                  cur, on ? 'x' : ' ', i + 1, r.label, quality.c_str(),
                   r.lossless ? "*" : "", r.note);
+    }
+    // Axis hint for the focused row (the blank line above the mode block); only
+    // lossy rows have an editable axis, so FLAC/WAV/WavPack focus shows nothing.
+    if (rip_focus_ >= 0 && rip_focus_ < kRipFormatCount) {
+        const auto& fr = kRipFormats[rip_focus_];
+        bool alt = fr.id == RipFormat::Mp3  ? config_.mp3_cbr
+                 : fr.id == RipFormat::Opus ? !config_.opus_vbr : false;
+        if (const char* hint = encoderAxisHint(fr.id, alt))
+            mvwaddstr(w, 7 + kRipFormatCount, 5, hint);
     }
 
     // Mode options — plain text; dimmed while nothing is selected (commit
@@ -2091,14 +2103,22 @@ void UIManager::drawRecPanel() {
         // ── SETTINGS view ────────────────────────────────────────────────
         mvwaddstr(w, 5, 3, "Format");
         mvwaddstr(w, 5, BOX_W - 15, "(1-3 select)");
+        // encoder-bitrate-mode: the shared label home, fed the REC fields
+        // (rec_*), independent of the rip knobs. alt_mode = "is CBR".
         struct { RipFormat id; const char* label; std::string quality; } rows[] = {
-            { RipFormat::Opus, "Opus", std::to_string(config_.opus_bitrate / 1000) + " kbps VBR" },
-            { RipFormat::Mp3,  "MP3",  "LAME " + config_.mp3 + " VBR" },
+            { RipFormat::Opus, "Opus",
+              encoderQualityLabel(RipFormat::Opus, !config_.rec_opus_vbr,
+                                  config_.rec_mp3, config_.rec_opus_bitrate) },
+            { RipFormat::Mp3,  "MP3",
+              encoderQualityLabel(RipFormat::Mp3, config_.rec_mp3_cbr,
+                                  config_.rec_mp3, config_.rec_mp3_cbr_bitrate) },
         };
-        for (int i = 0; i < 2; ++i)
-            mvwprintw(w, 6 + i, 3, "  (%c) %d  %-6s %s",
-                      (!rec_copy_ && rec_fmt_ == rows[i].id) ? '*' : ' ', i + 1,
+        for (int i = 0; i < 2; ++i) {
+            const char* cur = (i == rec_focus_) ? "> " : "  ";
+            mvwprintw(w, 6 + i, 3, "%s(%c) %d  %-6s %s",
+                      cur, (!rec_copy_ && rec_fmt_ == rows[i].id) ? '*' : ' ', i + 1,
                       rows[i].label, rows[i].quality.c_str());
+        }
         // Copy row (abi-cluster slice B): as-broadcast capture. Quality
         // column = the LIVE codec from the plugin's encoded_caps; greyed
         // with a dim reason when the plugin lacks the tee (old plugin).
@@ -2114,9 +2134,20 @@ void UIManager::drawRecPanel() {
                               : "as broadcast (no re-encode)";
             }
             if (!copy_ok) wattron(w, A_DIM);
-            mvwprintw(w, 8, 3, "  (%c) 3  %-6s %s",
+            mvwprintw(w, 8, 3, "%s(%c) 3  %-6s %s",
+                      (rec_focus_ == 2) ? "> " : "  ",
                       rec_copy_ ? '*' : ' ', "Copy", q.c_str());
             if (!copy_ok) wattroff(w, A_DIM);
+        }
+        // Axis hint for the focused rec row (encoder-bitrate-mode); the Copy row
+        // has no quality axis, so it shows nothing (like FLAC/WAV in the rip modal).
+        {
+            RipFormat ff = rec_focus_ == 1 ? RipFormat::Mp3
+                         : rec_focus_ == 0 ? RipFormat::Opus : RipFormat::Wav;
+            bool alt = ff == RipFormat::Mp3  ? config_.rec_mp3_cbr
+                     : ff == RipFormat::Opus ? !config_.rec_opus_vbr : false;
+            if (const char* hint = encoderAxisHint(ff, alt))
+                mvwaddstr(w, 13, 5, hint);
         }
         mvwprintw(w, 9, 3, "[S] Split on track change : %s",
                   rec_split_on_ ? "ON" : "OFF (one continuous file)");
@@ -5352,6 +5383,35 @@ void UIManager::handleInput(int ch) {
             redraw_needed_.store(true);
             return;
         }
+        // encoder-bitrate-mode: per-row quality editor for the REC fields.
+        // Up/Down focus over Opus(0)/MP3(1)/Copy(2); Left/Right cycle the focused
+        // row's axis; [M] flips its mode. The Copy row has no axis (inert).
+        if (ch == KEY_UP || ch == KEY_DOWN) {
+            rec_focus_ += (ch == KEY_DOWN) ? 1 : -1;
+            if (rec_focus_ < 0) rec_focus_ = 2;
+            if (rec_focus_ > 2) rec_focus_ = 0;
+            redraw_needed_.store(true);
+            return;
+        }
+        if (ch == KEY_LEFT || ch == KEY_RIGHT) {
+            int dir = (ch == KEY_RIGHT) ? 1 : -1;
+            if (rec_focus_ == 0) {                      // Opus: bitrate only
+                config_.rec_opus_bitrate = cycleBitrate(config_.rec_opus_bitrate, dir);
+            } else if (rec_focus_ == 1) {               // MP3: V-scale or CBR bitrate
+                if (config_.rec_mp3_cbr)
+                    config_.rec_mp3_cbr_bitrate = cycleBitrate(config_.rec_mp3_cbr_bitrate, dir);
+                else
+                    config_.rec_mp3 = cycleMp3Vbr(config_.rec_mp3, dir);
+            }
+            redraw_needed_.store(true);
+            return;
+        }
+        if (ch == 'm' || ch == 'M') {
+            if (rec_focus_ == 0)      config_.rec_opus_vbr = !config_.rec_opus_vbr;
+            else if (rec_focus_ == 1) config_.rec_mp3_cbr  = !config_.rec_mp3_cbr;
+            redraw_needed_.store(true);
+            return;
+        }
         if (ch == 's' || ch == 'S') {
             rec_split_on_ = !rec_split_on_;
             redraw_needed_.store(true);
@@ -5384,8 +5444,13 @@ void UIManager::handleInput(int ch) {
             }
             RecOptions opt;
             opt.formats         = { rec_fmt_ };
-            opt.mp3_vbr_q       = parseMp3VbrQ(config_.mp3);
-            opt.opus_bitrate    = std::clamp(config_.opus_bitrate, 6000, 510000);
+            // encoder-bitrate-mode: recording reads its OWN quality set (rec_*),
+            // independent of the rip knobs, so radio can be right-sized.
+            opt.mp3_vbr_q       = parseMp3VbrQ(config_.rec_mp3);
+            opt.mp3_cbr         = config_.rec_mp3_cbr;
+            opt.mp3_cbr_bitrate = std::clamp(config_.rec_mp3_cbr_bitrate, 6000, 510000);
+            opt.opus_bitrate    = std::clamp(config_.rec_opus_bitrate, 6000, 510000);
+            opt.opus_vbr        = config_.rec_opus_vbr;
             opt.split_on_meta   = rec_split_on_;
             opt.split_offset_ms = rec_offset_ms_;
             opt.ads_discard     = rec_ads_discard_;
@@ -5453,6 +5518,42 @@ void UIManager::handleInput(int ch) {
             redraw_needed_.store(true);
             return;
         }
+        // encoder-bitrate-mode: per-row quality editor. Up/Down move the focus
+        // cursor; Left/Right cycle the focused row's active axis; [M] flips its
+        // CBR/VBR mode. Inert on FLAC/WAV/WavPack (no bitrate axis).
+        if (ch == KEY_UP || ch == KEY_DOWN) {
+            rip_focus_ += (ch == KEY_DOWN) ? 1 : -1;
+            if (rip_focus_ < 0)                 rip_focus_ = kRipFormatCount - 1;
+            if (rip_focus_ >= kRipFormatCount)  rip_focus_ = 0;
+            redraw_needed_.store(true);
+            return;
+        }
+        if (ch == KEY_LEFT || ch == KEY_RIGHT) {
+            int dir = (ch == KEY_RIGHT) ? 1 : -1;
+            switch (kRipFormats[rip_focus_].id) {
+                case RipFormat::Mp3:
+                    if (config_.mp3_cbr)
+                        config_.mp3_cbr_bitrate = cycleBitrate(config_.mp3_cbr_bitrate, dir);
+                    else
+                        config_.mp3 = cycleMp3Vbr(config_.mp3, dir);
+                    redraw_needed_.store(true);
+                    break;
+                case RipFormat::Opus:
+                    config_.opus_bitrate = cycleBitrate(config_.opus_bitrate, dir);
+                    redraw_needed_.store(true);
+                    break;
+                default: break;   // no axis on the lossless rows
+            }
+            return;
+        }
+        if (ch == 'm' || ch == 'M') {
+            switch (kRipFormats[rip_focus_].id) {
+                case RipFormat::Mp3:  config_.mp3_cbr  = !config_.mp3_cbr;  redraw_needed_.store(true); break;
+                case RipFormat::Opus: config_.opus_vbr = !config_.opus_vbr; redraw_needed_.store(true); break;
+                default: break;
+            }
+            return;
+        }
         RipMode chosen = RipMode::None;
         switch (ch) {
             case 'a': case 'A': chosen = RipMode::AccurateRip; break;
@@ -5490,7 +5591,10 @@ void UIManager::handleInput(int ch) {
                 opt.formats.push_back(r.id);
         opt.flac_level   = std::clamp(config_.flac_level, 0, 8);
         opt.mp3_vbr_q    = parseMp3VbrQ(config_.mp3);
+        opt.mp3_cbr      = config_.mp3_cbr;
+        opt.mp3_cbr_bitrate = std::clamp(config_.mp3_cbr_bitrate, 6000, 510000);
         opt.opus_bitrate = std::clamp(config_.opus_bitrate, 6000, 510000);
+        opt.opus_vbr     = config_.opus_vbr;
         opt.wavpack_mode = config_.wavpack_mode == "fast"      ? 0
                          : config_.wavpack_mode == "high"      ? 2
                          : config_.wavpack_mode == "very_high" ? 3 : 1;

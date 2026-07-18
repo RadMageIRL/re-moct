@@ -473,6 +473,12 @@ private:
     // NEVER written back to config (the conf key is the default only).
     // Deliberately not reset on eject — user preference, not disc data.
     std::vector<RipFormat> rip_sel_;
+    // encoder-bitrate-mode: the `>` row-focus cursor for the per-row quality
+    // editor (Up/Down move it, Left/Right cycle the focused row's axis, [M]
+    // flips its mode). Session state, seeded to 0; the rip modal focuses over
+    // kRipFormats, the [Rec] panel over its 3 rows (Opus/Mp3/Copy).
+    int rip_focus_ = 0;
+    int rec_focus_ = 0;
     // Stream-record R2: the [Rec] panel's SETTINGS (session state seeded from
     // config, like rip_sel_ - config is load-once, the panel never writes
     // back). Lifecycle state (recording/elapsed/cuts/dropped) is deliberately

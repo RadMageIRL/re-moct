@@ -208,10 +208,22 @@ void DigiConfig::load() {
                 val[1] >= '0' && val[1] <= '9')
                 mp3 = std::string("V") + val[1];
         }
+        else if (key == "mp3_cbr")            mp3_cbr            = (val == "1");
+        else if (key == "mp3_cbr_bitrate")    try { mp3_cbr_bitrate = std::clamp(std::stoi(val), 6000, 510000); } catch (...) {}
+        else if (key == "opus_vbr")           opus_vbr           = (val != "0");
         else if (key == "rec_format") {
             // Lossy re-encode or the slice-B copy mode; anything else keeps opus.
             if (val == "opus" || val == "mp3" || val == "copy") rec_format = val;
         }
+        else if (key == "rec_mp3") {
+            if (val.size() == 2 && (val[0] == 'V' || val[0] == 'v') &&
+                val[1] >= '0' && val[1] <= '9')
+                rec_mp3 = std::string("V") + val[1];
+        }
+        else if (key == "rec_mp3_cbr")        rec_mp3_cbr        = (val == "1");
+        else if (key == "rec_mp3_cbr_bitrate") try { rec_mp3_cbr_bitrate = std::clamp(std::stoi(val), 6000, 510000); } catch (...) {}
+        else if (key == "rec_opus_bitrate")   try { rec_opus_bitrate = std::clamp(std::stoi(val), 6000, 510000); } catch (...) {}
+        else if (key == "rec_opus_vbr")       rec_opus_vbr       = (val != "0");
         else if (key == "rec_split")          rec_split          = (val == "1");
         else if (key == "rec_dir")            rec_dir            = val;
         else if (key == "split_offset_ms")    try { split_offset_ms = std::clamp(std::stoi(val), -5000, 5000); } catch (...) {}
@@ -337,9 +349,17 @@ void DigiConfig::save() const {
         f << "rip_formats="       << rip_formats << "\n";
         f << "flac_level="        << flac_level  << "\n";
         f << "mp3="               << mp3         << "\n";
+        f << "mp3_cbr="           << (mp3_cbr ? "1" : "0") << "\n";
+        f << "mp3_cbr_bitrate="   << mp3_cbr_bitrate << "\n";
         f << "opus_bitrate="      << opus_bitrate << "\n";
+        f << "opus_vbr="          << (opus_vbr ? "1" : "0") << "\n";
         f << "wavpack_mode="      << wavpack_mode << "\n";
         f << "rec_format="        << rec_format << "\n";
+        f << "rec_mp3="           << rec_mp3 << "\n";
+        f << "rec_mp3_cbr="       << (rec_mp3_cbr ? "1" : "0") << "\n";
+        f << "rec_mp3_cbr_bitrate=" << rec_mp3_cbr_bitrate << "\n";
+        f << "rec_opus_bitrate="  << rec_opus_bitrate << "\n";
+        f << "rec_opus_vbr="      << (rec_opus_vbr ? "1" : "0") << "\n";
         f << "rec_split="         << (rec_split ? "1" : "0") << "\n";
         if (!rec_dir.empty())     f << "rec_dir=" << rec_dir << "\n";
         f << "split_offset_ms="   << split_offset_ms << "\n";

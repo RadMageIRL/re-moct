@@ -392,8 +392,8 @@ void tagCutM4a(const std::string& path,
 
 std::unique_ptr<IEncoder> makeRecEncoder(RipFormat f, const RecOptions& opt) {
     switch (f) {
-        case RipFormat::Mp3:  return std::make_unique<Mp3Encoder>(opt.mp3_vbr_q);
-        case RipFormat::Opus: return std::make_unique<OpusRipEncoder>(opt.opus_bitrate);
+        case RipFormat::Mp3:  return std::make_unique<Mp3Encoder>(opt.mp3_vbr_q, opt.mp3_cbr, opt.mp3_cbr_bitrate);
+        case RipFormat::Opus: return std::make_unique<OpusRipEncoder>(opt.opus_bitrate, opt.opus_vbr);
         default:              return nullptr;   // start() rejected everything else
     }
 }

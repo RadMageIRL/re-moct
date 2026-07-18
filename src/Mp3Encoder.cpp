@@ -19,12 +19,22 @@ bool Mp3Encoder::open(const std::string& path, uint64_t total_frames) {
     if (!lame_) return false;
     lame_set_in_samplerate(lame_, SAMPLE_RATE);
     lame_set_num_channels(lame_, CHANNELS);
-    lame_set_VBR(lame_, vbr_mtrh);
-    lame_set_VBR_q(lame_, vbr_q_);
+    if (cbr_) {
+        // CBR branch (encoder-bitrate-mode): constant bitrate, no VBR quality
+        // scale and no Xing/LAME info frame (that duration frame is a VBR
+        // artifact). Everything else - quality 2, STEREO, id3-off - matches VBR.
+        lame_set_VBR(lame_, vbr_off);
+        lame_set_brate(lame_, cbr_bitrate_bps_ / 1000);
+    } else {
+        // VBR branch: the exact pre-seam sequence, byte-identical by contract.
+        lame_set_VBR(lame_, vbr_mtrh);
+        lame_set_VBR_q(lame_, vbr_q_);
+    }
     lame_set_quality(lame_, 2);
     lame_set_mode(lame_, STEREO);
     lame_set_write_id3tag_automatic(lame_, 0);
-    lame_set_bWriteVbrTag(lame_, 1);   // emit Xing/LAME info header (VBR duration)
+    if (!cbr_)
+        lame_set_bWriteVbrTag(lame_, 1);   // emit Xing/LAME info header (VBR duration)
     if (lame_init_params(lame_) < 0) {
         lame_close(lame_); lame_ = nullptr;
         return false;
@@ -62,11 +72,14 @@ bool Mp3Encoder::finalize(bool ok) {
         if (fb > 0) fwrite(out_.data(), 1, (size_t)fb, file_);
         // Overwrite the reserved first frame with the real Xing/LAME info tag so
         // VBR MP3s report the correct duration (frame count) to every player.
-        unsigned char vbr_tag[2880];
-        size_t tag_n = lame_get_lametag_frame(lame_, vbr_tag, sizeof(vbr_tag));
-        if (tag_n > 0 && tag_n <= sizeof(vbr_tag)) {
-            fseek(file_, 0, SEEK_SET);
-            fwrite(vbr_tag, 1, tag_n, file_);
+        // CBR has no reserved frame (bWriteVbrTag was not set) - skip the rewrite.
+        if (!cbr_) {
+            unsigned char vbr_tag[2880];
+            size_t tag_n = lame_get_lametag_frame(lame_, vbr_tag, sizeof(vbr_tag));
+            if (tag_n > 0 && tag_n <= sizeof(vbr_tag)) {
+                fseek(file_, 0, SEEK_SET);
+                fwrite(vbr_tag, 1, tag_n, file_);
+            }
         }
     }
     if (file_) { fclose(file_); file_ = nullptr; }

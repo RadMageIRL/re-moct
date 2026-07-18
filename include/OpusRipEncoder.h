@@ -31,7 +31,10 @@ struct OggOpusComments;
 
 class OpusRipEncoder : public IEncoder {
 public:
-    explicit OpusRipEncoder(int bitrate = kOpusDefaultBitrate) : bitrate_(bitrate) {}
+    // vbr defaults true = libopusenc's own default, so vbr=true output is
+    // unchanged from the pre-slice encoder; vbr=false sets OPUS_SET_VBR(0).
+    explicit OpusRipEncoder(int bitrate = kOpusDefaultBitrate, bool vbr = true)
+        : bitrate_(bitrate), vbr_(vbr) {}
     ~OpusRipEncoder() override { finalize(false); }
 
     bool open(const std::string& path, uint64_t total_frames) override;
@@ -40,6 +43,7 @@ public:
 
 private:
     int              bitrate_ = kOpusDefaultBitrate;
+    bool             vbr_  = true;
     FILE*            f_    = nullptr;
     OggOpusEnc*      enc_  = nullptr;
     OggOpusComments* cmts_ = nullptr;

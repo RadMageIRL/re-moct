@@ -51,7 +51,10 @@ class MuxWriter;
 struct RecOptions {
     std::vector<RipFormat> formats { RipFormat::Opus };  // Mp3/Opus only (plan §2)
     int  mp3_vbr_q     = 0;        // LAME VBR quality 0-9 (0 = V0)
+    bool mp3_cbr       = false;    // MP3 mode: false = VBR (V-scale), true = CBR
+    int  mp3_cbr_bitrate = 256000; // MP3 CBR bitrate (bps) when mp3_cbr
     int  opus_bitrate  = 128000;   // = kOpusDefaultBitrate; caller clamps
+    bool opus_vbr      = true;     // Opus mode: true = VBR (default), false = CBR
     bool split_on_meta = true;     // false -> one continuous timestamp-named file
     // split-trim: hold acting on a title change by this many ms so the closing
     // cut keeps its outro (radio metadata tends to run EARLY - the trail is

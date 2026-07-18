@@ -874,9 +874,9 @@ void CDRipper::tagFile(const std::string&         path,
 static std::unique_ptr<IEncoder> makeEncoder(RipFormat f, const RipOptions& opt) {
     switch (f) {
         case RipFormat::Flac: return std::make_unique<FlacEncoder>(opt.flac_level);
-        case RipFormat::Mp3:  return std::make_unique<Mp3Encoder>(opt.mp3_vbr_q);
+        case RipFormat::Mp3:  return std::make_unique<Mp3Encoder>(opt.mp3_vbr_q, opt.mp3_cbr, opt.mp3_cbr_bitrate);
         case RipFormat::Wav:  return std::make_unique<WavEncoder>();
-        case RipFormat::Opus: return std::make_unique<OpusRipEncoder>(opt.opus_bitrate);
+        case RipFormat::Opus: return std::make_unique<OpusRipEncoder>(opt.opus_bitrate, opt.opus_vbr);
         case RipFormat::WavPack: return std::make_unique<WavPackEncoder>(opt.wavpack_mode);
     }
     return nullptr;

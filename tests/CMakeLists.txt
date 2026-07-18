@@ -497,6 +497,36 @@ endif()
 add_test(NAME rip_encoder_seam_test COMMAND rip_encoder_seam_test)
 set_tests_properties(rip_encoder_seam_test PROPERTIES TIMEOUT 60)
 
+# encoder-bitrate-mode: the pure quality-editor logic (EncoderQuality.h axis
+# cycle / snap / label - the same code the Left/Right/[M] path drives) plus the
+# DigiConfig round-trip proving the eight new fields persist and that RIP and
+# REC quality are INDEPENDENT storage. No UI, no codec; Config.cpp only. The
+# round-trip redirects the config dir to a temp via the env var configPath()
+# reads, so it can never touch the developer's real remoct.conf.
+add_executable(encoder_quality_test
+    encoder_quality_test.cpp
+    ${CMAKE_SOURCE_DIR}/src/Config.cpp
+)
+target_include_directories(encoder_quality_test PRIVATE ${CMAKE_SOURCE_DIR}/include)
+add_test(NAME encoder_quality_test COMMAND encoder_quality_test)
+set_tests_properties(encoder_quality_test PROPERTIES TIMEOUT 30)
+
+# encoder-bitrate-mode: OpusRipEncoder CBR/VBR. Drives both modes end to end so
+# the vbr=false path issues OPUS_SET_VBR(0) at runtime (the F5 guard) and the
+# VBR default path is shown unchanged (run-to-run byte determinism).
+add_executable(opus_mode_test
+    opus_mode_test.cpp
+    ${CMAKE_SOURCE_DIR}/src/OpusRipEncoder.cpp
+)
+target_include_directories(opus_mode_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${OPUS_INCLUDE} ${OPUS_INCLUDE}/opus)
+target_link_libraries(opus_mode_test PRIVATE
+    ${OPUSENC_LIB} ${OPUS_LIB} ${OGG_LIB}
+    $<$<PLATFORM_ID:Linux>:pthread> $<$<PLATFORM_ID:Linux>:m>)
+add_test(NAME opus_mode_test COMMAND opus_mode_test)
+set_tests_properties(opus_mode_test PROPERTIES TIMEOUT 60)
+
 # stream-record R1 — the frozen StreamRecorder engine contract, headless-proven
 # BEFORE any UI exists (probe-first). Synthetic f32 PCM through capture() (the
 # audio-thread entry) + scripted onTitle() splits, real Mp3Encoder/

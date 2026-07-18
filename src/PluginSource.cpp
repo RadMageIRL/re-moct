@@ -59,6 +59,55 @@ double PluginSource::positionSec() const {
     return (self_ && plugin_->position_sec) ? plugin_->position_sec(self_) : 0.0;
 }
 
+// abi-cluster: the appended-field reach check — the contract's
+// min(host, plugin) struct_size rule, applied before even READING a pointer
+// an old (smaller) descriptor does not carry.
+static bool reachesRecordActive(const RemoctPlugin* p) {
+    return p && p->struct_size >= offsetof(RemoctPlugin, set_record_active)
+                                  + sizeof(p->set_record_active);
+}
+
+bool PluginSource::supportsRecordActive() const {
+    return self_ && reachesRecordActive(plugin_) && plugin_->set_record_active;
+}
+
+bool PluginSource::setRecordActive(bool on) {
+    if (!supportsRecordActive()) return false;
+    return plugin_->set_record_active(self_, on ? 1 : 0) != 0;
+}
+
+// Slice B: the copy tee's reach check spans all three fns (they were appended
+// together; read_encoded is the last, so reaching it reaches the trio). The
+// per-fn null-checks still apply — a plugin may ship any of them NULL.
+static bool reachesEncodedTee(const RemoctPlugin* p) {
+    return p && p->struct_size >= offsetof(RemoctPlugin, read_encoded)
+                                  + sizeof(p->read_encoded);
+}
+
+bool PluginSource::supportsEncodedCapture() const {
+    return self_ && reachesEncodedTee(plugin_) &&
+           plugin_->encoded_caps && plugin_->set_encoded_capture &&
+           plugin_->read_encoded;
+}
+
+int32_t PluginSource::encodedCaps() const {
+    return supportsEncodedCapture() ? plugin_->encoded_caps(self_) : 0;
+}
+
+void PluginSource::setEncodedCapture(bool on) {
+    if (supportsEncodedCapture()) plugin_->set_encoded_capture(self_, on ? 1 : 0);
+}
+
+uint32_t PluginSource::readEncoded(uint8_t* dst, uint32_t cap,
+                                   int32_t* codec_out, int32_t* discont_out) {
+    if (!supportsEncodedCapture()) {
+        if (codec_out)   *codec_out = 0;
+        if (discont_out) *discont_out = 0;
+        return 0;
+    }
+    return plugin_->read_encoded(self_, dst, cap, codec_out, discont_out);
+}
+
 void PluginSource::setPreferDigital(bool b) {
     if (self_ && plugin_->set_config) plugin_->set_config(self_, "prefer_digital", b ? "1" : "0");
 }

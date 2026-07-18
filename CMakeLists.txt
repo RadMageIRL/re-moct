@@ -64,6 +64,22 @@ set(REMOCT_SOURCES
     src/PluginHost.cpp            # loadPlugin / validatePlugin / LoadedPlugin (host is a loader now)
     src/ar_crc.cpp
     src/AacDecoder.cpp            # FDK-AAC file (.m4a/.m4b) backend — stays host (D5)
+    src/OpusDecoder.cpp           # libopus/libopusfile (.opus) backend
+    src/WavPackDecoder.cpp        # libwavpack (.wv) backend
+    src/VorbisDecoder.cpp         # libvorbis/libvorbisfile (.ogg) backend
+    src/CustomBackends.cpp        # the shared custom-backend array (playback + BPM)
+    src/FlacEncoder.cpp           # rip-encoder-seam: FLAC output behind IEncoder
+    src/Mp3Encoder.cpp            # rip-encoder-seam: MP3 output behind IEncoder
+    src/WavEncoder.cpp            # rip-wav-encoder: WAV output (no library)
+    src/OpusRipEncoder.cpp        # rip-opus-encoder: Opus output (libopusenc)
+    src/WavPackEncoder.cpp        # rip-wavpack-encoder: WavPack output (libwavpack, decode's lib)
+    src/M4aEncoder.cpp            # aac-m4a-encoder: AAC-LC in MP4 (FDK enc + Mp4Mux, no new dep)
+    src/StreamRecorder.cpp        # stream-record R1: capture engine (ring/worker/split/tag)
+    src/MuxWriter.cpp             # abi-cluster slice B: copy-path MP3 append / ADTS->M4A mux
+    src/GainScan.cpp              # batch-r128: folder ReplayGain scan engine
+    src/EncoderFactory.cpp        # RipFormat -> IEncoder factory (shared by rip + convert)
+    src/ArtEmbed.cpp              # art-embed-shared: embedded-art reader + convert-side writer
+    src/ConvertJob.cpp            # convert-core: decode -> IEncoder batch convert engine
     src/Mp4Chapters.cpp
     src/RadioBrowser.cpp
     src/LastFm.cpp
@@ -83,6 +99,7 @@ if(WIN32)
         ${CMAKE_SOURCE_DIR}/src/platform/win/NotifyWinToast.cpp
         ${CMAKE_SOURCE_DIR}/src/platform/win/CdIoWin.cpp
         ${CMAKE_SOURCE_DIR}/src/platform/win/PluginLoaderWin.cpp  # slice c: LoadLibrary seam in the host
+        ${CMAKE_SOURCE_DIR}/src/platform/win/MediaControlSmtc.cpp # osmedia-seam: SMTC (wingui) / no-op
     )
 endif()
 
@@ -98,6 +115,7 @@ if(UNIX)
         ${CMAKE_SOURCE_DIR}/src/platform/linux/NotifyNotifySend.cpp
         ${CMAKE_SOURCE_DIR}/src/platform/linux/CdIoSgIo.cpp
         ${CMAKE_SOURCE_DIR}/src/platform/linux/PluginLoaderPosix.cpp  # slice c: dlopen seam in the host
+        ${CMAKE_SOURCE_DIR}/src/platform/linux/MediaControlMpris.cpp  # osmedia-seam: MPRIS over sd-bus
     )
     # Module-mode search only: under WSL2 the appended Windows PATH would let
     # config-mode find MSYS2's CURLConfig.cmake at /mnt/c (CMake treats PATH
@@ -192,6 +210,54 @@ if(WIN32 AND REMOCT_STATIC_PROBE)
     set(FDKAAC_LIB "${MSYS2_PREFIX}/lib/libfdk-aac.dll.a")
 endif()
 message(STATUS "fdk-aac: ${FDKAAC_LIB}")
+
+# ── libopus + libopusfile (Opus decode: .opus) ─────────────────────────────
+find_library(OPUS_LIB      NAMES opus     PATHS "${MSYS2_PREFIX}/lib" REQUIRED)
+find_library(OPUSFILE_LIB  NAMES opusfile PATHS "${MSYS2_PREFIX}/lib" REQUIRED)
+# Headers nest exactly like fdk-aac/, identically on MSYS2 and Debian. TWO
+# include entries are needed: the root (so our code can write the explicit
+# <opus/opusfile.h> — TagLib ships its own unrelated opusfile.h, so a bare
+# <opusfile.h> in OUR code is banned) and the opus/ dir itself, because
+# opusfile.h includes its libopus siblings (<opus_multistream.h>) unprefixed —
+# upstream mandates -I<prefix>/include/opus via its pkg-config Cflags.
+# The bare-include ban is ENFORCED by the CI grep gate (ci.yml "Include-guard
+# lint"); adding the opus/ dir before TagLib's include dir below is
+# defense-in-depth only — do not rely on -I order as the guard.
+find_path(OPUS_INCLUDE NAMES opus/opusfile.h PATHS "${MSYS2_PREFIX}/include" REQUIRED)
+# libogg is opusfile's container layer. The dynamic import lib carries it
+# transitively, but under REMOCT_STATIC_PROBE the static libopusfile.a needs
+# it spelled out — for every target that links opusfile, not just remoct
+# (whose probe block already added libogg.a for static libFLAC).
+find_library(OGG_LIB NAMES ogg PATHS "${MSYS2_PREFIX}/lib" REQUIRED)
+# libopusenc (rip-opus-encoder): Opus ENCODE for the rip path. Same family,
+# same include layout (opusenc.h pulls <opus.h> unprefixed — served by the
+# include/opus dir already on the path). Linked before opus (dependency).
+find_library(OPUSENC_LIB NAMES opusenc PATHS "${MSYS2_PREFIX}/lib" REQUIRED)
+message(STATUS "opusfile: ${OPUSFILE_LIB}")
+message(STATUS "opusenc: ${OPUSENC_LIB}")
+
+# ── libwavpack (WavPack decode: .wv) ───────────────────────────────────────
+find_library(WAVPACK_LIB NAMES wavpack PATHS "${MSYS2_PREFIX}/lib" REQUIRED)
+find_path(WAVPACK_INCLUDE NAMES wavpack/wavpack.h PATHS "${MSYS2_PREFIX}/include" REQUIRED)
+message(STATUS "wavpack: ${WAVPACK_LIB}")
+
+# ── libvorbis + libvorbisfile (Ogg Vorbis decode: .ogg) ────────────────────
+find_library(VORBIS_LIB     NAMES vorbis     PATHS "${MSYS2_PREFIX}/lib" REQUIRED)
+find_library(VORBISFILE_LIB NAMES vorbisfile PATHS "${MSYS2_PREFIX}/lib" REQUIRED)
+# Root include only: vorbisfile.h pulls its siblings via QUOTED includes
+# (probe-verified — unlike opusfile's unprefixed-angle siblings), so no
+# <prefix>/include/vorbis entry exists to order. The bare-include ban is the
+# CI grep gate, which already covers vorbisfile.
+find_path(VORBIS_INCLUDE NAMES vorbis/vorbisfile.h PATHS "${MSYS2_PREFIX}/include" REQUIRED)
+message(STATUS "vorbisfile: ${VORBISFILE_LIB}")
+
+# Added HERE (after the find_path calls) rather than in the include block at
+# the top: that block interpolates its variables before find_path has set them
+# (the FDKAAC_INCLUDE entry there expands empty and only works because the
+# whole MSYS2 include dir is added separately).
+target_include_directories(remoct PRIVATE
+    ${OPUS_INCLUDE} ${OPUS_INCLUDE}/opus ${WAVPACK_INCLUDE} ${VORBIS_INCLUDE})
+
 # ── Curses: PDCursesMod wingui (Windows+REMOCT_PDCURSES) or ncursesw ────────
 if(WIN32 AND REMOCT_PDCURSES)
     # Vendored PDCursesMod (pinned; see lib/pdcursesmod/VENDOR.md). Build the
@@ -256,6 +322,13 @@ target_link_libraries(remoct PRIVATE
     ${LAME_LIB}
     ${EBUR128_LIB}
     ${FDKAAC_LIB}
+    ${OPUSFILE_LIB}   # dependency order: opusfile/opusenc -> opus, vorbisfile -> vorbis, all -> ogg
+    ${OPUSENC_LIB}
+    ${OPUS_LIB}
+    ${VORBISFILE_LIB}
+    ${VORBIS_LIB}
+    ${OGG_LIB}
+    ${WAVPACK_LIB}
     $<$<PLATFORM_ID:Windows>:winmm>
     $<$<PLATFORM_ID:Windows>:ws2_32>
     $<$<PLATFORM_ID:Windows>:ole32>
@@ -263,11 +336,14 @@ target_link_libraries(remoct PRIVATE
     $<$<PLATFORM_ID:Windows>:shell32>
     $<$<PLATFORM_ID:Windows>:advapi32>
     $<$<PLATFORM_ID:Windows>:dwmapi>   # DwmSetWindowAttribute: OS dark title bar (wingui)
+    $<$<PLATFORM_ID:Windows>:runtimeobject>  # osmedia-seam: WinRT ABI for SMTC (RoInitialize/RoGetActivationFactory)
+    $<$<PLATFORM_ID:Windows>:gdi32>          # osmedia-seam: SMTC HWND path (also via pdcurses_wingui in the wingui build)
     # Linux: miniaudio's runtime backend loading (dlopen) + threads + libm;
     # libcurl backs the core::IHttp seam (slice 2).
     $<$<PLATFORM_ID:Linux>:pthread>
     $<$<PLATFORM_ID:Linux>:dl>
     $<$<PLATFORM_ID:Linux>:m>
+    $<$<PLATFORM_ID:Linux>:systemd>          # osmedia-seam: MPRIS over sd-bus
 )
 if(UNIX)
     target_link_libraries(remoct PRIVATE CURL::libcurl)

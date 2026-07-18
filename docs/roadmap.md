@@ -994,6 +994,20 @@ carve the ABI first.
   sanitization (station-ID stripping).
 - Comb-filter / harmonic-sum tempogram for BPM (shelved).
 
+### Post-restructure feature backlog (1.3.0-era, deferred by decision)
+These are the genuinely-deferred items from the shipped 1.3.0 feature work (the
+convert / art slices), kept here so they are not re-scoped by accident:
+- **Recursive convert** (parent -> all subdirectories): the batch convert core
+  shipped flat-only on purpose; the recursive mode needs a count-confirm safety
+  gate, a collision policy at scale, and mid-batch failure handling - its own
+  plan-first slice.
+- **Native-rate / hi-res convert**: convert output is 44.1 kHz today (it reuses
+  the forced-44100 decode path). Native-rate output depends on a separate
+  bit-perfect decode slice that removes the forced resample.
+- **Rip cover-art MIME correction**: the CD rip embeds cover art with a hardcoded
+  image/jpeg type even when the image is a PNG (mislabeled but functional). A
+  small standalone fix; the newer convert path already writes the true MIME.
+
 ## Decisions log
 - **Slice C declined - Phase 2 closed at A+B (2026-07-03).** Dispatch
   uniformity in the audio callback would add a second source of truth for the

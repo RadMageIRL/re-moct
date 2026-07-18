@@ -17,6 +17,7 @@
 #include <unistd.h>
 #endif
 #include "StringUtils.h"
+#include "EncoderQuality.h"
 #include "AudioManager.h"
 #include "PlaylistManager.h"
 #include "Mp4Chapters.h"
@@ -40,11 +41,13 @@
 #include <cwchar>
 #include <clocale>
 #include <cstdint>
+#include <climits>   // INT_MAX (help-pane End: draw-time clamp pins it to max_scroll)
 #include <ctime>
 #include <thread>
 #include <cstdarg>
 #include <cstdio>
 #include <cstring>
+#include <cctype>
 #include <cstdlib>
 #include "Log.h"
 #include "Version.h"
@@ -179,12 +182,63 @@ void initWinguiFont(const std::string& configured_face) {
 // ─────────────────────────────────────────────────────────────────────────────
 // Construction
 // ─────────────────────────────────────────────────────────────────────────────
+// ── rip-format-select helpers ────────────────────────────────────────────────
+// config_.rip_formats ("flac,mp3") -> ordered selection. Case-insensitive
+// label match against kRipFormats, unknown tokens ignored (a future format
+// name degrades gracefully on an older build), duplicates dropped, empty
+// result -> the full default set (absent config = pre-slice behavior).
+static std::vector<RipFormat> parseRipFormats(const std::string& s) {
+    std::vector<RipFormat> sel;
+    std::string tok;
+    auto flush = [&] {
+        if (tok.empty()) return;
+        for (const auto& r : kRipFormats) {
+            if (tok.size() == strlen(r.label) &&
+                std::equal(tok.begin(), tok.end(), r.label,
+                           [](char a, char b) { return std::toupper((unsigned char)a) == b; }) &&
+                std::find(sel.begin(), sel.end(), r.id) == sel.end())
+                sel.push_back(r.id);
+        }
+        tok.clear();
+    };
+    for (char c : s) {
+        if (c == ',') flush();
+        else if (!std::isspace((unsigned char)c)) tok += c;
+    }
+    flush();
+    if (sel.empty())
+        for (const auto& r : kRipFormats) sel.push_back(r.id);
+    return sel;
+}
+
+// config_.mp3 "V0".."V9" -> LAME VBR_q int; anything unexpected -> 0 (V0,
+// the pre-config literal). Config::load already validates, this is defense.
+static int parseMp3VbrQ(const std::string& s) {
+    if (s.size() == 2 && (s[0] == 'V' || s[0] == 'v') && s[1] >= '0' && s[1] <= '9')
+        return s[1] - '0';
+    return 0;
+}
+
 UIManager::UIManager(PlaylistManager& playlist, AudioManager& audio,
                      DigiConfig& config, const std::string& initial_dir,
-                     core::INotify* notify)
+                     core::INotify* notify, core::IMediaControl* media)
     : notify_(notify ? notify : &core::notifier()),
+      media_(media),   // default resolved AFTER initscr (SMTC needs a live HWND)
       playlist_(playlist), audio_(audio), config_(config)
 {
+    // Seed the session rip-format selection from the config default (config
+    // is load-once; the modal toggles rip_sel_ and never writes it back).
+    rip_sel_ = parseRipFormats(config_.rip_formats);
+    // Stream-record R2: seed the [Rec] panel settings the same way (config is
+    // load-once; the panel mutates session state and never writes back).
+    rec_fmt_      = config_.rec_format == "mp3" ? RipFormat::Mp3
+                  : config_.rec_format == "m4a" ? RipFormat::M4a : RipFormat::Opus;
+    rec_copy_     = (config_.rec_format == "copy");   // 4th radio (slice B); falls
+                                                      // back live if the plugin lacks it
+    rec_split_on_ = config_.rec_split;
+    rec_dir_      = config_.rec_dir;
+    rec_offset_ms_ = std::clamp(config_.split_offset_ms, 0, 5000);  // lead reserved: negative -> 0
+    rec_ads_discard_ = (config_.rec_ads == "discard");
 #ifdef PDCURSES
     // wingui measures its font during initscr(), so choose the face FIRST.
     initWinguiFont(config_.wingui_font);
@@ -265,6 +319,17 @@ UIManager::UIManager(PlaylistManager& playlist, AudioManager& audio,
     refreshDir();
     audio_.setPreferDigital(config_.prefer_digital_stream);   // apply saved stream-mode pref
     audio_.setProbeMinted(config_.iheart_probe_minted);       // apply saved identity A/B arm (probe)
+    audio_.setRepinMode(config_.repin_mode);                  // apply saved iHeart re-pin mode (F6)
+
+    // OS media control (osmedia-seam): resolve the production default HERE, at the
+    // END of the ctor - after initscr() so the SMTC impl has the live wingui HWND
+    // (PDC_hWnd), which does not exist until the screen is open. Tests inject a
+    // fake, so mediaControl() (SMTC/MPRIS) is never constructed under test. Then
+    // register the inbound sinks + handler; outbound publish rides updateScrobbler
+    // and the loop pumps+drains.
+    if (!media_) media_ = &core::mediaControl();
+    wireMediaControl();
+
     running_ = true;
 }
 
@@ -288,6 +353,7 @@ void UIManager::showTrackToast(const std::string& title, const std::string& arti
 }
 
 UIManager::~UIManager() {
+    if (media_) media_->clear();   // drop the OS now-playing surface on exit
     flushBookProgress();       // persist resume position if quitting mid-book
     running_ = false;
     lf_poll_active_.store(false);
@@ -532,6 +598,9 @@ void UIManager::initColours() {
     init_pair(CP_VIZ_LOW_B,  fg[CP_VIZ_LOW],  -1);
     init_pair(CP_VIZ_MID_B,  fg[CP_VIZ_MID],  -1);
     init_pair(CP_VIZ_HIGH_B, fg[CP_VIZ_HIGH], -1);
+    // iHeart feed/re-pin mode indicator: fixed basic yellow on the default bg, theme
+    // independent, so the status tag reads the same in Classic and Awesome.
+    init_pair(CP_MODE, COLOR_YELLOW, -1);
 #ifdef REMOCT_PROBE
     probeLogCaps("classic");
 #endif
@@ -621,6 +690,10 @@ void UIManager::applyAwesomeTheme() {
         for (const auto& d : defs)
             init_pair(d.pair, nearest(d.fg), nearest(d.bg));
     }
+
+    // iHeart feed/re-pin mode indicator: fixed basic yellow on the default bg (theme
+    // independent, matching the Classic path), so the status tag reads the same in both.
+    init_pair(CP_MODE, COLOR_YELLOW, -1);
 
     // stdscr base fill: the pane/title/cwd/cmdline subwindows get a base bg via
     // wbkgd(CP_DIM) in createWindows(), but the inter-pane gutter, outer insets, and
@@ -867,28 +940,144 @@ void UIManager::maybePreloadNext() {
 }
 
 void UIManager::flushPendingSeek() {
-    if (!seek_dirty_) return;
-    double d = pending_seek_;
-    pending_seek_ = 0.0;
-    seek_dirty_   = false;
-    // Drop the buffered seek if the track changed since it was requested (e.g. n/p or
-    // auto-advance landed within the coalescing window) so it can't leak onto the new
-    // track and start it mid-way.
-    if ((int)playlist_.current() != seek_stamp_) return;
+    if (!seek_.pending()) return;
+    // The coalescer resolves to a DELTA (absolute target - live position, or the
+    // accumulated relative delta) and drops it if the track changed since the seek
+    // was requested (n/p or auto-advance inside the window) so it can't leak onto
+    // a new track. Absolute is resolved HERE against the live position - never
+    // folded at receive time (a drag stream would accumulate against a stale pos).
+    auto d = seek_.resolve((int)playlist_.current(), audio_.positionSec());
+    if (!d) return;
     last_seek_apply_ = std::chrono::steady_clock::now();
-    audio_.seekBy(d);
+    audio_.seekBy(*d);              // the one seekBy home (the MP3 bit-reservoir fix)
     redraw_needed_.store(true);
 }
 
 void UIManager::requestSeek(double delta) {
-    if (!seek_dirty_) seek_stamp_ = (int)playlist_.current();  // tie this seek to the current track
-    pending_seek_ += delta;
-    seek_dirty_    = true;
+    seek_.addRelative(delta, (int)playlist_.current());
     // Apply immediately when outside the cooldown (so a single tap is instant);
     // otherwise accumulate and let the run loop flush once the window elapses.
     using namespace std::chrono;
     if (steady_clock::now() - last_seek_apply_ >= milliseconds(100))
         flushPendingSeek();
+}
+
+void UIManager::requestSeekAbs(double target) {
+    // OS scrubber SetPosition. Last-write-wins absolute lane; NOT folded to a
+    // delta now (a drag emits many SetPositions in one window). Same immediate/
+    // coalesce timing as the relative path.
+    seek_.setAbsolute(target, (int)playlist_.current());
+    using namespace std::chrono;
+    if (steady_clock::now() - last_seek_apply_ >= milliseconds(100))
+        flushPendingSeek();
+}
+
+// ─── OS media control (osmedia-seam) ──────────────────────────────────────────
+core::MediaStatus UIManager::mediaStatus() const {
+    switch (audio_.state()) {
+        case PlaybackState::Playing: return core::MediaStatus::Playing;
+        case PlaybackState::Paused:  return core::MediaStatus::Paused;
+        default:                     return core::MediaStatus::Stopped;
+    }
+}
+
+// Register the inbound split sink + the command handler. Each sink routes to the
+// EXACT function the keyboard uses (no parallel transport); seek goes through the
+// coalescer, never a raw seekTo. The handler only enqueues (the marshal).
+void UIManager::wireMediaControl() {
+    MediaRouter::Sinks s;
+    s.play        = [this]{ if (audio_.state() == PlaybackState::Paused) audio_.togglePause(); };
+    s.pause       = [this]{ if (audio_.state() == PlaybackState::Playing) audio_.togglePause(); };
+    s.togglePause = [this]{ if (audio_.state() != PlaybackState::Stopped) audio_.togglePause(); };
+    s.stop        = [this]{ audio_.stop(); };
+    s.next        = [this]{ manualNext(); };
+    s.prev        = [this]{ manualPrevious(); };
+    s.seekAbs     = [this](double t){ requestSeekAbs(t); };
+    s.seekRel     = [this](double d){ requestSeek(d); };
+    media_router_.setSinks(std::move(s));
+    media_->setCommandHandler([this](core::MediaEvent e){ media_router_.post(e); });
+    // Hand the impl the bundled logo bytes ONCE for the empty-art floor
+    // (osmedia-art-floor). logoBytes() lazy-loads remoct_logo.jpg here.
+    media_->setDefaultArt(logoBytes());
+}
+
+// Publish now-playing to the OS on a real change. Called from updateScrobbler's
+// tail with the SAME resolved values Discord uses (no second assembler). The
+// change-trigger is independent of the Discord toggle.
+void UIManager::publishMedia(const std::string& artist, const std::string& track,
+                             const std::string& album, const std::string& art_url,
+                             const std::vector<uint8_t>& art_bytes, int pos, int dur) {
+    if (!config_.os_media_control) return;
+    // Art precedence (osmedia-art-floor): resolved cover BYTES first (a local
+    // file's embedded picture, or radio's resolved cover from the shared
+    // radio-art machinery), then a URL, then the RE-MOCT logo floor. The
+    // DECISION lives once, consumer-side.
+    std::string art_eff = art_bytes.empty() ? core::floorArt(art_url) : std::string();
+    // The art size joins the change trigger so a cover that RESOLVES a tick after
+    // the title (the radio song-entity lookup) re-publishes on the still-current
+    // song - the Discord path's deferred-art-commit, expressed via the trigger.
+    std::string art_id = std::to_string(art_bytes.size()) + "|" + art_eff;
+    if (artist != media_last_artist_ || track != media_last_track_ || art_id != media_last_art_) {
+        media_last_artist_ = artist; media_last_track_ = track; media_last_art_ = art_id;
+        media_last_valid_  = true;
+        core::MediaMeta m;
+        m.artist = artist; m.title = track; m.album = album;
+        m.art = art_eff; m.art_bytes = art_bytes;
+        media_->updateNowPlaying(m, mediaStatus(), (double)pos, (double)dur);
+    }
+}
+
+// Manual next/previous, extracted VERBATIM from the case 'n'/'p' bodies so the
+// keyboard AND an OS Next/Previous command route through the IDENTICAL logic
+// (queue priority, playlist next/prev, CD reopen, follow-mode cursor, preload).
+// One home; the switch cases now just call these. (The two inner switch-breaks
+// on the CD-ejected path became returns.)
+void UIManager::manualNext() {
+    auto play_next = [&](const std::string& path, bool from_queue = false) {
+        if (!from_queue && config_.follow_playing) pl_cursor_ = (int)playlist_.current();
+        std::string drive; int track_num;
+        if (parseCDPath(path, drive, track_num)) {
+            if (!reopenCDForAction(drive)) return;   // ejected while stopped
+            audio_.playCDTrack(track_num);
+            return;
+        }
+        if (audio_.cdMode()) audio_.closeCD();
+        audio_.play(path);
+        maybePreloadNext();
+    };
+    if (!playlist_.queueEmpty()) {
+        if (auto qe = playlist_.queuePop(); qe.has_value()) {
+            audio_.clearNext();
+            const std::string& qpath = qe->path;
+            std::string drive; int track_num;
+            if (parseCDPath(qpath, drive, track_num)) {
+                if (!reopenCDForAction(drive)) return;   // ejected while stopped
+                audio_.playCDTrack(track_num);
+                return;                                  // queue item has no playlist row
+            }
+            if (audio_.cdMode()) audio_.closeCD();
+            play_next(qpath, true);  // from_queue=true — don't move cursor
+        }
+    } else if (auto p = playlist_.next(); p.has_value())
+        play_next(p.value());
+    else
+        audio_.stop();
+}
+
+void UIManager::manualPrevious() {
+    auto play_prev = [&](const std::string& path) {
+        if (config_.follow_playing) pl_cursor_ = (int)playlist_.current();   // gated like manual next
+        std::string drive; int track_num;
+        if (parseCDPath(path, drive, track_num)) {
+            if (!reopenCDForAction(drive)) return;   // ejected while stopped
+            audio_.playCDTrack(track_num);
+            return;
+        }
+        if (audio_.cdMode()) audio_.closeCD();
+        audio_.play(path);
+    };
+    if (auto p = playlist_.previous(); p.has_value())
+        play_prev(p.value());
 }
 
 // Remove every playlist + queued row for a CD drive letter and keep the cursor
@@ -1063,12 +1252,131 @@ void UIManager::run() {
 
     while (running_) {
         audio_.pollEvents();
+        // OS media control (osmedia-seam): service the transport (Linux MPRIS bus;
+        // Windows no-op) then drain queued transport commands on THIS (UI) thread,
+        // beside the seek flush. Commands from an OS callback are applied here, not
+        // inline in the callback - the marshal. pump()/drain() are cheap no-ops when
+        // media is disabled or idle.
+        if (config_.os_media_control) {
+            media_->pump();
+            // Transport applies regardless of any open modal - a media key should
+            // work whatever the TUI is showing - EXCEPT during an active CD rip,
+            // where the ripper owns the drive and a background track-switch
+            // (manualNext -> closeCD/playCDTrack) would corrupt it. Drop queued
+            // commands for that window only (osmedia-seam, the modal confirm).
+            if (cd_ripper_.isActive()) media_router_.clear();
+            else                       media_router_.drain();
+        }
         // Flush a coalesced seek once the user stops hammering [/] (the cooldown
         // makes single taps instant and turns held repeats into a few seeks, not many).
-        if (seek_dirty_ &&
+        if (seek_.pending() &&
             std::chrono::steady_clock::now() - last_seek_apply_ >= std::chrono::milliseconds(100))
             flushPendingSeek();
-        updateScrobbler();
+        updateScrobbler();   // publishes now-playing to the OS on change (publishMedia)
+        // OS media control: per-tick position refresh (cheap; the impl throttles
+        // its own signal emission) + clear on the transition to stopped so the OS
+        // surface does not keep a dead track. Metadata itself is pushed on change
+        // by publishMedia from updateScrobbler.
+        if (config_.os_media_control) {
+            core::MediaStatus st = mediaStatus();
+            if (st == core::MediaStatus::Stopped) {
+                if (media_last_valid_) {
+                    media_->clear();
+                    media_last_valid_ = false;
+                    media_last_artist_.clear(); media_last_track_.clear(); media_last_art_.clear();
+                }
+            } else {
+                double pos = audio_.streamMode() ? (double)audio_.streamPositionSec()
+                                                 : audio_.positionSec();
+                double dur = audio_.streamMode() ? 0.0 : audio_.durationSec();
+                media_->updatePosition(pos, dur, st);
+            }
+        }
+        // Stream-record R2: hand the polled now-playing to the recorder —
+        // onTitle dedups internally (a repeat can never cut twice) and
+        // no-ops when idle/split-off, so the unconditional per-tick call is
+        // safe; the fetch is one the scrobbler/art paths already make. The
+        // panel refreshes its live state at ~2 Hz (80 ms ticks x 6).
+        if (audio_.streamMode()) {
+            const bool recording = audio_.streamRecorder().recording();
+            // Drive the SAME radio-art machinery the Info pane uses (single-
+            // in-flight guard, negative cache, provider order: station cover
+            // then an iTunes/Deezer song-entity lookup) whenever radio art is
+            // WANTED - for the recorder OR the OS media card - so radio_bytes_
+            // resolves even with the pane closed and nothing recording. This is
+            // the same resolution the Discord path does; radio_bytes_ is the one
+            // home, reused here instead of a second lookup.
+            if (recording || config_.os_media_control) {
+                std::string np = audio_.streamNowPlaying();
+                std::string artist, title;
+                std::string key = radioSongIdentity(np, artist, title);
+                radioArtPickup(key);
+                if (!key.empty()) radioArtKick(artist, title, key);
+                else radioArtFloor(key);   // metadata dip: reset so the song's
+                                           // return re-kicks (radio-art-refresh-fix)
+                if (recording) {
+                    audio_.streamRecorder().onTitle(np);
+                    // Hand the resolved image to the recorder keyed by the RAW
+                    // now-playing (matches cut_raw_ at tag time). Once per title.
+                    if (!key.empty() && radio_bytes_key_ == key && radio_bytes_resolved_ &&
+                        !radio_bytes_.empty() && np != rec_art_pushed_key_) {
+                        rec_art_pushed_key_ = np;
+                        audio_.streamRecorder().onArt(np, radio_bytes_);
+                    }
+                }
+            }
+            if (recording && ui_overlay_ == UIOverlay::RecPanel && (++rec_panel_tick_ % 6) == 0)
+                redraw_needed_.store(true);
+        }
+        // [REC] pulse driver: a redraw every ~0.64s while recording so the
+        // badge breathes (one atomic read per tick when idle).
+        if (audio_.streamRecorder().recording() && (++rec_pulse_tick_ % 8) == 0) {
+            ++rec_pulse_;
+            redraw_needed_.store(true);
+        }
+        // batch-r128: scan progress on the status line (~1 Hz) + the summary
+        // toast when the worker finishes. All reads are cheap atomics.
+        if (gain_scan_.running()) {
+            static int rg_tick = 0;
+            if ((++rg_tick % 12) == 0) {
+                rip_status_ = "ReplayGain " + std::to_string(gain_scan_.index()) + "/" +
+                              std::to_string(gain_scan_.total()) + "  " +
+                              sanitizeForDisplay(gain_scan_.currentFile());
+                rip_msg_ticks_ = 0;
+                redraw_needed_.store(true);
+            }
+        }
+        if (gain_scan_.takeFinished()) {
+            std::string sum = std::to_string(gain_scan_.tagged()) + " tagged, " +
+                              std::to_string(gain_scan_.skipped()) + " already had gain, " +
+                              std::to_string(gain_scan_.errors()) + " error(s)";
+            if (gain_scan_.wavNoted() > 0)
+                sum += ", " + std::to_string(gain_scan_.wavNoted()) + " wav skipped";
+            showTrackToast(gain_scan_.cancelled() ? "ReplayGain scan cancelled"
+                                                  : "ReplayGain scan done", sum, "");
+            rip_status_.clear();
+            redraw_needed_.store(true);
+        }
+        // convert-core: the same status-line/toast shape as the RG scan.
+        if (convert_job_.running()) {
+            static int cv_tick = 0;
+            if ((++cv_tick % 12) == 0) {
+                rip_status_ = "Converting " + std::to_string(convert_job_.index()) + "/" +
+                              std::to_string(convert_job_.total()) + "  " +
+                              sanitizeForDisplay(convert_job_.currentFile());
+                rip_msg_ticks_ = 0;
+                redraw_needed_.store(true);
+            }
+        }
+        if (convert_job_.takeFinished()) {
+            std::string sum = std::to_string(convert_job_.converted()) + " converted, " +
+                              std::to_string(convert_job_.skipped()) + " skipped, " +
+                              std::to_string(convert_job_.errors()) + " error(s)";
+            showTrackToast(convert_job_.cancelled() ? "Convert cancelled"
+                                                    : "Convert done", sum, "");
+            rip_status_.clear();
+            redraw_needed_.store(true);
+        }
         updateBookProgress();
         // Async stream connect/fail confirmation toasts. Un-gated at slice 5:
         // this was #ifdef _WIN32 slice-1 scaffolding from when notify was a
@@ -1418,6 +1726,9 @@ void UIManager::run() {
             if (ui_overlay_ != UIOverlay::None) {
                 if (ui_overlay_ == UIOverlay::RipConfirm) drawRipConfirm();
                 else if (ui_overlay_ == UIOverlay::MBSearch) drawMBSearch();
+                else if (ui_overlay_ == UIOverlay::RecPanel) drawRecPanel();
+                else if (ui_overlay_ == UIOverlay::ConvertScope) drawConvertScope();
+                else if (ui_overlay_ == UIOverlay::ConvertConfirm) drawConvertConfirm();
                 redraw_needed_.store(false);
             } else {
             drawAll();
@@ -1624,7 +1935,9 @@ void UIManager::drawAll() {
 
 void UIManager::drawRipConfirm() {   // slice 6: common (ncurses + portable CDSource)
     const int BOX_W = 68;
-    const int BOX_H = 15;
+    // rip-format-select: the format block is data-driven, so the box and
+    // everything below it grow with the table (2 rows -> 19, 3 -> 20, ...).
+    const int BOX_H = 17 + kRipFormatCount;
     int y0 = (screen_rows_ - BOX_H) / 2;
     int x0 = (screen_cols_ - BOX_W) / 2;
     if (y0 < 0) y0 = 0;
@@ -1670,18 +1983,80 @@ void UIManager::drawRipConfirm() {   // slice 6: common (ncurses + portable CDSo
 
     mvwprintw(w, 2, 3, "Drive  %s\\   offset %+d samples",
               cd.driveLetter().c_str(), drive_offset);
-    // "Disc N tracks" left, "FLAC-5 + LAME V0 VBR" right-aligned on same line
-    const char* fmt_str = "FLAC-5 + LAME V0 VBR";
     mvwprintw(w, 3, 3, "Disc   %d tracks", ntracks);
-    mvwaddstr(w, 3, BOX_W - (int)strlen(fmt_str) - 3, fmt_str);
-    if (!album_str.empty())
-        mvwprintw(w, 4, 3, "%s", album_str.c_str());
 
-    // Divider
-    mvwhline(w, 5, 1, ACS_HLINE, BOX_W - 2);
+    // Album line + the live selection summary (or the deselect-all hint)
+    // right-aligned on the same row. The album truncates to keep the
+    // right-hand text intact (the MAX_DIR idiom above).
+    const bool none_selected = rip_sel_.empty();
+    std::string summary;
+    if (none_selected) {
+        summary = "select at least one format to rip";
+    } else {
+        summary = "Out: ";
+        bool first = true;
+        for (const auto& r : kRipFormats) {
+            if (std::find(rip_sel_.begin(), rip_sel_.end(), r.id) == rip_sel_.end()) continue;
+            if (!first) summary += " + ";
+            summary += r.label;
+            first = false;
+        }
+    }
+    {
+        int sum_x = BOX_W - (int)summary.size() - 3;
+        int max_album = sum_x - 5;
+        std::string a = album_str;
+        if ((int)a.size() > max_album && max_album > 3)
+            a = a.substr(0, (size_t)max_album - 3) + "...";
+        if (!a.empty()) mvwprintw(w, 4, 3, "%s", a.c_str());
+        if (none_selected) wattron(w, COLOR_PAIR(CP_STATUS_ERR) | A_BOLD);
+        mvwaddstr(w, 4, sum_x, summary.c_str());
+        if (none_selected) wattroff(w, COLOR_PAIR(CP_STATUS_ERR) | A_BOLD);
+    }
 
-    // Mode options — plain text, no color pairs on description lines
-    mvwaddstr(w, 6, 3, "Select ripping mode:");
+    // ── Output formats (digit-toggled; data-driven from kRipFormats) ──────
+    mvwaddstr(w, 6, 3, "Output formats");
+    {
+        char hint[24];
+        snprintf(hint, sizeof(hint), "(1-%d toggle)", kRipFormatCount);
+        mvwaddstr(w, 6, BOX_W - (int)strlen(hint) - 3, hint);
+    }
+    for (int i = 0; i < kRipFormatCount; ++i) {
+        const auto& r = kRipFormats[i];
+        bool on = std::find(rip_sel_.begin(), rip_sel_.end(), r.id) != rip_sel_.end();
+        // encoder-bitrate-mode: the ONE label home, fed the RIP config fields.
+        // alt_mode = "is CBR" (MP3 mp3_cbr; Opus !opus_vbr; M4A !aac_vbr).
+        bool alt = r.id == RipFormat::Mp3  ? config_.mp3_cbr
+                 : r.id == RipFormat::Opus ? !config_.opus_vbr
+                 : r.id == RipFormat::M4a  ? !config_.aac_vbr : false;
+        std::string quality = encoderQualityLabel(
+            r.id, alt, config_.mp3,
+            r.id == RipFormat::Mp3 ? config_.mp3_cbr_bitrate
+            : r.id == RipFormat::M4a ? config_.aac_cbr_bitrate : config_.opus_bitrate,
+            config_.flac_level, config_.wavpack_mode, config_.aac_vbr_level);
+        // Focus cursor (>) marks the row Left/Right/[M] edit. Marker and note are
+        // two separate signals (lossless master; format limitation).
+        const char* cur = (i == rip_focus_) ? "> " : "  ";
+        mvwprintw(w, 7 + i, 3, "%s[%c] %d  %-8s %-14s %-3s%s",
+                  cur, on ? 'x' : ' ', i + 1, r.label, quality.c_str(),
+                  r.lossless ? "*" : "", r.note);
+    }
+    // Axis hint for the focused row (the blank line above the mode block); only
+    // lossy rows have an editable axis, so FLAC/WAV/WavPack focus shows nothing.
+    if (rip_focus_ >= 0 && rip_focus_ < kRipFormatCount) {
+        const auto& fr = kRipFormats[rip_focus_];
+        bool alt = fr.id == RipFormat::Mp3  ? config_.mp3_cbr
+                 : fr.id == RipFormat::Opus ? !config_.opus_vbr
+                 : fr.id == RipFormat::M4a  ? !config_.aac_vbr : false;
+        if (const char* hint = encoderAxisHint(fr.id, alt))
+            mvwaddstr(w, 7 + kRipFormatCount, 5, hint);
+    }
+
+    // Mode options — plain text; dimmed while nothing is selected (commit
+    // keys are inert then; N stays live). Cancel row never dims. Rows below
+    // the format block are table-size-relative.
+    const int mode_y = 8 + kRipFormatCount;
+    mvwaddstr(w, mode_y, 3, "Select ripping mode");
     struct { const char* key; const char* label; const char* desc; } opts[] = {
         { "[A]", "AccurateRip ", "Network CRC verify + offset correction" },
         { "[C]", "CUETools    ", "Disc-wide CRC32, no network required" },
@@ -1689,13 +2064,193 @@ void UIManager::drawRipConfirm() {   // slice 6: common (ncurses + portable CDSo
         { "[B]", "Local 2-pass", "Best-effort + read-twice determinism check" },
         { "[N]", "Cancel      ", "Go back" },
     };
-    for (int i = 0; i < 5; ++i)
-        mvwprintw(w, 7 + i, 3, "%s %-12s  %s",
+    for (int i = 0; i < 5; ++i) {
+        bool dim = none_selected && i < 4;
+        if (dim) wattron(w, A_DIM);
+        mvwprintw(w, mode_y + 1 + i, 3, "%s %-12s  %s",
                   opts[i].key, opts[i].label, opts[i].desc);
+        if (dim) wattroff(w, A_DIM);
+    }
 
     // Footer divider + output path
-    mvwhline(w, 12, 1, ACS_HLINE, BOX_W - 2);
-    mvwprintw(w, 13, 3, "Out  %s", disp_dir.c_str());
+    mvwhline(w, mode_y + 6, 1, ACS_HLINE, BOX_W - 2);
+    mvwprintw(w, mode_y + 7, 3, "Out  %s", disp_dir.c_str());
+
+    wrefresh(w);
+    delwin(w);
+}
+
+// Stream-record R2: the [Rec] panel (^E). The rip modal's window mechanics
+// cloned (centered newwin, themed bkgd, panelFrame + Classic manual title,
+// MAX_DIR truncation); rip-specific rows dropped. Two views on one overlay:
+// SETTINGS while idle, live STATE while recording (^E reopens to it). Every
+// lifecycle datum is read from the recorder's atomic accessors per render —
+// no UI-side copy exists to drift.
+void UIManager::drawRecPanel() {
+    const int BOX_W = 68;
+    const int BOX_H = 23;   // split-trim [T] + ad-aware [A] + the M4A and Copy rows
+                            // (slice B) and its no-RG note
+    int y0 = (screen_rows_ - BOX_H) / 2;
+    int x0 = (screen_cols_ - BOX_W) / 2;
+    if (y0 < 0) y0 = 0;
+    if (x0 < 0) x0 = 0;
+
+    WINDOW* w = newwin(BOX_H, BOX_W, y0, x0);
+    if (!w) return;
+    wbkgd(w, config_.awesome_mode ? COLOR_PAIR(CP_DIM) : COLOR_PAIR(0));
+    werase(w);
+
+    const char* title = " STREAM RECORDING ";
+    panelFrame(w, title, true);
+    if (!config_.awesome_mode)
+        mvwaddstr(w, 0, (BOX_W - (int)strlen(title)) / 2, title);
+
+    auto& rec = audio_.streamRecorder();
+
+    // Station display name (the "RADIO: " prefix is a pane affordance, not a name)
+    std::string st = stationLabel(audio_.streamUrl());
+    if (st.rfind("RADIO: ", 0) == 0) st = st.substr(7);
+
+    // Effective output dir: the recorder appends <Station>/ itself, so show
+    // the resolved station dir the cuts will actually land in.
+    const std::string base = rec_dir_.empty() ? CDRipper::recordingsDir() : rec_dir_;
+#ifdef _WIN32
+    const std::string dir  = base + "\\" + sanitizePathComponent(st);
+#else
+    const std::string dir  = base + "/" + sanitizePathComponent(st);
+#endif
+    // Both fields' content starts at column 12 (col 3 + the 9-char prefix); the
+    // last interior column is BOX_W - 2, so the budget from col 12 is BOX_W - 12 - 1.
+    const int FIELD_W = BOX_W - 12 - 1;
+    std::string disp_dir = dir;
+    if ((int)disp_dir.size() > FIELD_W)
+        disp_dir = "..." + disp_dir.substr(disp_dir.size() - (FIELD_W - 3));
+
+    // Station marquees through the shared scrollToWidth tick (pads if it fits,
+    // scrolls if it does not) so a long station name stays inside the border. Out
+    // keeps the head-truncation idiom (the meaningful tail of a path) at the
+    // corrected budget - a scrolling path in a settings modal is noise.
+    mvwprintw(w, 2, 3, "Station  %s", scrollToWidth(st, FIELD_W, text_scroll_offset_).c_str());
+    mvwprintw(w, 3, 3, "Out      %s", disp_dir.c_str());
+
+    if (!rec.recording()) {
+        // ── SETTINGS view ────────────────────────────────────────────────
+        mvwaddstr(w, 5, 3, "Format");
+        mvwaddstr(w, 5, BOX_W - 15, "(1-4 select)");
+        // encoder-bitrate-mode: the shared label home, fed the REC fields
+        // (rec_*), independent of the rip knobs. alt_mode = "is CBR".
+        struct { RipFormat id; const char* label; std::string quality; } rows[] = {
+            { RipFormat::Opus, "Opus",
+              encoderQualityLabel(RipFormat::Opus, !config_.rec_opus_vbr,
+                                  config_.rec_mp3, config_.rec_opus_bitrate) },
+            { RipFormat::Mp3,  "MP3",
+              encoderQualityLabel(RipFormat::Mp3, config_.rec_mp3_cbr,
+                                  config_.rec_mp3, config_.rec_mp3_cbr_bitrate) },
+            { RipFormat::M4a,  "M4A",
+              encoderQualityLabel(RipFormat::M4a, !config_.rec_aac_vbr,
+                                  config_.rec_mp3, config_.rec_aac_cbr_bitrate,
+                                  5, "normal", config_.rec_aac_vbr_level) },
+        };
+        for (int i = 0; i < 3; ++i) {
+            const char* cur = (i == rec_focus_) ? "> " : "  ";
+            mvwprintw(w, 6 + i, 3, "%s(%c) %d  %-6s %s",
+                      cur, (!rec_copy_ && rec_fmt_ == rows[i].id) ? '*' : ' ', i + 1,
+                      rows[i].label, rows[i].quality.c_str());
+        }
+        // Copy row (abi-cluster slice B): as-broadcast capture. Quality
+        // column = the LIVE codec from the plugin's encoded_caps; greyed
+        // with a dim reason when the plugin lacks the tee (old plugin).
+        {
+            const bool copy_ok = audio_.recordingCopySupported();
+            std::string q;
+            if (!copy_ok) {
+                q = "unavailable (plugin lacks copy)";
+            } else {
+                int32_t caps = audio_.streamEncodedCaps();
+                q = caps == 2 ? "AAC as broadcast (no re-encode)"
+                  : caps == 1 ? "MP3 as broadcast (no re-encode)"
+                              : "as broadcast (no re-encode)";
+            }
+            if (!copy_ok) wattron(w, A_DIM);
+            mvwprintw(w, 9, 3, "%s(%c) 4  %-6s %s",
+                      (rec_focus_ == 3) ? "> " : "  ",
+                      rec_copy_ ? '*' : ' ', "Copy", q.c_str());
+            if (!copy_ok) wattroff(w, A_DIM);
+        }
+        // Axis hint for the focused rec row (encoder-bitrate-mode); the Copy row
+        // has no quality axis, so it shows nothing (like FLAC/WAV in the rip modal).
+        {
+            RipFormat ff = rec_focus_ == 1 ? RipFormat::Mp3
+                         : rec_focus_ == 0 ? RipFormat::Opus
+                         : rec_focus_ == 2 ? RipFormat::M4a : RipFormat::Wav;
+            bool alt = ff == RipFormat::Mp3  ? config_.rec_mp3_cbr
+                     : ff == RipFormat::Opus ? !config_.rec_opus_vbr
+                     : ff == RipFormat::M4a  ? !config_.rec_aac_vbr : false;
+            if (const char* hint = encoderAxisHint(ff, alt))
+                mvwaddstr(w, 14, 5, hint);
+        }
+        mvwprintw(w, 10, 3, "[S] Split on track change : %s",
+                  rec_split_on_ ? "ON" : "OFF (one continuous file)");
+        mvwprintw(w, 11, 3, "[T] Split hold : %d ms", rec_offset_ms_);
+        mvwprintw(w, 12, 3, "[A] Ad segments : %s",
+                  rec_ads_discard_ ? "DISCARD (not written)" : "Save (to ads/ folder)");
+        mvwaddstr(w, 13, 3, "[D] Output dir (edit)");
+
+        // The pause note — driven by the plugin's keep-draining capability
+        // (abi-cluster slice A): with a capable plugin, pausing mutes playback
+        // while the recording continues gaplessly; with an old plugin the R1
+        // pause-gap truth stays. Plus the Discard cost AT THE TOGGLE and the
+        // copy trade AT THE SELECTION.
+        wattron(w, A_DIM);
+        if (audio_.recordingDrainSupported()) {
+            mvwaddstr(w, 15, 3, "Note: pausing mutes playback - the recording");
+            mvwaddstr(w, 16, 3, "continues (you rejoin the live broadcast on resume).");
+        } else {
+            mvwaddstr(w, 15, 3, "Note: pausing playback while recording leaves a");
+            mvwaddstr(w, 16, 3, "silence gap - the paused-over airtime is not captured.");
+        }
+        mvwaddstr(w, 17, 3, "Cuts split on station metadata (boundaries are +/-1-2s).");
+        if (rec_copy_)
+            mvwaddstr(w, 18, 3, "Copy keeps the broadcast bytes exactly - no ReplayGain tags.");
+        if (rec_ads_discard_)
+            mvwaddstr(w, 19, 3, "Discard trusts station metadata - a mislabeled song can be lost.");
+        wattroff(w, A_DIM);
+
+        mvwhline(w, BOX_H - 3, 1, ACS_HLINE, BOX_W - 2);
+        mvwaddstr(w, BOX_H - 2, 3, "[R] Record        [N/Esc] Close");
+    } else {
+        // ── RECORDING view (live state, all atomic reads) ───────────────
+        std::string np = audio_.streamNowPlaying();
+        if ((int)np.size() > BOX_W - 14) np = np.substr(0, BOX_W - 17) + "...";
+        wattron(w, COLOR_PAIR(CP_STATUS_ERR) | A_BOLD);
+        mvwaddstr(w, 5, 3, "* REC");
+        wattroff(w, COLOR_PAIR(CP_STATUS_ERR) | A_BOLD);
+        mvwprintw(w, 5, 10, "%s", np.c_str());
+
+        int es = rec.elapsedSec();
+        mvwprintw(w, 7, 3, "elapsed %d:%02d    cuts %d    written %.1f MB",
+                  es / 60, es % 60, rec.cutIndex(),
+                  (double)rec.bytesWritten() / (1024.0 * 1024.0));
+        // ad-aware: the skip counter is the trust surface for Discard — the
+        // only evidence the mode is working, and the tell when it over-fires.
+        if (int skipped = rec.adsSkipped(); skipped > 0)
+            mvwprintw(w, 6, 3, "ads skipped: %d (Discard is on)", skipped);
+        uint64_t dropped = rec.droppedFrames();
+        if (dropped > 0) {
+            wattron(w, COLOR_PAIR(CP_STATUS_ERR) | A_BOLD);
+            mvwprintw(w, 8, 3, "dropped frames: %llu", (unsigned long long)dropped);
+            wattroff(w, COLOR_PAIR(CP_STATUS_ERR) | A_BOLD);
+        }
+        std::string err = rec.lastError();
+        if (!err.empty()) {
+            wattron(w, COLOR_PAIR(CP_STATUS_ERR) | A_BOLD);
+            mvwprintw(w, 9, 3, "error: %s", err.c_str());
+            wattroff(w, COLOR_PAIR(CP_STATUS_ERR) | A_BOLD);
+        }
+
+        mvwhline(w, BOX_H - 3, 1, ACS_HLINE, BOX_W - 2);
+        mvwaddstr(w, BOX_H - 2, 3, "[X] Stop          [N/Esc] Close (keeps recording)");
+    }
 
     wrefresh(w);
     delwin(w);
@@ -1888,6 +2443,11 @@ void UIManager::drawTitleBar() {
         default: break;
     }
     if (playlist_.shuffle()) modes += " [SHUFFLE]";
+    // Stream-record R2: DERIVED from the recorder's own state (one relaxed
+    // atomic) — no stored UI flag exists, so a stale badge is impossible:
+    // every engine teardown path (stop/station switch/file/CD/quit) already
+    // clears recording() via the R1 hooks.
+    if (audio_.streamRecorder().recording()) modes += " [REC]";
     if (!playlist_.queueEmpty())
         modes += " [Q:" + std::to_string(playlist_.queueSize()) + "]";
     if (config_.toast_enabled) modes += " [TOAST]";
@@ -1993,6 +2553,26 @@ void UIManager::drawTitleBar() {
     std::wstring wtitle = utf8_to_wide(padToWidth(line, screen_cols_));
     mvwaddnwstr(win_title_, 0, 0, wtitle.c_str(), (int)wtitle.size());
     wattroff(win_title_, COLOR_PAIR(CP_TITLE) | A_BOLD);
+
+    // [REC] pulse: overpaint the badge in slow-pulsing red (phase advanced by
+    // the tick loop ~every 0.64s while recording). Column math: `right` is
+    // right-aligned at the true edge, and everything BEFORE [REC] in it is
+    // ASCII (repeat/shuffle tags), so byte offset == columns for the prefix;
+    // dispWidth handles any UTF-8 (MB album) that follows. ASCII overpaint,
+    // both curses builds, both themes (CP_STATUS_ERR is the red pair).
+    if (audio_.streamRecorder().recording()) {
+        size_t p = right.find(" [REC]");
+        if (p != std::string::npos) {
+            int col = screen_cols_ - dispWidth(right) + (int)p + 1;
+            if (col >= 0 && col + 5 <= screen_cols_) {
+                static const attr_t kPulse[4] = { A_BOLD, A_NORMAL, A_DIM, A_NORMAL };
+                attr_t a = COLOR_PAIR(CP_STATUS_ERR) | kPulse[rec_pulse_ & 3];
+                wattron(win_title_, a);
+                mvwaddstr(win_title_, 0, col, "[REC]");
+                wattroff(win_title_, a);
+            }
+        }
+    }
 }
 
 void UIManager::drawCwd() {
@@ -2067,6 +2647,9 @@ void UIManager::drawDirBrowser() {
                              : "";
         hdr = " Dir: " + leaf + sortname + (show_hidden_ ? " [.hidden]" : "") + " ";
     }
+    // convert-core: a visible marked count (any browser mode).
+    if (!marked_.empty())
+        hdr += "[" + std::to_string((int)marked_.size()) + " marked] ";
     if (!aw) {   // Classic: full-width coloured header bar on row 0
         wattron(win_dir_, focused ? (COLOR_PAIR(CP_FOCUSED)|A_BOLD)
                                   : (COLOR_PAIR(CP_BORDER)|A_BOLD));
@@ -2107,9 +2690,17 @@ void UIManager::drawDirBrowser() {
         else                        { rpair = CP_DIM;      rattr = A_BOLD; }
         wattron(win_dir_, COLOR_PAIR(rpair) | rattr);
 
+        // convert-core: is this row a marked file? (path-keyed; skip the lookup
+        // entirely when nothing is marked - the common case).
+        bool marked = false;
+        if (!marked_.empty() && !is_dir) {
+            std::string ep = browserEntryPath(idx);
+            marked = !ep.empty() && marked_.contains(ep);
+        }
         const bool ico = config_.nerd_icons;
         // With icons on, reserve the prefix cell (the glyph replaces the "+"/space).
-        std::string prefix = ico ? "  " : (is_dir ? "+ " : "  ");
+        // A marked file shows "* " (non-icon) or a star glyph (icon mode).
+        std::string prefix = ico ? "  " : (is_dir ? "+ " : (marked ? "* " : "  "));
         int avail = cw - 1;
         std::string d;
         if (ico) {
@@ -2125,7 +2716,7 @@ void UIManager::drawDirBrowser() {
         mvwaddnwstr(win_dir_, i+1, cx, wd.c_str(), (int)wd.size());
         if (ico) {   // overlay glyph on the reserved cell (wide API → real glyph)
             cchar_t cc;
-            wchar_t s[2] = { is_dir ? L'\uf07b' : L'\uf001', 0 };  // folder / music
+            wchar_t s[2] = { is_dir ? L'\uf07b' : (marked ? L'\uf005' : L'\uf001'), 0 };  // folder / star / music
             setcchar(&cc, s, rattr, rpair, nullptr);
             mvwadd_wch(win_dir_, i+1, cx, &cc);
         }
@@ -2196,7 +2787,7 @@ static std::string fileTypeTag(const std::string& path) {
     if (ext == "AIF") ext = "AIFF";
     if (ext == "MP4") ext = "M4A";
     static const char* known[] = { "FLAC", "MP3", "OGG", "OPUS", "WAV",
-                                   "AIFF", "M4A", "M4B", "WMA", "AAC" };
+                                   "AIFF", "M4A", "M4B", "WMA", "AAC", "WV" };
     for (const char* k : known)
         if (ext == k) return ext;
     return "";   // unknown extension: no tag (safer than guessing)
@@ -2487,6 +3078,11 @@ void UIManager::drawHelp() {
         { "c",              "Clear entire playlist"               },
         { "S  (Shift+S)",   "Save playlist as M3U file"           },
         { "l",              "Load / append M3U playlist file"     },
+        { "Convert",        "",                             true  },
+        { "x",              "Convert file / folder / marked set to another format" },
+        { "u",              "Mark / unmark file (for convert)"    },
+        { "U  (Shift+U)",   "Clear all marks"                     },
+        { "Up/Dn L/R M",    "Rip/rec/convert modal: pick per-format quality" },
         { "Views",          "",                             true  },
         { "o",              "Cycle playlist sort: none/title/artist/dur/file" },
         { "O  (Shift+O)",   "Cycle browser sort: name / modified / size"  },
@@ -2499,7 +3095,7 @@ void UIManager::drawHelp() {
         { "X  (Shift+X)",   "Output device picker"               },
         { "i",              "Track info popup"                    },
         { "Ctrl+L",         "Force redraw / fix layout after resize" },
-        { "?",              "Toggle this help  (j/k to scroll)"  },
+        { "?",              "Toggle this help  (j/k, PgUp/PgDn, Home/End scroll)"  },
         { "q",              "Add track to play queue"             },
         { "Q  (Shift+Q)",   "Show / hide queue pane"              },
         { "Ctrl+R",         "Fetch CD metadata from MusicBrainz" },
@@ -2520,6 +3116,11 @@ void UIManager::drawHelp() {
         { "Ctrl+N",         "Toggle Nerd Font icons (needs Nerd Font)" },
         { "Ctrl+A",         "Toggle deep-analysis iHeart log (diagnostic)" },
         { "Ctrl+K",         "Stream mode: Web Player (fewer ads) / Raw broadcast" },
+        { "Ctrl+U",         "Play an internet-radio stream URL" },
+        { "Ctrl+E",         "Record the playing stream ([Rec] panel)" },
+        { "Ctrl+O",         "Normalize folder (batch ReplayGain scan)" },
+        { "Ctrl+G",         "Last.fm login (scrobbling)" },
+        { "Ctrl+B",         "ListenBrainz login (paste user token)" },
     };
 
     const int n    = (int)(sizeof(entries) / sizeof(entries[0]));
@@ -3589,29 +4190,34 @@ void UIManager::startRadioArtFetch(const std::string& artist, const std::string&
 // Resolve + decode the cover for the currently-committed radio song into the
 // Info-pane art box. Mirrors the Discord committed-song decision but runs
 // independently (so the pane's art works with Discord presence off). UI thread.
-void UIManager::refreshRadioArt(int box_cols, int box_rows) {
-    // Committed-song identity — same parse as updateScrobbler's radio branch.
-    std::string song_key, artist, title;
-    {
-        std::string np = audio_.streamNowPlaying();      // "Artist - Title"
-        auto dash = np.find(" - ");
-        if (dash != std::string::npos) {
-            artist = np.substr(0, dash);
-            title  = np.substr(dash + 3);
-            auto trim = [](std::string& x){
-                while (!x.empty() && (x.front()==' '||x.front()=='\t')) x.erase(x.begin());
-                while (!x.empty() && (x.back()==' '||x.back()=='\t')) x.pop_back();
-            };
-            trim(artist); trim(title);
-            if (!artist.empty() && !title.empty()) song_key = artist + "\t" + title;
-        }
+// rec-cover-art: the committed-song identity parse, one home for the pane and
+// the recording wiring (the RAW pane parse — deliberately NOT deinverted, so
+// the fetch key matches what the pane always used).
+std::string UIManager::radioSongIdentity(const std::string& np,
+                                         std::string& artist, std::string& title) {
+    std::string song_key;
+    auto dash = np.find(" - ");
+    if (dash != std::string::npos) {
+        artist = np.substr(0, dash);
+        title  = np.substr(dash + 3);
+        auto trim = [](std::string& x){
+            while (!x.empty() && (x.front()==' '||x.front()=='\t')) x.erase(x.begin());
+            while (!x.empty() && (x.back()==' '||x.back()=='\t')) x.pop_back();
+        };
+        trim(artist); trim(title);
+        if (!artist.empty() && !title.empty()) song_key = artist + "\t" + title;
     }
-    const std::string station_art = audio_.streamArtUrl();   // iHeart digital cover ("" -> logo/lookup)
+    return song_key;
+}
 
-    // Pick up a finished fetch for the still-current song. A confirmed miss on a
-    // urlBySong lookup is remembered in the shared negative cache so the same song
-    // returning in rotation keeps the logo without re-querying (station-art misses
-    // are NOT neg-cached: a late-landing station cover should still get a chance).
+// rec-cover-art: the pickup half of the radio-art machinery, extracted
+// VERBATIM from refreshRadioArt so the recording wiring can consume fetch
+// results with the Info pane closed. Pick up a finished fetch for the
+// still-current song. A confirmed miss on a urlBySong lookup is remembered in
+// the shared negative cache so the same song returning in rotation keeps the
+// logo without re-querying (station-art misses are NOT neg-cached: a
+// late-landing station cover should still get a chance).
+void UIManager::radioArtPickup(const std::string& song_key) {
     if (radio_art_done_.exchange(false)) {
         std::vector<uint8_t> bytes; std::string forkey; bool was_station = radio_fetch_station_;
         { std::lock_guard<std::mutex> lk(radio_art_mtx_);
@@ -3624,37 +4230,67 @@ void UIManager::refreshRadioArt(int box_cols, int box_rows) {
             radio_bytes_resolved_ = true;
             radio_render_key_.clear();                       // force a re-decode
             if (radio_bytes_.empty() && !was_station)
-                discord_art_neg_.insert(song_key);
+                discord_art_neg_.add(song_key, port::tickMs());
             requestRedraw();                                 // cover landed -> repaint
         }
-        // else: the song moved on mid-fetch; the (re)trigger below handles the new one.
+        // else: the song moved on mid-fetch; the (re)trigger handles the new one.
     }
+}
 
-    // (Re)start resolution on a committed song-change, or when the station supplies
-    // a new non-empty cover URL for the same song (iHeart digital art can land a
-    // tick after the title commits). While a fetch is in flight we hold off so the
-    // in-flight result isn't discarded; once it clears we re-evaluate and catch up.
-    if (!song_key.empty()) {
-        const bool song_changed    = (song_key != radio_bytes_key_);
-        const bool station_changed = (!station_art.empty() && station_art != radio_last_station_art_);
-        if ((song_changed || station_changed) && !radio_art_active_.load()) {
-            radio_last_station_art_ = station_art;
-            radio_bytes_key_        = song_key;
-            radio_bytes_resolved_   = false;                 // show the logo floor while we fetch
-            radio_render_key_.clear();
-            if (!station_art.empty())
-                startRadioArtFetch(artist, title, station_art);
-            else if (discord_art_neg_.find(song_key) == discord_art_neg_.end())
-                startRadioArtFetch(artist, title, "");       // song-entity lookup
-            else { radio_bytes_.clear(); radio_bytes_resolved_ = true; }   // known miss -> floor
-        }
-    } else if (song_key != radio_bytes_key_) {
+// rec-cover-art: the trigger half, extracted VERBATIM from refreshRadioArt.
+// (Re)start resolution on a committed song-change, or when the station
+// supplies a new non-empty cover URL for the same song (iHeart digital art
+// can land a tick after the title commits). While a fetch is in flight we
+// hold off so the in-flight result isn't discarded; once it clears we
+// re-evaluate and catch up.
+void UIManager::radioArtKick(const std::string& artist, const std::string& title,
+                             const std::string& song_key) {
+    if (song_key.empty()) return;
+    const std::string station_art = audio_.streamArtUrl();
+    const bool song_changed    = (song_key != radio_bytes_key_);
+    const bool station_changed = (!station_art.empty() && station_art != radio_last_station_art_);
+    if ((song_changed || station_changed) && !radio_art_active_.load()) {
+        radio_last_station_art_ = station_art;
+        radio_bytes_key_        = song_key;
+        radio_bytes_resolved_   = false;                 // show the logo floor while we fetch
+        radio_render_key_.clear();
+        if (!station_art.empty())
+            startRadioArtFetch(artist, title, station_art);
+        else if (!discord_art_neg_.hit(song_key, port::tickMs()))
+            startRadioArtFetch(artist, title, "");       // song-entity lookup
+        else { radio_bytes_.clear(); radio_bytes_resolved_ = true; }   // fresh miss -> floor
+    }
+}
+
+// radio-art-refresh-fix: the empty-key floor reset, hoisted from
+// refreshRadioArt's inline else-branch so BOTH drivers (the pane and the
+// recording tick) share it. The confirmed stale-until-bounce bug existed
+// precisely because the tick driver was extracted with a SUBSET of the
+// original's branches: a fetch completing during a metadata dip was
+// discarded while radio_bytes_key_ still named the song, so the catch-up
+// re-kick (song_changed) never fired when the song returned. With all four
+// operations (identity/pickup/kick/floor) shared, the drivers cannot
+// diverge again.
+void UIManager::radioArtFloor(const std::string& song_key) {
+    if (song_key != radio_bytes_key_) {
         // No parseable now-playing (ad break / LIVE / pre-title): float on the logo.
         radio_bytes_key_ = song_key;   // ""
         radio_bytes_.clear();
         radio_bytes_resolved_ = true;
         radio_render_key_.clear();
     }
+}
+
+void UIManager::refreshRadioArt(int box_cols, int box_rows) {
+    // Committed-song identity — same parse as updateScrobbler's radio branch.
+    std::string artist, title;
+    std::string song_key = radioSongIdentity(audio_.streamNowPlaying(), artist, title);
+
+    radioArtPickup(song_key);
+    if (!song_key.empty())
+        radioArtKick(artist, title, song_key);
+    else
+        radioArtFloor(song_key);   // same code, new home — behavior identical
 
     // Decode step: real cover if we have one, else the logo floor. Cached on
     // (source | box), so no per-frame re-decode and the logo doesn't thrash.
@@ -4057,18 +4693,47 @@ void UIManager::drawProgress() {
         right += "  vol:" + std::to_string((int)(audio_.volume()*100.0f+0.5f)) + "%";
         std::string left = title.empty() ? "(live stream)" : title;
 
+        // iHeart feed/re-pin mode indicator (Section C): a yellow tag at the lower-left,
+        // "<feed> - <repin>" e.g. "digital - smart" / "raw - off". Confirm-on-change: it
+        // shows only for ~kModeTagMs after a Ctrl+K/F6 toggle (mode_tag_at_), then clears
+        // so the now-playing title reoccupies the space. iHeart streams only (host sniff
+        // on the revma HLS domain); the title is shifted right by the tag width while it
+        // shows. Empty tag (idle, or non-iHeart) -> byte-identical to the plain layout.
+        std::string modeTag;
+        {
+            using namespace std::chrono;
+            const long sinceMs = (mode_tag_at_.time_since_epoch().count() == 0)
+                ? kModeTagMs + 1   // never toggled -> outside the window
+                : (long)duration_cast<milliseconds>(steady_clock::now() - mode_tag_at_).count();
+            if (sinceMs < kModeTagMs &&
+                audio_.streamUrl().find("ihrhls") != std::string::npos) {   // iHeart HLS host, within window
+                const char* rp = config_.repin_mode == 0 ? "off"
+                               : config_.repin_mode == 1 ? "on" : "smart";
+                modeTag = std::string(config_.prefer_digital_stream ? "digital" : "raw")
+                        + " - " + rp;
+            }
+        }
+        const int tag_x   = 1;
+        const int tag_w   = modeTag.empty() ? 0 : (int)modeTag.size() + 2;  // +2 gap after the tag
+        const int title_x = tag_x + tag_w;              // title starts past the tag (== 1 when no tag)
+
         const int right_w = (int)right.size();          // ASCII -> byte width == display width
         const int right_x = cols - right_w - 1;         // first col of the right block
-        int left_cap = right_x - 2;                     // keep >=1 blank col before the right block
+        int left_cap = right_x - 1 - title_x;           // keep >=1 blank col before the right block
         if (left_cap < 0) left_cap = 0;
         if (dispWidth(left) > left_cap) left = truncateToWidth(left, left_cap);   // keep the head
         const int left_w   = dispWidth(left);
-        const int left_end = 1 + left_w;                // first free col past the title
+        const int left_end = title_x + left_w;          // first free col past the title
 
+        if (!modeTag.empty()) {
+            wattron(win_progress_, COLOR_PAIR(CP_MODE) | A_BOLD);
+            mvwaddstr(win_progress_, 0, tag_x, modeTag.c_str());
+            wattroff(win_progress_, COLOR_PAIR(CP_MODE) | A_BOLD);
+        }
         wattron(win_progress_, COLOR_PAIR(CP_TITLE));
         if (left_w > 0) {
             std::wstring wl = utf8_to_wide(left);
-            mvwaddnwstr(win_progress_, 0, 1, wl.c_str(), (int)wl.size());
+            mvwaddnwstr(win_progress_, 0, title_x, wl.c_str(), (int)wl.size());
         }
         if (right_x >= left_end)
             mvwaddstr(win_progress_, 0, right_x, right.c_str());
@@ -4298,6 +4963,8 @@ void UIManager::drawGotoBar() {
         case InputMode::LastfmSecret: prompt = " last.fm secret: ";  break;
         case InputMode::ListenBrainzToken: prompt = " listenbrainz token: "; break;
         case InputMode::PlaylistSearch: prompt = " search playlist: "; break;
+        case InputMode::RecDir: prompt = " recordings dir: "; break;
+        case InputMode::RecOffset: prompt = " split hold ms (0-5000): "; break;
     }
     wattron(win_cmdline_, COLOR_PAIR(CP_TITLE) | A_BOLD);
     mvwaddstr(win_cmdline_, 0, 0, prompt.c_str());
@@ -4339,46 +5006,12 @@ std::string UIManager::stationLabel(const std::string& url) const {
 // Unstoppable") pass; ad/station-break markers and empty/Unknown fields are
 // dropped so neither Last.fm nor ListenBrainz gets polluted. Heuristic by
 // nature — extend the marker list as new junk patterns turn up in the log.
-// De-invert "Surname, The" -> "The Surname" for cleaner scrobble metadata.
-// Strict: only fires when the entire tail after the comma is a bare article, so
-// real comma-containing names ("Tyler, The Creator", "Earth, Wind & Fire") are
-// left untouched. Verified against an isolated test of both forms.
-static std::string deinvertArtist(const std::string& a) {
-    auto pos = a.rfind(',');
-    if (pos == std::string::npos || pos == 0) return a;
-    std::string head = a.substr(0, pos);
-    std::string tail = a.substr(pos + 1);
-    size_t ts = tail.find_first_not_of(" \t");
-    if (ts == std::string::npos) return a;             // nothing after the comma
-    tail = tail.substr(ts);
-    while (!head.empty() && (head.back() == ' ' || head.back() == '\t')) head.pop_back();
-    if (head.empty()) return a;
-    std::string low = tail;
-    for (auto& c : low) c = (char)std::tolower((unsigned char)c);
-    if (low == "the" || low == "a" || low == "an")
-        return tail + " " + head;                      // preserve article casing
-    return a;
-}
+// (deinvertArtist moved verbatim to StringUtils.h in stream-record R2 so the
+// recorder's parseNowPlaying shares it; the :4663 caller is unchanged.)
 
-static bool looksLikeRealTrack(const std::string& artist, const std::string& track) {
-    auto lower = [](std::string s) {
-        for (auto& c : s) c = (char)std::tolower((unsigned char)c);
-        return s;
-    };
-    std::string a = lower(artist), t = lower(track);
-    if (a.empty() || t.empty()) return false;
-    if (a == "unknown" || t == "unknown" ||
-        a == "unknown artist" || a == "unknown_artist") return false;
-    if (t == "live") return false;   // "<station> - LIVE" floor (exact match; spares songs like "Live and Let Die")
-    static const char* junk[] = {
-        "ad|", "ad |", "commercial break", "commercial-break",
-        "advertisement", "station id", "station-id", "spot block", "spotblock"
-    };
-    for (const char* j : junk)
-        if (a.find(j) != std::string::npos || t.find(j) != std::string::npos)
-            return false;
-    return true;
-}
+// (looksLikeRealTrack moved verbatim to StringUtils.h in the ad-aware slice so
+// the recorder's ad classification shares the scrobbler's vocabulary; the two
+// callers below are unchanged.)
 
 // Canonical track identity for scrobble dedup. iHeart sometimes relabels the SAME
 // song mid-play with a different EXTINF string — moving the featured artist between
@@ -4566,6 +5199,29 @@ void UIManager::updateScrobbler() {
         return;
     }
     artist = deinvertArtist(artist);   // "Shins, The" -> "The Shins" for both services
+    // OS media control (osmedia-seam): publish to SMTC / MPRIS on a real change,
+    // reusing these resolved values (no second assembler) and independent of the
+    // Discord toggle. Radio art is the stream cover URL; local-file cover via the
+    // OS surface is a v1 follow-up (title/artist/status/scrubber are full).
+    // Resolve the OS-card cover BYTES, reusing existing machinery (no new lookup):
+    //  - radio: radio_bytes_ from the shared radio-art machinery (station cover or
+    //    the iTunes/Deezer song lookup - the same the pane/recorder/Discord use),
+    //    driven each tick above; resolved+non-empty means it belongs to this song.
+    //  - local file: the embedded picture, extracted ONCE per file (path-cached).
+    static const std::vector<uint8_t> kNoArt;
+    const std::vector<uint8_t>* art_bytes = &kNoArt;
+    std::string art_url;
+    if (audio_.streamMode()) {
+        if (radio_bytes_resolved_ && !radio_bytes_.empty()) art_bytes = &radio_bytes_;
+    } else {
+        const std::string& p = audio_.currentTrack().path;
+        if (p != media_art_path_) {   // extract once per file, not per tick
+            media_art_path_  = p;
+            media_art_cache_ = p.empty() ? std::vector<uint8_t>{} : extractEmbeddedArt(p);
+        }
+        if (!media_art_cache_.empty()) art_bytes = &media_art_cache_;
+    }
+    publishMedia(artist, track, album, art_url, *art_bytes, pos, dur);
     // Discord Rich Presence — same resolved metadata, independent of scrobbling.
     // Portable since slice 4 (Unix-socket IIpc twin).
     if (config_.discord_presence) {
@@ -4602,7 +5258,7 @@ void UIManager::updateScrobbler() {
                 // confirmed miss is remembered so rotation repeats don't re-query.
                 if (key == discord_art_cache_key_ && !discord_art_cache_url_.empty())
                     image = discord_art_cache_url_;            // resolved earlier this session
-                else if (discord_art_neg_.find(key) == discord_art_neg_.end())
+                else if (!discord_art_neg_.hit(key, port::tickMs()))
                     startDiscordArtLookup(artist, track, key, /*song=*/true);
             }
 
@@ -4629,9 +5285,10 @@ void UIManager::updateScrobbler() {
                     discord_.setActivity(discord_track_, sta, discord_start_, url, "RE-MOCT");
                 } else if (audio_.streamMode()) {
                     // Radio lookup came back empty for the still-current track: remember
-                    // the miss so the same song returning in rotation keeps the logo
-                    // without re-hitting iTunes/Deezer. Logo is already on screen.
-                    discord_art_neg_.insert(forkey);
+                    // the miss (time-bounded - a transient failure self-heals after the
+                    // TTL) so the same song returning soon keeps the logo without
+                    // re-hitting iTunes/Deezer. Logo is already on screen.
+                    discord_art_neg_.add(forkey, port::tickMs());
                 }
             } else if (!audio_.streamMode() && !discord_album_.empty()) {
                 // The finished lookup was for a since-skipped track — retry for the
@@ -4777,19 +5434,240 @@ void UIManager::handleInput(int ch) {
     // slice 6: overlay input is common. The RipConfirm modal (^Y) is live on Linux;
     // the MBSearch line is inert there (^F stays gated, so it never opens).
     if (ui_overlay_ == UIOverlay::MBSearch) { handleMBSearchInput(ch); return; }
+    // ── [Rec] panel (stream-record R2) — intercepts all input when active ──
+    // The rip modal's structural disambiguation, minus its empty-selection
+    // guard (a single-select radio always has exactly one format chosen):
+    // N/Esc first (close always works; recording continues), then the
+    // recording-view keys, then settings keys, then start.
+    if (ui_overlay_ == UIOverlay::RecPanel) {
+        auto& rec = audio_.streamRecorder();
+        if (ch == 'n' || ch == 'N' || ch == 27) {
+            ui_overlay_ = UIOverlay::None;      // close; [REC] badge carries state
+            redraw_needed_.store(true);
+            return;
+        }
+        if (rec.recording()) {
+            if (ch == 'x' || ch == 'X') {
+                audio_.endRecording();          // finalizes the in-flight cut
+                                                // + clears the drain signal
+                // Session-end summary: the ads-skipped count rides the toast —
+                // the Discard trust surface survives past the live panel.
+                std::string sum = std::to_string(rec.cuts().size() -
+                                                 (size_t)rec.adsSkipped()) + " cut(s) saved";
+                if (int sk = rec.adsSkipped(); sk > 0)
+                    sum += ", " + std::to_string(sk) + " ad(s) skipped";
+                showTrackToast("Recording stopped", sum, "");
+                redraw_needed_.store(true);     // panel flips to settings view
+            }
+            return;                             // settings keys inert while recording
+        }
+        if (ch == '1') { rec_fmt_ = RipFormat::Opus; rec_copy_ = false; redraw_needed_.store(true); return; }
+        if (ch == '2') { rec_fmt_ = RipFormat::Mp3;  rec_copy_ = false; redraw_needed_.store(true); return; }
+        if (ch == '3') { rec_fmt_ = RipFormat::M4a;  rec_copy_ = false; redraw_needed_.store(true); return; }
+        if (ch == '4') {   // Copy (slice B): selectable only when the plugin has the tee
+            if (audio_.recordingCopySupported()) rec_copy_ = true;
+            redraw_needed_.store(true);
+            return;
+        }
+        // encoder-bitrate-mode: per-row quality editor for the REC fields.
+        // Up/Down focus over Opus(0)/MP3(1)/M4A(2)/Copy(3); Left/Right cycle the
+        // focused row's axis; [M] flips its mode. The Copy row has no axis (inert).
+        if (ch == KEY_UP || ch == KEY_DOWN) {
+            rec_focus_ += (ch == KEY_DOWN) ? 1 : -1;
+            if (rec_focus_ < 0) rec_focus_ = 3;
+            if (rec_focus_ > 3) rec_focus_ = 0;
+            redraw_needed_.store(true);
+            return;
+        }
+        if (ch == KEY_LEFT || ch == KEY_RIGHT) {
+            int dir = (ch == KEY_RIGHT) ? 1 : -1;
+            if (rec_focus_ == 0) {                      // Opus: bitrate only
+                config_.rec_opus_bitrate = cycleBitrate(config_.rec_opus_bitrate, dir);
+            } else if (rec_focus_ == 1) {               // MP3: V-scale or CBR bitrate
+                if (config_.rec_mp3_cbr)
+                    config_.rec_mp3_cbr_bitrate = cycleBitrate(config_.rec_mp3_cbr_bitrate, dir);
+                else
+                    config_.rec_mp3 = cycleMp3Vbr(config_.rec_mp3, dir);
+            } else if (rec_focus_ == 2) {               // M4A: VBR ladder or CBR bitrate
+                if (config_.rec_aac_vbr)
+                    config_.rec_aac_vbr_level = cycleAacVbr(config_.rec_aac_vbr_level, dir);
+                else
+                    config_.rec_aac_cbr_bitrate = cycleBitrate(config_.rec_aac_cbr_bitrate, dir);
+            }
+            redraw_needed_.store(true);
+            return;
+        }
+        if (ch == 'm' || ch == 'M') {
+            if (rec_focus_ == 0)      config_.rec_opus_vbr = !config_.rec_opus_vbr;
+            else if (rec_focus_ == 1) config_.rec_mp3_cbr  = !config_.rec_mp3_cbr;
+            else if (rec_focus_ == 2) config_.rec_aac_vbr  = !config_.rec_aac_vbr;
+            redraw_needed_.store(true);
+            return;
+        }
+        if (ch == 's' || ch == 'S') {
+            rec_split_on_ = !rec_split_on_;
+            redraw_needed_.store(true);
+            return;
+        }
+        if (ch == 't' || ch == 'T') {   // split-trim: edit the hold (ms)
+            ui_overlay_ = UIOverlay::None;
+            openInputBar(InputMode::RecOffset, std::to_string(rec_offset_ms_));
+            return;
+        }
+        if (ch == 'a' || ch == 'A') {   // ad-aware: Save <-> Discard
+            rec_ads_discard_ = !rec_ads_discard_;
+            redraw_needed_.store(true);
+            return;
+        }
+        if (ch == 'd' || ch == 'D') {
+            // The goto bar and an overlay don't compose (drawGotoBar returns
+            // early) — close the panel, prompt, reopen on submit.
+            ui_overlay_ = UIOverlay::None;
+            openInputBar(InputMode::RecDir,
+                         rec_dir_.empty() ? CDRipper::recordingsDir() : rec_dir_);
+            return;
+        }
+        if (ch == 'r' || ch == 'R' || ch == '\n' || ch == '\r' || ch == KEY_ENTER) {
+            if (!audio_.streamMode()) {         // stream died while the panel was open
+                ui_overlay_ = UIOverlay::None;
+                showTrackToast("Stream recording", "Start a stream first (Ctrl+U)", "");
+                redraw_needed_.store(true);
+                return;
+            }
+            RecOptions opt;
+            opt.formats         = { rec_fmt_ };
+            // encoder-bitrate-mode: recording reads its OWN quality set (rec_*),
+            // independent of the rip knobs, so radio can be right-sized.
+            opt.mp3_vbr_q       = parseMp3VbrQ(config_.rec_mp3);
+            opt.mp3_cbr         = config_.rec_mp3_cbr;
+            opt.mp3_cbr_bitrate = std::clamp(config_.rec_mp3_cbr_bitrate, 6000, 510000);
+            opt.opus_bitrate    = std::clamp(config_.rec_opus_bitrate, 6000, 510000);
+            opt.opus_vbr        = config_.rec_opus_vbr;
+            opt.aac_vbr         = config_.rec_aac_vbr;
+            opt.aac_vbr_level   = std::clamp(config_.rec_aac_vbr_level, 1, 5);
+            opt.aac_cbr_bitrate = std::clamp(config_.rec_aac_cbr_bitrate, 6000, 510000);
+            opt.split_on_meta   = rec_split_on_;
+            opt.split_offset_ms = rec_offset_ms_;
+            opt.ads_discard     = rec_ads_discard_;
+            // Copy (slice B): the wrapper wires the pull + arms the tee; the
+            // selection can only be true when the capability probe passed,
+            // but a plugin swap mid-session falls back honestly here.
+            opt.copy_mode       = rec_copy_ && audio_.recordingCopySupported();
+            std::string st = stationLabel(audio_.streamUrl());
+            if (st.rfind("RADIO: ", 0) == 0) st = st.substr(7);
+            // abi-cluster: start through the wrapper so the keep-draining
+            // signal travels with the recorder lifecycle.
+            if (audio_.beginRecording(opt, st, rec_dir_.empty() ? CDRipper::recordingsDir()
+                                                                : rec_dir_))
+                rec.onTitle(audio_.streamNowPlaying());   // seed the first label
+            else
+                showTrackToast("Recording failed", rec.lastError(), "");
+            redraw_needed_.store(true);         // panel flips to recording view
+            return;
+        }
+        return;   // swallow everything else — the overlay is modal
+    }
+    // ── batch-r128: the ^O tag/force prompt intercepts until answered ────────
+    if (rgscan_prompt_) {
+        if (ch == '\n' || ch == '\r' || ch == KEY_ENTER || ch == 'f' || ch == 'F') {
+            const bool force = (ch == 'f' || ch == 'F');
+            rgscan_prompt_ = false;
+            if (gain_scan_.start(rgscan_dir_, force)) {
+                rip_status_ = std::string("ReplayGain scan started") +
+                              (force ? " (force re-tag)" : "") + "...";
+            } else {
+                rip_status_ = "ReplayGain scan: could not read the folder.";
+            }
+            rip_msg_ticks_ = 0;
+            redraw_needed_.store(true);
+            return;
+        }
+        if (ch == 27) {
+            rgscan_prompt_ = false;
+            rip_status_.clear();
+            redraw_needed_.store(true);
+            return;
+        }
+        rip_msg_ticks_ = 0;   // keep the prompt line alive while undecided
+        return;               // modal until answered
+    }
     // ── Rip mode selection modal — intercepts all input when active ─────────
+    // Input disambiguation is STRUCTURAL (rip-format-select): N/Esc first
+    // (cancel always works), digits toggle and return inside their own case
+    // (can never commit), letters carry the empty-selection guard (can never
+    // toggle, and commit is inert — not "commits with empty list" — while
+    // nothing is checked; the dimmed rows + red hint explain why).
     if (ui_overlay_ == UIOverlay::RipConfirm) {
+        // Cancel — always allowed, selection state irrelevant.
+        if (ch == 'n' || ch == 'N' || ch == 27) {
+            ui_overlay_ = UIOverlay::None;
+            redraw_needed_.store(true);
+            return;
+        }
+        // Digit toggles: '1'..'0'+kRipFormatCount flip a row and stay open.
+        if (ch > '0' && ch <= '0' + kRipFormatCount) {
+            RipFormat f = kRipFormats[ch - '1'].id;
+            auto it = std::find(rip_sel_.begin(), rip_sel_.end(), f);
+            if (it != rip_sel_.end()) rip_sel_.erase(it);
+            else                      rip_sel_.push_back(f);
+            redraw_needed_.store(true);
+            return;
+        }
+        // encoder-bitrate-mode: per-row quality editor. Up/Down move the focus
+        // cursor; Left/Right cycle the focused row's active axis; [M] flips its
+        // CBR/VBR mode. Inert on FLAC/WAV/WavPack (no bitrate axis).
+        if (ch == KEY_UP || ch == KEY_DOWN) {
+            rip_focus_ += (ch == KEY_DOWN) ? 1 : -1;
+            if (rip_focus_ < 0)                 rip_focus_ = kRipFormatCount - 1;
+            if (rip_focus_ >= kRipFormatCount)  rip_focus_ = 0;
+            redraw_needed_.store(true);
+            return;
+        }
+        if (ch == KEY_LEFT || ch == KEY_RIGHT) {
+            int dir = (ch == KEY_RIGHT) ? 1 : -1;
+            switch (kRipFormats[rip_focus_].id) {
+                case RipFormat::Mp3:
+                    if (config_.mp3_cbr)
+                        config_.mp3_cbr_bitrate = cycleBitrate(config_.mp3_cbr_bitrate, dir);
+                    else
+                        config_.mp3 = cycleMp3Vbr(config_.mp3, dir);
+                    redraw_needed_.store(true);
+                    break;
+                case RipFormat::Opus:
+                    config_.opus_bitrate = cycleBitrate(config_.opus_bitrate, dir);
+                    redraw_needed_.store(true);
+                    break;
+                case RipFormat::M4a:
+                    if (config_.aac_vbr)
+                        config_.aac_vbr_level = cycleAacVbr(config_.aac_vbr_level, dir);
+                    else
+                        config_.aac_cbr_bitrate = cycleBitrate(config_.aac_cbr_bitrate, dir);
+                    redraw_needed_.store(true);
+                    break;
+                default: break;   // no axis on the lossless rows
+            }
+            return;
+        }
+        if (ch == 'm' || ch == 'M') {
+            switch (kRipFormats[rip_focus_].id) {
+                case RipFormat::Mp3:  config_.mp3_cbr  = !config_.mp3_cbr;  redraw_needed_.store(true); break;
+                case RipFormat::Opus: config_.opus_vbr = !config_.opus_vbr; redraw_needed_.store(true); break;
+                case RipFormat::M4a:  config_.aac_vbr  = !config_.aac_vbr;  redraw_needed_.store(true); break;
+                default: break;
+            }
+            return;
+        }
         RipMode chosen = RipMode::None;
         switch (ch) {
             case 'a': case 'A': chosen = RipMode::AccurateRip; break;
             case 'c': case 'C': chosen = RipMode::CUETools;    break;
             case 'y': case 'Y': chosen = RipMode::Local;       break;
             case 'b': case 'B': chosen = RipMode::LocalVerify; break;
-            case 'n': case 'N': case 27:
-                ui_overlay_ = UIOverlay::None;
-                redraw_needed_.store(true);
-                return;
             default: return;  // ignore everything else
+        }
+        if (rip_sel_.empty()) {           // commit keys inert at zero selected
+            redraw_needed_.store(true);
+            return;
         }
         ui_overlay_ = UIOverlay::None;
         if (!audio_.cdMode()) return;
@@ -4805,13 +5683,151 @@ void UIManager::handleInput(int ch) {
         rip_status_    = "Initializing rip...  Output: " + out_dir;
         rip_msg_ticks_ = 0;
         redraw_needed_.store(true);
-        cd_ripper_.start(audio_, tracks, out_dir, rel, chosen,
+        // Build the rip request: selection normalized to TABLE order (the
+        // fan-out sequence must not depend on toggle history — default set
+        // always rips FLAC-then-MP3, byte-identical to pre-selection), plus
+        // the config-fed quality values (defaults == the old literals).
+        RipOptions opt;
+        opt.formats.clear();
+        for (const auto& r : kRipFormats)
+            if (std::find(rip_sel_.begin(), rip_sel_.end(), r.id) != rip_sel_.end())
+                opt.formats.push_back(r.id);
+        opt.flac_level   = std::clamp(config_.flac_level, 0, 8);
+        opt.mp3_vbr_q    = parseMp3VbrQ(config_.mp3);
+        opt.mp3_cbr      = config_.mp3_cbr;
+        opt.mp3_cbr_bitrate = std::clamp(config_.mp3_cbr_bitrate, 6000, 510000);
+        opt.opus_bitrate = std::clamp(config_.opus_bitrate, 6000, 510000);
+        opt.opus_vbr     = config_.opus_vbr;
+        opt.wavpack_mode = config_.wavpack_mode == "fast"      ? 0
+                         : config_.wavpack_mode == "high"      ? 2
+                         : config_.wavpack_mode == "very_high" ? 3 : 1;
+        opt.aac_vbr      = config_.aac_vbr;
+        opt.aac_vbr_level = std::clamp(config_.aac_vbr_level, 1, 5);
+        opt.aac_cbr_bitrate = std::clamp(config_.aac_cbr_bitrate, 6000, 510000);
+        cd_ripper_.start(audio_, tracks, out_dir, rel, chosen, std::move(opt),
             [this](const RipProgress& p) {
                 rip_status_ = p.status_msg;
                 rip_msg_ticks_ = 0;
                 redraw_needed_.store(true);
             });
         return;
+    }
+
+    // ── Convert scope chooser (convert-core) ────────────────────────────────
+    if (ui_overlay_ == UIOverlay::ConvertScope) {
+        if (ch == 'n' || ch == 'N' || ch == 27) {
+            ui_overlay_ = UIOverlay::None; redraw_needed_.store(true); return;
+        }
+        if (ch == '1' && !convert_single_.empty()) {
+            convert_scope_ = 1; convert_focus_ = 0;
+            ui_overlay_ = UIOverlay::ConvertConfirm; redraw_needed_.store(true); return;
+        }
+        if (ch == '2' && !convert_src_dir_.empty()) {
+            convert_scope_ = 2; convert_focus_ = 0;
+            ui_overlay_ = UIOverlay::ConvertConfirm; redraw_needed_.store(true); return;
+        }
+        if (ch == '3' && !marked_.empty()) {
+            convert_scope_ = 3; convert_focus_ = 0;
+            ui_overlay_ = UIOverlay::ConvertConfirm; redraw_needed_.store(true); return;
+        }
+        return;   // modal
+    }
+
+    // ── Convert target picker (convert-core): single-select output format +
+    //    the per-row quality editor reusing EncoderQuality.h (the [Rec] shape).
+    //    Quality edits the shared rip config fields (the brief's reuse). ────────
+    if (ui_overlay_ == UIOverlay::ConvertConfirm) {
+        if (ch == 'n' || ch == 'N' || ch == 27) {
+            ui_overlay_ = UIOverlay::None; redraw_needed_.store(true); return;
+        }
+        if (ch > '0' && ch <= '0' + kRipFormatCount) {   // radio-select output format
+            convert_fmt_ = kRipFormats[ch - '1'].id;
+            convert_focus_ = ch - '1';
+            redraw_needed_.store(true); return;
+        }
+        if (ch == KEY_UP || ch == KEY_DOWN) {
+            convert_focus_ += (ch == KEY_DOWN) ? 1 : -1;
+            if (convert_focus_ < 0)                convert_focus_ = kRipFormatCount - 1;
+            if (convert_focus_ >= kRipFormatCount) convert_focus_ = 0;
+            redraw_needed_.store(true); return;
+        }
+        if (ch == KEY_LEFT || ch == KEY_RIGHT) {
+            int dir = (ch == KEY_RIGHT) ? 1 : -1;
+            switch (kRipFormats[convert_focus_].id) {
+                case RipFormat::Flac:
+                    config_.flac_level = std::clamp(config_.flac_level + dir, 0, 8);
+                    redraw_needed_.store(true); break;
+                case RipFormat::Mp3:
+                    if (config_.mp3_cbr)
+                        config_.mp3_cbr_bitrate = cycleBitrate(config_.mp3_cbr_bitrate, dir);
+                    else
+                        config_.mp3 = cycleMp3Vbr(config_.mp3, dir);
+                    redraw_needed_.store(true); break;
+                case RipFormat::Opus:
+                    config_.opus_bitrate = cycleBitrate(config_.opus_bitrate, dir);
+                    redraw_needed_.store(true); break;
+                case RipFormat::WavPack: {
+                    static const char* modes[] = { "fast", "normal", "high", "very_high" };
+                    int mi = config_.wavpack_mode == "fast" ? 0 : config_.wavpack_mode == "high" ? 2
+                           : config_.wavpack_mode == "very_high" ? 3 : 1;
+                    mi = ((mi + dir) % 4 + 4) % 4;
+                    config_.wavpack_mode = modes[mi];
+                    redraw_needed_.store(true); break;
+                }
+                case RipFormat::M4a:
+                    if (config_.aac_vbr)
+                        config_.aac_vbr_level = cycleAacVbr(config_.aac_vbr_level, dir);
+                    else
+                        config_.aac_cbr_bitrate = cycleBitrate(config_.aac_cbr_bitrate, dir);
+                    redraw_needed_.store(true); break;
+                default: break;   // WAV: no axis
+            }
+            return;
+        }
+        if (ch == 'm' || ch == 'M') {
+            switch (kRipFormats[convert_focus_].id) {
+                case RipFormat::Mp3:  config_.mp3_cbr  = !config_.mp3_cbr;  redraw_needed_.store(true); break;
+                case RipFormat::Opus: config_.opus_vbr = !config_.opus_vbr; redraw_needed_.store(true); break;
+                case RipFormat::M4a:  config_.aac_vbr  = !config_.aac_vbr;  redraw_needed_.store(true); break;
+                default: break;
+            }
+            return;
+        }
+        if (ch == '\n' || ch == '\r' || ch == KEY_ENTER) {
+            RipOptions opt;
+            opt.formats         = { convert_fmt_ };
+            opt.flac_level      = std::clamp(config_.flac_level, 0, 8);
+            opt.mp3_vbr_q       = parseMp3VbrQ(config_.mp3);
+            opt.mp3_cbr         = config_.mp3_cbr;
+            opt.mp3_cbr_bitrate = std::clamp(config_.mp3_cbr_bitrate, 6000, 510000);
+            opt.opus_bitrate    = std::clamp(config_.opus_bitrate, 6000, 510000);
+            opt.opus_vbr        = config_.opus_vbr;
+            opt.wavpack_mode    = config_.wavpack_mode == "fast" ? 0
+                                : config_.wavpack_mode == "high" ? 2
+                                : config_.wavpack_mode == "very_high" ? 3 : 1;
+            opt.aac_vbr         = config_.aac_vbr;
+            opt.aac_vbr_level   = std::clamp(config_.aac_vbr_level, 1, 5);
+            opt.aac_cbr_bitrate = std::clamp(config_.aac_cbr_bitrate, 6000, 510000);
+            bool started = false;
+            if (convert_scope_ == 1 && !convert_single_.empty()) {
+                std::string dst = convertDstPath(convert_single_, convert_fmt_);
+                started = convert_job_.startFiles({{ convert_single_, dst }}, convert_fmt_, opt);
+            } else if (convert_scope_ == 2 && !convert_src_dir_.empty()) {
+                started = convert_job_.startFolder(convert_src_dir_, convert_fmt_, opt);
+            } else if (convert_scope_ == 3) {
+                std::vector<ConvertPair> pairs;
+                for (const auto& s : marked_.list())
+                    pairs.push_back({ s, convertDstPath(s, convert_fmt_) });
+                started = convert_job_.startFiles(std::move(pairs), convert_fmt_, opt);
+                if (started) marked_.clear();   // consumed: clear the marked set
+            }
+            ui_overlay_ = UIOverlay::None;
+            if (started) { rip_status_ = "Converting..."; rip_msg_ticks_ = 0; }
+            else showTrackToast("Convert", "Nothing to convert (or a job is running)", "");
+            redraw_needed_.store(true);
+            return;
+        }
+        return;   // modal
     }
 
     // ? toggles help from anywhere
@@ -4975,12 +5991,30 @@ void UIManager::handleInput(int ch) {
         return;
     }
 
-    // When help is showing, j/k scroll it; other keys still work globally
+    // When help is showing, j/k scroll it; other keys still work globally.
+    // PgUp/PgDn/Home/End mirror the playlist's nav SEMANTICS (page = one
+    // visible page minus a row of overlap, clamped at both ends) applied to
+    // the help pane's scroll offset. The end clamp is drawHelp's draw-time
+    // invariant (help_scroll_ = clamp(0, max_scroll)), the same pattern the
+    // playlist uses for its cursor scroll, so setting help_scroll_ past a
+    // bound here is pinned on the next render - short content (max_scroll==0)
+    // clamps every key to 0, a harmless no-op.
     if (right_pane_ == RightPane::Help) {
+        // Page size from the help viewport (win_playlist_ hosts the pane):
+        // rows-2 visible rows (header + bottom border), minus one for overlap,
+        // exactly as drawHelp computes visible_rows.
+        int hr = 0, hc = 0;
+        if (win_playlist_) getmaxyx(win_playlist_, hr, hc);
+        (void)hc;
+        int help_page = std::max(1, (hr - 2) - 1);
         switch (ch) {
             case 17: audio_.stop(); running_ = false; return;
             case 'j': case 'J': case KEY_DOWN: ++help_scroll_; redraw_needed_.store(true); return;
             case 'k': case 'K': case KEY_UP:   --help_scroll_; redraw_needed_.store(true); return;
+            case KEY_NPAGE: help_scroll_ += help_page; redraw_needed_.store(true); return;  // PgDn
+            case KEY_PPAGE: help_scroll_ -= help_page; redraw_needed_.store(true); return;  // PgUp
+            case KEY_HOME:  help_scroll_ = 0;          redraw_needed_.store(true); return;
+            case KEY_END:   help_scroll_ = INT_MAX;    redraw_needed_.store(true); return;  // draw clamps to max_scroll
             case ' ': audio_.togglePause(); return;
             case 's': audio_.stop(); return;
             default: return;
@@ -5273,9 +6307,10 @@ void UIManager::handleInput(int ch) {
             config_.prefer_digital_stream = !config_.prefer_digital_stream;
             config_.save();
             audio_.setPreferDigital(config_.prefer_digital_stream);
-            showTrackToast(config_.prefer_digital_stream
-                               ? "Stream: Web Player mode (fewer ads)"
-                               : "Stream: Raw broadcast (direct)", "", "");
+            // Flash the lower-left feed/re-pin mode indicator for ~5s (confirm-on-change),
+            // then it clears and the now-playing text reoccupies the space.
+            mode_tag_at_ = std::chrono::steady_clock::now();
+            redraw_needed_.store(true);
             if (audio_.streamMode())                 // reconnect now so it takes effect
                 audio_.beginStream(audio_.streamUrl());
             break;
@@ -5337,6 +6372,16 @@ void UIManager::handleInput(int ch) {
             redraw_needed_.store(true);
             showTrackToast(config_.follow_playing ? "Follow playing: ON"
                                                   : "Follow playing: OFF", "", "");
+            break;
+        case KEY_F(6):    // cycle iHeart re-pin mode: off -> on -> smart (persisted)
+            // Feed (Ctrl+K) and re-pin behaviour are independent axes; F6 changes only
+            // the re-pin half. Read live by the producer/SM, so no reconnect is needed.
+            // Flash the lower-left mode indicator for ~5s (confirm-on-change).
+            config_.repin_mode = (config_.repin_mode + 1) % 3;
+            config_.save();
+            audio_.setRepinMode(config_.repin_mode);
+            mode_tag_at_ = std::chrono::steady_clock::now();
+            redraw_needed_.store(true);
             break;
         case KEY_F(7):    // previous Awesome named palette (F7)
         case KEY_F(8): {  // next Awesome named palette (F8)
@@ -5502,6 +6547,38 @@ void UIManager::handleInput(int ch) {
         case 21:  // Ctrl+U — input an internet-radio stream URL
             if (ui_overlay_ == UIOverlay::None)
                 openInputBar(InputMode::StreamURL, "");
+            break;
+        case 15:  // Ctrl+O — batch ReplayGain scan over the browsed folder (batch-r128)
+            if (gain_scan_.running()) {
+                gain_scan_.cancel();
+                rip_status_ = "ReplayGain scan: cancelling (finishing nothing mid-file)...";
+                rip_msg_ticks_ = 0;
+                redraw_needed_.store(true);
+            } else if (cd_ripper_.isActive()) {
+                showTrackToast("ReplayGain scan", "Wait for the rip to finish", "");
+            } else {
+                // The prompt names the folder — no fat-fingered scans on the
+                // wrong directory. Enter = tag untagged, F = force re-tag all.
+                rgscan_prompt_ = true;
+                rgscan_dir_    = current_dir_;
+                rip_status_ = "ReplayGain scan '" + sanitizeForDisplay(rgscan_dir_) +
+                              "': [Enter] tag untagged  [F] force re-tag  [Esc] cancel";
+                rip_msg_ticks_ = 0;
+                redraw_needed_.store(true);
+            }
+            break;
+        case 5:  // Ctrl+E — stream recording: the [Rec] panel (stream-record R2)
+            if (ui_overlay_ != UIOverlay::None) break;  // already showing a modal
+            if (audio_.streamMode() || audio_.streamRecorder().recording()) {
+                // Idle -> settings view; recording -> live-state view (the
+                // draw fn branches on the recorder's own state).
+                ui_overlay_ = UIOverlay::RecPanel;
+                redraw_needed_.store(true);
+            } else {
+                // Precondition: recording taps the playing stream — nothing
+                // to record from a CD/file/silence. Toast, no panel.
+                showTrackToast("Stream recording", "Start a stream first (Ctrl+U)", "");
+            }
             break;
         case 25:  // Ctrl+Y — CD rip  (slice 6: common — CD path live on Linux)
             if (ui_overlay_ != UIOverlay::None) break;  // already showing modal
@@ -5851,58 +6928,52 @@ void UIManager::handleInput(int ch) {
             break;
         case 'z':
             playlist_.toggleShuffle(); break;
-        case 'n': case 'N': {
-            auto play_next = [&](const std::string& path, bool from_queue = false) {
-                // Follow-mode gates the cursor move (like the auto-advance sync block):
-                // OFF => manual next plays the track but leaves the cursor browsing.
-                if (!from_queue && config_.follow_playing) pl_cursor_ = (int)playlist_.current();
-                std::string drive; int track_num;
-                if (parseCDPath(path, drive, track_num)) {
-                    if (!reopenCDForAction(drive)) return;   // ejected while stopped
-                    audio_.playCDTrack(track_num);
-                    return;
+        case 'u':   // convert-core: mark/unmark the focused browser file
+            if (focus_ == Pane::DirBrowser) {
+                std::string p = browserEntryPath(dir_cursor_);
+                if (!p.empty() && convertSupportedInput(p)) {
+                    bool now = marked_.toggle(p);
+                    showTrackToast(now ? "Marked" : "Unmarked",
+                                   fs::path(p).filename().string(), "");
+                    redraw_needed_.store(true);
                 }
-                if (audio_.cdMode()) audio_.closeCD();
-                audio_.play(path);
-                maybePreloadNext();
-            };
-            // Queue takes priority over playlist on manual next
-            if (!playlist_.queueEmpty()) {
-                if (auto qe = playlist_.queuePop(); qe.has_value()) {
-                    audio_.clearNext();
-                    const std::string& qpath = qe->path;
-                    std::string drive; int track_num;
-                    if (parseCDPath(qpath, drive, track_num)) {
-                        if (!reopenCDForAction(drive)) break;   // ejected while stopped
-                        audio_.playCDTrack(track_num);
-                        // pl_cursor_ stays where it is — queue item has no playlist row
-                        break;
-                    }
-                    if (audio_.cdMode()) audio_.closeCD();
-                    play_next(qpath, true);  // from_queue=true — don't move cursor
-                }
-            } else if (auto p = playlist_.next(); p.has_value())
-                play_next(p.value());
-            else
-                audio_.stop();
+            }
+            break;
+        case 'U':   // convert-core: clear all marks
+            if (!marked_.empty()) {
+                marked_.clear();
+                showTrackToast("Marks cleared", "", "");
+                redraw_needed_.store(true);
+            }
+            break;
+        case 'x': {  // convert-core: open the convert scope chooser (or cancel a run)
+            if (ui_overlay_ != UIOverlay::None) break;
+            if (convert_job_.running()) {
+                convert_job_.cancel();
+                rip_status_ = "Convert: cancelling (finishing nothing mid-file)...";
+                rip_msg_ticks_ = 0; redraw_needed_.store(true);
+                break;
+            }
+            convert_single_.clear(); convert_src_dir_.clear();
+            if (focus_ == Pane::DirBrowser) {
+                std::string p = browserEntryPath(dir_cursor_);
+                if (!p.empty() && convertSupportedInput(p)) convert_single_ = p;
+                if (!in_drive_list_ && !in_radio_ && !in_favs_ && !in_recent_ && !in_books_)
+                    convert_src_dir_ = current_dir_;
+            }
+            if (convert_single_.empty() && convert_src_dir_.empty() && marked_.empty()) {
+                showTrackToast("Convert", "No file, folder, or marks here", "");
+                break;
+            }
+            convert_scope_ = 0; convert_focus_ = 0;
+            ui_overlay_ = UIOverlay::ConvertScope;
+            redraw_needed_.store(true);
             break;
         }
-        case 'p': case 'P': {
-            auto play_prev = [&](const std::string& path) {
-                if (config_.follow_playing) pl_cursor_ = (int)playlist_.current();   // gated like manual next
-                std::string drive; int track_num;
-                if (parseCDPath(path, drive, track_num)) {
-                    if (!reopenCDForAction(drive)) return;   // ejected while stopped
-                    audio_.playCDTrack(track_num);
-                    return;
-                }
-                if (audio_.cdMode()) audio_.closeCD();
-                audio_.play(path);
-            };
-            if (auto p = playlist_.previous(); p.has_value())
-                play_prev(p.value());
-            break;
-        }
+        // Manual next/prev - one home (manualNext/manualPrevious); an OS
+        // Next/Previous command routes through the same methods (osmedia-seam).
+        case 'n': case 'N': manualNext();     break;
+        case 'p': case 'P': manualPrevious(); break;
         case '[': requestSeek(-5.0); break;
         case ']': requestSeek(+5.0); break;
         case ',': jumpChapter(-1); break;
@@ -6114,6 +7185,24 @@ void UIManager::gotoClose(bool commit) {
                     in_drive_list_ = false;
                     refreshDir();
                 }
+                break;
+            }
+            case InputMode::RecDir: {
+                // Stream-record R2: [D] from the [Rec] panel. Session override
+                // only (never written back to config); empty submit keeps the
+                // derived default. Reopen the panel with the new value.
+                rec_dir_ = target;
+                ui_overlay_ = UIOverlay::RecPanel;
+                redraw_needed_.store(true);
+                break;
+            }
+            case InputMode::RecOffset: {
+                // split-trim: [T] from the [Rec] panel. Clamp 0-5000 (lead is
+                // reserved - negative folds to 0); junk keeps the prior value.
+                try { rec_offset_ms_ = std::clamp(std::stoi(target), 0, 5000); }
+                catch (...) {}
+                ui_overlay_ = UIOverlay::RecPanel;
+                redraw_needed_.store(true);
                 break;
             }
             case InputMode::SaveM3U: {
@@ -7091,6 +8180,124 @@ std::string UIManager::formatTime(double s) const {
 // Returns a substring of `text` of length `width` using the shared scroll
 // offset. If text fits within width, returns it padded. If not, scrolls.
 // (Removed: all consumers now use the column-aware scrollToWidth in StringUtils.h.)
+
+// convert-core: the absolute path of browser entry idx, respecting the mode.
+// Favs/Recent/Books entries are already absolute; normal-dir entries join
+// current_dir_. Pseudo-entries and drive/radio modes have no file path.
+std::string UIManager::browserEntryPath(int idx) const {
+    if (idx < 0 || idx >= (int)dir_entries_.size()) return {};
+    const std::string& nm = dir_entries_[(size_t)idx];
+    if (nm.empty() || nm == ".." || nm == "[Back]" || nm.front() == '[') return {};
+    if (in_drive_list_ || in_radio_) return {};
+    namespace fs = std::filesystem;
+    return fs::path(nm).is_absolute() ? nm : (fs::path(current_dir_) / nm).string();
+}
+
+// convert-core: pick the convert scope (this file / this folder / marked set).
+void UIManager::drawConvertScope() {
+    const int BOX_W = 60, BOX_H = 11;
+    int y0 = (screen_rows_ - BOX_H) / 2, x0 = (screen_cols_ - BOX_W) / 2;
+    if (y0 < 0) y0 = 0; if (x0 < 0) x0 = 0;
+    WINDOW* w = newwin(BOX_H, BOX_W, y0, x0);
+    if (!w) return;
+    wbkgd(w, config_.awesome_mode ? COLOR_PAIR(CP_DIM) : COLOR_PAIR(0));
+    werase(w);
+    const char* title = " CONVERT ";
+    panelFrame(w, title, true);
+    if (!config_.awesome_mode) mvwaddstr(w, 0, (BOX_W - (int)strlen(title)) / 2, title);
+
+    int folder_n = 0;
+    if (!convert_src_dir_.empty()) {
+        std::error_code ec;
+        namespace fs = std::filesystem;
+        for (fs::directory_iterator it(convert_src_dir_, ec), end; !ec && it != end; it.increment(ec))
+            if (it->is_regular_file(ec) && convertSupportedInput(it->path().string())) ++folder_n;
+    }
+
+    mvwaddstr(w, 2, 3, "Convert to another format:");
+    auto row = [&](int y, bool on, const std::string& s) {
+        if (!on) wattron(w, A_DIM);
+        mvwaddnstr(w, y, 3, s.c_str(), BOX_W - 5);
+        if (!on) wattroff(w, A_DIM);
+    };
+    row(4, !convert_single_.empty(), convert_single_.empty()
+        ? "[1] This file: (no audio file focused)"
+        : "[1] This file: " + sanitizeForDisplay(std::filesystem::path(convert_single_).filename().string()));
+    row(5, !convert_src_dir_.empty(), convert_src_dir_.empty()
+        ? "[2] This folder: (n/a here)"
+        : "[2] This folder: " + std::to_string(folder_n) + " file(s)");
+    row(6, !marked_.empty(), marked_.empty()
+        ? "[3] Marked set: (none - press u to mark)"
+        : "[3] Marked set: " + std::to_string((int)marked_.size()) + " file(s)");
+    mvwaddstr(w, 8, 3, "[1/2/3] pick   [Esc] cancel");
+    wrefresh(w); delwin(w);
+}
+
+// convert-core: pick the output format + quality (single-select + the shared
+// per-row quality editor). Quality edits the rip config knobs (the reuse).
+void UIManager::drawConvertConfirm() {
+    const int BOX_W = 62, BOX_H = 12 + kRipFormatCount;
+    int y0 = (screen_rows_ - BOX_H) / 2, x0 = (screen_cols_ - BOX_W) / 2;
+    if (y0 < 0) y0 = 0; if (x0 < 0) x0 = 0;
+    WINDOW* w = newwin(BOX_H, BOX_W, y0, x0);
+    if (!w) return;
+    wbkgd(w, config_.awesome_mode ? COLOR_PAIR(CP_DIM) : COLOR_PAIR(0));
+    werase(w);
+    const char* title = " CONVERT TO ";
+    panelFrame(w, title, true);
+    if (!config_.awesome_mode) mvwaddstr(w, 0, (BOX_W - (int)strlen(title)) / 2, title);
+
+    namespace fs = std::filesystem;
+    std::string scope;
+    if (convert_scope_ == 1) scope = "1 file: " + fs::path(convert_single_).filename().string();
+    else if (convert_scope_ == 2) scope = "folder: " + fs::path(convert_src_dir_).filename().string();
+    else if (convert_scope_ == 3) scope = std::to_string((int)marked_.size()) + " marked file(s)";
+    mvwaddnstr(w, 2, 3, sanitizeForDisplay(scope).c_str(), BOX_W - 5);
+
+    mvwaddstr(w, 4, 3, "Output format");
+    mvwaddstr(w, 4, BOX_W - 15, "(1-6 select)");
+    for (int i = 0; i < kRipFormatCount; ++i) {
+        const auto& r = kRipFormats[i];
+        bool alt = r.id == RipFormat::Mp3 ? config_.mp3_cbr
+                 : r.id == RipFormat::Opus ? !config_.opus_vbr
+                 : r.id == RipFormat::M4a ? !config_.aac_vbr : false;
+        std::string q = encoderQualityLabel(r.id, alt, config_.mp3,
+            r.id == RipFormat::Mp3 ? config_.mp3_cbr_bitrate
+            : r.id == RipFormat::M4a ? config_.aac_cbr_bitrate : config_.opus_bitrate,
+            config_.flac_level, config_.wavpack_mode, config_.aac_vbr_level);
+        const char* cur = (i == convert_focus_) ? "> " : "  ";
+        mvwprintw(w, 5 + i, 3, "%s(%c) %d  %-8s %s",
+                  cur, (convert_fmt_ == r.id) ? '*' : ' ', i + 1, r.label, q.c_str());
+    }
+    {
+        const auto& fr = kRipFormats[convert_focus_];
+        bool alt = fr.id == RipFormat::Mp3 ? config_.mp3_cbr
+                 : fr.id == RipFormat::Opus ? !config_.opus_vbr
+                 : fr.id == RipFormat::M4a ? !config_.aac_vbr : false;
+        if (const char* hint = encoderAxisHint(fr.id, alt))
+            mvwaddstr(w, 5 + kRipFormatCount, 5, hint);
+    }
+    int note_y = 6 + kRipFormatCount;
+    mvwaddstr(w, note_y, 3, "Output is 44.1 kHz (sources are resampled).");
+    if (convert_scope_ == 1 && !convert_single_.empty()) {
+        int sr = 0;
+        try {
+#ifdef _WIN32
+            TagLib::FileRef f(utf8_to_wide(convert_single_).c_str(), true);
+#else
+            TagLib::FileRef f(convert_single_.c_str(), true);
+#endif
+            if (!f.isNull() && f.audioProperties()) sr = f.audioProperties()->sampleRate();
+        } catch (...) {}
+        if (sr > 44100) {
+            wattron(w, COLOR_PAIR(CP_STATUS_ERR) | A_BOLD);
+            mvwprintw(w, note_y + 1, 3, "Source is %d kHz; output will be 44.1 kHz.", sr / 1000);
+            wattroff(w, COLOR_PAIR(CP_STATUS_ERR) | A_BOLD);
+        }
+    }
+    mvwaddstr(w, BOX_H - 2, 3, "[Enter] convert   [Esc] cancel");
+    wrefresh(w); delwin(w);
+}
 
 void UIManager::drawMBSearch() {
     const int BOX_W = std::min(screen_cols_ - 4, 72);

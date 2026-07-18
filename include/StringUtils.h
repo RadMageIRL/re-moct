@@ -2,6 +2,7 @@
 #include <string>
 #include <vector>
 #include <utility>
+#include <cctype>    // deinvertArtist's tolower
 #include <cstdint>
 #include <ctime>
 #ifdef _WIN32
@@ -18,6 +19,76 @@ inline bool localtimeSafe(std::time_t t, std::tm& out) {
 #else
     return ::localtime_r(&t, &out) != nullptr;
 #endif
+}
+
+// ─── Filesystem-safe path component ──────────────────────────────────────────
+// One path COMPONENT (a file or directory name), never a full path: strips the
+// characters Windows forbids (superset of POSIX) plus control bytes, and the
+// trailing dots/spaces Windows silently drops. Empty in -> "Unknown" so a
+// caller can never produce a nameless file. Moved verbatim from
+// CDRipper::sanitizePath (stream-record R1) so StreamRecorder can share it
+// without linking CDRipper's TU into tests; CDRipper::sanitizePath delegates.
+inline std::string sanitizePathComponent(const std::string& s) {
+    static const std::string ill = R"(\/:*?"<>|)";
+    std::string o; o.reserve(s.size());
+    for (unsigned char c : s)
+        o += (c < 32 || ill.find((char)c) != std::string::npos) ? '_' : (char)c;
+    while (!o.empty() && (o.back()=='.'||o.back()==' ')) o.pop_back();
+    return o.empty() ? "Unknown" : o;
+}
+
+// ─── Article de-inversion ─────────────────────────────────────────────────────
+// "Surname, The" -> "The Surname" for cleaner scrobble/tag metadata. Strict:
+// only fires when the ENTIRE tail after the last comma is a bare article
+// (the/a/an), so real comma-containing names ("Tyler, The Creator",
+// "Earth, Wind & Fire") are left untouched. Deliberately does NOT transform
+// "Lastname, Firstname" - too ambiguous to guess safely. Moved verbatim from
+// the UIManager file-static (stream-record R2) so StreamRecorder's
+// parseNowPlaying applies the same rule to filenames AND tags.
+inline std::string deinvertArtist(const std::string& a) {
+    auto pos = a.rfind(',');
+    if (pos == std::string::npos || pos == 0) return a;
+    std::string head = a.substr(0, pos);
+    std::string tail = a.substr(pos + 1);
+    size_t ts = tail.find_first_not_of(" \t");
+    if (ts == std::string::npos) return a;             // nothing after the comma
+    tail = tail.substr(ts);
+    while (!head.empty() && (head.back() == ' ' || head.back() == '\t')) head.pop_back();
+    if (head.empty()) return a;
+    std::string low = tail;
+    for (auto& c : low) c = (char)std::tolower((unsigned char)c);
+    if (low == "the" || low == "a" || low == "an")
+        return tail + " " + head;                      // preserve article casing
+    return a;
+}
+
+// ─── Junk-metadata gate ───────────────────────────────────────────────────────
+// Real radio tracks (e.g. "Sia - Unstoppable") pass; ad/station-break markers
+// and empty/Unknown fields are dropped. Heuristic by nature - extend the
+// marker list as new junk patterns turn up. Note the "live" check is an EXACT
+// match on the whole title (the "<station> - LIVE" floor - which is also how
+// iHeart's Song/Ad/Live state machine surfaces ad breaks host-side, so for
+// iHeart this gate is structural, not heuristic), sparing songs like "Live and
+// Let Die". Moved verbatim from the UIManager file-static (ad-aware slice) so
+// the scrobbler and StreamRecorder's ad classification share one vocabulary.
+inline bool looksLikeRealTrack(const std::string& artist, const std::string& track) {
+    auto lower = [](std::string s) {
+        for (auto& c : s) c = (char)std::tolower((unsigned char)c);
+        return s;
+    };
+    std::string a = lower(artist), t = lower(track);
+    if (a.empty() || t.empty()) return false;
+    if (a == "unknown" || t == "unknown" ||
+        a == "unknown artist" || a == "unknown_artist") return false;
+    if (t == "live") return false;   // "<station> - LIVE" floor (exact match; spares songs like "Live and Let Die")
+    static const char* junk[] = {
+        "ad|", "ad |", "commercial break", "commercial-break",
+        "advertisement", "station id", "station-id", "spot block", "spotblock"
+    };
+    for (const char* j : junk)
+        if (a.find(j) != std::string::npos || t.find(j) != std::string::npos)
+            return false;
+    return true;
 }
 
 // ─── Wide string conversion ───────────────────────────────────────────────────

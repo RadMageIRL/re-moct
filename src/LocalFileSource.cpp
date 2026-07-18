@@ -5,13 +5,19 @@
 // the seek-prime and cursor logic moved from AudioManager::seekTo/positionSec.
 #include "LocalFileSource.h"
 #include "StringUtils.h"
-#include "AacDecoder.h"   // FDK-AAC custom miniaudio backend (.aac/.m4a/.mp4)
-#include "Mp4Chapters.h"  // mp4AacChannelCount: true ASC channel count
+#include "CustomBackends.h" // the shared AAC/Opus/WavPack backend array
+#include "R128Gain.h"       // dbFromR128 — the one home for the R128<->RG dialect
+#include "Mp4Chapters.h"    // mp4AacChannelCount: true ASC channel count
 
 #include <taglib/fileref.h>
 #include <taglib/tag.h>
 #include <taglib/audioproperties.h>
 #include <taglib/tpropertymap.h>
+// mp3-rg-read: the MP3 TXXX fallback walks ID3v2 frames directly (the
+// PropertyMap can't see the legacy blob shape — see the RG block below).
+#include <taglib/mpegfile.h>
+#include <taglib/id3v2tag.h>
+#include <taglib/textidentificationframe.h>
 
 #include <algorithm>
 #include <cstring>
@@ -56,10 +62,66 @@ static void populate_track_info(TrackInfo& info, const std::string& path) {
             if (s.empty()) return 0.0f;
             try { return std::stof(s); } catch (...) { return 0.0f; }
         };
-        float rg_db = tryRG("REPLAYGAIN_TRACK_GAIN");
-        if (rg_db == 0.0f) rg_db = tryRG("replaygain_track_gain");
-        if (rg_db == 0.0f) rg_db = tryRG("R128_TRACK_GAIN");
-        // Convert dB to linear: gain = 10^(dB/20)
+        float rg_db = 0.0f;
+        std::string rg_ext = fs::path(path).extension().string();
+        std::transform(rg_ext.begin(), rg_ext.end(), rg_ext.begin(), ::tolower);
+        if (rg_ext == ".opus") {
+            // Opus (RFC 7845) carries gain as R128_TRACK_GAIN: an INTEGER in
+            // Q7.8 fixed-point dB. Reading it as plain dB (the old fallback)
+            // turned an ordinary tag into hundreds of negative dB and muted
+            // the track. The conversion (and its -23 -> -18 LUFS rebase) lives
+            // in R128Gain.h, SHARED with the rip encoder's tag-write direction
+            // so the dialect cannot drift. The tag is relative to the OpusHead
+            // output gain, which libopusfile already applies (OP_HEADER_GAIN
+            // default), so there is no header-gain term here.
+            if (float q78 = tryRG("R128_TRACK_GAIN"); q78 != 0.0f)
+                rg_db = dbFromR128((int)q78);
+        }
+        if (rg_db == 0.0f) {
+            rg_db = tryRG("REPLAYGAIN_TRACK_GAIN");
+            if (rg_db == 0.0f) rg_db = tryRG("replaygain_track_gain");
+        }
+        // MP3 fallback (mp3-rg-read): RE-MOCT's own rips/recordings wrote the
+        // TXXX frame as ONE "KEY=value" text blob, which re-parses with the
+        // whole blob in the frame's DESCRIPTION and an empty value — so the
+        // PropertyMap above keys it as 'REPLAYGAIN_TRACK_GAIN=-6.92 DB' -> ''
+        // and the lookups miss (probe-proven on the rip baseline; plan doc
+        // docs/mp3-rg-read-plan.md). Walk the TXXX frames directly: match the
+        // TRACK_GAIN description prefix case-insensitively, prefer the VALUE
+        // field when non-empty (standard third-party files stay standard),
+        // else parse the description's "=..." tail (our legacy blob). Track
+        // gain only — mode parity with the FLAC/Opus reads above. The write
+        // shape is fixed in its own follow-up slice; this read handles both
+        // shapes so that change can land without breaking read-back.
+        if (rg_db == 0.0f && rg_ext == ".mp3") {
+            if (auto* mp3 = dynamic_cast<TagLib::MPEG::File*>(ref.file())) {
+                if (auto* id3 = mp3->ID3v2Tag(false)) {
+                    static const std::string kKey = "REPLAYGAIN_TRACK_GAIN";
+                    for (auto* fr : id3->frameList("TXXX")) {
+                        auto* u = dynamic_cast<TagLib::ID3v2::UserTextIdentificationFrame*>(fr);
+                        if (!u) continue;
+                        std::string desc = u->description().to8Bit(true);
+                        std::string up   = desc;
+                        std::transform(up.begin(), up.end(), up.begin(), ::toupper);
+                        if (up.rfind(kKey, 0) != 0) continue;
+                        std::string val;
+                        // fieldList()[0] repeats the description; the VALUE is
+                        // the first non-empty field after it.
+                        const auto& fl = u->fieldList();
+                        for (unsigned int i = 1; i < fl.size(); ++i)
+                            if (!fl[i].isEmpty()) { val = fl[i].to8Bit(true); break; }
+                        if (val.empty()) {                      // legacy blob
+                            if (auto eq = desc.find('='); eq != std::string::npos)
+                                val = desc.substr(eq + 1);
+                        }
+                        if (!val.empty()) {
+                            try { rg_db = std::stof(val); } catch (...) {}
+                            if (rg_db != 0.0f) break;
+                        }
+                    }
+                }
+            }
+        }
         info.replaygain_db = rg_db;
     }
     if (auto* ap = ref.audioProperties(); ap) {
@@ -87,11 +149,12 @@ static bool open_decoder(const std::string& path, ma_decoder& dec,
     // non-zero channels/rate also keep miniaudio off the format-sniffer path that can
     // crash on files with bad/dual ID3 tags (previously done via TagLib hints).
     ma_decoder_config cfg = ma_decoder_config_init(ma_format_f32, 2, 44100);
-    // Plug in the FDK-AAC backend so .aac/.m4a/.mp4 decode through the same pipeline.
-    // It fails fast for non-AAC, so flac/mp3/wav/ogg still use miniaudio's built-ins.
-    static ma_decoding_backend_vtable* k_aac_backends[] = { ma_aac_backend_vtable() };
-    cfg.ppCustomBackendVTables = k_aac_backends;
-    cfg.customBackendCount     = 1;
+    // Plug in the custom backends (FDK-AAC, Opus, WavPack — CustomBackends.cpp)
+    // so .aac/.m4a/.mp4/.opus/.wv decode through the same pipeline. Each fails
+    // fast for non-matching input, so flac/mp3/wav still use miniaudio's built-ins.
+    size_t nbackends = 0;
+    cfg.ppCustomBackendVTables = remoct_custom_backends(&nbackends);
+    cfg.customBackendCount     = (ma_uint32)nbackends;
     cfg.pCustomBackendUserData = nullptr;
 #ifdef _WIN32
     auto wpath = utf8_to_wide(path);

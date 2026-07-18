@@ -7,7 +7,8 @@
 // The backend is registered in a ma_decoder_config via ppCustomBackendVTables.
 // miniaudio tries custom backends BEFORE its built-ins, so this vtable sniffs the
 // file and fails fast (MA_NO_BACKEND) for anything that isn't AAC — letting the
-// built-in FLAC / MP3 / WAV / Vorbis decoders take over unchanged.
+// built-in FLAC / MP3 / WAV decoders and the other custom backends (Opus,
+// WavPack, Vorbis — see CustomBackends.h) take over unchanged.
 //
 // Output is signed-16 PCM; miniaudio converts/resamples to the device format, so
 // every downstream feature (seek, ReplayGain, BPM, visualizer) works as-is.

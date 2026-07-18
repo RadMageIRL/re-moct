@@ -18,11 +18,17 @@
 #include <shlobj.h>
 #endif
 
-// FLAC C API
-#include <FLAC/stream_encoder.h>
-
-// LAME MP3
-#include <lame/lame.h>
+// Rip-output encoders (rip-encoder-seam): the FLAC/LAME code that lived
+// inline in ripTrack moved verbatim behind IEncoder — this TU no longer
+// touches either C API directly.
+#include "IEncoder.h"
+#include "EncoderFactory.h"   // makeEncoder decl (now external linkage; convert-core shares it)
+#include "FlacEncoder.h"
+#include "Mp3Encoder.h"
+#include "WavEncoder.h"
+#include "OpusRipEncoder.h"
+#include "WavPackEncoder.h"
+#include "R128Gain.h"       // r128FromDb — shared with the decode side (LocalFileSource)
 
 // libebur128 for ReplayGain
 #include <ebur128.h>
@@ -39,6 +45,18 @@
 #include <taglib/flacfile.h>
 #include <taglib/flacpicture.h>
 #include <taglib/xiphcomment.h>
+// TagLib's Ogg Opus reader/writer. The taglib/ prefix matters doubly here:
+// the CODEC header opus/opusfile.h shares the basename (the decode-slice
+// collision), and this TU must get TagLib's C++ class, not libopusfile's C API.
+#include <taglib/opusfile.h>
+// TagLib's WavPack APEv2 reader/writer (same basename story: wavpack/wavpack.h
+// is the codec header; taglib/wavpackfile.h is the tagger).
+#include <taglib/wavpackfile.h>
+#include <taglib/apetag.h>
+#include <taglib/mp4file.h>
+#include <taglib/mp4tag.h>
+#include <taglib/mp4item.h>
+#include <taglib/mp4coverart.h>
 
 #include <filesystem>
 #include <cstring>
@@ -59,8 +77,7 @@ static constexpr int SECTOR_SAMPLES   = 588;
 static constexpr int SECTORS_PER_READ = 27;
 static constexpr int SAMPLE_RATE      = 44100;
 static constexpr int CHANNELS         = 2;
-static constexpr int BIT_DEPTH        = 16;
-static constexpr int FLAC_COMPRESSION = 5;
+// (BIT_DEPTH / FLAC_COMPRESSION moved with the FLAC code into FlacEncoder.cpp)
 // C2 read: 2352 audio bytes + 294 C2 bytes = 2646 bytes per sector
 static constexpr int SECTOR_BYTES_C2  = 2352 + 294;
 
@@ -86,15 +103,16 @@ static constexpr int MAX_PRESSING_OFFSET = 700;
 
 // ─── Path helpers ─────────────────────────────────────────────────────────────
 std::string CDRipper::sanitizePath(const std::string& s) {
-    static const std::string ill = R"(\/:*?"<>|)";
-    std::string o; o.reserve(s.size());
-    for (unsigned char c : s)
-        o += (c < 32 || ill.find((char)c) != std::string::npos) ? '_' : (char)c;
-    while (!o.empty() && (o.back()=='.'||o.back()==' ')) o.pop_back();
-    return o.empty() ? "Unknown" : o;
+    // Body moved verbatim to StringUtils.h sanitizePathComponent (stream-record
+    // R1) so StreamRecorder shares it without linking this TU into tests.
+    return sanitizePathComponent(s);
 }
 
-std::string CDRipper::buildOutputDir(const MBRelease& rel) {
+// The user's music root — extracted verbatim from buildOutputDir (stream-record
+// R1) so recordings derive from the SAME root as rips: relocating the music
+// folder moves both together. Behavior-identical by construction (a pure move);
+// the trimmed CD gate re-proves the rip path.
+std::string CDRipper::musicRoot() {
     std::string music;
 #ifdef _WIN32
     // The baseline block, verbatim: the user's known Music folder, USERPROFILE
@@ -137,6 +155,18 @@ std::string CDRipper::buildOutputDir(const MBRelease& rel) {
         std::fclose(f);
     }
 #endif
+    return music;
+}
+
+// Stream captures live beside rips under the one re-moct root (stream-record
+// plan §5): <music>/re-moct/recordings — lowercase/plural to match re-moct's
+// own casing. R2's panel (and the R1 harness) call this for the default dir.
+std::string CDRipper::recordingsDir() {
+    return musicRoot() + kSep + "re-moct" + kSep + "recordings";
+}
+
+std::string CDRipper::buildOutputDir(const MBRelease& rel) {
+    std::string music = musicRoot();
     std::string folder;
     if (!rel.title.empty()) {
         std::string yr = rel.date.size()>=4 ? " ("+rel.date.substr(0,4)+")" : "";
@@ -659,6 +689,9 @@ void CDRipper::tagFile(const std::string&         path,
 #endif
         bool is_mp3  = path.size()>4 && path.substr(path.size()-4)==".mp3";
         bool is_flac = path.size()>5 && path.substr(path.size()-5)==".flac";
+        bool is_opus = path.size()>5 && path.substr(path.size()-5)==".opus";
+        bool is_wv   = path.size()>3 && path.substr(path.size()-3)==".wv";
+        bool is_m4a  = path.size()>4 && path.substr(path.size()-4)==".m4a";
 
         std::string title_str;
         if (mt && !mt->title.empty()) title_str = mt->title;
@@ -691,22 +724,38 @@ void CDRipper::tagFile(const std::string&         path,
             tag->setTrack ((unsigned int)track_num);
             if (rel.date.size()>=4) try { tag->setYear((unsigned)std::stoi(rel.date.substr(0,4))); } catch(...){}
 
+            // TENC is a standard ID3v2 text frame — the generic construction
+            // is CORRECT for it and stays.
             auto addTxt = [&](const char* id, const std::string& val) {
                 auto* f2 = new TagLib::ID3v2::TextIdentificationFrame(id, TagLib::String::UTF8);
                 f2->setText(TagLib::String(val, TagLib::String::UTF8));
                 tag->addFrame(f2);
             };
+            // TXXX frames need the description/value SPLIT (mp3-rg-write):
+            // the old addTxt("TXXX", "KEY=value") blob re-parsed with the
+            // whole string in the DESCRIPTION and an empty value — invisible
+            // to PropertyMap, foobar2000, and CUETools alike (probe-proven;
+            // docs/mp3-rg-read-plan.md). Keys and value strings are
+            // byte-identical to before; only the framing is corrected. The
+            // decode side reads BOTH shapes (mp3-rg-read), so legacy files
+            // stay readable and are never re-tagged.
+            auto addUserTxt = [&](const char* desc, const std::string& val) {
+                auto* f2 = new TagLib::ID3v2::UserTextIdentificationFrame(TagLib::String::UTF8);
+                f2->setDescription(desc);
+                f2->setText(TagLib::String(val, TagLib::String::UTF8));
+                tag->addFrame(f2);
+            };
             addTxt("TENC", "RE-MOCT v" REMOCT_VERSION);
             if (!ar_str.empty()) {
-                addTxt("TXXX", "AccurateRip="      + ar_str);
-                addTxt("TXXX", "ACCURATERIPCRC="   + std::string(ar_crc_str));
-                addTxt("TXXX", "ACCURATERIPCOUNT=" + std::string(ar_conf_str));
+                addUserTxt("AccurateRip",      ar_str);
+                addUserTxt("ACCURATERIPCRC",   std::string(ar_crc_str));
+                addUserTxt("ACCURATERIPCOUNT", std::string(ar_conf_str));
             }
             if (rg.valid) {
-                addTxt("TXXX", "REPLAYGAIN_TRACK_GAIN="+rg_str(rg.track_gain));
-                addTxt("TXXX", "REPLAYGAIN_TRACK_PEAK="+rg_peak_str(rg.track_peak));
-                addTxt("TXXX", "REPLAYGAIN_ALBUM_GAIN="+rg_str(rg.album_gain));
-                addTxt("TXXX", "REPLAYGAIN_ALBUM_PEAK="+rg_peak_str(rg.album_peak));
+                addUserTxt("REPLAYGAIN_TRACK_GAIN", rg_str(rg.track_gain));
+                addUserTxt("REPLAYGAIN_TRACK_PEAK", rg_peak_str(rg.track_peak));
+                addUserTxt("REPLAYGAIN_ALBUM_GAIN", rg_str(rg.album_gain));
+                addUserTxt("REPLAYGAIN_ALBUM_PEAK", rg_peak_str(rg.album_peak));
             }
             if (!art.empty()) {
                 auto* ap = new TagLib::ID3v2::AttachedPictureFrame();
@@ -747,11 +796,147 @@ void CDRipper::tagFile(const std::string&         path,
                 f.addPicture(pic);
             }
             f.save();
+
+        } else if (is_opus) {
+            // Opus (rip-opus-encoder): Xiph comments like FLAC — standard
+            // fields, AR fields, and art (XiphComment carries pictures
+            // natively) are the FLAC branch's calls verbatim. ReplayGain is
+            // the R128 DIALECT ONLY (RFC 7845): Q7.8 integers via the shared
+            // R128Gain.h conversion — the exact inverse of the decode side.
+            // No REPLAYGAIN_* keys, no peaks (R128 defines none). The header
+            // output gain is 0 (OpusRipEncoder pins it), so these tags are
+            // the only gain.
+            TagLib::Ogg::Opus::File f(wp.c_str(), false);
+            auto* tag = f.tag(); if (!tag) return;
+            tag->setTitle (TagLib::String(title_str,  TagLib::String::UTF8));
+            tag->setArtist(TagLib::String(artist_str, TagLib::String::UTF8));
+            tag->setAlbum (TagLib::String(rel.title,  TagLib::String::UTF8));
+            tag->setTrack ((unsigned int)track_num);
+            if (rel.date.size()>=4) try { tag->setYear((unsigned)std::stoi(rel.date.substr(0,4))); } catch(...){}
+            tag->addField("ENCODER",TagLib::String("RE-MOCT v" REMOCT_VERSION,TagLib::String::UTF8),true);
+            if (!ar_str.empty()) {
+                tag->addField("ACCURATERIP",    TagLib::String(ar_str,       TagLib::String::UTF8),true);
+                tag->addField("ACCURATERIPCRC", TagLib::String(ar_crc_str,   TagLib::String::UTF8),true);
+                tag->addField("ACCURATERIPCOUNT",TagLib::String(ar_conf_str, TagLib::String::UTF8),true);
+            }
+            if (rg.valid) {
+                tag->addField("R128_TRACK_GAIN",
+                    TagLib::String(std::to_string(r128FromDb(rg.track_gain)),TagLib::String::UTF8),true);
+                tag->addField("R128_ALBUM_GAIN",
+                    TagLib::String(std::to_string(r128FromDb(rg.album_gain)),TagLib::String::UTF8),true);
+            }
+            if (!art.empty()) {
+                auto* pic = new TagLib::FLAC::Picture();
+                pic->setMimeType("image/jpeg");
+                pic->setType(TagLib::FLAC::Picture::FrontCover);
+                pic->setDescription(TagLib::String("Cover"));
+                pic->setData(TagLib::ByteVector((const char*)art.data(),(unsigned)art.size()));
+                tag->addPicture(pic);
+            }
+            f.save();
+
+        } else if (is_wv) {
+            // WavPack (rip-wavpack-encoder): APEv2 — the tag home of the
+            // PLAIN ReplayGain dialect (the decode side already reads it back
+            // via the generic path), so the FLAC/MP3 formatters are reused
+            // verbatim. No R128 keys here. Art is the APEv2 convention: a
+            // Binary item keyed "Cover Art (Front)" whose payload is
+            // "<filename>\0<image bytes>".
+            TagLib::WavPack::File f(wp.c_str(), false);
+            auto* tag = f.APETag(true); if (!tag) return;
+            tag->setTitle (TagLib::String(title_str,  TagLib::String::UTF8));
+            tag->setArtist(TagLib::String(artist_str, TagLib::String::UTF8));
+            tag->setAlbum (TagLib::String(rel.title,  TagLib::String::UTF8));
+            tag->setTrack ((unsigned int)track_num);
+            if (rel.date.size()>=4) try { tag->setYear((unsigned)std::stoi(rel.date.substr(0,4))); } catch(...){}
+            tag->addValue("ENCODER", TagLib::String("RE-MOCT v" REMOCT_VERSION, TagLib::String::UTF8), true);
+            if (!ar_str.empty()) {
+                tag->addValue("ACCURATERIP",     TagLib::String(ar_str,      TagLib::String::UTF8), true);
+                tag->addValue("ACCURATERIPCRC",  TagLib::String(ar_crc_str,  TagLib::String::UTF8), true);
+                tag->addValue("ACCURATERIPCOUNT",TagLib::String(ar_conf_str, TagLib::String::UTF8), true);
+            }
+            if (rg.valid) {
+                tag->addValue("REPLAYGAIN_TRACK_GAIN",TagLib::String(rg_str(rg.track_gain),TagLib::String::UTF8),true);
+                tag->addValue("REPLAYGAIN_TRACK_PEAK",TagLib::String(rg_peak_str(rg.track_peak),TagLib::String::UTF8),true);
+                tag->addValue("REPLAYGAIN_ALBUM_GAIN",TagLib::String(rg_str(rg.album_gain),TagLib::String::UTF8),true);
+                tag->addValue("REPLAYGAIN_ALBUM_PEAK",TagLib::String(rg_peak_str(rg.album_peak),TagLib::String::UTF8),true);
+            }
+            if (!art.empty()) {
+                TagLib::ByteVector payload("cover.jpg");
+                payload.append('\0');
+                payload.append(TagLib::ByteVector((const char*)art.data(),(unsigned)art.size()));
+                tag->setData("Cover Art (Front)", payload);
+            }
+            f.save();
+
+        } else if (is_m4a) {
+            // AAC/M4A (aac-m4a-encoder): MP4 atoms. Standard fields, then the
+            // iTunes freeform (----) convention for AR and the PLAIN ReplayGain
+            // dialect (REPLAYGAIN_*). TagLib surfaces those freeform atoms through
+            // PropertyMap, so the decode side reads the gain with NO MP4-specific
+            // path (proven, aac-m4a-encoder plan F3). Cover art is the covr atom,
+            // JPEG like the rip cover the other branches write.
+            TagLib::MP4::File f(wp.c_str(), false);
+            auto* tag = f.tag(); if (!tag) return;
+            tag->setTitle (TagLib::String(title_str,  TagLib::String::UTF8));
+            tag->setArtist(TagLib::String(artist_str, TagLib::String::UTF8));
+            tag->setAlbum (TagLib::String(rel.title,  TagLib::String::UTF8));
+            tag->setTrack ((unsigned int)track_num);
+            if (rel.date.size()>=4) try { tag->setYear((unsigned)std::stoi(rel.date.substr(0,4))); } catch(...){}
+            auto setFree = [&](const char* name, const std::string& val) {
+                tag->setItem(std::string("----:com.apple.iTunes:") + name,
+                    TagLib::MP4::Item(TagLib::StringList(TagLib::String(val, TagLib::String::UTF8))));
+            };
+            tag->setItem("\251too", TagLib::MP4::Item(TagLib::StringList(
+                TagLib::String("RE-MOCT v" REMOCT_VERSION, TagLib::String::UTF8))));
+            if (!ar_str.empty()) {
+                setFree("ACCURATERIP",      ar_str);
+                setFree("ACCURATERIPCRC",   std::string(ar_crc_str));
+                setFree("ACCURATERIPCOUNT", std::string(ar_conf_str));
+            }
+            if (rg.valid) {
+                setFree("REPLAYGAIN_TRACK_GAIN", rg_str(rg.track_gain));
+                setFree("REPLAYGAIN_TRACK_PEAK", rg_peak_str(rg.track_peak));
+                setFree("REPLAYGAIN_ALBUM_GAIN", rg_str(rg.album_gain));
+                setFree("REPLAYGAIN_ALBUM_PEAK", rg_peak_str(rg.album_peak));
+            }
+            if (!art.empty()) {
+                TagLib::MP4::CoverArtList covers;
+                covers.append(TagLib::MP4::CoverArt(TagLib::MP4::CoverArt::JPEG,
+                    TagLib::ByteVector((const char*)art.data(), (unsigned)art.size())));
+                tag->setItem("covr", TagLib::MP4::Item(covers));
+            }
+            f.save();
         }
     } catch(...) {}
 }
 
 // ─── Core track rip ───────────────────────────────────────────────────────────
+// makeEncoder (the RipFormat -> IEncoder factory) moved to EncoderFactory.cpp so
+// the convert-core engine can link it without dragging in the whole rip TU. Its
+// declaration arrives via EncoderFactory.h (included above); the body is byte-
+// identical, so rip_encoder_seam_test is unaffected.
+
+// Per-track output list from the selection: table-ordered, absent formats
+// simply not present (no path, no encoder, no temp siblings — subset
+// correctness by construction).
+static std::vector<CDRipper::RipOutput> buildOuts(const RipOptions& opt,
+                                                  const std::string& out_dir,
+                                                  const std::string& prefix) {
+    std::vector<CDRipper::RipOutput> v;
+    for (RipFormat f : opt.formats)
+        if (const RipFormatRow* r = ripFormatRow(f))
+            v.push_back({ f, out_dir + kSep + prefix + r->ext });
+    return v;
+}
+
+// The .tmp/.det/.probe sibling lists the re-rip paths use.
+static std::vector<CDRipper::RipOutput> withSuffix(std::vector<CDRipper::RipOutput> outs,
+                                                   const char* sfx) {
+    for (auto& o : outs) o.path += sfx;
+    return outs;
+}
+
 ARTrackResult CDRipper::ripTrack(core::ICdDevice&   dev,
                                  const CDTrack&     track,
                                  int                track_idx,
@@ -759,8 +944,8 @@ ARTrackResult CDRipper::ripTrack(core::ICdDevice&   dev,
                                  bool               is_first,
                                  bool               is_last,
                                  bool               use_c2,
-                                 const std::string& flac_path,
-                                 const std::string& mp3_path,
+                                 const std::vector<RipOutput>& outs,
+                                 const RipOptions&  opt,
                                  RGResult&          rg_out,
                                  const ProgressCb&  cb,
                                  const std::string& log_path,
@@ -783,50 +968,24 @@ ARTrackResult CDRipper::ripTrack(core::ICdDevice&   dev,
     const uint32_t total_secs = (uint32_t)track.length_lba;
     if (total_secs == 0) return ar_result;
 
-    // ── FLAC setup ────────────────────────────────────────────────────────
-    FLAC__StreamEncoder* flac_enc = FLAC__stream_encoder_new();
-    if (!flac_enc) { ar_result.status = ARStatus::NotFound; return ar_result; }
-    FLAC__stream_encoder_set_verify(flac_enc, false);
-    FLAC__stream_encoder_set_compression_level(flac_enc, FLAC_COMPRESSION);
-    FLAC__stream_encoder_set_channels(flac_enc, CHANNELS);
-    FLAC__stream_encoder_set_bits_per_sample(flac_enc, BIT_DEPTH);
-    FLAC__stream_encoder_set_sample_rate(flac_enc, SAMPLE_RATE);
-    FLAC__stream_encoder_set_total_samples_estimate(flac_enc,
-        (FLAC__uint64)total_secs * SECTOR_SAMPLES);
-    FILE* flac_file = port::fopenUtf8(flac_path, "wb");
-    if (!flac_file) { FLAC__stream_encoder_delete(flac_enc); return ar_result; }
-    if (FLAC__stream_encoder_init_FILE(flac_enc, flac_file, nullptr, nullptr)
-            != FLAC__STREAM_ENCODER_INIT_STATUS_OK) {
-        fclose(flac_file); FLAC__stream_encoder_delete(flac_enc); return ar_result;
-    }
-
-    // ── LAME setup ────────────────────────────────────────────────────────
-    lame_global_flags* lame = lame_init();
-    if (!lame) {
-        FLAC__stream_encoder_finish(flac_enc);
-        FLAC__stream_encoder_delete(flac_enc);
-        return ar_result;
-    }
-    lame_set_in_samplerate(lame, SAMPLE_RATE);
-    lame_set_num_channels(lame, CHANNELS);
-    lame_set_VBR(lame, vbr_mtrh);
-    lame_set_VBR_q(lame, 0);
-    lame_set_quality(lame, 2);
-    lame_set_mode(lame, STEREO);
-    lame_set_write_id3tag_automatic(lame, 0);
-    lame_set_bWriteVbrTag(lame, 1);   // emit Xing/LAME info header (VBR duration)
-    if (lame_init_params(lame) < 0) {
-        lame_close(lame);
-        FLAC__stream_encoder_finish(flac_enc);
-        FLAC__stream_encoder_delete(flac_enc);
-        return ar_result;
-    }
-    FILE* mp3_file = port::fopenUtf8(mp3_path, "wb");
-    if (!mp3_file) {
-        lame_close(lame);
-        FLAC__stream_encoder_finish(flac_enc);
-        FLAC__stream_encoder_delete(flac_enc);
-        return ar_result;
+    // ── Encoder fan-out (rip-encoder-seam / rip-format-select) ────────────
+    // One IEncoder per SELECTED output, in list order (table order — the
+    // pre-selection FLAC-then-MP3 sequence for the default set). Each is a
+    // pure PCM consumer of the read loop's blocks; tags/art/RG happen later
+    // in tagFile, unchanged. On an open failure, unwind the already-opened
+    // encoders exactly as the inline code did: finalize (a lossless
+    // encoder's finish flushes a valid-but-empty file, deliberately LEFT on
+    // disk — the worker's zero-CRC heuristic catches it) and return.
+    if (outs.empty()) return ar_result;   // UI guarantees >= 1; belt-and-suspenders
+    std::vector<std::unique_ptr<IEncoder>> encoders;
+    for (const auto& o : outs) encoders.push_back(makeEncoder(o.fmt, opt));
+    for (size_t ei = 0; ei < encoders.size(); ++ei) {
+        if (!encoders[ei] ||
+            !encoders[ei]->open(outs[ei].path,
+                                (uint64_t)total_secs * SECTOR_SAMPLES)) {
+            for (size_t j = 0; j < ei; ++j) encoders[j]->finalize(false);
+            return ar_result;
+        }
     }
 
     // ── libebur128 for ReplayGain ─────────────────────────────────────────
@@ -903,11 +1062,8 @@ ARTrackResult CDRipper::ripTrack(core::ICdDevice&   dev,
     static constexpr int BUF_BYTES   = BUF_SECTORS * SECTOR_BYTES;
 
     uint8_t raw_buf[BUF_BYTES];
-    FLAC__int32 flac_buf[BUF_SECTORS * SECTOR_SAMPLES * 2];
-    int16_t lame_left[BUF_SECTORS * SECTOR_SAMPLES];
-    int16_t lame_right[BUF_SECTORS * SECTOR_SAMPLES];
-    uint8_t mp3_out[BUF_SECTORS * SECTOR_SAMPLES * 2 + 7200];
     float   ebur_interleaved[BUF_SECTORS * SECTOR_SAMPLES * 2]; // interleaved L+R
+    // (the per-format staging buffers moved into FlacEncoder/Mp3Encoder)
 
     // ── Drive + pressing offset correction ───────────────────────────────────
     // total_skip = drive_offset + pressing_offset. May span multiple sectors.
@@ -1036,10 +1192,6 @@ ARTrackResult CDRipper::ripTrack(core::ICdDevice&   dev,
 
         for (int i = 0; i < samples; ++i) {
             int16_t l = src[i*2], r = src[i*2+1];
-            flac_buf[i*2]            = (FLAC__int32)l;
-            flac_buf[i*2+1]          = (FLAC__int32)r;
-            lame_left[i]             = l;
-            lame_right[i]            = r;
             ebur_interleaved[i*2]    = (float)l / 32768.0f;
             ebur_interleaved[i*2+1]  = (float)r / 32768.0f;
 
@@ -1063,15 +1215,15 @@ ARTrackResult CDRipper::ripTrack(core::ICdDevice&   dev,
                 pcm_crc32 = crc32_table[(pcm_crc32 ^ b[n]) & 0xFF] ^ (pcm_crc32 >> 8);
         }
 
-        // FLAC encode
-        if (!FLAC__stream_encoder_process_interleaved(
-                flac_enc, flac_buf, (unsigned)samples)) { ok = false; break; }
-
-        // MP3 encode
-        int mp3b = lame_encode_buffer(lame, lame_left, lame_right,
-                                      samples, mp3_out, sizeof(mp3_out));
-        if (mp3b < 0) { ok = false; break; }
-        if (mp3b > 0) fwrite(mp3_out, 1, (size_t)mp3b, mp3_file);
+        // Encoders (FLAC then MP3 — the inline order). A failure breaks the
+        // rip exactly as the inline `ok=false; break` pairs did: later
+        // encoders in the list, ReplayGain, and CTDB are skipped this block.
+        {
+            bool enc_ok = true;
+            for (auto& e : encoders)
+                if (!e->writeFrames(src, (size_t)samples)) { enc_ok = false; break; }
+            if (!enc_ok) { ok = false; break; }
+        }
 
         // ReplayGain -- interleaved stereo. `samples` is already the stereo-frame
         // count (same value passed to FLAC/LAME), which is exactly what
@@ -1142,10 +1294,6 @@ ARTrackResult CDRipper::ripTrack(core::ICdDevice&   dev,
         int samples = corr_sub_skip;
         for (int i = 0; i < samples; ++i) {
             int16_t l = src[i*2], r = src[i*2+1];
-            flac_buf[i*2]           = (FLAC__int32)l;
-            flac_buf[i*2+1]         = (FLAC__int32)r;
-            lame_left[i]            = l;
-            lame_right[i]           = r;
             ebur_interleaved[i*2]   = (float)l / 32768.0f;
             ebur_interleaved[i*2+1] = (float)r / 32768.0f;
             arc.sample(l, r);
@@ -1156,35 +1304,22 @@ ARTrackResult CDRipper::ripTrack(core::ICdDevice&   dev,
             for (int n = 0; n < samples * 4; ++n)
                 pcm_crc32 = crc32_table[(pcm_crc32 ^ b[n]) & 0xFF] ^ (pcm_crc32 >> 8);
         }
-        if (!FLAC__stream_encoder_process_interleaved(flac_enc, flac_buf, (unsigned)samples))
-            ok = false;
-        if (ok) {
-            int mp3b = lame_encode_buffer(lame, lame_left, lame_right,
-                                          samples, mp3_out, sizeof(mp3_out));
-            if (mp3b < 0) ok = false;
-            else if (mp3b > 0) fwrite(mp3_out, 1, (size_t)mp3b, mp3_file);
-        }
+        // Encoders on the borrowed tail samples — FLAC-fail skips MP3, as the
+        // inline `if (ok)` gate did; ebur still runs after, also as before.
+        for (auto& e : encoders)
+            if (!e->writeFrames(src, (size_t)samples)) { ok = false; break; }
         if (ebur) ebur128_add_frames_float(ebur, ebur_interleaved,
                                            (size_t)samples);
     }
 
     // ── Flush encoders ────────────────────────────────────────────────────
-    FLAC__stream_encoder_finish(flac_enc);
-    FLAC__stream_encoder_delete(flac_enc);
-    if (ok) {
-        int fb = lame_encode_flush(lame, mp3_out, sizeof(mp3_out));
-        if (fb > 0) fwrite(mp3_out, 1, (size_t)fb, mp3_file);
-        // Overwrite the reserved first frame with the real Xing/LAME info tag so
-        // VBR MP3s report the correct duration (frame count) to every player.
-        unsigned char vbr_tag[2880];
-        size_t tag_n = lame_get_lametag_frame(lame, vbr_tag, sizeof(vbr_tag));
-        if (tag_n > 0 && tag_n <= sizeof(vbr_tag)) {
-            fseek(mp3_file, 0, SEEK_SET);
-            fwrite(vbr_tag, 1, tag_n, mp3_file);
-        }
-    }
-    fclose(mp3_file);
-    lame_close(lame);
+    // FLAC first (list order = the inline finish order). ok=false skips the
+    // quality-tail work but still closes handles, exactly as before. A
+    // finalize returning false (a buffering encoder's final flush failed —
+    // WavPack/Opus disk-full) fails the track: the cleanup below removes the
+    // files and the worker's zero-CRC heuristic reports it.
+    for (auto& e : encoders)
+        if (!e->finalize(ok)) ok = false;
 
     // ── ReplayGain result ─────────────────────────────────────────────────
     if (ebur && ok) {
@@ -1211,8 +1346,7 @@ ARTrackResult CDRipper::ripTrack(core::ICdDevice&   dev,
     if (ebur) ebur128_destroy(&ebur);
 
     if (!ok || cancel_.load()) {
-        fs::remove(flac_path);
-        fs::remove(mp3_path);
+        for (const auto& o : outs) fs::remove(o.path);
         return ar_result;
     }
 
@@ -1270,6 +1404,7 @@ void CDRipper::worker(std::string          drive_letter,
                       std::string          out_dir,
                       MBRelease            rel,
                       RipMode              mode,
+                      RipOptions           opt,
                       ProgressCb           cb,
                       std::unique_ptr<core::ICdDevice> dev,
                       int                  drive_offset,
@@ -1311,6 +1446,35 @@ void CDRipper::worker(std::string          drive_letter,
     std::string log_dir      = out_dir + kSep + "logs";
     std::string ar_cache_dir = out_dir + kSep + ".ar-db-info";
     std::string log_path;
+    // log-semantics: the master-vs-derived distinction, surfaced from the
+    // properties that already exist (kRipFormats[].lossless + opt.formats) —
+    // nothing computed. Precise framing, resisting the common overclaim:
+    // AR/CTDB verify the disc READ; lossless outputs RETAIN the verified
+    // bits, lossy ones transcode them away. Written in the header block and
+    // restated beside the Summary's AR totals so "did the read verify?" and
+    // "which file retains it?" sit together. The log has no parser (human-
+    // only, grep-confirmed at plan) — format is free.
+    auto joinFormats = [&](bool lossless) {
+        std::string s;
+        for (const auto& r : kRipFormats)
+            if (r.lossless == lossless &&
+                std::find(opt.formats.begin(), opt.formats.end(), r.id) != opt.formats.end())
+                s += (s.empty() ? "" : ", ") + std::string(r.label);
+        return s;
+    };
+    const std::string master_fmts  = joinFormats(true);
+    const std::string derived_fmts = joinFormats(false);
+    // The parenthetical stays FACTUAL per shape: mention lossy copies only
+    // when the rip actually produces some (caught by the lossless-only
+    // verification rip at implement — the fixed text must never overclaim).
+    const std::string master_line = !master_fmts.empty()
+        ? master_fmts + "  (AR/CTDB verdicts apply to the lossless master"
+          + (master_fmts.find(',') != std::string::npos ? "s" : "")
+          + (!derived_fmts.empty()
+                 ? "; lossy copies derive from the same verified read)"
+                 : ")")
+        : "NONE - lossy outputs only. AR/CTDB verdicts attest the disc READ, "
+          "but no output retains the verified bits.";
     {
         fs::create_directories(log_dir, ec);
         std::time_t t = std::time(nullptr);
@@ -1332,7 +1496,17 @@ void CDRipper::worker(std::string          drive_letter,
                 mode==RipMode::AccurateRip ? "AccurateRip"    :
                 mode==RipMode::CUETools    ? "CUETools"       :
                 mode==RipMode::LocalVerify ? "Local (2-pass)" : "Local");
-            fprintf(lf, "Output : %s\n\n", out_dir.c_str());
+            fprintf(lf, "Output : %s\n", out_dir.c_str());
+            bool first_fmt = true;
+            for (const auto& r : kRipFormats) {
+                if (std::find(opt.formats.begin(), opt.formats.end(), r.id) == opt.formats.end())
+                    continue;
+                fprintf(lf, "%s%-8s %s\n", first_fmt ? "Formats: " : "         ",
+                        r.label, r.lossless ? "lossless - verifiable master"
+                                            : "lossy - derived copy");
+                first_fmt = false;
+            }
+            fprintf(lf, "Master : %s\n\n", master_line.c_str());
             fclose(lf);
         }
     }
@@ -1506,8 +1680,7 @@ void CDRipper::worker(std::string          drive_letter,
         std::string prefix = nn.str();
         if (mt && !mt->title.empty()) prefix += " - " + sanitizePath(mt->title);
 
-        std::string flac_path = out_dir + kSep + prefix + ".flac";
-        std::string mp3_path  = out_dir + kSep + prefix + ".mp3";
+        const std::vector<RipOutput> outs = buildOuts(opt, out_dir, prefix);
 
         // For track 1: only drive_offset (pressing not yet detected).
         // For all subsequent tracks: drive_offset + pressing_offset (once detected).
@@ -1518,7 +1691,7 @@ void CDRipper::worker(std::string          drive_letter,
         ARTrackResult ar = ripTrack(*dev, trk, i, total,
                                     i==0, i==total-1,
                                     use_c2,
-                                    flac_path, mp3_path, rg, cb,
+                                    outs, opt, rg, cb,
                                     log_path, mode, drive_offset,
                                     ctdb_state.ctdb_crc,
                                     ctdb_state.ctdb_bytes,
@@ -1670,13 +1843,12 @@ void CDRipper::worker(std::string          drive_letter,
                     for (int p : CANDIDATE_OFFSETS) {
                         if (cancel_.load()) break;
                         if (drive_offset + p < 0) continue;
-                        std::string probe_flac = flac_path + ".probe";
-                        std::string probe_mp3  = mp3_path  + ".probe";
+                        const auto probe_outs = withSuffix(outs, ".probe");
                         RGResult      rg_probe;
                         ARTrackResult ar_probe = ripTrack(*dev, trk, i, total,
                                                           true, total == 1,
                                                           use_c2,
-                                                          probe_flac, probe_mp3,
+                                                          probe_outs, opt,
                                                           rg_probe, nullptr,
                                                           log_path, mode,
                                                           drive_offset,
@@ -1684,8 +1856,7 @@ void CDRipper::worker(std::string          drive_letter,
                                                           ctdb_state.ctdb_bytes,
                                                           p);
                         std::error_code ec_probe;
-                        fs::remove(probe_flac, ec_probe);
-                        fs::remove(probe_mp3,  ec_probe);
+                        for (const auto& o : probe_outs) fs::remove(o.path, ec_probe);
                         ar_probe = checkAR(ar_probe);
                         if (ar_probe.status == ARStatus::Matched_v1 ||
                             ar_probe.status == ARStatus::Matched_v2) {
@@ -1737,15 +1908,14 @@ void CDRipper::worker(std::string          drive_letter,
             //   before we start reading again.
             port::sleepMs(500);
 
-            std::string tmp_flac = flac_path + ".tmp";
-            std::string tmp_mp3  = mp3_path  + ".tmp";
+            const auto tmp_outs = withSuffix(outs, ".tmp");
 
             RGResult      rg2;
             ebur128_state* ebur_p2 = nullptr;
             ARTrackResult ar2 = ripTrack(*dev, trk, i, total,
                                          i==0, i==total-1,
                                          use_c2,
-                                         tmp_flac, tmp_mp3, rg2, cb,
+                                         tmp_outs, opt, rg2, cb,
                                          log_path, mode, drive_offset,
                                          ctdb_state.ctdb_crc,
                                          ctdb_state.ctdb_bytes,
@@ -1771,10 +1941,10 @@ void CDRipper::worker(std::string          drive_letter,
                     ar2.status == ARStatus::Matched_v2) {
                     // Pass 2 verified — atomically replace Pass 1 files
                     std::error_code ec2;
-                    fs::remove(flac_path, ec2);
-                    fs::remove(mp3_path,  ec2);
-                    fs::rename(tmp_flac, flac_path, ec2);
-                    fs::rename(tmp_mp3,  mp3_path,  ec2);
+                    for (size_t k = 0; k < outs.size(); ++k) {
+                        fs::remove(outs[k].path, ec2);
+                        fs::rename(tmp_outs[k].path, outs[k].path, ec2);
+                    }
                     ar = ar2;
                     rg = rg2;
                     // Pass 2 audio is now the kept audio: its loudness state is
@@ -1785,14 +1955,12 @@ void CDRipper::worker(std::string          drive_letter,
                 } else {
                     // Pass 2 also failed — discard its audio, keep Pass 1
                     std::error_code ec2;
-                    fs::remove(tmp_flac, ec2);
-                    fs::remove(tmp_mp3,  ec2);
+                    for (const auto& o : tmp_outs) fs::remove(o.path, ec2);
                 }
             } else {
                 // Pass 2 hard read failure — clean up and keep Pass 1
                 std::error_code ec2;
-                fs::remove(tmp_flac, ec2);
-                fs::remove(tmp_mp3,  ec2);
+                for (const auto& o : tmp_outs) fs::remove(o.path, ec2);
             }
             // Pass 2's loudness state is discarded unless it won (handled above).
             if (ebur_p2) ebur128_destroy(&ebur_p2);
@@ -1807,11 +1975,10 @@ void CDRipper::worker(std::string          drive_letter,
         // which is why it's a separate mode from fast best-effort [Y].
         else if (mode == RipMode::LocalVerify) {
             flushDriveCache(*dev, trk.start_lba, full_leadout_lba, use_c2);
-            std::string det_flac = flac_path + ".det";
-            std::string det_mp3  = mp3_path  + ".det";
+            const auto det_outs = withSuffix(outs, ".det");
             RGResult      rgd;
             ARTrackResult ard = ripTrack(*dev, trk, i, total, i==0, i==total-1,
-                                         use_c2, det_flac, det_mp3, rgd, cb,
+                                         use_c2, det_outs, opt, rgd, cb,
                                          log_path, mode, drive_offset,
                                          ctdb_state.ctdb_crc, ctdb_state.ctdb_bytes,
                                          eff_pressing);
@@ -1825,7 +1992,8 @@ void CDRipper::worker(std::string          drive_letter,
                         ar.crc_v1, ar.crc_v2, ard.crc_v1, ard.crc_v2);
                 fclose(lf);
             }
-            std::error_code ec; fs::remove(det_flac, ec); fs::remove(det_mp3, ec);
+            std::error_code ec;
+            for (const auto& o : det_outs) fs::remove(o.path, ec);
         }
 
         ar_results[i]    = ar;
@@ -1950,9 +2118,25 @@ void CDRipper::worker(std::string          drive_letter,
         std::string prefix = nn.str();
         if (mt && !mt->title.empty()) prefix += " - " + sanitizePath(mt->title);
 
-        tagFile(out_dir+kSep+prefix+".flac", rel, mt, tnum, art, ar_results[i], rg_results[i], mode);
-        tagFile(out_dir+kSep+prefix+".mp3",  rel, mt, tnum, art, ar_results[i], rg_results[i], mode);
+        for (const auto& o : buildOuts(opt, out_dir, prefix)) {
+            // Untaggable formats (WAV: no tags/art/RG by format) are skipped
+            // here — tagFile itself and the taggable formats' calls are
+            // unchanged (the guard is false for FLAC/MP3).
+            if (const RipFormatRow* r = ripFormatRow(o.fmt); r && !r->taggable)
+                continue;
+            tagFile(o.path, rel, mt, tnum, art, ar_results[i], rg_results[i], mode);
+        }
     }
+
+    // CUE/M3U8 entries must reference files that exist: point them at the
+    // MASTER — the first selected lossless format, else the first selected
+    // (lossy-only rips get a playlist over the lossy files). Default
+    // selection resolves to ".flac", byte-identical to before.
+    const RipFormatRow* master_row = nullptr;
+    for (RipFormat f : opt.formats)
+        if (const RipFormatRow* r = ripFormatRow(f); r && r->lossless) { master_row = r; break; }
+    if (!master_row && !opt.formats.empty()) master_row = ripFormatRow(opt.formats[0]);
+    const char* list_ext = master_row ? master_row->ext : ".flac";
 
     // ── Write CUE sheet ───────────────────────────────────────────────────
     // Standard Red Book CUE sheet for FLAC rip — compatible with foobar2000,
@@ -1984,8 +2168,8 @@ void CDRipper::worker(std::string          drive_letter,
                 std::string prefix2 = nn.str();
                 if (mt && !mt->title.empty()) prefix2 += " - " + sanitizePath(mt->title);
 
-                // FILE per track (non-embedded CUE)
-                fprintf(cf, "FILE \"%s.flac\" WAVE\r\n", prefix2.c_str());
+                // FILE per track (non-embedded CUE) — the master format (§ above)
+                fprintf(cf, "FILE \"%s%s\" WAVE\r\n", prefix2.c_str(), list_ext);
                 fprintf(cf, "  TRACK %02d AUDIO\r\n", tnum);
                 if (mt && !mt->title.empty())
                     fprintf(cf, "    TITLE \"%s\"\r\n", mt->title.c_str());
@@ -2029,7 +2213,7 @@ void CDRipper::worker(std::string          drive_letter,
                     ? (mt ? mt->title : prefix2)
                     : rel.artist + " - " + (mt ? mt->title : prefix2);
                 fprintf(mf, "#EXTINF:%d,%s\r\n", duration_sec, display.c_str());
-                fprintf(mf, "%s.flac\r\n", prefix2.c_str());
+                fprintf(mf, "%s%s\r\n", prefix2.c_str(), list_ext);
             }
             fclose(mf);
         }
@@ -2187,6 +2371,9 @@ void CDRipper::worker(std::string          drive_letter,
                     i < (int)rg_results.size() ? rg_results[i].track_gain : 0.0,
                     ar_results[i].crc_v1, ar_results[i].crc_v2);
             }
+            // log-semantics: restate the master verdict beside the AR totals
+            // (computed once at the header — see the block above log_path).
+            fprintf(lf, "Master : %s\n", master_line.c_str());
             fclose(lf);
         }
     }
@@ -2226,6 +2413,7 @@ bool CDRipper::start(AudioManager&               audio,
                      const std::string&           out_dir,
                      const MBRelease&             rel,
                      RipMode                      mode,
+                     RipOptions                   opt,
                      ProgressCb                   cb) {
     if (active_.load()) return false;
     active_.store(true);
@@ -2240,7 +2428,8 @@ bool CDRipper::start(AudioManager&               audio,
     std::vector<uint32_t> data_trk_lbas = audio.cdSource().dataTrackLbas();
     auto dev = openDrive(dl);   // may be null — worker reports the error (as baseline)
     thread_ = std::thread(&CDRipper::worker, this,
-                          dl, tracks, out_dir, rel, mode, cb, std::move(dev), drv_offset, drv_model,
+                          dl, tracks, out_dir, rel, mode, std::move(opt), cb,
+                          std::move(dev), drv_offset, drv_model,
                           full_leadout, data_trk_lbas);
     return true;
 }

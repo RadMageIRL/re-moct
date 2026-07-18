@@ -1,7 +1,7 @@
 #define MINIAUDIO_IMPLEMENTATION
 #include "AudioManager.h"
 #include "StringUtils.h"
-#include "AacDecoder.h"   // FDK-AAC custom miniaudio backend (used by detectBpm's analysis decoder)
+#include "CustomBackends.h" // AAC/Opus/WavPack backends (used by detectBpm's analysis decoder)
 #include "PortUtil.h"     // port::exeDir — resolve the streaming plugin beside the binary (slice c)
 #include "Log.h"          // stream-plugin load diagnostics
 
@@ -47,8 +47,56 @@ AudioManager::~AudioManager() {
     bpm_cancel_.store(true);
     if (bpm_thread_.joinable()) bpm_thread_.join();
     if (stream_connect_thread_.joinable()) stream_connect_thread_.join();
+    endRecording();            // finalize an in-flight capture while the plugin
+                               // and device still exist (R1); no-op when idle
     teardown();
     teardownNext();
+}
+
+// ─── stream capture lifecycle (abi-cluster slice A) ──────────────────────────
+// The keep-draining signal travels WITH the recorder lifecycle so no stop path
+// can leave the plugin draining through pauses with nothing recording.
+bool AudioManager::beginRecording(const RecOptions& opt, const std::string& station,
+                                  const std::string& out_dir) {
+    if (opt.copy_mode) {
+        // abi-cluster slice B: copy mode. Wire the recorder's pull callback
+        // to the plugin's read_encoded and arm the tee BEFORE the pump
+        // starts. The PCM tap never arms in copy mode (StreamRecorder::start
+        // owns that) — one lifecycle, one mode flag, the two tees can never
+        // arm together (the design doc's hazard 5.7, closed structurally).
+        if (!stream_plugin_.supportsEncodedCapture()) return false;  // old plugin:
+        // the panel greys Copy pre-start; this is the belt to that suspender.
+        RecOptions o = opt;
+        o.pull = [this](uint8_t* dst, uint32_t cap,
+                        int32_t* codec, int32_t* discont) {
+            return stream_plugin_.readEncoded(dst, cap, codec, discont);
+        };
+        stream_plugin_.setEncodedCapture(true);
+        if (!stream_recorder_.start(o, station, out_dir)) {
+            stream_plugin_.setEncodedCapture(false);
+            return false;
+        }
+        // Keep-draining composes: the tee sits producer-side, so a playback
+        // pause mid-copy stays gapless through the same slice-A signal.
+        stream_plugin_.setRecordActive(true);
+        return true;
+    }
+    if (!stream_recorder_.start(opt, station, out_dir)) return false;
+    // Best-effort: 1 = the plugin drains through playback pauses (gapless);
+    // 0/absent = old plugin, the pause-gap behavior remains (the panel note
+    // stays honest via recordingDrainSupported()).
+    stream_plugin_.setRecordActive(true);
+    return true;
+}
+
+void AudioManager::endRecording() {
+    stream_recorder_.stop();               // idempotent; finalizes in-flight cut
+                                           // (the copy pump joins here, BEFORE
+                                           // the tee disarms — pull-while-armed)
+    if (stream_plugin_.valid()) {
+        stream_plugin_.setEncodedCapture(false); // no-op when never armed
+        stream_plugin_.setRecordActive(false);   // no-op plugin-side when already off
+    }
 }
 
 void AudioManager::teardown() {
@@ -123,6 +171,7 @@ bool AudioManager::play(const std::string& path) {
     // audio callback stops entering the stream branch, then join the producer).
     if (stream_mode_.load()) {
         stream_mode_.store(false);
+        endRecording();            // finalize an in-flight capture BEFORE close (R1)
         stream_plugin_.close();
     }
     // Exit CD mode if switching to file playback
@@ -382,6 +431,9 @@ void AudioManager::stop() {
         return;
     }
     if (stream_mode_.load()) {
+        endRecording();              // finalize an in-flight capture BEFORE close (R1);
+                                     // its first act gates the tap off, so the
+                                     // baseline close/mode order below is untouched
         stream_plugin_.close();
         stream_mode_.store(false);
         state_.store(PlaybackState::Stopped);
@@ -602,6 +654,26 @@ void AudioManager::onDataCallback(void* output, ma_uint32 frame_count) {
     if (stream_mode_.load()) {
         float* out = static_cast<float*>(output);
         stream_plugin_.readFrames(out, frame_count);  // 44100/stereo; silence while buffering
+
+        // Stream-capture tap (stream-record R1): BEFORE volume/balance/EQ/mute
+        // so the recording is the undecorated broadcast — the same doctrine as
+        // the CD live-BPM tap below. Inline no-op unless armed; when armed, one
+        // bounded copy into the recorder's SPSC ring (no lock/alloc/IO — see
+        // StreamRecorder::push).
+        stream_recorder_.capture(out, frame_count);
+
+        // abi-cluster keep-draining: while paused-and-recording, a capable
+        // plugin keeps delivering REAL frames (one truth) — the tap above got
+        // them; playback goes silent HERE (the second view). ORDER IS THE
+        // CONTRACT: this memset must stay AFTER capture() or the file gets the
+        // silence. With an old plugin readFrames already delivered silence and
+        // this is a harmless double-zero. Two relaxed atomics — no new
+        // blocking work on the audio thread; volume/EQ run on zeros and the
+        // viz flatlines exactly as a pause always looked.
+        if (stream_recorder_.recording() &&
+            state_.load(std::memory_order_relaxed) == PlaybackState::Paused) {
+            std::memset(out, 0, (size_t)frame_count * 2 * sizeof(float));
+        }
 
         float vol = volume_.load();
         if (vol != 1.0f)
@@ -908,9 +980,9 @@ int AudioManager::detectBpm(const std::string& path, int sample_rate,
     // Open a fresh decoder just for analysis — don't touch the playback decoder
     ma_decoder dec {};
     ma_decoder_config cfg = ma_decoder_config_init(ma_format_f32, 1, 0); // mono f32
-    static ma_decoding_backend_vtable* k_aac_backends2[] = { ma_aac_backend_vtable() };
-    cfg.ppCustomBackendVTables = k_aac_backends2;
-    cfg.customBackendCount     = 1;
+    size_t nbackends = 0;
+    cfg.ppCustomBackendVTables = remoct_custom_backends(&nbackends);
+    cfg.customBackendCount     = (ma_uint32)nbackends;
     cfg.pCustomBackendUserData = nullptr;
 #ifdef _WIN32
     {
@@ -1104,6 +1176,7 @@ bool AudioManager::openCD(const std::string& drive_letter) {
     // Exit stream mode if active before entering CD mode.
     if (stream_mode_.load()) {
         stream_mode_.store(false);
+        endRecording();            // finalize an in-flight capture BEFORE close (R1)
         stream_plugin_.close();
     }
     // teardown handles already-stopped device safely
@@ -1194,6 +1267,10 @@ void AudioManager::startStreamConnectLocked(const std::string& url) {
     // worker touches stream_plugin_. (stream_mode_ is cleared first, so a prior
     // stream's callback stops entering the stream branch.)
     if (cd_mode_.load()) { cd_source_.stop(); cd_source_.close(); cd_mode_.store(false); }
+    endRecording();            // a station switch ends the old stream's capture (R1);
+                               // no-op when idle. The connect-fail/superseded close
+                               // sites need no hook: their stream never played, so
+                               // nothing can be recording it (arming needs streamMode).
     stream_mode_.store(false);
     teardown();        // stops + uninits device_ and file decoder_
     teardownNext();

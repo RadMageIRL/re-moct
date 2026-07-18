@@ -32,7 +32,12 @@ the repo - no separate download step.
      mingw-w64-ucrt-x86_64-flac \
      mingw-w64-ucrt-x86_64-lame \
      mingw-w64-ucrt-x86_64-libebur128 \
-     mingw-w64-ucrt-x86_64-fdk-aac
+     mingw-w64-ucrt-x86_64-fdk-aac \
+     mingw-w64-ucrt-x86_64-opus \
+     mingw-w64-ucrt-x86_64-opusfile \
+     mingw-w64-ucrt-x86_64-libopusenc \
+     mingw-w64-ucrt-x86_64-wavpack \
+     mingw-w64-ucrt-x86_64-libvorbis
    ```
 
 3. Configure and build from the repo root:
@@ -74,8 +79,14 @@ configure time:
   ```
 
   The `ncurses` package is still needed for the default build; the wingui build does
-  not use it. Everything else (TagLib, FLAC, LAME, libebur128, FDK-AAC) is common to
-  both. The two configs use separate build directories, so you can keep both around.
+  not use it. Everything else (TagLib, FLAC, LAME, libebur128, FDK-AAC, opus/opusfile/
+  opusenc, vorbis, wavpack) is common to both. The two configs use separate build
+  directories, so you can keep both around.
+
+**Fonts differ by backend.** The wingui build sets its own GDI font (config key
+`wingui_font`, default a bundled JetBrains Mono Nerd Font); the ncursesw build - like
+the Linux build - renders with the terminal emulator's font. See the README section
+"Fonts and Nerd Font icons" for the per-platform details.
 
 ---
 
@@ -97,12 +108,16 @@ configure time:
    sudo apt-get install --no-install-recommends \
      build-essential g++ cmake ninja-build pkg-config git ca-certificates \
      libflac-dev libmp3lame-dev libebur128-dev libfdk-aac-dev \
+     libopus-dev libopusfile-dev libopusenc-dev libwavpack-dev libvorbis-dev \
      libncurses-dev libtag-dev libcurl4-openssl-dev libnotify-dev \
-     libasound2-dev libpulse-dev
+     libasound2-dev libpulse-dev libsystemd-dev
    ```
 
    `libcurl` backs the HTTP seam; `libnotify` backs desktop notifications;
-   `libasound2`/`libpulse` are miniaudio's runtime audio backends (loaded via `dlopen`).
+   `libasound2`/`libpulse` are miniaudio's runtime audio backends (loaded via `dlopen`);
+   `libsystemd` (sd-bus) backs MPRIS OS media control. The opus/vorbis/wavpack
+   `-dev` packages back the extra playback decoders and the Opus/WavPack rip and
+   convert encoders.
 
 3. Configure and build:
 

@@ -23,6 +23,7 @@
 #include "PluginSource.h"
 #include "PluginHostServices.h"
 #include "PluginHost.h"        // core::loadPlugin / LoadedPlugin / PluginLoad (slice c)
+#include "StreamRecorder.h"    // stream-record R1: the host-side capture engine
 
 enum class PlaybackState { Stopped, Playing, Paused };
 
@@ -125,6 +126,9 @@ public:
     // Identity A/B arm (probe): use a minted anonymous profileId on the digital
     // handshake (deep-log only). Same config-passthrough shape as setDeepLog.
     void     setProbeMinted(bool on) { stream_plugin_.setConfig("iheart_probe_minted", on ? "1" : "0"); }
+    // iHeart re-pin behaviour (F6): 0 off / 1 on / 2 smart. Config-passthrough shape,
+    // read live by the producer/SM so it takes effect without a reconnect.
+    void     setRepinMode(int m) { stream_plugin_.setConfig("repin_mode", std::to_string(m).c_str()); }
     // Whether the streaming plugin loaded (slice c). false => streaming disabled
     // (missing/incompatible .so/.dll). beginStream() guards on this and surfaces a
     // failure toast; the UI may also preflight streamPluginError() for the specific
@@ -144,6 +148,25 @@ public:
     std::string streamArtUrl()     const { return stream_plugin_.currentArtUrl(); } // iHeart digital cover ("" -> use logo)
     std::string streamUrl()      const { return stream_plugin_.url(); }   // URL actually streaming
     int      streamPositionSec() const { return (int)stream_plugin_.positionSec(); }
+
+    // Stream capture (stream-record R1). The engine is host-side and headless
+    // here — R2's [Rec] panel drives it through this accessor (start/stop/
+    // onTitle/state); the audio callback taps into it in the stream branch.
+    StreamRecorder& streamRecorder() { return stream_recorder_; }
+    // abi-cluster slice A: recording start/stop go through these wrappers so
+    // the keep-draining signal always travels WITH the recorder lifecycle
+    // (set_record_active(1) on start, (0) on every stop path incl. teardown).
+    // beginRecording's recorder result is authoritative; the drain ack is
+    // best-effort (old plugin -> false -> the pause-gap note stays honest).
+    bool beginRecording(const RecOptions& opt, const std::string& station,
+                        const std::string& out_dir);
+    void endRecording();
+    bool recordingDrainSupported() const { return stream_plugin_.supportsRecordActive(); }
+    // abi-cluster slice B: whether the plugin offers the copy tee (drives the
+    // [Rec] panel's Copy row — greyed when false), and the live codec for its
+    // quality column (REMOCT_CODEC_* numeric; 0 = none/unknown/not flowing).
+    bool    recordingCopySupported() const { return stream_plugin_.supportsEncodedCapture(); }
+    int32_t streamEncodedCaps()      const { return stream_plugin_.encodedCaps(); }
 
     // Called by track-end callback to pre-load next track for crossfade/gapless
     // Returns false if next track can't be opened
@@ -245,6 +268,12 @@ private:
     core::PluginSource         stream_plugin_{
         loaded_plugin_ ? loaded_plugin_->plugin() : nullptr,
         host_services_.table() };
+    // Stream capture (stream-record R1): the recorder the callback taps into.
+    // Inert (capturing_ false, no worker) until something calls start() — in R1
+    // only the test/harness do; the [Rec] panel arrives in R2. Every stream-
+    // teardown site stops it BEFORE stream_plugin_.close() so an in-flight
+    // capture finalizes its current cut instead of truncating it.
+    StreamRecorder             stream_recorder_;
 
     // ── Async stream connect (StreamSource::open runs off the UI thread) ──
     // beginStream() stops current playback and spawns a worker that runs the slow

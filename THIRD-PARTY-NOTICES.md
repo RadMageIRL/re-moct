@@ -19,7 +19,12 @@ license texts referenced here must accompany the distribution.
 | **nlohmann/json** | JSON parsing (metadata, service APIs) | Vendored header (`lib/json.hpp`) | MIT | https://github.com/nlohmann/json |
 | **Openwall MD5** (Solar Designer) | `api_sig` signing for Last.fm | Vendored C (`lib/md5.c`, `lib/md5.h`), byte-verbatim | Public domain | https://openwall.info/wiki/people/solar/software/public-domain-source-code-md5 |
 | **libFLAC** (Xiph.Org) | FLAC encode (CD ripping) | Dynamic link | BSD-3-Clause | https://xiph.org/flac/ |
-| **libogg** (Xiph.Org) | Ogg container (libFLAC dependency) | Transitive dynamic link | BSD-3-Clause | https://xiph.org/ogg/ |
+| **libogg** (Xiph.Org) | Ogg container (libFLAC + libopusfile dependency) | Transitive dynamic link | BSD-3-Clause | https://xiph.org/ogg/ |
+| **libopus** (Xiph.Org) | Opus decode (`.opus` playback) | Dynamic link | BSD-3-Clause | https://opus-codec.org/ |
+| **libopusfile** (Xiph.Org) | Ogg Opus demux/seek over libopus | Dynamic link | BSD-3-Clause | https://opus-codec.org/ |
+| **libvorbis / libvorbisfile** (Xiph.Org) | Ogg Vorbis decode (`.ogg` playback) | Dynamic link | BSD-3-Clause | https://xiph.org/vorbis/ |
+| **libopusenc** (Xiph.Org) | Opus encode (CD ripping) | Dynamic link | BSD-3-Clause | https://opus-codec.org/ |
+| **WavPack (libwavpack)** | WavPack decode (`.wv` playback) | Dynamic link | BSD-3-Clause | https://www.wavpack.com/ |
 | ⚠ **LAME / libmp3lame** | MP3 encode (CD ripping) | Dynamic link | LGPL-2.1-or-later | https://lame.sourceforge.io/ |
 | ⚠ **TagLib** | Read/write audio tags | Dynamic link | LGPL-2.1-only **or** MPL-1.1 (dual) | https://taglib.org/ |
 | **zlib** | Compression (TagLib dependency) | Transitive dynamic link | Zlib License | https://zlib.net/ |
@@ -104,6 +109,22 @@ redistributions:
 > permitted provided that the BSD-3-Clause conditions (retain copyright notice, this
 > list of conditions, and the disclaimer; no endorsement) are met. THE SOFTWARE IS
 > PROVIDED "AS IS".
+
+**libopus / libopusfile / libopusenc (Xiph.Org) - BSD-3-Clause**
+> Copyright (c) 1994-2013 Xiph.Org Foundation and contributors. Redistribution and use
+> in source and binary forms, with or without modification, are permitted provided that
+> the BSD-3-Clause conditions (retain copyright notice, this list of conditions, and the
+> disclaimer; no endorsement) are met. THE SOFTWARE IS PROVIDED "AS IS".
+
+**libvorbis / libvorbisfile (Xiph.Org) - BSD-3-Clause**
+> Copyright (c) 2002-2020 Xiph.Org Foundation. Redistribution and use in source and
+> binary forms, with or without modification, are permitted provided that the
+> BSD-3-Clause conditions are met. THE SOFTWARE IS PROVIDED "AS IS".
+
+**WavPack (libwavpack) - BSD-3-Clause**
+> Copyright (c) 1998-2025 David Bryant. All rights reserved. Redistribution and use in
+> source and binary forms, with or without modification, are permitted provided that the
+> BSD-3-Clause conditions are met. THE SOFTWARE IS PROVIDED "AS IS".
 
 **libebur128 - MIT**
 > Copyright (c) 2011 Jan Kokemüller. Permission is granted, free of charge, … "AS IS".

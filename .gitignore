@@ -32,3 +32,6 @@ theme.conf
 # remoct_logo.jpg IS shipped though — it's the app logo, used as the radio-art floor.
 icon/*
 !icon/remoct_logo.jpg
+
+# ctest scratch (a stray repo-root ctest run creates this)
+Testing/

@@ -40,10 +40,14 @@ IHeartDecision IHeartNowPlayingSM::tick(const IHeartTick& in) {
     d.tgtKind = tgtKind; d.tgtDisp = tgtDisp;
 
     // ── LIVE-floor stall self-heal (StreamSource.cpp:746-760) ──
+    // F6 re-pin mode picks the floor threshold: off (0) never fires; on (1) = 35s
+    // (original); smart (2) = the longer SMART_STALL_MS so short breaks ride out.
     if (in.digitalActive && state_ == IHNow::Live) {
+        const uint32_t stallMs = (in.repinMode == 2) ? SMART_STALL_MS : LIVE_STALL_MS;
         if (liveSince_ == 0) {
             liveSince_ = in.nowMs;
-        } else if (in.repinArmed && (in.nowMs - liveSince_) >= LIVE_STALL_MS) {
+        } else if (in.repinMode != 0 && in.repinArmed &&
+                   (in.nowMs - liveSince_) >= stallMs) {
             d.liveStallFired     = true;
             d.liveStallElapsedMs = in.nowMs - liveSince_;
             liveSince_ = 0;                       // restart floor timer after acting

@@ -34,6 +34,54 @@ struct DigiConfig {
     // Discord Rich Presence toggle (Ctrl+D)
     bool  discord_presence = false;
 
+    // OS media control (osmedia-seam): publish now-playing to the OS media
+    // surface (Windows SMTC / Linux MPRIS) and accept its transport keys /
+    // scrubber. Default on; config-only toggle (no keybinding).
+    bool  os_media_control = true;
+
+    // ── Rip output (rip-format-select) ────────────────────────────────────
+    // rip_formats is the DEFAULT selection only: it seeds the session's
+    // format set once at startup; the modal's toggles are never written back.
+    // Defaults must equal the pre-config literals (both formats, FLAC level
+    // 5, LAME V0) so an absent/default config rips byte-identically.
+    std::string rip_formats = "flac,mp3";  // comma-separated kRipFormats labels
+    int         flac_level  = 5;           // FLAC compression 0-8
+    std::string mp3         = "V0";        // LAME quality V0-V9 (VBR axis)
+    bool        mp3_cbr     = false;       // MP3 mode: false = VBR (V-scale), true = CBR
+    int         mp3_cbr_bitrate = 256000;  // MP3 CBR bitrate, snapped to {96,128,256,320}k
+    int         opus_bitrate = 128000;     // Opus bitrate, 6000-510000 (= kOpusDefaultBitrate)
+    bool        opus_vbr    = true;        // Opus mode: true = VBR (default), false = CBR
+    std::string wavpack_mode = "normal";   // fast|normal|high|very_high (= kWavPackDefaultMode)
+    bool        aac_vbr     = true;        // AAC/M4A mode: true = VBR ladder (default), false = CBR
+    int         aac_vbr_level = 4;         // AAC VBR quality 1-5 (5 best; = kAacDefaultVbrLevel)
+    int         aac_cbr_bitrate = 128000;  // AAC CBR bitrate, snapped to {96,128,256,320}k
+
+    // ── Stream recording (stream-record R2 / encoder-bitrate-mode) ─────────
+    // Session seeds only, like rip_formats - the [Rec] panel's toggles are
+    // never written back. Recording carries its OWN quality set (rec_mp3 /
+    // rec_opus_* below): the earlier "reuses the rip mp3 / opus_bitrate knobs"
+    // invariant is intentionally retired so radio can be right-sized (Opus 96)
+    // independently of a high-quality CD rip (V0).
+    std::string rec_format = "opus";  // opus | mp3 | m4a | copy (single-select default;
+                                      // copy = as-broadcast capture, slice B)
+    std::string rec_mp3          = "V5";    // rec MP3 V-scale (right-sized default)
+    bool        rec_mp3_cbr      = false;   // rec MP3 mode: false = VBR, true = CBR
+    int         rec_mp3_cbr_bitrate = 256000; // rec MP3 CBR bitrate, snapped to ladder
+    int         rec_opus_bitrate = 96000;   // rec Opus bitrate (right-sized default)
+    bool        rec_opus_vbr     = true;    // rec Opus mode: true = VBR, false = CBR
+    bool        rec_aac_vbr      = true;    // rec AAC/M4A mode: true = VBR, false = CBR
+    int         rec_aac_vbr_level = 4;      // rec AAC VBR quality 1-5 (5 best)
+    int         rec_aac_cbr_bitrate = 128000; // rec AAC CBR bitrate, snapped to ladder
+    bool        rec_split  = true;    // split on metadata title change
+    std::string rec_dir;              // "" = <music>/re-moct/recordings, resolved at record start
+    // split-trim: hold acting on a title change by this many ms so the closing
+    // cut keeps its outro. Signed by design; negative (lead) is RESERVED and
+    // clamps to 0 until implemented (docs/split-trim-ad-aware-plan.md).
+    int         split_offset_ms = 1200;
+    // ad-aware: save (route non-song cuts to <Station>/ads/) | discard (do not
+    // write them - trusts station metadata, the informed opt-in).
+    std::string rec_ads = "save";
+
     // UI theme toggle (Ctrl+T): false = Classic, true = Awesome (rounded panels)
     bool  awesome_mode = false;
     int   awesome_theme = 0;   // index into kAwesomeThemes (Ctrl+T Awesome look; F8 cycles)
@@ -42,6 +90,7 @@ struct DigiConfig {
     bool  viz_led = false;
     bool  prefer_digital_stream = false;   // iHeart: try web-player (ad-reduced) rendition; raw broadcast otherwise
     bool  iheart_probe_minted   = false;   // probe: use a minted anonymous profileId on the digital handshake (deep-log A/B only)
+    int   repin_mode            = 2;       // iHeart re-pin (F6): 0=off (play through ads), 1=on (re-pin long breaks), 2=smart (re-pin only long pods). Default smart
 
     // Nerd Font pane-title icons (Ctrl+N). Requires a Nerd Font terminal font.
     bool  nerd_icons = false;

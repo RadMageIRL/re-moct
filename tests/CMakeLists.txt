@@ -50,6 +50,13 @@ target_include_directories(iheart_sm_test PRIVATE
     ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/plugins/stream)
 add_test(NAME iheart_sm_test COMMAND iheart_sm_test)
 
+# hls_prime_test: pure prime-to-music-boundary scan (re-pin clip fix, Section A).
+# Header-only (HlsPrime.h), so no source to link.
+add_executable(hls_prime_test hls_prime_test.cpp)
+target_include_directories(hls_prime_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/plugins/stream)
+add_test(NAME hls_prime_test COMMAND hls_prime_test)
+
 add_executable(ar_crc_test
     ar_crc_test.cpp
     ${CMAKE_SOURCE_DIR}/src/ar_crc.cpp
@@ -314,6 +321,14 @@ if(WIN32)
     add_executable(xfade_handoff_test
         xfade_handoff_test.cpp
         ${CMAKE_SOURCE_DIR}/src/AudioManager.cpp
+        # stream-record R1: AudioManager owns the capture engine (the tap's
+        # teardown ordering lives inside AudioManager), so this target carries
+        # the recorder + its two encoders. Inert here — nothing arms it.
+        ${CMAKE_SOURCE_DIR}/src/StreamRecorder.cpp
+        ${CMAKE_SOURCE_DIR}/src/MuxWriter.cpp
+        ${CMAKE_SOURCE_DIR}/src/Mp3Encoder.cpp
+        ${CMAKE_SOURCE_DIR}/src/OpusRipEncoder.cpp
+        ${CMAKE_SOURCE_DIR}/src/M4aEncoder.cpp
         ${CMAKE_SOURCE_DIR}/src/LocalFileSource.cpp
         ${CMAKE_SOURCE_DIR}/src/PluginSource.cpp
         ${CMAKE_SOURCE_DIR}/src/PluginHostServices.cpp
@@ -321,6 +336,10 @@ if(WIN32)
         ${CMAKE_SOURCE_DIR}/src/platform/win/PluginLoaderWin.cpp
         ${CMAKE_SOURCE_DIR}/src/CDSource.cpp
         ${CMAKE_SOURCE_DIR}/src/AacDecoder.cpp
+        ${CMAKE_SOURCE_DIR}/src/OpusDecoder.cpp
+        ${CMAKE_SOURCE_DIR}/src/WavPackDecoder.cpp
+        ${CMAKE_SOURCE_DIR}/src/VorbisDecoder.cpp
+        ${CMAKE_SOURCE_DIR}/src/CustomBackends.cpp
         ${CMAKE_SOURCE_DIR}/src/Mp4Chapters.cpp
         ${CMAKE_SOURCE_DIR}/src/Log.cpp
         ${CMAKE_SOURCE_DIR}/src/platform/win/HttpWinInet.cpp
@@ -328,10 +347,16 @@ if(WIN32)
     )
     target_include_directories(xfade_handoff_test PRIVATE
         ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/lib
-        ${FDKAAC_INCLUDE} ${TAGLIB_INCLUDE_DIRS})
+        ${FDKAAC_INCLUDE} ${OPUS_INCLUDE} ${OPUS_INCLUDE}/opus ${WAVPACK_INCLUDE}
+        ${TAGLIB_INCLUDE_DIRS})
     target_compile_definitions(xfade_handoff_test PRIVATE UNICODE _UNICODE)
+    target_include_directories(xfade_handoff_test PRIVATE
+        ${LAME_INCLUDE} ${EBUR128_INCLUDE})   # stream-record R1: recorder deps
     target_link_libraries(xfade_handoff_test PRIVATE
-        ${TAGLIB_LIBRARIES} ${FDKAAC_LIB} wininet winmm ole32)
+        ${TAGLIB_LIBRARIES} ${FDKAAC_LIB} ${OPUSENC_LIB} ${OPUSFILE_LIB} ${OPUS_LIB}
+        ${VORBISFILE_LIB} ${VORBIS_LIB} ${OGG_LIB}
+        ${LAME_LIB} ${EBUR128_LIB}            # stream-record R1: recorder deps
+        ${WAVPACK_LIB} wininet winmm ole32)
     add_test(NAME xfade_handoff_test COMMAND xfade_handoff_test)
     set_tests_properties(xfade_handoff_test PROPERTIES TIMEOUT 180 SKIP_RETURN_CODE 77)
 endif()
@@ -447,3 +472,325 @@ add_dependencies(plugin_hls_parity_test remoct_stream)
 add_test(NAME plugin_hls_parity_test COMMAND plugin_hls_parity_test)
 set_tests_properties(plugin_hls_parity_test PROPERTIES TIMEOUT 90)
 
+
+# rip-encoder-seam — the byte-identity oracle. The reference arm is the
+# pre-seam inline FLAC/LAME sequence frozen verbatim in the test; the seam arm
+# is FlacEncoder/Mp3Encoder (the only rip-tail TUs light enough to link —
+# CDRipper's TU never links into tests). Asserts both formats' outputs are
+# byte-identical on a fixed deterministic PCM fixture, both platforms. This
+# machine-enforces the transliteration; the Joan Osborne hardware gate remains
+# the integration oracle.
+add_executable(rip_encoder_seam_test
+    rip_encoder_seam_test.cpp
+    ${CMAKE_SOURCE_DIR}/src/FlacEncoder.cpp
+    ${CMAKE_SOURCE_DIR}/src/Mp3Encoder.cpp
+    ${CMAKE_SOURCE_DIR}/src/WavEncoder.cpp
+    ${CMAKE_SOURCE_DIR}/src/WavPackEncoder.cpp
+    ${CMAKE_SOURCE_DIR}/src/WavPackDecoder.cpp
+)
+target_include_directories(rip_encoder_seam_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/lib
+    ${FLAC_INCLUDE} ${LAME_INCLUDE})
+target_link_libraries(rip_encoder_seam_test PRIVATE ${FLAC_LIB} ${LAME_LIB}
+    ${OGG_LIB}   # static libFLAC.a (Option C probe) needs ogg spelled out
+    ${WAVPACK_LIB}   # rip-wavpack-encoder: encode + the round-trip decode
+    $<$<PLATFORM_ID:Linux>:dl>   # miniaudio impl in this TU (WavPack round-trip)
+    $<$<PLATFORM_ID:Linux>:pthread>
+    $<$<PLATFORM_ID:Linux>:m>)
+if(WIN32 AND REMOCT_STATIC_PROBE)
+    # Same as the remoct target: static libFLAC.a exports plain symbols, but
+    # FLAC_API defaults to dllimport (__imp_) without this define.
+    target_compile_definitions(rip_encoder_seam_test PRIVATE FLAC__NO_DLL)
+endif()
+add_test(NAME rip_encoder_seam_test COMMAND rip_encoder_seam_test)
+set_tests_properties(rip_encoder_seam_test PROPERTIES TIMEOUT 60)
+
+# encoder-bitrate-mode: the pure quality-editor logic (EncoderQuality.h axis
+# cycle / snap / label - the same code the Left/Right/[M] path drives) plus the
+# DigiConfig round-trip proving the eight new fields persist and that RIP and
+# REC quality are INDEPENDENT storage. No UI, no codec; Config.cpp only. The
+# round-trip redirects the config dir to a temp via the env var configPath()
+# reads, so it can never touch the developer's real remoct.conf.
+add_executable(encoder_quality_test
+    encoder_quality_test.cpp
+    ${CMAKE_SOURCE_DIR}/src/Config.cpp
+)
+target_include_directories(encoder_quality_test PRIVATE ${CMAKE_SOURCE_DIR}/include)
+add_test(NAME encoder_quality_test COMMAND encoder_quality_test)
+set_tests_properties(encoder_quality_test PROPERTIES TIMEOUT 30)
+
+# encoder-bitrate-mode: OpusRipEncoder CBR/VBR. Drives both modes end to end so
+# the vbr=false path issues OPUS_SET_VBR(0) at runtime (the F5 guard) and the
+# VBR default path is shown unchanged (run-to-run byte determinism).
+add_executable(opus_mode_test
+    opus_mode_test.cpp
+    ${CMAKE_SOURCE_DIR}/src/OpusRipEncoder.cpp
+)
+target_include_directories(opus_mode_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${OPUS_INCLUDE} ${OPUS_INCLUDE}/opus)
+target_link_libraries(opus_mode_test PRIVATE
+    ${OPUSENC_LIB} ${OPUS_LIB} ${OGG_LIB}
+    $<$<PLATFORM_ID:Linux>:pthread> $<$<PLATFORM_ID:Linux>:m>)
+add_test(NAME opus_mode_test COMMAND opus_mode_test)
+set_tests_properties(opus_mode_test PROPERTIES TIMEOUT 60)
+
+# convert-core: the decode -> IEncoder convert engine, headless. Synthesizes
+# input fixtures via makeEncoder (EncoderFactory), converts each -> each output
+# through ConvertJob::convertOne, decodes the result via the SHIPPING
+# LocalFileSource stack, and checks the guards + flat enumeration + tag
+# carryover. Carries the LocalFileSource decode stack exactly as copy_mux_test.
+add_executable(convert_core_test
+    convert_core_test.cpp
+    ${CMAKE_SOURCE_DIR}/src/ConvertJob.cpp
+    ${CMAKE_SOURCE_DIR}/src/ArtEmbed.cpp
+    ${CMAKE_SOURCE_DIR}/src/EncoderFactory.cpp
+    ${CMAKE_SOURCE_DIR}/src/FlacEncoder.cpp
+    ${CMAKE_SOURCE_DIR}/src/Mp3Encoder.cpp
+    ${CMAKE_SOURCE_DIR}/src/WavEncoder.cpp
+    ${CMAKE_SOURCE_DIR}/src/OpusRipEncoder.cpp
+    ${CMAKE_SOURCE_DIR}/src/WavPackEncoder.cpp
+    ${CMAKE_SOURCE_DIR}/src/M4aEncoder.cpp
+    ${CMAKE_SOURCE_DIR}/src/LocalFileSource.cpp
+    ${CMAKE_SOURCE_DIR}/src/AacDecoder.cpp
+    ${CMAKE_SOURCE_DIR}/src/OpusDecoder.cpp
+    ${CMAKE_SOURCE_DIR}/src/WavPackDecoder.cpp
+    ${CMAKE_SOURCE_DIR}/src/VorbisDecoder.cpp
+    ${CMAKE_SOURCE_DIR}/src/CustomBackends.cpp
+    ${CMAKE_SOURCE_DIR}/src/Mp4Chapters.cpp
+    ${CMAKE_SOURCE_DIR}/src/Log.cpp
+)
+target_include_directories(convert_core_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/lib
+    ${FLAC_INCLUDE} ${LAME_INCLUDE} ${FDKAAC_INCLUDE}
+    ${OPUS_INCLUDE} ${OPUS_INCLUDE}/opus ${WAVPACK_INCLUDE}
+    ${TAGLIB_INCLUDE_DIRS})
+target_link_libraries(convert_core_test PRIVATE
+    ${TAGLIB_LIBRARIES} ${FLAC_LIB} ${LAME_LIB} ${FDKAAC_LIB}
+    ${OPUSENC_LIB} ${OPUSFILE_LIB} ${OPUS_LIB}
+    ${VORBISFILE_LIB} ${VORBIS_LIB} ${OGG_LIB} ${WAVPACK_LIB}
+    $<$<PLATFORM_ID:Linux>:dl> $<$<PLATFORM_ID:Linux>:pthread> $<$<PLATFORM_ID:Linux>:m>)
+if(WIN32 AND REMOCT_STATIC_PROBE)
+    target_compile_definitions(convert_core_test PRIVATE FLAC__NO_DLL)
+endif()
+add_test(NAME convert_core_test COMMAND convert_core_test)
+set_tests_properties(convert_core_test PROPERTIES TIMEOUT 120)
+
+# art-embed-shared: embedded-art carryover (reader + convert-side writer) + the
+# RG/AR text-tag completeness matrix through convertOne. Same decode/encode link
+# set as convert_core_test, plus ArtEmbed.cpp.
+add_executable(art_embed_test
+    art_embed_test.cpp
+    ${CMAKE_SOURCE_DIR}/src/ArtEmbed.cpp
+    ${CMAKE_SOURCE_DIR}/src/ConvertJob.cpp
+    ${CMAKE_SOURCE_DIR}/src/EncoderFactory.cpp
+    ${CMAKE_SOURCE_DIR}/src/FlacEncoder.cpp
+    ${CMAKE_SOURCE_DIR}/src/Mp3Encoder.cpp
+    ${CMAKE_SOURCE_DIR}/src/WavEncoder.cpp
+    ${CMAKE_SOURCE_DIR}/src/OpusRipEncoder.cpp
+    ${CMAKE_SOURCE_DIR}/src/WavPackEncoder.cpp
+    ${CMAKE_SOURCE_DIR}/src/M4aEncoder.cpp
+    ${CMAKE_SOURCE_DIR}/src/LocalFileSource.cpp
+    ${CMAKE_SOURCE_DIR}/src/AacDecoder.cpp
+    ${CMAKE_SOURCE_DIR}/src/OpusDecoder.cpp
+    ${CMAKE_SOURCE_DIR}/src/WavPackDecoder.cpp
+    ${CMAKE_SOURCE_DIR}/src/VorbisDecoder.cpp
+    ${CMAKE_SOURCE_DIR}/src/CustomBackends.cpp
+    ${CMAKE_SOURCE_DIR}/src/Mp4Chapters.cpp
+    ${CMAKE_SOURCE_DIR}/src/Log.cpp
+)
+target_include_directories(art_embed_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/lib
+    ${FLAC_INCLUDE} ${LAME_INCLUDE} ${FDKAAC_INCLUDE}
+    ${OPUS_INCLUDE} ${OPUS_INCLUDE}/opus ${WAVPACK_INCLUDE}
+    ${TAGLIB_INCLUDE_DIRS})
+target_link_libraries(art_embed_test PRIVATE
+    ${TAGLIB_LIBRARIES} ${FLAC_LIB} ${LAME_LIB} ${FDKAAC_LIB}
+    ${OPUSENC_LIB} ${OPUSFILE_LIB} ${OPUS_LIB}
+    ${VORBISFILE_LIB} ${VORBIS_LIB} ${OGG_LIB} ${WAVPACK_LIB}
+    $<$<PLATFORM_ID:Linux>:dl> $<$<PLATFORM_ID:Linux>:pthread> $<$<PLATFORM_ID:Linux>:m>)
+if(WIN32 AND REMOCT_STATIC_PROBE)
+    target_compile_definitions(art_embed_test PRIVATE FLAC__NO_DLL)
+endif()
+add_test(NAME art_embed_test COMMAND art_embed_test)
+set_tests_properties(art_embed_test PROPERTIES TIMEOUT 120)
+
+# stream-record R1 — the frozen StreamRecorder engine contract, headless-proven
+# BEFORE any UI exists (probe-first). Synthetic f32 PCM through capture() (the
+# audio-thread entry) + scripted onTitle() splits, real Mp3Encoder/
+# OpusRipEncoder output read back with TagLib: frame-exact split boundaries,
+# partial marking, both tag dialects (RG TXXX / R128 Q7.8), per-cut ReplayGain,
+# timestamp-fallback naming, split-off single file, the ring-overflow honesty
+# counter (drops counted + accounted, file stays valid), parseNowPlaying edges.
+# CDRipper's TU stays out (the norm): sanitizePathComponent lives in
+# StringUtils.h and the recorder takes its output dir from the caller.
+add_executable(stream_record_test
+    stream_record_test.cpp
+    ${CMAKE_SOURCE_DIR}/src/StreamRecorder.cpp
+    ${CMAKE_SOURCE_DIR}/src/MuxWriter.cpp
+    ${CMAKE_SOURCE_DIR}/src/Mp3Encoder.cpp
+    ${CMAKE_SOURCE_DIR}/src/OpusRipEncoder.cpp
+    ${CMAKE_SOURCE_DIR}/src/M4aEncoder.cpp   # aac-m4a-encoder: makeRecEncoder M4A case
+)
+target_include_directories(stream_record_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/lib
+    ${LAME_INCLUDE} ${EBUR128_INCLUDE} ${FDKAAC_INCLUDE}
+    ${OPUS_INCLUDE} ${OPUS_INCLUDE}/opus
+    ${TAGLIB_INCLUDE_DIRS})
+target_link_libraries(stream_record_test PRIVATE
+    ${TAGLIB_LIBRARIES} ${LAME_LIB} ${EBUR128_LIB} ${FDKAAC_LIB}
+    ${OPUSENC_LIB} ${OPUS_LIB} ${OGG_LIB}
+    $<$<PLATFORM_ID:Linux>:pthread> $<$<PLATFORM_ID:Linux>:m>)
+add_test(NAME stream_record_test COMMAND stream_record_test)
+set_tests_properties(stream_record_test PROPERTIES TIMEOUT 120)
+
+# copy_mux_test — abi-cluster slice B: FrameSync unit contract + the ADTS->M4A
+# mux writer round-tripped through the app's OWN decode path (LocalFileSource
+# over the FDK MP4 backend — the in-tree oracle). Real FDK-encoded ADTS in
+# (hls_fixture's encodeAdtsSine), a recorder copy-pump cut out, frame-exact
+# sample count + TagLib::MP4 tag read-back. Carries the LocalFileSource decode
+# stack exactly as mp3_rg_read_test does.
+add_executable(copy_mux_test
+    copy_mux_test.cpp
+    ${CMAKE_SOURCE_DIR}/src/StreamRecorder.cpp
+    ${CMAKE_SOURCE_DIR}/src/MuxWriter.cpp
+    ${CMAKE_SOURCE_DIR}/src/Mp3Encoder.cpp
+    ${CMAKE_SOURCE_DIR}/src/OpusRipEncoder.cpp
+    ${CMAKE_SOURCE_DIR}/src/M4aEncoder.cpp
+    ${CMAKE_SOURCE_DIR}/src/LocalFileSource.cpp
+    ${CMAKE_SOURCE_DIR}/src/AacDecoder.cpp
+    ${CMAKE_SOURCE_DIR}/src/OpusDecoder.cpp
+    ${CMAKE_SOURCE_DIR}/src/WavPackDecoder.cpp
+    ${CMAKE_SOURCE_DIR}/src/VorbisDecoder.cpp
+    ${CMAKE_SOURCE_DIR}/src/CustomBackends.cpp
+    ${CMAKE_SOURCE_DIR}/src/Mp4Chapters.cpp
+    ${CMAKE_SOURCE_DIR}/src/Log.cpp
+)
+target_include_directories(copy_mux_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/lib
+    ${LAME_INCLUDE} ${EBUR128_INCLUDE} ${FDKAAC_INCLUDE}
+    ${OPUS_INCLUDE} ${OPUS_INCLUDE}/opus ${WAVPACK_INCLUDE}
+    ${TAGLIB_INCLUDE_DIRS})
+target_link_libraries(copy_mux_test PRIVATE
+    ${TAGLIB_LIBRARIES} ${LAME_LIB} ${EBUR128_LIB} ${FDKAAC_LIB}
+    ${OPUSENC_LIB} ${OPUSFILE_LIB} ${OPUS_LIB}
+    ${VORBISFILE_LIB} ${VORBIS_LIB} ${OGG_LIB} ${WAVPACK_LIB}
+    $<$<PLATFORM_ID:Linux>:dl> $<$<PLATFORM_ID:Linux>:pthread> $<$<PLATFORM_ID:Linux>:m>)
+add_test(NAME copy_mux_test COMMAND copy_mux_test)
+set_tests_properties(copy_mux_test PROPERTIES TIMEOUT 120)
+
+# mp3-rg-read — the MP3 ReplayGain read contract. A REAL Mp3Encoder fixture
+# tagged in all three shapes (the legacy RE-MOCT "KEY=value"-in-description
+# blob, the standard desc/value TXXX, lowercase desc) + untagged, read back
+# through the REAL LocalFileSource::open() metadata path. Pins the read
+# across the legacy AND standard shapes so the follow-up write-shape fix
+# cannot silently break read-back (the seam-oracle move on a tag dialect).
+add_executable(mp3_rg_read_test
+    mp3_rg_read_test.cpp
+    ${CMAKE_SOURCE_DIR}/src/LocalFileSource.cpp
+    ${CMAKE_SOURCE_DIR}/src/AacDecoder.cpp
+    ${CMAKE_SOURCE_DIR}/src/OpusDecoder.cpp
+    ${CMAKE_SOURCE_DIR}/src/WavPackDecoder.cpp
+    ${CMAKE_SOURCE_DIR}/src/VorbisDecoder.cpp
+    ${CMAKE_SOURCE_DIR}/src/CustomBackends.cpp
+    ${CMAKE_SOURCE_DIR}/src/Mp4Chapters.cpp
+    ${CMAKE_SOURCE_DIR}/src/Log.cpp
+    ${CMAKE_SOURCE_DIR}/src/Mp3Encoder.cpp
+)
+target_include_directories(mp3_rg_read_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/lib
+    ${LAME_INCLUDE} ${FDKAAC_INCLUDE}
+    ${OPUS_INCLUDE} ${OPUS_INCLUDE}/opus ${WAVPACK_INCLUDE}
+    ${TAGLIB_INCLUDE_DIRS})
+target_link_libraries(mp3_rg_read_test PRIVATE
+    ${TAGLIB_LIBRARIES} ${LAME_LIB} ${FDKAAC_LIB}
+    ${OPUSFILE_LIB} ${OPUS_LIB} ${VORBISFILE_LIB} ${VORBIS_LIB} ${OGG_LIB}
+    ${WAVPACK_LIB}
+    $<$<PLATFORM_ID:Linux>:dl> $<$<PLATFORM_ID:Linux>:pthread> $<$<PLATFORM_ID:Linux>:m>)
+add_test(NAME mp3_rg_read_test COMMAND mp3_rg_read_test)
+set_tests_properties(mp3_rg_read_test PROPERTIES TIMEOUT 60)
+
+# osmedia-seam — the OS media routing + marshal + seek-coalescing contract
+# (header-only cores, no platform/curses/audio deps): SeekCoalescer's abs/rel
+# lanes incl the absolute-drag regression gate, and MediaRouter's split sink +
+# off-thread marshal.
+add_executable(media_control_test media_control_test.cpp)
+target_include_directories(media_control_test PRIVATE ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(media_control_test PRIVATE
+    $<$<PLATFORM_ID:Linux>:pthread>)
+add_test(NAME media_control_test COMMAND media_control_test)
+
+# radio-art-refresh-fix — the time-bounded art negative cache (header-only,
+# no deps): rate-limits within the TTL, self-heals at it, wrap-safe ticks.
+add_executable(art_miss_cache_test art_miss_cache_test.cpp)
+target_include_directories(art_miss_cache_test PRIVATE ${CMAKE_SOURCE_DIR}/include)
+add_test(NAME art_miss_cache_test COMMAND art_miss_cache_test)
+set_tests_properties(art_miss_cache_test PROPERTIES TIMEOUT 30)
+
+# batch-r128 — the GainScan engine contract: the same sine through the four
+# production encoders, then the REAL engine over the folder (dialect tags,
+# cross-format gain agreement, skip/force, the legacy-blob MP3 heal, wav
+# note, error isolation, cancel-leaves-whole-files). The artifact-parity leg
+# (vs the retained rip artifacts) runs locally via GAIN_SCAN_ARTIFACTS.
+add_executable(gain_scan_test
+    gain_scan_test.cpp
+    ${CMAKE_SOURCE_DIR}/src/GainScan.cpp
+    ${CMAKE_SOURCE_DIR}/src/LocalFileSource.cpp
+    ${CMAKE_SOURCE_DIR}/src/AacDecoder.cpp
+    ${CMAKE_SOURCE_DIR}/src/OpusDecoder.cpp
+    ${CMAKE_SOURCE_DIR}/src/WavPackDecoder.cpp
+    ${CMAKE_SOURCE_DIR}/src/VorbisDecoder.cpp
+    ${CMAKE_SOURCE_DIR}/src/CustomBackends.cpp
+    ${CMAKE_SOURCE_DIR}/src/Mp4Chapters.cpp
+    ${CMAKE_SOURCE_DIR}/src/Log.cpp
+    ${CMAKE_SOURCE_DIR}/src/FlacEncoder.cpp
+    ${CMAKE_SOURCE_DIR}/src/Mp3Encoder.cpp
+    ${CMAKE_SOURCE_DIR}/src/OpusRipEncoder.cpp
+    ${CMAKE_SOURCE_DIR}/src/WavPackEncoder.cpp
+)
+target_include_directories(gain_scan_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/lib
+    ${FLAC_INCLUDE} ${LAME_INCLUDE} ${EBUR128_INCLUDE} ${FDKAAC_INCLUDE}
+    ${OPUS_INCLUDE} ${OPUS_INCLUDE}/opus ${WAVPACK_INCLUDE}
+    ${TAGLIB_INCLUDE_DIRS})
+target_link_libraries(gain_scan_test PRIVATE
+    ${TAGLIB_LIBRARIES} ${EBUR128_LIB} ${FLAC_LIB} ${LAME_LIB}
+    ${OPUSENC_LIB} ${OPUSFILE_LIB} ${OPUS_LIB}
+    ${VORBISFILE_LIB} ${VORBIS_LIB} ${OGG_LIB}
+    ${WAVPACK_LIB} ${FDKAAC_LIB}
+    $<$<PLATFORM_ID:Linux>:dl> $<$<PLATFORM_ID:Linux>:pthread> $<$<PLATFORM_ID:Linux>:m>)
+if(WIN32 AND REMOCT_STATIC_PROBE)
+    target_compile_definitions(gain_scan_test PRIVATE FLAC__NO_DLL)
+endif()
+add_test(NAME gain_scan_test COMMAND gain_scan_test)
+set_tests_properties(gain_scan_test PROPERTIES TIMEOUT 300)
+
+# aac-m4a-encoder — the M4aEncoder + Mp4Mux contract, headless. Encode a
+# frequency-stepped PCM fixture (VBR + CBR) via M4aEncoder, open the .m4a through
+# the SHIPPING AacDecoder/custom-backend stack, assert length + seek (25/50/75%
+# thirds - the sample-table gate), tags/covr/ReplayGain round-trip (the ---- RG
+# read via PropertyMap - plan F3), and the ENOSPC finalize=false path. The decode
+# stack + its libs mirror copy_mux_test; the TU provides the miniaudio impl.
+add_executable(m4a_encoder_test
+    m4a_encoder_test.cpp
+    ${CMAKE_SOURCE_DIR}/src/M4aEncoder.cpp
+    ${CMAKE_SOURCE_DIR}/src/LocalFileSource.cpp
+    ${CMAKE_SOURCE_DIR}/src/AacDecoder.cpp
+    ${CMAKE_SOURCE_DIR}/src/OpusDecoder.cpp
+    ${CMAKE_SOURCE_DIR}/src/WavPackDecoder.cpp
+    ${CMAKE_SOURCE_DIR}/src/VorbisDecoder.cpp
+    ${CMAKE_SOURCE_DIR}/src/CustomBackends.cpp
+    ${CMAKE_SOURCE_DIR}/src/Mp4Chapters.cpp
+    ${CMAKE_SOURCE_DIR}/src/Log.cpp
+)
+target_include_directories(m4a_encoder_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/lib
+    ${FDKAAC_INCLUDE} ${OPUS_INCLUDE} ${OPUS_INCLUDE}/opus ${WAVPACK_INCLUDE}
+    ${TAGLIB_INCLUDE_DIRS})
+target_link_libraries(m4a_encoder_test PRIVATE
+    ${TAGLIB_LIBRARIES} ${FDKAAC_LIB}
+    ${OPUSENC_LIB} ${OPUSFILE_LIB} ${OPUS_LIB}
+    ${VORBISFILE_LIB} ${VORBIS_LIB} ${OGG_LIB} ${WAVPACK_LIB}
+    $<$<PLATFORM_ID:Linux>:dl> $<$<PLATFORM_ID:Linux>:pthread> $<$<PLATFORM_ID:Linux>:m>)
+add_test(NAME m4a_encoder_test COMMAND m4a_encoder_test)
+set_tests_properties(m4a_encoder_test PROPERTIES TIMEOUT 120)

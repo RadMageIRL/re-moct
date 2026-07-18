@@ -42,6 +42,7 @@
 #include "core/ISource.h"
 
 #include <cstdio>
+#include <cstring>
 #include <string>
 #include <vector>
 
@@ -128,6 +129,121 @@ int main() {
         auto healed = drainFrames(ss, 50 * 512);
         CHECK(rmsOf(healed) > 0.15);                      // audio resumed after self-heal
         CHECK(waitFor(5000, [&]{ return ss.nowPlaying() == "Bjork - Joga"; }));
+
+        // ── 5b. abi-cluster keep-draining: the pause contract, both ways ──────
+        // While record-active, a playback pause interrupts NOTHING: readFrames
+        // keeps draining REAL frames and the producer keeps consuming the
+        // network (segment_gets advances). With record-active off, the same
+        // paused stream reverts to the old contract byte-for-byte: silence
+        // pads + a frozen producer. Both pinned in one run.
+        {
+            { std::lock_guard<std::mutex> lk(fake.mtx); fake.window_top += 6; }  // +12s of fresh window
+            ss.setRecordActive(true);
+            ss.pause(true);
+            int gets0 = fake.segment_gets.load();
+            auto held = drainFrames(ss, 400 * 512);       // ~4.6s drained WHILE PAUSED
+            CHECK(rmsOf(held) > 0.15);                    // real audio through the pause
+            CHECK(waitFor(8000, [&]{ return fake.segment_gets.load() > gets0; }));  // network consumed
+
+            ss.setRecordActive(false);                    // still paused: the OLD contract
+            port::sleepMs(300);                           // let any in-flight fetch settle
+            auto silent = drainFrames(ss, 20 * 512);
+            CHECK(rmsOf(silent) == 0.0);                  // silence pads again
+            int gets1 = fake.segment_gets.load();
+            port::sleepMs(800);
+            CHECK(fake.segment_gets.load() == gets1);     // producer frozen again
+
+            ss.pause(false);                              // resume: normal playback
+            CHECK(waitFor(10000, [&]{ return ss.isPrebuffered(); }));
+            auto resumed = drainFrames(ss, 50 * 512);
+            CHECK(rmsOf(resumed) > 0.15);
+        }
+
+        // ── 5c. copy/remux tee (abi-cluster slice B) ──────────────────────────
+        // The plugin-side byte ring: disarmed = zero reads; armed = the EXACT
+        // post-transport bytes (segment payloads, ID3 stripped — the tee'd
+        // stream must be a byte-aligned run of seg_audio repetitions); codec
+        // reports AAC; a segment-fetch death -> reconnect -> self-heal fires
+        // the discont bit the muxer resyncs on.
+        {
+            uint8_t tb[8192]; int32_t codec = -1, disc = -1;
+            CHECK(ss.encodedCaps() == 2);                 // AAC ADTS (connect decided)
+            CHECK(ss.readEncoded(tb, sizeof tb, &codec, &disc) == 0);  // disarmed
+            CHECK(codec == 2);
+
+            ss.setEncodedCapture(true);
+            { std::lock_guard<std::mutex> lk(fake.mtx); fake.window_top += 6; }
+
+            // (b) byte fidelity: gather >= 1.5 segments of tee'd bytes while
+            // keeping the consumer draining (producer backpressure).
+            std::vector<uint8_t> got;
+            bool clean_disc = false;
+            uint32_t t0 = port::tickMs();
+            while ((long)(port::tickMs() - t0) < 20000 &&
+                   got.size() < fake.seg_audio.size() * 3 / 2) {
+                float pb[512 * 2];
+                ss.readFrames(pb, 512);
+                int32_t c = 0, d = 0;
+                uint32_t n = ss.readEncoded(tb, sizeof tb, &c, &d);
+                if (d) clean_disc = true;
+                if (n) { got.insert(got.end(), tb, tb + n); CHECK(c == 2); }
+                else port::sleepMs(5);
+            }
+            CHECK(!clean_disc);                           // no gap on a clean run
+            CHECK(got.size() >= fake.seg_audio.size());
+            {
+                // Align the (mid-stream) start inside seg_audio, then every
+                // byte must continue the cyclic repetition — proving the tee
+                // carries the broadcast bytes verbatim, ID3 never leaks.
+                const auto& seg = fake.seg_audio;
+                size_t probe = got.size() < 256 ? got.size() : 256;
+                size_t off = std::string::npos;
+                for (size_t i = 0; i + probe <= seg.size() && off == std::string::npos; ++i)
+                    if (std::memcmp(seg.data() + i, got.data(), probe) == 0) off = i;
+                CHECK(off != std::string::npos);
+                bool cyclic_ok = off != std::string::npos;
+                for (size_t i = 0; cyclic_ok && i < got.size(); ++i)
+                    cyclic_ok = got[i] == seg[(off + i) % seg.size()];
+                CHECK(cyclic_ok);
+            }
+
+            // (c) discont across a die -> reconnect -> self-heal boundary.
+            int gets0 = fake.segment_gets.load();
+            fake.fail_segments.store(true);
+            { std::lock_guard<std::mutex> lk(fake.mtx); fake.window_top += 2; }
+            {
+                // Keep the consumer draining so backpressure can't park the
+                // producer before it reaches the (dying) segment fetch.
+                uint32_t tw = port::tickMs();
+                while ((long)(port::tickMs() - tw) < 15000 &&
+                       fake.segment_gets.load() <= gets0) {
+                    float pb[512 * 2];
+                    ss.readFrames(pb, 512);
+                }
+                CHECK(fake.segment_gets.load() > gets0);
+            }
+            port::sleepMs(300);                           // let the failure land
+            fake.fail_segments.store(false);
+            { std::lock_guard<std::mutex> lk(fake.mtx); fake.window_top += 4; }
+            bool saw_disc = false, post_bytes = false;
+            t0 = port::tickMs();
+            while ((long)(port::tickMs() - t0) < 20000 && !(saw_disc && post_bytes)) {
+                float pb[512 * 2];
+                ss.readFrames(pb, 512);
+                int32_t c = 0, d = 0;
+                uint32_t n = ss.readEncoded(tb, sizeof tb, &c, &d);
+                if (d) saw_disc = true;
+                if (n && saw_disc) post_bytes = true;     // stream continues past the gap
+                if (!n) port::sleepMs(5);
+            }
+            CHECK(saw_disc);
+            CHECK(post_bytes);
+
+            // (d) disarm: reads stop, playback untouched.
+            ss.setEncodedCapture(false);
+            int32_t c2 = 0, d2 = 0;
+            CHECK(ss.readEncoded(tb, sizeof tb, &c2, &d2) == 0);
+        }
 
         // ── 6. prompt close mid-fetch: stop_ as the cancel token ──────────────
         {

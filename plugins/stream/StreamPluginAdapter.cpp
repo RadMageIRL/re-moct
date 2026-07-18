@@ -18,6 +18,7 @@
 #include "IHeartDeepLog.h"     // set_config("deeplog", ...) — deep-log toggle across the ABI
 
 #include <cstring>
+#include <cstdlib>   // std::atoi (repin_mode config passthrough)
 #include <string>
 
 namespace {
@@ -109,6 +110,32 @@ void sp_set_config(void* self, const char* key, const char* value) noexcept {
         // Read at hlsConnect time + forced anon unless the deep log is on, so this is inert
         // outside a probe session (see StreamSource::hlsConnect).
         inst(self)->src.setProbeMinted(on);
+    else if (std::strcmp(key, "repin_mode") == 0)
+        // iHeart re-pin behaviour (F6): 0 off / 1 on / 2 smart. Read live by the
+        // producer/SM, so it takes effect without a reconnect.
+        inst(self)->src.setRepinMode(value ? std::atoi(value) : 2);
+}
+
+// abi-cluster slice A: keep-draining. Returns 1 = honored (the ack drives the
+// host's honest pause copy). Host/UI thread, like every non-audio entry.
+int32_t sp_set_record_active(void* self, int32_t on) noexcept {
+    inst(self)->src.setRecordActive(on != 0);
+    return 1;
+}
+
+// abi-cluster slice B: the copy/remux tee. encoded_caps reports what connect
+// decided (REMOCT_CODEC_*, 0 before open); set_encoded_capture arms/disarms
+// the plugin-side byte ring; read_encoded is the host WORKER-thread pull
+// (host buffer — nobody frees across the line).
+int32_t sp_encoded_caps(void* self) noexcept {
+    return inst(self)->src.encodedCaps();
+}
+void sp_set_encoded_capture(void* self, int32_t on) noexcept {
+    inst(self)->src.setEncodedCapture(on != 0);
+}
+uint32_t sp_read_encoded(void* self, uint8_t* dst, uint32_t cap,
+                         int32_t* codec_out, int32_t* discont_out) noexcept {
+    return inst(self)->src.readEncoded(dst, cap, codec_out, discont_out);
 }
 
 const RemoctPlugin STREAM_PLUGIN = {
@@ -132,6 +159,13 @@ const RemoctPlugin STREAM_PLUGIN = {
     /* art_url      */ sp_art_url,
     /* last_error   */ sp_last_error,
     /* set_config   */ sp_set_config,
+    /* ── the abi-cluster growth (design doc): drain in slice A, the
+     * copy/remux tee in slice B — the boundary grew exactly once and is now
+     * fully populated. ── */
+    /* set_record_active   */ sp_set_record_active,
+    /* encoded_caps        */ sp_encoded_caps,
+    /* set_encoded_capture */ sp_set_encoded_capture,
+    /* read_encoded        */ sp_read_encoded,
 };
 
 } // namespace

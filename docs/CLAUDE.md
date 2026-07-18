@@ -154,6 +154,36 @@ byte-identity deliberately not asserted (float-flag-sensitive), covered behavior
 branch is **feature-complete** (Phases 0–4 done); merge to `dev`/`main` is Dos's call. See
 `docs/roadmap.md` (Done + Parked) + `docs/session-handoff-2026-07-04-phase4-complete.md`.
 
+**2026-07-16 flight (8 slices, all on `experimental/win-pdcurses`, v1.3.0 UNRELEASED):**
+DECODE: .opus/.wv/.ogg playback via custom miniaudio backends behind
+`remoct_custom_backends()` (CustomBackends.h); native-float lossy decode; the
+R128 RG read fixed. RIP OVERHAUL COMPLETE: `IEncoder` seam (`ebfaf1c`..`2e53de7`)
+- FLAC/MP3/WAV/Opus/WavPack, modal digits 1-5, any combination, one verified
+read; `RipOptions` plumbing; quality keys (flac_level/mp3/opus_bitrate/
+wavpack_mode); R128Gain.h = the one home for the R128<->RG dialect;
+IEncoder::finalize returns bool (the 3-layer ENOSPC laundering lesson);
+rip_encoder_seam_test = frozen-inline oracle + round-trips + forced-failure
+gates. Joan Osborne gate re-proven at the seam slice (12/12 AR v2 conf 200,
+byte-identical). Next recorded: log-semantics slice (lossless=master marking).
+See `docs/session-handoff-2026-07-16-rip-overhaul-complete.md` + the five
+`docs/rip-*-plan.md` design-of-record docs.
+
+**2026-07-17 full-day flight (12 slices + 2 fixes, all CI-green):**
+stream-record COMPLETE (R1 engine `c333428` + R2 panel/^E/[REC] `9f8c393`,
+covers `8f06fab`, split-trim hold + ad-aware routing `8038368` - the [Rec]
+panel now: format/split/hold/ads/dir, pulsing red [REC]); the MP3 tag pair
+(read `e7c3fc8` + write `8a36b4c`; smoke/subM3 = the tag contract, subM =
+legacy specimen); log-semantics `76798ad` (Formats/Master lines); radio-art
+staleness fixed `758cf3b` (shared radioArtFloor + time-bounded neg cache);
+**THE ABI OPENED ONCE `254baca`** (slice A: 4 fns appended, NO version
+bump, keep-draining = gapless pause capture, 0.00s silence across a 35s
+pause; copy/remux slice B planned+committed `c62ca85` - M4A decisively,
+AacDecoder already decodes ADTS+MP4); batch ReplayGain `7dc403b` (^O
+folder scan, rip-parity EXACT, THE HEAL fixes pre-fix MP3s library-wide).
+**Backlog = slice B only.** Handoffs: `session-handoff-2026-07-17-*.md`;
+lessons: LP64 (long) tick-math trap, TagLib RW-handle sharing trap,
+additive-ABI reach-check discipline.
+
 ## Deep knowledge - read the matching file when a task touches it
 - Roadmap, phases, parked items, decisions → `docs/roadmap.md`
 - Plugin/Source interface, platform abstraction, Linux port, GitHub strategy → `docs/architecture.md`

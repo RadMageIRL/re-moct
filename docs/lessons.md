@@ -935,3 +935,284 @@ runtime-discoverable, not compile-discoverable; a green build proves nothing abo
   frequency sweep (bins just partition the same k's). A low band whose log-spaced range collapses
   onto a single FFT bin (`k_lo==k_hi`) must use that k, not hit the above-Nyquist "empty" skip, or
   low bands drop out.
+
+## Decode backends / Opus + WavPack (decode-opus-wv slice)
+- **`.ogg` Vorbis is advertised-but-broken today.** `.ogg` sits in `AUDIO_EXTS`
+  and `fileTypeTag`, but this build compiles NO Vorbis decoder: miniaudio gates
+  its whole stb_vorbis backend on `STB_VORBIS_INCLUDE_STB_VORBIS_H`, which nothing
+  in the tree defines (proven by compile probe, plan §1.2). Browsable, labelled,
+  un-playable - exactly the trap `.opus` was in before this slice. Becomes the
+  next slice; until then a red `.ogg` result is NOT a decode-slice regression.
+- **Custom decoder backends register through `remoct_custom_backends()`
+  (CustomBackends.{h,cpp}) - add codecs THERE, not at the call sites.** Playback
+  (`open_decoder`) and BPM analysis (`detectBpm`) share the array; before the
+  helper they were two hand-maintained literals that could drift.
+- **TagLib ships its own `opusfile.h` and its include dir is on the target's
+  path.** `#include <opusfile.h>` can resolve to TagLib's C++ tag reader instead
+  of libopusfile's C codec API. Our code always writes `#include <opus/opusfile.h>`.
+  The `-I.../include/opus` dir itself IS still required (opusfile.h includes its
+  libopus siblings like `<opus_multistream.h>` unprefixed - upstream mandates
+  that dir via pkg-config Cflags). **The enforced guard is the CI grep gate**
+  (ci.yml "Include-guard lint": bare `<opusfile.h>`/`<vorbisfile.h>` fails the
+  build; vorbisfile is pre-covered for the Vorbis slice). The -I ordering is
+  defense-in-depth only. Recorded fact - the REAL compile line for
+  LocalFileSource.cpp (ninja -v, Option C config, 2026-07-16):
+  `-IE:/code/remoct/include -IE:/code/remoct/lib -IC:/msys64/ucrt64/include/opus
+  -IC:/msys64/ucrt64/include/taglib -IE:/code/remoct/lib/pdcursesmod` - the opus
+  dir does precede taglib's. Note `${MSYS2_PREFIX}/include` is ABSENT: CMake
+  filters it as a compiler-implicit dir - which is also why the empty
+  `${FDKAAC_INCLUDE}` interpolation never broke anything (the compiler's own
+  default path covers those headers).
+- **Opus ReplayGain is R128_TRACK_GAIN: an INTEGER in Q7.8 (dB×256), referenced
+  to -23 LUFS.** Reading it as plain dB (the old third fallback in
+  `populate_track_info`) turned an ordinary tag into hundreds of negative dB ->
+  gain 0.0 -> a muted track. Correct read: `value/256 + 5` (+5 rebases -23 ->
+  -18 LUFS, the ReplayGain convention). No header-gain term: libopusfile applies
+  `OpusHead.output_gain` itself, and RFC 7845 defines the tag relative to that.
+- **Pre-existing, KNOWN, deliberately not fixed here** (tombstones so they don't
+  get rediscovered as new bugs):
+  - `${FDKAAC_INCLUDE}` is interpolated in the include block ~50 lines before
+    `find_path` sets it, so it expands EMPTY; builds work only because the whole
+    MSYS2/system include dir is added separately. The Opus/WavPack include call
+    was placed after the finds to avoid inheriting this.
+  - The WASAPI warm-up in `initDevice` claims "file_src_ is null" in its comment,
+    but on the first `play()` `file_src_` is assigned BEFORE `initDevice()`, so
+    the warm-up callback can consume a few frames from the just-primed decoder;
+    the outer "the callback never fires" comment is stale (the code does
+    start/stop). Benign today, worth knowing before touching device bring-up.
+  - `REPLAYGAIN_TRACK_PEAK` is written by the ripper but never read back: the RG
+    apply path has NO clip protection beyond the clamp at 4.0.
+  - The unconditional +6 dB RG preamp boosts UNTAGGED tracks by +6 dB when RG is
+    on (db==0 -> gain 1.0, then ×1.995) - the opposite of normalization for
+    untagged files, and a 0.0 dB tag is indistinguishable from "no tag".
+- **vorbisfile.h does NOT need its own include dir (unlike opusfile.h).**
+  Probe-verified on the live toolchain: `#include <vorbis/vorbisfile.h>`
+  compiles with only the include ROOT on the path, because vorbisfile.h pulls
+  its siblings as QUOTED includes (`#include "codec.h"` - resolved relative to
+  its own dir) and codec.h uses the prefixed `<ogg/ogg.h>`. Contrast opusfile.h,
+  whose unprefixed `<opus_multistream.h>` sibling includes force
+  `-I<prefix>/include/opus` onto the path. So the vorbis CMake block adds NO
+  extra -I entry and there is no ordering question vs TagLib's dir; a bare
+  `<vorbisfile.h>` (which would resolve to TagLib's C++ header) is caught by
+  the CI grep gate before anything compiles.
+- **ov_read_float is PLANAR (float** per channel, decoder-internal buffers);
+  op_read_float is INTERLEAVED (one flat float*).** They are not symmetric -
+  the interleave loop lives only in VorbisDecoder, and the pointers ov_read_float
+  hands back are invalidated by the next call, so interleave immediately.
+  Chained Ogg streams can also switch channel count per link: clamp to the
+  CURRENT link's channels (ov_info(vf, bitstream)) before indexing pcm[], or a
+  channel-count change mid-file reads a garbage plane pointer.
+
+## Rip encoder seam (rip-encoder-seam slice)
+- **The rip write tail was ALREADY a streaming fan-out** - one 27-sector block
+  fed FLAC -> LAME -> ebur128 -> AR/CTDB CRCs inside one loop iteration of
+  ripTrack, same thread as the read. The IEncoder seam (IEncoder.h +
+  FlacEncoder/Mp3Encoder) NAMES that structure; it did not create it. Tags,
+  art, and ReplayGain are NOT part of IEncoder and never can be: album gain
+  only exists after the last track (ebur128_loudness_global_multiple over
+  handed-back per-track states), so tagging is a post-loop worker pass
+  (tagFile) that the seam leaves at a zero-line diff.
+- **Byte-identity of the transliteration is machine-enforced** by
+  rip_encoder_seam_test: the pre-seam inline FLAC/LAME sequence is FROZEN
+  verbatim in the test as a reference arm and diffed against the seam classes
+  on a fixed PCM fixture. If you touch FlacEncoder/Mp3Encoder settings or call
+  order, that test failing is the point - do not update the reference arm to
+  match; the reference IS the contract until a slice deliberately changes the
+  output format (then move the gate).
+- **KNOWN, DELIBERATELY PRESERVED quirk: an MP3-side open failure leaves a
+  finished, valid-but-EMPTY .flac on disk** (the inline code FLAC-finished on
+  the LAME unwind path; the seam reproduces it via finalize(false)). The
+  worker's zero-CRC heuristic catches it downstream. Do NOT "helpfully" clean
+  it up in a refactor - changing error-path behavior couples a bug-fix to the
+  byte-identity gate. If it deserves fixing, it is its own slice.
+- One-bit simplification, analyzed as invisible: the inline code set
+  ARStatus::NotFound when FLAC__stream_encoder_new returned null (alloc
+  failure only) and NotQueried on every other open failure; the seam's bool
+  open() collapses both to NotQueried. The distinction was dead: the worker's
+  abort check keys on crc_v1==0 && crc_v2==0 (status not consulted), and the
+  Pass-2 NotFound gate is unreachable for a track that failed before reading.
+- **Session rip-format selection vs config default are two different states
+  on purpose** (rip-format-select): `DigiConfig::rip_formats` is ONLY the
+  startup seed; `UIManager::rip_sel_` is the live session state, toggled by
+  the modal digits, normalized to kRipFormats TABLE order when building
+  RipOptions (fan-out order must not depend on toggle history), and never
+  written back to conf - config_.save() persists the unchanged default.
+  Not reset on eject: preference, not disc data (contrast mb_release_).
+  The modal's input disambiguation is structural: N/Esc handled first,
+  digit cases return inside themselves, commit letters guarded on a
+  non-empty selection - the wrong transition is unreachable, not guarded.
+  CUE/M3U8 entries follow the MASTER format (first selected lossless, else
+  first selected) so subset rips never emit playlists over absent files.
+- **WavEncoder's strict writeFrames is load-bearing, not defensive**
+  (rip-wav-encoder): a short fwrite returns false so the track aborts and
+  the caller removes the partial. A lenient write would combine with the
+  finalize size back-patch into "disk-full produces a valid-looking,
+  silently TRUNCATED .wav marked success" - the header would honestly
+  describe the truncated data and even pass a bit-exact check of what
+  remains. The back-patch exists only for non-exact callers (the CD path is
+  TOC-exact); with writeFrames strict it can never launder a write failure.
+  Guarded by the /dev/full short-write check in rip_encoder_seam_test
+  (Linux job). Do not "simplify" the strictness away.
+- **The R128<->RG dialect lives in include/R128Gain.h, both directions, and
+  nowhere else** (rip-opus-encoder): decode (LocalFileSource RG read) and
+  encode (CDRipper tagFile Opus branch) call the same two inline functions,
+  so the ~5 dB reference bug (decode slice, found in the wild) structurally
+  cannot reappear as a drift between the two sides. Round trip is EXACT for
+  every Q7.8 int (/256 and +/-5 are exact in binary FP over the range) -
+  asserted over the FULL range in rip_encoder_seam_test. Do not inline
+  either direction "for simplicity"; one home is the guard.
+- **Opus rip notes**: libopusenc accepts 44100 input and resamples to 48k
+  internally, sample-exact (probe-proven: 88200 in -> exactly 96000 @ 48k).
+  Wide paths go through ope_encoder_create_callbacks over port::fopenUtf8 -
+  ope_encoder_create_file's char* path is an ANSI trap on Windows. The class
+  is OpusRipEncoder because opus.h typedefs a C OpusEncoder and the TU sees
+  both. Header output gain is pinned 0 so the R128 tags are the only gain.
+  Opus tags carry NO REPLAYGAIN_* and NO peak keys - R128 defines none.
+- **The block-callback laundering trap (rip-wavpack-encoder), one level
+  deeper than WAV's**: libwavpack writes through a BLOCK callback, and its
+  finalize-time insurance (sample-index-vs-declared) counts samples
+  SUBMITTED, not bytes written - so a lenient callback turns disk-full into
+  a complete-looking truncated .wv marked success, and no downstream check
+  can see it. The safety chain is: strict blockOut (short fwrite -> return
+  0 + sticky write_failed_) -> propagation (probe-proven: PackSamples AND
+  FlushSamples both return 0 after a failed block; note WavpackGetNumErrors
+  stays 0 - it counts decode CRC errors, NEVER write failures, do not rely
+  on it) -> IEncoder::finalize now returns bool so the final block's flush
+  failure can fail the track (ripTrack folds finalize returns into ok
+  before the cleanup). Same treatment applied to Opus's drain (the same
+  buffering-encoder class). FLAC/MP3/WAV finalize return true
+  unconditionally - their best-effort semantics are the pre-seam baseline,
+  unchanged. Guarded end-to-end by the /dev/full chain test (Linux job).
+- **Third layer of the same trap, found BY the ENOSPC chain test on its
+  first run**: highly-compressible audio makes WavPack blocks smaller than
+  the stdio buffer - fwrite "succeeds" into the buffer, the library flush
+  "succeeds" (its callback never reached the disk), and the real ENOSPC
+  would only surface at an unchecked fclose. Every FILE*-owning buffering
+  encoder's finalize now does fflush-and-check before declaring completion
+  (WavPack, Opus, and WAV's tail). This is why the chain test exists: the
+  strict callback alone was NOT enough, and no amount of reasoning about
+  libwavpack's propagation would have caught stdio's layer.
+- **Pause loses the broadcast - for ANY host-side tap (stream-record R1,
+  probe-proven)**: while playback is paused the device callback keeps firing
+  and readFrames keeps delivering full blocks, but they are silence pads
+  (readFrames short-circuits pre-ring), and BOTH stream producers stop
+  consuming the network (`if (paused_) sleepMs(20); continue;` - fixture
+  probe: segment_gets frozen across the pause, output rms exactly 0). So a
+  recording through a pause captures a real silence gap and the paused-over
+  airtime is unrecoverable host-side - no tap placement can fix it, because
+  the plugin never decodes it. Making pause not poison a cut is a PLUGIN
+  behavior change (keep draining while paused), recorded as its own later
+  conversation. R2's panel states the gap plainly.
+- **A split trigger must not depend on audio flowing (stream-record R1,
+  found BY the headless test before any UI existed)**: the recorder worker
+  originally checked the split flag only on the has-audio drain path -
+  correct-looking because a live source silence-pads and the ring is
+  "never" idle. The contract test deadlocked instantly: a title event
+  landing on an idle ring never rolled. The roll check now runs on EVERY
+  worker pass. The probe-first payoff in its purest form - the UI would
+  have masked this until a buffering gap coincided with a title change in
+  the field.
+- **Linkage norms shape API placement (stream-record R1)**: "CDRipper's TU
+  never links into tests" (the rip_encoder_seam_test comment) is a real
+  constraint, not a habit - StreamRecorder needed sanitizePath, so the BODY
+  moved to header-inline StringUtils.h (sanitizePathComponent) with
+  CDRipper::sanitizePath delegating; musicRoot() stayed a CDRipper static
+  (the trimmed CD gate proves extraction inertness) and the recorder takes
+  its output dir from the CALLER, so neither the engine nor its test ever
+  name a CDRipper symbol. When a helper wants sharing across TU-heavy
+  boundaries, move the body to a header home and delegate - do not link the
+  heavy TU.
+- **The LP64 (long) trap in uint32 tick math (radio-art-refresh-fix, caught
+  by art_miss_cache_test's FIRST Linux run)**: `(long)(uint32_a - uint32_b)`
+  is the tree's wrap-compare idiom - and long is 64-bit on Linux/LP64, so a
+  wrapped difference promotes to a huge POSITIVE value and the comparison
+  inverts (every cache entry expired instantly; Windows' 32-bit long masked
+  it completely). The correct form is `(int32_t)(a - b)`. FLAGGED, not yet
+  fixed: StreamSource's np_pub_q_ release check uses the (long) form - a
+  potential pre-existing Linux nit (title publish delays may release
+  early); its own small look someday.
+- **TagLib File objects open READ-WRITE by default (gain_scan_test, found
+  the hard way)**: a still-in-scope TagLib::MPEG::File - even one only used
+  for reading - holds a write handle, and on Windows that blocks a second
+  open (LocalFileSource's FileRef) with a sharing violation that TagLib
+  swallows SILENTLY: metadata is skipped, ReplayGain reads 0, and the file
+  looks untagged while being perfectly tagged. Scope TagLib file objects
+  tightly; close before any re-open of the same path. The scope brace IS
+  the fix.
+- **Additive ABI growth, realized (abi-cluster slice A)**: the contract's
+  own rules did all the work - NO version bump (REMOCT_ABI_VERSION is the
+  breaking gate; bumping would reject every old plugin), one struct growth
+  appending fn pointers, and the NEW discipline appended fields demand:
+  check struct_size REACHES a field before even reading its pointer (an
+  old descriptor simply ends earlier - reading past it is UB, not NULL).
+  Per-fn null-check then gives per-feature capability granularity free.
+  The keep-draining shape worth remembering: ONE truth in the plugin (real
+  frames keep flowing), TWO views in the host (tap gets audio, playback
+  gets a post-tap memset) - and the gapless proof was structural (the
+  paused pipeline IS the unpaused pipeline) then confirmed empirically
+  (0.00s silence across a 35s pause).
+
+## osmedia (SMTC + MPRIS OS media control) - 2026-07-17
+
+- **WinRT from MSYS2/UCRT64 GCC works via the RAW ABI - no cppwinrt, no WRL.**
+  mingw-w64's generated headers (windows.media.h, windows.storage.streams.h,
+  systemmediatransportcontrolsinterop.h, roapi.h, asyncinfo.h) expose every
+  interface in `ABI::Windows::...` with `__CRT_UUID_DECL`, so `__uuidof`
+  resolves them and a hand-rolled COM object (IUnknown + IAgileObject +
+  the typed method) compiles and runs. Gotchas found the hard way:
+    - A typed event delegate (ITypedEventHandler<Sender*, Args*>) is a C++
+      virtual interface here; its `Invoke` takes the ARGS INTERFACE
+      (I...EventArgs*), NOT the runtimeclass in the template param (that type
+      is incomplete). Parametrize the handler on the interface.
+    - Ref count must be a plain LONG for InterlockedIncrement(&ref) - NOT
+      std::atomic<LONG> (no matching overload).
+    - Timeline + PlaybackPositionChangeRequested live on
+      ISystemMediaTransportControls2 (QI from the base), not the base iface.
+    - IAsyncInfo / AsyncStatus are GLOBAL scope (asyncinfo.h), unscoped enum
+      (Started/Completed), not under ABI::Windows::Foundation. Await an async
+      op by polling get_Status (no completion-handler delegate needed) - fine
+      for a fast in-memory StoreAsync.
+    - SMTC thumbnail from bytes: InMemoryRandomAccessStream (RoActivateInstance)
+      + DataWriter (WriteBytes -> polled StoreAsync -> DetachStream) ->
+      RandomAccessStreamReference::CreateFromStream. `file://` is NOT a valid
+      CreateFromUri scheme, so a temp file will NOT work for SMTC - the
+      in-memory stream is required. (MPRIS, by contrast, WANTS a file:// URL.)
+    - Link set: -lruntimeobject -lole32 -luser32 -lgdi32; build plain main()
+      (NOT -municode - it forces wWinMain and fails to link a console app).
+    - The wingui top-level HWND is `extern "C" HWND PDC_hWnd` (PDCursesMod),
+      valid only AFTER initscr() and only in the REMOCT_PDCURSES build. Resolve
+      the SMTC production default at the END of the ctor, never in the init
+      list (which runs before initscr - GetForWindow on a null HWND).
+- **MPRIS via sd-bus (-lsystemd) needs no dedicated thread when the loop is a
+  getch()-timeout loop, not a poll().** Service the bus with a per-tick
+  sd_bus_process + non-blocking poll(0); the ~80ms getch timeout bounds
+  command latency (imperceptible). One thread touches the bus (outbound
+  updates + inbound callbacks both on the UI thread) so there is no sd-bus
+  concurrency to manage. mpris:artUrl wants a file:// URL - write cover bytes
+  to an XDG cache file and serve that.
+- **Bidirectional seam marshal**: OS callbacks (SMTC threadpool / MPRIS pump)
+  only ENQUEUE; the UI loop drains once per tick and routes to the EXISTING
+  homes (AudioManager fns; the manualNext/manualPrevious methods extracted
+  from the case 'n'/'p' bodies). Never a parallel transport layer. Transport
+  during an active CD rip is dropped (the ripper owns the drive) - the only
+  state that can't tolerate a background track-switch.
+- **Absolute seek does NOT fold to a delta at receive time**: an OS scrubber
+  drag emits many SetPositions in one coalescing window; folding each against
+  a stale (unflushed) position accumulates (30-then-60 lands at 80). Give the
+  coalescer an absolute lane, last-write-wins, resolved to a delta at FLUSH
+  time against the live position. Still through the one seekBy home.
+- **One radio-art home already existed**: radioArtKick -> radio_bytes_ (station
+  cover, then the iTunes/Deezer song-entity lookup) - the SAME resolution the
+  Info pane, recorder, AND Discord path use. Don't add a second lookup; drive
+  that machinery for the new consumer and read radio_bytes_. Art that resolves
+  a tick after the title re-publishes via an art-size term in the change
+  trigger (the Discord deferred-art-commit pattern).
+- **Edit-placement bug that cost a debug cycle**: an anchored Edit matched a
+  `status_msg_ticks_ = 0; redraw_needed_.store(true); #endif` pattern that
+  exists in BOTH the ctor and showTrackToast; the ctor-tail media init landed
+  in showTrackToast instead, so media_ stayed null and the loop segfaulted at
+  startup. Lesson: when an anchor pattern could be non-unique, include a
+  function-scoped landmark (a nearby unique line) in the old_string, and after
+  a structural insert re-read the exact region to confirm placement. File-based
+  trace milestones (fopen/fprintf to a fixed path, fflush) beat stderr for a
+  wingui crash where stdio may not reach the pipe.

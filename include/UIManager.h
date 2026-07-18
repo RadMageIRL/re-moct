@@ -24,7 +24,14 @@
 #include "Mp4Chapters.h"
 #include "AwesomeThemes.h"
 #include "CoverArtRender.h"
+#include "ArtMissCache.h"   // time-bounded art negative cache (radio-art-refresh-fix)
+#include "GainScan.h"       // batch ReplayGain over a folder (batch-r128)
+#include "ConvertJob.h"     // convert-core: decode -> IEncoder batch convert engine
+#include "MarkSet.h"        // convert-core: the browser's path-keyed marked set
 #include "core/INotify.h"
+#include "core/IMediaControl.h"   // OS media control seam (osmedia-seam)
+#include "MediaRouter.h"          // OS-command marshal + split sink
+#include "SeekCoalescer.h"        // shared seek lanes (TUI [/] + OS SetPosition/Seek)
 
 class PlaylistManager;
 struct DigiConfig;
@@ -33,16 +40,19 @@ enum class Pane      { DirBrowser, Playlist };
 enum class RightPane { Playlist, Visualizer, Help, TrackInfo, Bookmarks, Lyrics, About, Devices, EQ, Queue, Chapters, SearchResults };
 
 // Modal overlays drawn on top of the normal layout
-enum class UIOverlay { None, RipConfirm, MBSearch };
+enum class UIOverlay { None, RipConfirm, MBSearch, RecPanel, ConvertScope, ConvertConfirm };
 
 class UIManager {
 public:
     // notify == nullptr -> the production platform notifier (core::notifier());
     // tests inject a fake here (constructor injection — no setNotify global).
+    // media == nullptr -> the production platform impl (core::mediaControl());
+    // tests inject a fake here (constructor injection, the notify_ pattern).
     UIManager(PlaylistManager& playlist, AudioManager& audio,
               DigiConfig& config,
               const std::string& initial_dir = "",
-              core::INotify* notify = nullptr);
+              core::INotify* notify = nullptr,
+              core::IMediaControl* media = nullptr);
     ~UIManager();
 
     void run();
@@ -62,6 +72,28 @@ public:
 private:
     // Notifications seam (slice 7): injected fake in tests, core::notifier() in prod.
     core::INotify* notify_;
+    // OS media control seam (osmedia-seam): SMTC / MPRIS, injected fake in tests,
+    // core::mediaControl() in prod. Bidirectional - outbound now-playing +
+    // inbound transport via media_router_ (marshalled to the UI-loop drain).
+    core::IMediaControl* media_;
+    MediaRouter         media_router_;
+    void wireMediaControl();           // ctor: register sinks + command handler
+    // updateScrobbler tail: publish now-playing to the OS on a real change
+    // (the resolved Discord-feed values, reused - no second assembler).
+    void publishMedia(const std::string& artist, const std::string& track,
+                      const std::string& album, const std::string& art_url,
+                      const std::vector<uint8_t>& art_bytes, int pos, int dur);
+    // Local-file embedded cover, extracted once per file (path-keyed) so the
+    // per-tick OS-media publish never re-reads the tag (osmedia-art-floor).
+    std::string          media_art_path_;
+    std::vector<uint8_t> media_art_cache_;
+    core::MediaStatus   mediaStatus() const;
+    // Last-published OS-media identity (independent of the Discord toggle so the
+    // two features are orthogonal).
+    std::string media_last_artist_, media_last_track_, media_last_art_;
+    bool        media_last_valid_ = false;
+    void        manualNext();         // the case 'n' body, one home (OS Next routes here too)
+    void        manualPrevious();     // the case 'p' body, one home
     // Same name/arity as the pre-slice-7 free function, so every toast call site
     // in UIManager.cpp compiles unchanged (class scope hides the 4-arg adapter in
     // Toast.h); forwards to that adapter with the injected notifier. Defined in
@@ -108,6 +140,23 @@ private:
     void maybePreloadNext();
     void drawRipConfirm();
     void drawMBSearch();
+    void drawRecPanel();   // stream-record R2: the [Rec] panel (^E)
+    void drawConvertScope();    // convert-core: pick scope (this file/folder/marked)
+    void drawConvertConfirm();  // convert-core: pick output format + quality
+    // Absolute path of browser entry idx, respecting the browser mode (favs/
+    // recent entries are already absolute; normal-dir entries join current_dir_).
+    // "" for pseudo-entries ("..", "[Drives]", ...) and drive/radio modes.
+    std::string browserEntryPath(int idx) const;
+    // rec-cover-art: the radio-art machinery's identity/pickup/trigger halves,
+    // extracted from refreshRadioArt so the recording wiring can drive the
+    // SAME fetch path (same guard, caches, providers) with the pane closed.
+    std::string radioSongIdentity(const std::string& np,
+                                  std::string& artist, std::string& title);
+    void radioArtPickup(const std::string& song_key);
+    void radioArtKick(const std::string& artist, const std::string& title,
+                      const std::string& song_key);
+    void radioArtFloor(const std::string& song_key);   // radio-art-refresh-fix: the
+                                                       // empty-key reset BOTH drivers share
     void handleMBSearchInput(int ch);
     void drawProgress();
     void drawCmdLine();
@@ -216,7 +265,7 @@ private:
     void computeVizBins();
 
     // Input bar state (goto dir / save M3U / load M3U)
-    enum class InputMode { Goto, SaveM3U, LoadM3U, StreamURL, StreamName, RadioSearch, LastfmKey, LastfmSecret, ListenBrainzToken, PlaylistSearch };
+    enum class InputMode { Goto, SaveM3U, LoadM3U, StreamURL, StreamName, RadioSearch, LastfmKey, LastfmSecret, ListenBrainzToken, PlaylistSearch, RecDir, RecOffset };
     bool        goto_active_  = false;
     InputMode   input_mode_   = InputMode::Goto;
     std::string goto_input_;
@@ -427,6 +476,49 @@ private:
 
     CDRipper    cd_ripper_;
     UIOverlay   ui_overlay_    = UIOverlay::None;
+    // Session rip-format selection (rip-format-select): seeded ONCE from
+    // config_.rip_formats in the ctor, toggled by the modal's digit keys,
+    // NEVER written back to config (the conf key is the default only).
+    // Deliberately not reset on eject — user preference, not disc data.
+    std::vector<RipFormat> rip_sel_;
+    // encoder-bitrate-mode: the `>` row-focus cursor for the per-row quality
+    // editor (Up/Down move it, Left/Right cycle the focused row's axis, [M]
+    // flips its mode). Session state, seeded to 0; the rip modal focuses over
+    // kRipFormats, the [Rec] panel over its 3 rows (Opus/Mp3/Copy).
+    int rip_focus_ = 0;
+    int rec_focus_ = 0;
+    // convert-core: the marked-file set (path-keyed, survives re-sort/refresh/
+    // dir-change), the batch convert engine, and the convert overlay state.
+    MarkSet    marked_;
+    ConvertJob convert_job_;
+    int        convert_scope_ = 0;             // 1 = this file, 2 = folder, 3 = marked
+    std::string convert_src_dir_;              // folder scope: the dir to enumerate
+    std::string convert_single_;               // file scope: the one source path
+    RipFormat  convert_fmt_ = RipFormat::Flac; // single-select output format
+    int        convert_focus_ = 0;             // ConvertConfirm row cursor
+    // Stream-record R2: the [Rec] panel's SETTINGS (session state seeded from
+    // config, like rip_sel_ - config is load-once, the panel never writes
+    // back). Lifecycle state (recording/elapsed/cuts/dropped) is deliberately
+    // NOT mirrored here - every render reads the recorder's own atomic
+    // accessors, so panel/badge and engine can never drift.
+    RipFormat   rec_fmt_      = RipFormat::Opus;   // single-select: Opus | Mp3
+    bool        rec_copy_     = false;             // 3rd radio: Copy (as broadcast,
+                                                   // no re-encode); wins over rec_fmt_
+    bool        rec_split_on_ = true;              // split on title change
+    std::string rec_dir_;                          // "" = recordingsDir() at start
+    int         rec_offset_ms_ = 1200;             // split-trim hold (session, [T])
+    bool        rec_ads_discard_ = false;          // ad-aware: [A] Save/Discard
+    int         rec_panel_tick_ = 0;               // ~2 Hz live-state refresh
+    std::string rec_art_pushed_key_;               // rec-cover-art: dedupe onArt pushes
+    // batch-r128: the folder ReplayGain scan (worker-threaded engine) + the
+    // ^O tag/force/cancel prompt state (the prompt text lives in rip_status_,
+    // the app's de-facto status line; no new draw plumbing).
+    GainScan    gain_scan_;
+    bool        rgscan_prompt_ = false;
+    std::string rgscan_dir_;
+    // [REC] badge pulse: phase advanced ~every 0.64s by the tick loop while
+    // recording; drawTitleBar overpaints the badge in red with the phase attr.
+    int         rec_pulse_ = 0, rec_pulse_tick_ = 0;
     std::string rip_status_;   // shown in cmdline during/after rip
     int         rip_msg_ticks_ = 0;  // auto-clear counter
 
@@ -518,9 +610,12 @@ private:
     std::string       discord_art_key_;            // "artist\ttrack" the result is for (guarded)
     std::string       discord_art_cache_key_;       // last resolved key (UI thread only)
     std::string       discord_art_cache_url_;       // last resolved url (UI thread only)
-    std::unordered_set<std::string> discord_art_neg_; // radio keys that resolved to NO art this
-                                                      // session — skip re-querying on rotation
-                                                      // return (UI thread only). Stream-only.
+    ArtMissCache      discord_art_neg_;             // radio keys whose art lookup MISSED —
+                                                    // time-bounded (radio-art-refresh-fix Fix #2:
+                                                    // a transient failure self-heals after the
+                                                    // TTL; a genuine no-art song stays
+                                                    // rate-limited). UI thread only. Stream-only;
+                                                    // shared by the pane and Discord paths.
     void startDiscordArtLookup(const std::string& artist,
                                const std::string& album,
                                const std::string& key,
@@ -543,12 +638,14 @@ private:
     // stop/seek/start per repeat is choppy on MP3 (bit-reservoir warm-up after each
     // seek). Coalesce rapid repeats into ~one seek per cooldown while keeping single
     // taps instant. The run loop flushes the tail after the key is released.
-    double      pending_seek_    = 0.0;
-    bool        seek_dirty_      = false;
-    int         seek_stamp_      = -1;   // playlist index the pending seek belongs to
+    // The lanes (relative [/] + absolute OS SetPosition) live in SeekCoalescer,
+    // shared so both routes flush through the one seekBy home (osmedia-seam).
+    SeekCoalescer seek_;
     std::chrono::steady_clock::time_point last_seek_apply_ {};
-    void        requestSeek(double delta);
+    void        requestSeek(double delta);      // relative ([/] + MPRIS Seek)
+    void        requestSeekAbs(double target);  // absolute (OS SetPosition)
     void        flushPendingSeek();
+    bool        seekPending() const { return seek_.pending(); }
     int         marquee_ticks_   = 0;
     std::string marquee_last_path_;  // detect track change to reset offset
     static constexpr int MARQUEE_PAUSE  = 20;
@@ -568,6 +665,12 @@ private:
     int    scanner_pos_ = 0;         // head column within the scanner track (0..track_w-1)
     int    scanner_dir_ = 1;         // +1 / -1 sweep direction
     std::chrono::steady_clock::time_point scanner_last_ {};  // last wall-clock advance
+
+    // iHeart feed/re-pin mode indicator (drawProgress): a Ctrl+K or F6 toggle stamps
+    // this with the wall-clock; the tag shows for kModeTagMs then clears, giving the
+    // lower-left back to the now-playing text. Non-blocking (checked in the draw loop).
+    static constexpr long kModeTagMs = 5000;   // ~5s confirm-on-change window
+    std::chrono::steady_clock::time_point mode_tag_at_ {};   // last mode toggle (epoch == never)
 
     // Drive browser
     bool in_drive_list_ = false;
@@ -595,6 +698,7 @@ private:
     static constexpr short CP_VIZ_LOW_B  = 15;
     static constexpr short CP_VIZ_MID_B  = 16;
     static constexpr short CP_VIZ_HIGH_B = 17;
+    static constexpr short CP_MODE       = 18;  // iHeart feed/re-pin indicator: yellow on default bg
 
     // Art half-block cells allocate curses colours and pairs above the theme's
     // fixed CP_* range. The pair table is global; a collision here would let a

@@ -126,6 +126,7 @@ struct FakeHls final : core::IHttp {
     std::vector<uint8_t> id3;
 
     std::atomic<bool> block_segments { false };// segment GETs block until cancelled
+    std::atomic<bool> fail_segments  { false };// segment GETs fail fast (reconnect path)
     std::atomic<bool> in_blocked     { false };
     std::atomic<bool> saw_cancel     { false };
     std::atomic<int>  segment_gets   { 0 };
@@ -156,6 +157,12 @@ struct FakeHls final : core::IHttp {
         size_t p = req.url.find("/seg");
         if (p != std::string::npos) {
             ++segment_gets;
+            if (fail_segments.load()) {
+                // A dying origin: immediate failure — drives the producer's
+                // reconnect path (slice B uses it to pin the tee's discont).
+                res.ok = false; res.status = 503;
+                return res;
+            }
             if (block_segments.load()) {
                 // A wedged origin: sit on the request until the caller's cancel
                 // token fires (bounded so a broken cancel can't hang the test).

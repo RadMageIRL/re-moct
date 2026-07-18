@@ -186,14 +186,57 @@ void DigiConfig::load() {
         else if (key == "toast_enabled")    toast_enabled     = (val == "1");
         else if (key == "eq_enabled")       eq_enabled        = (val == "1");
         else if (key == "discord_presence") discord_presence  = (val == "1");
+        else if (key == "os_media_control") os_media_control   = (val != "0");
         else if (key == "awesome_mode")      awesome_mode       = (val == "1");
         else if (key == "viz_led")            viz_led            = (val == "1");
         else if (key == "awesome_theme")     try { awesome_theme = std::stoi(val); } catch (...) {}
         else if (key == "prefer_digital_stream") prefer_digital_stream = (val == "1");
         else if (key == "iheart_probe_minted")   iheart_probe_minted   = (val == "1");
+        else if (key == "repin_mode")            try { repin_mode = std::clamp(std::stoi(val), 0, 2); } catch (...) {}
         else if (key == "nerd_icons")         nerd_icons         = (val == "1");
         else if (key == "follow_playing")     follow_playing     = (val == "1");
         else if (key == "show_filetype")      show_filetype      = (val == "1");
+        else if (key == "rip_formats")        rip_formats        = val;
+        else if (key == "opus_bitrate")       try { opus_bitrate = std::clamp(std::stoi(val), 6000, 510000); } catch (...) {}
+        else if (key == "wavpack_mode") {
+            if (val == "fast" || val == "normal" || val == "high" || val == "very_high")
+                wavpack_mode = val;
+        }
+        else if (key == "flac_level")         try { flac_level = std::clamp(std::stoi(val), 0, 8); } catch (...) {}
+        else if (key == "mp3") {
+            // Accept V0-V9 (case-insensitive); anything else keeps the default.
+            if (val.size() == 2 && (val[0] == 'V' || val[0] == 'v') &&
+                val[1] >= '0' && val[1] <= '9')
+                mp3 = std::string("V") + val[1];
+        }
+        else if (key == "mp3_cbr")            mp3_cbr            = (val == "1");
+        else if (key == "mp3_cbr_bitrate")    try { mp3_cbr_bitrate = std::clamp(std::stoi(val), 6000, 510000); } catch (...) {}
+        else if (key == "opus_vbr")           opus_vbr           = (val != "0");
+        else if (key == "aac_vbr")            aac_vbr            = (val != "0");
+        else if (key == "aac_vbr_level")      try { aac_vbr_level = std::clamp(std::stoi(val), 1, 5); } catch (...) {}
+        else if (key == "aac_cbr_bitrate")    try { aac_cbr_bitrate = std::clamp(std::stoi(val), 6000, 510000); } catch (...) {}
+        else if (key == "rec_format") {
+            // Lossy re-encode or the slice-B copy mode; anything else keeps opus.
+            if (val == "opus" || val == "mp3" || val == "m4a" || val == "copy") rec_format = val;
+        }
+        else if (key == "rec_mp3") {
+            if (val.size() == 2 && (val[0] == 'V' || val[0] == 'v') &&
+                val[1] >= '0' && val[1] <= '9')
+                rec_mp3 = std::string("V") + val[1];
+        }
+        else if (key == "rec_mp3_cbr")        rec_mp3_cbr        = (val == "1");
+        else if (key == "rec_mp3_cbr_bitrate") try { rec_mp3_cbr_bitrate = std::clamp(std::stoi(val), 6000, 510000); } catch (...) {}
+        else if (key == "rec_opus_bitrate")   try { rec_opus_bitrate = std::clamp(std::stoi(val), 6000, 510000); } catch (...) {}
+        else if (key == "rec_opus_vbr")       rec_opus_vbr       = (val != "0");
+        else if (key == "rec_aac_vbr")        rec_aac_vbr        = (val != "0");
+        else if (key == "rec_aac_vbr_level")  try { rec_aac_vbr_level = std::clamp(std::stoi(val), 1, 5); } catch (...) {}
+        else if (key == "rec_aac_cbr_bitrate") try { rec_aac_cbr_bitrate = std::clamp(std::stoi(val), 6000, 510000); } catch (...) {}
+        else if (key == "rec_split")          rec_split          = (val == "1");
+        else if (key == "rec_dir")            rec_dir            = val;
+        else if (key == "split_offset_ms")    try { split_offset_ms = std::clamp(std::stoi(val), -5000, 5000); } catch (...) {}
+        else if (key == "rec_ads") {
+            if (val == "save" || val == "discard") rec_ads = val;
+        }
         else if (key == "wingui_font")        wingui_font        = val;
         else if (key == "wingui_cols")        try { wingui_cols = std::stoi(val); } catch (...) {}
         else if (key == "wingui_rows")        try { wingui_rows = std::stoi(val); } catch (...) {}
@@ -301,15 +344,44 @@ void DigiConfig::save() const {
         f << "toast_enabled="    << (toast_enabled ? "1" : "0") << "\n";
         f << "eq_enabled="       << (eq_enabled ? "1" : "0") << "\n";
         f << "discord_presence=" << (discord_presence ? "1" : "0") << "\n";
+        f << "os_media_control=" << (os_media_control ? "1" : "0") << "\n";
         f << "awesome_mode="      << (awesome_mode ? "1" : "0") << "\n";
         f << "viz_led="           << (viz_led ? "1" : "0") << "\n";
         f << "awesome_theme="     << awesome_theme << "\n";
         f << "prefer_digital_stream=" << (prefer_digital_stream ? "1" : "0") << "\n";
         f << "iheart_probe_minted="   << (iheart_probe_minted ? "1" : "0") << "\n";
+        f << "repin_mode="            << repin_mode << "\n";
         f << "nerd_icons="        << (nerd_icons ? "1" : "0") << "\n";
         f << "follow_playing="    << (follow_playing ? "1" : "0") << "\n";
         f << "show_filetype="     << (show_filetype ? "1" : "0") << "\n";
-        if (!wingui_font.empty()) f << "wingui_font="    << wingui_font << "\n";
+        f << "rip_formats="       << rip_formats << "\n";
+        f << "flac_level="        << flac_level  << "\n";
+        f << "mp3="               << mp3         << "\n";
+        f << "mp3_cbr="           << (mp3_cbr ? "1" : "0") << "\n";
+        f << "mp3_cbr_bitrate="   << mp3_cbr_bitrate << "\n";
+        f << "opus_bitrate="      << opus_bitrate << "\n";
+        f << "opus_vbr="          << (opus_vbr ? "1" : "0") << "\n";
+        f << "wavpack_mode="      << wavpack_mode << "\n";
+        f << "aac_vbr="           << (aac_vbr ? "1" : "0") << "\n";
+        f << "aac_vbr_level="     << aac_vbr_level << "\n";
+        f << "aac_cbr_bitrate="   << aac_cbr_bitrate << "\n";
+        f << "rec_format="        << rec_format << "\n";
+        f << "rec_mp3="           << rec_mp3 << "\n";
+        f << "rec_mp3_cbr="       << (rec_mp3_cbr ? "1" : "0") << "\n";
+        f << "rec_mp3_cbr_bitrate=" << rec_mp3_cbr_bitrate << "\n";
+        f << "rec_opus_bitrate="  << rec_opus_bitrate << "\n";
+        f << "rec_opus_vbr="      << (rec_opus_vbr ? "1" : "0") << "\n";
+        f << "rec_aac_vbr="       << (rec_aac_vbr ? "1" : "0") << "\n";
+        f << "rec_aac_vbr_level=" << rec_aac_vbr_level << "\n";
+        f << "rec_aac_cbr_bitrate=" << rec_aac_cbr_bitrate << "\n";
+        f << "rec_split="         << (rec_split ? "1" : "0") << "\n";
+        if (!rec_dir.empty())     f << "rec_dir=" << rec_dir << "\n";
+        f << "split_offset_ms="   << split_offset_ms << "\n";
+        f << "rec_ads="           << rec_ads << "\n";
+        // Always written (even empty) so users can discover it. Empty = the bundled
+        // JetBrains Mono default (read path + initWinguiFont treat empty == absent).
+        f << "# wingui_font: Windows only. Exact GDI face name, e.g. 3270 Nerd Font Mono. Empty = bundled default.\n";
+        f << "wingui_font="       << wingui_font << "\n";
         if (wingui_cols > 0)      f << "wingui_cols="    << wingui_cols << "\n";
         if (wingui_rows > 0)      f << "wingui_rows="    << wingui_rows << "\n";
         if (!lastfm_key.empty())     f << "lastfm-key="     << nl(lastfm_key)     << "\n";

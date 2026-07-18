@@ -90,6 +90,11 @@ public:
     // time so it can be flipped between reconnects; forced OFF unless the deep log is
     // enabled (probe context). Default false == shipped behavior. Thread-safe.
     void setProbeMinted(bool b) { probe_minted_.store(b); }
+    // iHeart re-pin behaviour (F6): 0 = off (play through ads, no re-pin), 1 = on
+    // (re-pin on every long break, the original behaviour), 2 = smart (ride out
+    // short breaks, re-pin only long pods). Read live by the producer/SM, so a
+    // change takes effect without a reconnect. Default smart. Thread-safe.
+    void setRepinMode(int m) { repin_mode_.store(m); }
     void close() override;
 
     bool isOpen()     const { return producer_thread_.joinable(); }
@@ -105,6 +110,39 @@ public:
     const std::string& url() const { return url_; }  // stream URL currently open ("" if none)
     void pause(bool p)      { paused_.store(p); }
     bool paused()     const { return paused_.load(); }
+    // abi-cluster keep-draining: while a host recording is active, a playback
+    // pause must not interrupt the broadcast pipeline — the three paused_
+    // gates (readFrames silence short-circuit + both producers' network
+    // freeze) are bypassed and the HOST mutes its output post-tap instead.
+    // Off (the default, and for every pre-cluster host): pause behavior is
+    // byte-for-byte the old contract.
+    void setRecordActive(bool on) { record_active_.store(on); }
+
+    // ── copy/remux tee (abi-cluster slice B) ─────────────────────────────────
+    // A 2 MiB byte ring the producers memcpy the POST-TRANSPORT compressed
+    // stream into when armed (ICY metaint stripped, HLS segment ID3 stripped —
+    // the one tap sits in readAudio(), where every codec/mode converges before
+    // any decoder). Disarmed cost is one relaxed atomic load; the producers
+    // are network threads, never the audio callback. Overflow = drop-oldest:
+    // the writer never stalls, the reader detects the lap, snaps to the live
+    // tail, and reports a discontinuity (the muxer resyncs on the next frame
+    // header — the same machinery the reconnect/re-pin discont uses).
+    //
+    // Threading: arm/disarm on the host/UI thread, readEncoded on the host's
+    // recorder WORKER thread, teeWrite on the producer thread. tee_r_ is
+    // reader-owned; setEncodedCapture(true) may reset it only because the
+    // host contract arms BEFORE the worker starts pulling and disarms after
+    // it stops (the beginRecording wrapper enforces that lifecycle).
+    void setEncodedCapture(bool on);
+    // Pull tee'd bytes. codec_out = REMOCT_CODEC_* value (what connect
+    // decided); discont_out = 1 when a reconnect/re-pin/overflow boundary
+    // occurred since the last read. Returns bytes copied (0 = nothing new or
+    // disarmed). Never blocks.
+    uint32_t readEncoded(uint8_t* dst, uint32_t cap,
+                         int32_t* codec_out, int32_t* discont_out);
+    // REMOCT_CODEC_* of the stream currently flowing; 0 before open()/after
+    // close() (the fn reports what connect decided).
+    int32_t encodedCaps() const;
 
     // Seconds of wall-clock playback since the first sample left the ring.
     // (double per core::ISource; the stored value is whole seconds.)
@@ -187,6 +225,18 @@ private:
     std::atomic<bool> hls_repin_pending_{ false };  // producer should re-handshake at next safe point
     bool              hls_repin_armed_ = true;      // one-shot: fire once per ad break, then re-arm
     uint32_t          hls_repin_cooldown_until_ = 0;// re-arm only after this tick (suppress mid-pod)
+    std::atomic<int>  repin_mode_{ 2 };             // F6 re-pin mode: 0 off / 1 on / 2 smart (default)
+    // Prime-to-music-boundary (clip fix): on a re-pin, if the fresh manifest shows a
+    // clean ad->music boundary in-window, prime from the song's first segment so
+    // audio lands at the song start instead of ~2 segments behind live. All three are
+    // producer/connect-thread-owned (like hls_), so no lock. hls_repin_active_ marks
+    // the current connect() as a re-pin (vs first tune-in); hls_priming_ gates the
+    // boundary scan to the connect poll only; hls_prime_boundary_ is that scan's
+    // result (segment index of the first in-window music boundary, or -1 = none ->
+    // keep the unchanged live-edge-minus-2 prime).
+    bool              hls_repin_active_  = false;
+    bool              hls_priming_       = false;
+    int               hls_prime_boundary_ = -1;
 
     // ── Staging lane (dual-stream smooth re-pin) ─────────────────────────────
     // The coordinator (a normal is_lane_=false instance) owns ONE staging
@@ -273,6 +323,7 @@ private:
     // State
     std::atomic<bool>       playing_     { false };
     std::atomic<bool>       paused_      { false };
+    std::atomic<bool>       record_active_ { false };  // abi-cluster: drain through pause
     std::atomic<bool>       stop_        { false };
     // ABI-typed (plain int32) mirror of stop_'s cancel signal, for the HTTP cancel
     // token (Phase 4 slice b). A plain int32 — NOT std::atomic — so it crosses the
@@ -296,6 +347,20 @@ private:
     std::vector<int16_t>    ring_;
     std::atomic<int>        ring_write_  { 0 };
     std::atomic<int>        ring_read_   { 0 };
+
+    // ── copy/remux tee state (slice B; see the public section's contract) ────
+    // Monotonic uint64 cursors (the recorder-ring discipline applied to bytes)
+    // — no wrap arithmetic exists to fall into the LP64 (long)(u32diff) trap.
+    // The writer only ever advances tee_w_; the reader owns tee_r_ and
+    // validates AFTER copying that the writer didn't lap it mid-copy
+    // (drop-oldest without a second writer on the read cursor).
+    static constexpr uint32_t TEE_RING_BYTES = 2u * 1024 * 1024;  // power of two
+    std::vector<uint8_t>    tee_;                  // allocated at first arm
+    std::atomic<bool>       tee_armed_   { false };
+    std::atomic<uint64_t>   tee_w_       { 0 };    // bytes, monotonic (producer)
+    uint64_t                tee_r_       = 0;      // bytes, monotonic (reader-owned)
+    std::atomic<bool>       tee_discont_ { false };// reconnect/re-pin/overflow latch
+    void teeWrite(const void* src, uint32_t n);    // producer thread; no-op disarmed
 
     std::thread             producer_thread_;
 

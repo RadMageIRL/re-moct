@@ -60,6 +60,11 @@ and a playlist/rip view. The public feature guide is [`docs/index.html`](docs/in
 - RadioBrowser (radio-browser.info) station search (Ctrl+U to add by URL)
 - ICY/SHOUTcast streaming with live StreamTitle metadata
 - iHeartRadio via HLS, with now-playing reconciliation and a digital (web-player) path
+- iHeart ad re-pin control (`F6`, iHeart streams only): `off` plays through ads like the
+  web player, `on` re-pins out of every long break, `smart` (default) rides out short
+  breaks and re-pins only long ad pods. Independent of the `Ctrl+K` feed toggle
+  (web-player vs raw broadcast); pressing either flashes the current `<feed> - <repin>`
+  mode in the status bar for a few seconds
 - Record the playing stream to disk (`Ctrl+E`): re-encode to Opus, MP3, or M4A, or
   an as-broadcast copy mode (no re-encode - the better choice for an AAC broadcast);
   per-song split from the station's metadata, a pulsing `[REC]` badge, cover-art per
@@ -128,7 +133,7 @@ truecolor + Alt+Enter fullscreen); see [BUILD.md](BUILD.md).
 | `F12` | Refresh drive list | `;` | Audiobook chapter list |
 | `x` / `u` / `U` | Convert / mark / clear marks | `Ctrl+E` | Record playing stream |
 | `Ctrl+O` | Batch ReplayGain (normalize folder) | `Alt+Enter` | Fullscreen (Windows wingui) |
-| `Ctrl+N` | Nerd Font title icons toggle |  |  |
+| `Ctrl+N` | Nerd Font title icons toggle | `F6` | iHeart re-pin mode: off / on / smart |
 
 ## Configuration
 

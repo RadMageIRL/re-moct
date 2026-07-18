@@ -2,7 +2,7 @@
 
 **RE-MOCT** is a terminal music player, CD ripper, and internet-radio client for
 **Windows and Linux**, written in C++20 on ncurses, miniaudio, TagLib, libFLAC, LAME,
-libebur128, and FDK-AAC.
+libebur128, FDK-AAC, libopus, libvorbis, and libwavpack.
 
 It is a homage to [MOC](http://moc.daper.net/) (Music On Console) with a twist. In
 **Classic mode** it stays faithful and minimal. Hit **Ctrl+T** for **Awesome mode** and
@@ -23,33 +23,52 @@ and a playlist/rip view. The public feature guide is [`docs/index.html`](docs/in
 ## Features
 
 **Local playback**
-- MP3, FLAC, OGG, WAV, AAC/HE-AAC, and `.m4b` audiobooks (chapter navigation)
+- MP3, FLAC, Opus, Ogg Vorbis, WavPack, WAV, AAC/HE-AAC, and `.m4b` audiobooks
+  (chapter navigation)
 - Gapless playback, configurable crossfade, varispeed
 - Repeat (track/all), shuffle, seek, volume, 10-band equalizer
-- ReplayGain tag support; per-track play counts
+- ReplayGain tag support (including Opus R128); per-track play counts
 - LRC lyrics, tag editor (via TagLib), queue, bookmarks, favorites (star key), goto bar
 - Split-pane UI: directory browser + playlist/views; full-text playlist search (`\`)
 - Page navigation (`PgUp`/`PgDn`/`Home`/`End`), cursor position readout in the playlist
   header (`[3/12]`), optional per-row file-type column (`Shift+F`)
 
+**Convert & library**
+- Convert files to another format (`x`) - a single file, every file in a folder,
+  or a marked set (`u` marks, `U` clears); reuses the rip encoders and carries the
+  source tags plus embedded cover art to the new file
+- Batch ReplayGain over a folder (`Ctrl+O`): compute and write track gain for every
+  supported file, using the same loudness math as the CD ripper
+
 **CD playback & ripping** (Ctrl+Y)
 - Red Book CD playback + MusicBrainz disc lookup (Ctrl+R)
 - Eject from the TUI (Shift+E) and drive-list refresh for hot-plugged drives (F12)
-- Three rip modes:
+- Four rip modes:
   - **[A] AccurateRip** - network CRC verify against accuraterip.com + drive-offset correction
   - **[C] CUETools Database** - offset-immune whole-disc CRC32 (cue.tools/db)
   - **[Y] Local** - best-effort offline rip
-- Every mode: FLAC + MP3 output, embedded cover art (Cover Art Archive), EBU R128
-  ReplayGain tags, C2 error-pointer detection, dual-pass on mismatch, per-rip logs
+  - **[B] Local 2-pass** - best-effort plus a read-twice determinism check
+- Selectable output - **FLAC, MP3, WAV, Opus, WavPack**, any combination - with
+  per-format quality on a per-row editor (FLAC level; MP3 V-scale or a CBR bitrate;
+  Opus bitrate; CBR/VBR toggle). Every tagged format carries embedded cover art
+  (Cover Art Archive) and EBU R128 ReplayGain tags. C2 error-pointer detection,
+  dual-pass on mismatch, per-rip logs (with lossless-master vs lossy-derived notes)
 
 **Internet radio & streaming**
 - RadioBrowser (radio-browser.info) station search (Ctrl+U to add by URL)
 - ICY/SHOUTcast streaming with live StreamTitle metadata
 - iHeartRadio via HLS, with now-playing reconciliation and a digital (web-player) path
+- Record the playing stream to disk (`Ctrl+E`): per-song split from the station's
+  metadata, a pulsing `[REC]` badge, cover-art per cut, a split-hold that keeps
+  outros, ad-aware routing, and an as-broadcast copy mode (no re-encode); recording
+  continues gaplessly through a playback pause
 
 **Scrobbling & presence**
 - Last.fm (Ctrl+G) and ListenBrainz (Ctrl+B) scrobbling + now-playing
 - Discord Rich Presence with album art
+- OS media controls (on by default): the now-playing title, artist, and cover appear
+  on the operating system's own media surface - Windows SMTC (volume/lock-screen
+  overlay, media keys, scrubber) and Linux MPRIS (playerctl, desktop widgets)
 
 **Interface & visuals**
 - Two modes: **Classic** (a faithful MOC homage) and **Awesome** (**Ctrl+T**) - comet
@@ -104,7 +123,8 @@ truecolor + Alt+Enter fullscreen); see [BUILD.md](BUILD.md).
 | `PgUp` / `PgDn` / `Home` / `End` | Page / top-bottom jump | `\` | Playlist search |
 | `Shift+F` | File-type column toggle | `Shift+E` | Eject CD drive (in `[Drives]`) |
 | `F12` | Refresh drive list | `;` | Audiobook chapter list |
-| `Alt+Enter` | Fullscreen (Windows wingui build) | | |
+| `x` / `u` / `U` | Convert / mark / clear marks | `Ctrl+E` | Record playing stream |
+| `Ctrl+O` | Batch ReplayGain (normalize folder) | `Alt+Enter` | Fullscreen (Windows wingui) |
 
 ## Configuration
 

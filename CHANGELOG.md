@@ -83,6 +83,8 @@ Feature release: Opus and WavPack playback.
   radio can be right-sized (for example Opus 96 kbps) without changing the
   high-quality settings a CD rip uses, and the reverse. The recording panel
   defaults to Opus 96 kbps and MP3 V5.
+
+- **OS media controls.** RE-MOCT now appears in the operating system's own
   media surface and responds to its transport keys. On Windows the now-playing
   title, artist, and cover show in the volume/media overlay and on the lock
   screen, and the keyboard media keys (play/pause, next, previous, stop) and
@@ -95,6 +97,8 @@ Feature release: Opus and WavPack playback.
   radio track's cover (the station's own art, or the same iTunes/Deezer lookup
   the Info pane uses), falling back to the RE-MOCT logo when a track has none.
 
+- **The help pane scrolls with Home, End, PgUp, and PgDn** (in addition to
+  j/k), so the full keybinding list is reachable on a short terminal.
 - **Batch ReplayGain scan** (Ctrl+O in the file browser): point it at a
   folder and it computes and writes track gain for every supported audio
   file - FLAC, MP3, Opus, WavPack, and M4A/M4B - using the same loudness
@@ -223,8 +227,11 @@ Feature release: Opus and WavPack playback.
 - **Opus decode is now native float** (matching the new Vorbis backend): the
   decoder hands float samples straight through instead of quantizing to
   16-bit first. ReplayGain behavior is unchanged.
-- New library dependencies: libopus, libopusfile, libwavpack, libvorbis (all
-  BSD-3-Clause; see THIRD-PARTY-NOTICES.md).
+- New library dependencies: libopus, libopusfile, libopusenc, libwavpack,
+  libvorbis (all BSD-3-Clause; see THIRD-PARTY-NOTICES.md) - libopusenc backs
+  Opus rip and convert output. On Linux, MPRIS media control uses sd-bus from
+  libsystemd (libsystemd-dev); Windows media control (SMTC) needs no extra
+  package.
 
 ## [1.2.0] - 2026-07-10
 

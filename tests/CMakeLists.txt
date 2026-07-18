@@ -535,6 +535,7 @@ set_tests_properties(opus_mode_test PROPERTIES TIMEOUT 60)
 add_executable(convert_core_test
     convert_core_test.cpp
     ${CMAKE_SOURCE_DIR}/src/ConvertJob.cpp
+    ${CMAKE_SOURCE_DIR}/src/ArtEmbed.cpp
     ${CMAKE_SOURCE_DIR}/src/EncoderFactory.cpp
     ${CMAKE_SOURCE_DIR}/src/FlacEncoder.cpp
     ${CMAKE_SOURCE_DIR}/src/Mp3Encoder.cpp
@@ -565,6 +566,44 @@ if(WIN32 AND REMOCT_STATIC_PROBE)
 endif()
 add_test(NAME convert_core_test COMMAND convert_core_test)
 set_tests_properties(convert_core_test PROPERTIES TIMEOUT 120)
+
+# art-embed-shared: embedded-art carryover (reader + convert-side writer) + the
+# RG/AR text-tag completeness matrix through convertOne. Same decode/encode link
+# set as convert_core_test, plus ArtEmbed.cpp.
+add_executable(art_embed_test
+    art_embed_test.cpp
+    ${CMAKE_SOURCE_DIR}/src/ArtEmbed.cpp
+    ${CMAKE_SOURCE_DIR}/src/ConvertJob.cpp
+    ${CMAKE_SOURCE_DIR}/src/EncoderFactory.cpp
+    ${CMAKE_SOURCE_DIR}/src/FlacEncoder.cpp
+    ${CMAKE_SOURCE_DIR}/src/Mp3Encoder.cpp
+    ${CMAKE_SOURCE_DIR}/src/WavEncoder.cpp
+    ${CMAKE_SOURCE_DIR}/src/OpusRipEncoder.cpp
+    ${CMAKE_SOURCE_DIR}/src/WavPackEncoder.cpp
+    ${CMAKE_SOURCE_DIR}/src/LocalFileSource.cpp
+    ${CMAKE_SOURCE_DIR}/src/AacDecoder.cpp
+    ${CMAKE_SOURCE_DIR}/src/OpusDecoder.cpp
+    ${CMAKE_SOURCE_DIR}/src/WavPackDecoder.cpp
+    ${CMAKE_SOURCE_DIR}/src/VorbisDecoder.cpp
+    ${CMAKE_SOURCE_DIR}/src/CustomBackends.cpp
+    ${CMAKE_SOURCE_DIR}/src/Mp4Chapters.cpp
+    ${CMAKE_SOURCE_DIR}/src/Log.cpp
+)
+target_include_directories(art_embed_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/lib
+    ${FLAC_INCLUDE} ${LAME_INCLUDE} ${FDKAAC_INCLUDE}
+    ${OPUS_INCLUDE} ${OPUS_INCLUDE}/opus ${WAVPACK_INCLUDE}
+    ${TAGLIB_INCLUDE_DIRS})
+target_link_libraries(art_embed_test PRIVATE
+    ${TAGLIB_LIBRARIES} ${FLAC_LIB} ${LAME_LIB} ${FDKAAC_LIB}
+    ${OPUSENC_LIB} ${OPUSFILE_LIB} ${OPUS_LIB}
+    ${VORBISFILE_LIB} ${VORBIS_LIB} ${OGG_LIB} ${WAVPACK_LIB}
+    $<$<PLATFORM_ID:Linux>:dl> $<$<PLATFORM_ID:Linux>:pthread> $<$<PLATFORM_ID:Linux>:m>)
+if(WIN32 AND REMOCT_STATIC_PROBE)
+    target_compile_definitions(art_embed_test PRIVATE FLAC__NO_DLL)
+endif()
+add_test(NAME art_embed_test COMMAND art_embed_test)
+set_tests_properties(art_embed_test PROPERTIES TIMEOUT 120)
 
 # stream-record R1 — the frozen StreamRecorder engine contract, headless-proven
 # BEFORE any UI exists (probe-first). Synthetic f32 PCM through capture() (the

@@ -77,6 +77,7 @@ set(REMOCT_SOURCES
     src/MuxWriter.cpp             # abi-cluster slice B: copy-path MP3 append / ADTS->M4A mux
     src/GainScan.cpp              # batch-r128: folder ReplayGain scan engine
     src/EncoderFactory.cpp        # RipFormat -> IEncoder factory (shared by rip + convert)
+    src/ArtEmbed.cpp              # art-embed-shared: embedded-art reader + convert-side writer
     src/ConvertJob.cpp            # convert-core: decode -> IEncoder batch convert engine
     src/Mp4Chapters.cpp
     src/RadioBrowser.cpp

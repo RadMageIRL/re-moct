@@ -65,8 +65,10 @@ Feature release: Opus and WavPack playback.
   count in the browser, and marks stay put as you move between folders so you can
   gather a set and convert it in one go. The convert picker reuses the same
   format and quality controls as ripping (FLAC, MP3, WAV, Opus, WavPack, with the
-  per-format bitrate and CBR/VBR choices). Existing tags carry over to the new
-  file. Output is 44.1 kHz; a higher-rate source is resampled, and the picker
+  per-format bitrate and CBR/VBR choices). Existing tags and the embedded cover
+  art carry over to the new file, so a converted track keeps its artwork even
+  when moved away from a folder image. Output is 44.1 kHz; a higher-rate source
+  is resampled, and the picker
   warns before converting one. Converting never overwrites the source or an
   existing output (those are skipped), and conversion runs in the background so
   playback continues.

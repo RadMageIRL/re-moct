@@ -7,6 +7,7 @@
 #include "LocalFileSource.h"
 #include "EncoderFactory.h"   // makeEncoder (now external linkage)
 #include "IEncoder.h"
+#include "ArtEmbed.h"         // extractEmbeddedArt / embedArt (art carryover)
 #include "StringUtils.h"      // utf8_to_wide
 
 #include <taglib/fileref.h>
@@ -124,6 +125,10 @@ ConvertJob::Result ConvertJob::convertOne(const std::string& src, const std::str
         return Result::Error;
     }
     copyTextTags(src, dst);
+    // Embedded cover art carryover (art-embed-shared): pull the source's own
+    // picture across to the output. Best-effort - a source with no art, or an
+    // embed failure, never fails the convert.
+    if (auto art = extractEmbeddedArt(src)) embedArt(dst, fmt, *art);
     return Result::Converted;
 }
 

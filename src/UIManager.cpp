@@ -1348,6 +1348,26 @@ void UIManager::run() {
             rip_status_.clear();
             redraw_needed_.store(true);
         }
+        // convert-core: the same status-line/toast shape as the RG scan.
+        if (convert_job_.running()) {
+            static int cv_tick = 0;
+            if ((++cv_tick % 12) == 0) {
+                rip_status_ = "Converting " + std::to_string(convert_job_.index()) + "/" +
+                              std::to_string(convert_job_.total()) + "  " +
+                              sanitizeForDisplay(convert_job_.currentFile());
+                rip_msg_ticks_ = 0;
+                redraw_needed_.store(true);
+            }
+        }
+        if (convert_job_.takeFinished()) {
+            std::string sum = std::to_string(convert_job_.converted()) + " converted, " +
+                              std::to_string(convert_job_.skipped()) + " skipped, " +
+                              std::to_string(convert_job_.errors()) + " error(s)";
+            showTrackToast(convert_job_.cancelled() ? "Convert cancelled"
+                                                    : "Convert done", sum, "");
+            rip_status_.clear();
+            redraw_needed_.store(true);
+        }
         updateBookProgress();
         // Async stream connect/fail confirmation toasts. Un-gated at slice 5:
         // this was #ifdef _WIN32 slice-1 scaffolding from when notify was a
@@ -1698,6 +1718,8 @@ void UIManager::run() {
                 if (ui_overlay_ == UIOverlay::RipConfirm) drawRipConfirm();
                 else if (ui_overlay_ == UIOverlay::MBSearch) drawMBSearch();
                 else if (ui_overlay_ == UIOverlay::RecPanel) drawRecPanel();
+                else if (ui_overlay_ == UIOverlay::ConvertScope) drawConvertScope();
+                else if (ui_overlay_ == UIOverlay::ConvertConfirm) drawConvertConfirm();
                 redraw_needed_.store(false);
             } else {
             drawAll();
@@ -2607,6 +2629,9 @@ void UIManager::drawDirBrowser() {
                              : "";
         hdr = " Dir: " + leaf + sortname + (show_hidden_ ? " [.hidden]" : "") + " ";
     }
+    // convert-core: a visible marked count (any browser mode).
+    if (!marked_.empty())
+        hdr += "[" + std::to_string((int)marked_.size()) + " marked] ";
     if (!aw) {   // Classic: full-width coloured header bar on row 0
         wattron(win_dir_, focused ? (COLOR_PAIR(CP_FOCUSED)|A_BOLD)
                                   : (COLOR_PAIR(CP_BORDER)|A_BOLD));
@@ -2647,9 +2672,17 @@ void UIManager::drawDirBrowser() {
         else                        { rpair = CP_DIM;      rattr = A_BOLD; }
         wattron(win_dir_, COLOR_PAIR(rpair) | rattr);
 
+        // convert-core: is this row a marked file? (path-keyed; skip the lookup
+        // entirely when nothing is marked - the common case).
+        bool marked = false;
+        if (!marked_.empty() && !is_dir) {
+            std::string ep = browserEntryPath(idx);
+            marked = !ep.empty() && marked_.contains(ep);
+        }
         const bool ico = config_.nerd_icons;
         // With icons on, reserve the prefix cell (the glyph replaces the "+"/space).
-        std::string prefix = ico ? "  " : (is_dir ? "+ " : "  ");
+        // A marked file shows "* " (non-icon) or a star glyph (icon mode).
+        std::string prefix = ico ? "  " : (is_dir ? "+ " : (marked ? "* " : "  "));
         int avail = cw - 1;
         std::string d;
         if (ico) {
@@ -2665,7 +2698,7 @@ void UIManager::drawDirBrowser() {
         mvwaddnwstr(win_dir_, i+1, cx, wd.c_str(), (int)wd.size());
         if (ico) {   // overlay glyph on the reserved cell (wide API → real glyph)
             cchar_t cc;
-            wchar_t s[2] = { is_dir ? L'\uf07b' : L'\uf001', 0 };  // folder / music
+            wchar_t s[2] = { is_dir ? L'\uf07b' : (marked ? L'\uf005' : L'\uf001'), 0 };  // folder / star / music
             setcchar(&cc, s, rattr, rpair, nullptr);
             mvwadd_wch(win_dir_, i+1, cx, &cc);
         }
@@ -5607,6 +5640,113 @@ void UIManager::handleInput(int ch) {
         return;
     }
 
+    // ── Convert scope chooser (convert-core) ────────────────────────────────
+    if (ui_overlay_ == UIOverlay::ConvertScope) {
+        if (ch == 'n' || ch == 'N' || ch == 27) {
+            ui_overlay_ = UIOverlay::None; redraw_needed_.store(true); return;
+        }
+        if (ch == '1' && !convert_single_.empty()) {
+            convert_scope_ = 1; convert_focus_ = 0;
+            ui_overlay_ = UIOverlay::ConvertConfirm; redraw_needed_.store(true); return;
+        }
+        if (ch == '2' && !convert_src_dir_.empty()) {
+            convert_scope_ = 2; convert_focus_ = 0;
+            ui_overlay_ = UIOverlay::ConvertConfirm; redraw_needed_.store(true); return;
+        }
+        if (ch == '3' && !marked_.empty()) {
+            convert_scope_ = 3; convert_focus_ = 0;
+            ui_overlay_ = UIOverlay::ConvertConfirm; redraw_needed_.store(true); return;
+        }
+        return;   // modal
+    }
+
+    // ── Convert target picker (convert-core): single-select output format +
+    //    the per-row quality editor reusing EncoderQuality.h (the [Rec] shape).
+    //    Quality edits the shared rip config fields (the brief's reuse). ────────
+    if (ui_overlay_ == UIOverlay::ConvertConfirm) {
+        if (ch == 'n' || ch == 'N' || ch == 27) {
+            ui_overlay_ = UIOverlay::None; redraw_needed_.store(true); return;
+        }
+        if (ch > '0' && ch <= '0' + kRipFormatCount) {   // radio-select output format
+            convert_fmt_ = kRipFormats[ch - '1'].id;
+            convert_focus_ = ch - '1';
+            redraw_needed_.store(true); return;
+        }
+        if (ch == KEY_UP || ch == KEY_DOWN) {
+            convert_focus_ += (ch == KEY_DOWN) ? 1 : -1;
+            if (convert_focus_ < 0)                convert_focus_ = kRipFormatCount - 1;
+            if (convert_focus_ >= kRipFormatCount) convert_focus_ = 0;
+            redraw_needed_.store(true); return;
+        }
+        if (ch == KEY_LEFT || ch == KEY_RIGHT) {
+            int dir = (ch == KEY_RIGHT) ? 1 : -1;
+            switch (kRipFormats[convert_focus_].id) {
+                case RipFormat::Flac:
+                    config_.flac_level = std::clamp(config_.flac_level + dir, 0, 8);
+                    redraw_needed_.store(true); break;
+                case RipFormat::Mp3:
+                    if (config_.mp3_cbr)
+                        config_.mp3_cbr_bitrate = cycleBitrate(config_.mp3_cbr_bitrate, dir);
+                    else
+                        config_.mp3 = cycleMp3Vbr(config_.mp3, dir);
+                    redraw_needed_.store(true); break;
+                case RipFormat::Opus:
+                    config_.opus_bitrate = cycleBitrate(config_.opus_bitrate, dir);
+                    redraw_needed_.store(true); break;
+                case RipFormat::WavPack: {
+                    static const char* modes[] = { "fast", "normal", "high", "very_high" };
+                    int mi = config_.wavpack_mode == "fast" ? 0 : config_.wavpack_mode == "high" ? 2
+                           : config_.wavpack_mode == "very_high" ? 3 : 1;
+                    mi = ((mi + dir) % 4 + 4) % 4;
+                    config_.wavpack_mode = modes[mi];
+                    redraw_needed_.store(true); break;
+                }
+                default: break;   // WAV: no axis
+            }
+            return;
+        }
+        if (ch == 'm' || ch == 'M') {
+            switch (kRipFormats[convert_focus_].id) {
+                case RipFormat::Mp3:  config_.mp3_cbr  = !config_.mp3_cbr;  redraw_needed_.store(true); break;
+                case RipFormat::Opus: config_.opus_vbr = !config_.opus_vbr; redraw_needed_.store(true); break;
+                default: break;
+            }
+            return;
+        }
+        if (ch == '\n' || ch == '\r' || ch == KEY_ENTER) {
+            RipOptions opt;
+            opt.formats         = { convert_fmt_ };
+            opt.flac_level      = std::clamp(config_.flac_level, 0, 8);
+            opt.mp3_vbr_q       = parseMp3VbrQ(config_.mp3);
+            opt.mp3_cbr         = config_.mp3_cbr;
+            opt.mp3_cbr_bitrate = std::clamp(config_.mp3_cbr_bitrate, 6000, 510000);
+            opt.opus_bitrate    = std::clamp(config_.opus_bitrate, 6000, 510000);
+            opt.opus_vbr        = config_.opus_vbr;
+            opt.wavpack_mode    = config_.wavpack_mode == "fast" ? 0
+                                : config_.wavpack_mode == "high" ? 2
+                                : config_.wavpack_mode == "very_high" ? 3 : 1;
+            bool started = false;
+            if (convert_scope_ == 1 && !convert_single_.empty()) {
+                std::string dst = convertDstPath(convert_single_, convert_fmt_);
+                started = convert_job_.startFiles({{ convert_single_, dst }}, convert_fmt_, opt);
+            } else if (convert_scope_ == 2 && !convert_src_dir_.empty()) {
+                started = convert_job_.startFolder(convert_src_dir_, convert_fmt_, opt);
+            } else if (convert_scope_ == 3) {
+                std::vector<ConvertPair> pairs;
+                for (const auto& s : marked_.list())
+                    pairs.push_back({ s, convertDstPath(s, convert_fmt_) });
+                started = convert_job_.startFiles(std::move(pairs), convert_fmt_, opt);
+                if (started) marked_.clear();   // consumed: clear the marked set
+            }
+            ui_overlay_ = UIOverlay::None;
+            if (started) { rip_status_ = "Converting..."; rip_msg_ticks_ = 0; }
+            else showTrackToast("Convert", "Nothing to convert (or a job is running)", "");
+            redraw_needed_.store(true);
+            return;
+        }
+        return;   // modal
+    }
+
     // ? toggles help from anywhere
     // Don't let pane-toggle hotkeys fire while editing tags
     bool in_tag_edit = (right_pane_ == RightPane::TrackInfo && tag_edit_mode_);
@@ -6694,6 +6834,48 @@ void UIManager::handleInput(int ch) {
             break;
         case 'z':
             playlist_.toggleShuffle(); break;
+        case 'u':   // convert-core: mark/unmark the focused browser file
+            if (focus_ == Pane::DirBrowser) {
+                std::string p = browserEntryPath(dir_cursor_);
+                if (!p.empty() && convertSupportedInput(p)) {
+                    bool now = marked_.toggle(p);
+                    showTrackToast(now ? "Marked" : "Unmarked",
+                                   fs::path(p).filename().string(), "");
+                    redraw_needed_.store(true);
+                }
+            }
+            break;
+        case 'U':   // convert-core: clear all marks
+            if (!marked_.empty()) {
+                marked_.clear();
+                showTrackToast("Marks cleared", "", "");
+                redraw_needed_.store(true);
+            }
+            break;
+        case 'x': {  // convert-core: open the convert scope chooser (or cancel a run)
+            if (ui_overlay_ != UIOverlay::None) break;
+            if (convert_job_.running()) {
+                convert_job_.cancel();
+                rip_status_ = "Convert: cancelling (finishing nothing mid-file)...";
+                rip_msg_ticks_ = 0; redraw_needed_.store(true);
+                break;
+            }
+            convert_single_.clear(); convert_src_dir_.clear();
+            if (focus_ == Pane::DirBrowser) {
+                std::string p = browserEntryPath(dir_cursor_);
+                if (!p.empty() && convertSupportedInput(p)) convert_single_ = p;
+                if (!in_drive_list_ && !in_radio_ && !in_favs_ && !in_recent_ && !in_books_)
+                    convert_src_dir_ = current_dir_;
+            }
+            if (convert_single_.empty() && convert_src_dir_.empty() && marked_.empty()) {
+                showTrackToast("Convert", "No file, folder, or marks here", "");
+                break;
+            }
+            convert_scope_ = 0; convert_focus_ = 0;
+            ui_overlay_ = UIOverlay::ConvertScope;
+            redraw_needed_.store(true);
+            break;
+        }
         // Manual next/prev - one home (manualNext/manualPrevious); an OS
         // Next/Previous command routes through the same methods (osmedia-seam).
         case 'n': case 'N': manualNext();     break;
@@ -7904,6 +8086,121 @@ std::string UIManager::formatTime(double s) const {
 // Returns a substring of `text` of length `width` using the shared scroll
 // offset. If text fits within width, returns it padded. If not, scrolls.
 // (Removed: all consumers now use the column-aware scrollToWidth in StringUtils.h.)
+
+// convert-core: the absolute path of browser entry idx, respecting the mode.
+// Favs/Recent/Books entries are already absolute; normal-dir entries join
+// current_dir_. Pseudo-entries and drive/radio modes have no file path.
+std::string UIManager::browserEntryPath(int idx) const {
+    if (idx < 0 || idx >= (int)dir_entries_.size()) return {};
+    const std::string& nm = dir_entries_[(size_t)idx];
+    if (nm.empty() || nm == ".." || nm == "[Back]" || nm.front() == '[') return {};
+    if (in_drive_list_ || in_radio_) return {};
+    namespace fs = std::filesystem;
+    return fs::path(nm).is_absolute() ? nm : (fs::path(current_dir_) / nm).string();
+}
+
+// convert-core: pick the convert scope (this file / this folder / marked set).
+void UIManager::drawConvertScope() {
+    const int BOX_W = 60, BOX_H = 11;
+    int y0 = (screen_rows_ - BOX_H) / 2, x0 = (screen_cols_ - BOX_W) / 2;
+    if (y0 < 0) y0 = 0; if (x0 < 0) x0 = 0;
+    WINDOW* w = newwin(BOX_H, BOX_W, y0, x0);
+    if (!w) return;
+    wbkgd(w, config_.awesome_mode ? COLOR_PAIR(CP_DIM) : COLOR_PAIR(0));
+    werase(w);
+    const char* title = " CONVERT ";
+    panelFrame(w, title, true);
+    if (!config_.awesome_mode) mvwaddstr(w, 0, (BOX_W - (int)strlen(title)) / 2, title);
+
+    int folder_n = 0;
+    if (!convert_src_dir_.empty()) {
+        std::error_code ec;
+        namespace fs = std::filesystem;
+        for (fs::directory_iterator it(convert_src_dir_, ec), end; !ec && it != end; it.increment(ec))
+            if (it->is_regular_file(ec) && convertSupportedInput(it->path().string())) ++folder_n;
+    }
+
+    mvwaddstr(w, 2, 3, "Convert to another format:");
+    auto row = [&](int y, bool on, const std::string& s) {
+        if (!on) wattron(w, A_DIM);
+        mvwaddnstr(w, y, 3, s.c_str(), BOX_W - 5);
+        if (!on) wattroff(w, A_DIM);
+    };
+    row(4, !convert_single_.empty(), convert_single_.empty()
+        ? "[1] This file: (no audio file focused)"
+        : "[1] This file: " + sanitizeForDisplay(std::filesystem::path(convert_single_).filename().string()));
+    row(5, !convert_src_dir_.empty(), convert_src_dir_.empty()
+        ? "[2] This folder: (n/a here)"
+        : "[2] This folder: " + std::to_string(folder_n) + " file(s)");
+    row(6, !marked_.empty(), marked_.empty()
+        ? "[3] Marked set: (none - press u to mark)"
+        : "[3] Marked set: " + std::to_string((int)marked_.size()) + " file(s)");
+    mvwaddstr(w, 8, 3, "[1/2/3] pick   [Esc] cancel");
+    wrefresh(w); delwin(w);
+}
+
+// convert-core: pick the output format + quality (single-select + the shared
+// per-row quality editor). Quality edits the rip config knobs (the reuse).
+void UIManager::drawConvertConfirm() {
+    const int BOX_W = 62, BOX_H = 12 + kRipFormatCount;
+    int y0 = (screen_rows_ - BOX_H) / 2, x0 = (screen_cols_ - BOX_W) / 2;
+    if (y0 < 0) y0 = 0; if (x0 < 0) x0 = 0;
+    WINDOW* w = newwin(BOX_H, BOX_W, y0, x0);
+    if (!w) return;
+    wbkgd(w, config_.awesome_mode ? COLOR_PAIR(CP_DIM) : COLOR_PAIR(0));
+    werase(w);
+    const char* title = " CONVERT TO ";
+    panelFrame(w, title, true);
+    if (!config_.awesome_mode) mvwaddstr(w, 0, (BOX_W - (int)strlen(title)) / 2, title);
+
+    namespace fs = std::filesystem;
+    std::string scope;
+    if (convert_scope_ == 1) scope = "1 file: " + fs::path(convert_single_).filename().string();
+    else if (convert_scope_ == 2) scope = "folder: " + fs::path(convert_src_dir_).filename().string();
+    else if (convert_scope_ == 3) scope = std::to_string((int)marked_.size()) + " marked file(s)";
+    mvwaddnstr(w, 2, 3, sanitizeForDisplay(scope).c_str(), BOX_W - 5);
+
+    mvwaddstr(w, 4, 3, "Output format");
+    mvwaddstr(w, 4, BOX_W - 15, "(1-5 select)");
+    for (int i = 0; i < kRipFormatCount; ++i) {
+        const auto& r = kRipFormats[i];
+        bool alt = r.id == RipFormat::Mp3 ? config_.mp3_cbr
+                 : r.id == RipFormat::Opus ? !config_.opus_vbr : false;
+        std::string q = encoderQualityLabel(r.id, alt, config_.mp3,
+            r.id == RipFormat::Mp3 ? config_.mp3_cbr_bitrate : config_.opus_bitrate,
+            config_.flac_level, config_.wavpack_mode);
+        const char* cur = (i == convert_focus_) ? "> " : "  ";
+        mvwprintw(w, 5 + i, 3, "%s(%c) %d  %-8s %s",
+                  cur, (convert_fmt_ == r.id) ? '*' : ' ', i + 1, r.label, q.c_str());
+    }
+    {
+        const auto& fr = kRipFormats[convert_focus_];
+        bool alt = fr.id == RipFormat::Mp3 ? config_.mp3_cbr
+                 : fr.id == RipFormat::Opus ? !config_.opus_vbr : false;
+        if (const char* hint = encoderAxisHint(fr.id, alt))
+            mvwaddstr(w, 5 + kRipFormatCount, 5, hint);
+    }
+    int note_y = 6 + kRipFormatCount;
+    mvwaddstr(w, note_y, 3, "Output is 44.1 kHz (sources are resampled).");
+    if (convert_scope_ == 1 && !convert_single_.empty()) {
+        int sr = 0;
+        try {
+#ifdef _WIN32
+            TagLib::FileRef f(utf8_to_wide(convert_single_).c_str(), true);
+#else
+            TagLib::FileRef f(convert_single_.c_str(), true);
+#endif
+            if (!f.isNull() && f.audioProperties()) sr = f.audioProperties()->sampleRate();
+        } catch (...) {}
+        if (sr > 44100) {
+            wattron(w, COLOR_PAIR(CP_STATUS_ERR) | A_BOLD);
+            mvwprintw(w, note_y + 1, 3, "Source is %d kHz; output will be 44.1 kHz.", sr / 1000);
+            wattroff(w, COLOR_PAIR(CP_STATUS_ERR) | A_BOLD);
+        }
+    }
+    mvwaddstr(w, BOX_H - 2, 3, "[Enter] convert   [Esc] cancel");
+    wrefresh(w); delwin(w);
+}
 
 void UIManager::drawMBSearch() {
     const int BOX_W = std::min(screen_cols_ - 4, 72);

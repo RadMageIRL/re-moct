@@ -527,6 +527,45 @@ target_link_libraries(opus_mode_test PRIVATE
 add_test(NAME opus_mode_test COMMAND opus_mode_test)
 set_tests_properties(opus_mode_test PROPERTIES TIMEOUT 60)
 
+# convert-core: the decode -> IEncoder convert engine, headless. Synthesizes
+# input fixtures via makeEncoder (EncoderFactory), converts each -> each output
+# through ConvertJob::convertOne, decodes the result via the SHIPPING
+# LocalFileSource stack, and checks the guards + flat enumeration + tag
+# carryover. Carries the LocalFileSource decode stack exactly as copy_mux_test.
+add_executable(convert_core_test
+    convert_core_test.cpp
+    ${CMAKE_SOURCE_DIR}/src/ConvertJob.cpp
+    ${CMAKE_SOURCE_DIR}/src/EncoderFactory.cpp
+    ${CMAKE_SOURCE_DIR}/src/FlacEncoder.cpp
+    ${CMAKE_SOURCE_DIR}/src/Mp3Encoder.cpp
+    ${CMAKE_SOURCE_DIR}/src/WavEncoder.cpp
+    ${CMAKE_SOURCE_DIR}/src/OpusRipEncoder.cpp
+    ${CMAKE_SOURCE_DIR}/src/WavPackEncoder.cpp
+    ${CMAKE_SOURCE_DIR}/src/LocalFileSource.cpp
+    ${CMAKE_SOURCE_DIR}/src/AacDecoder.cpp
+    ${CMAKE_SOURCE_DIR}/src/OpusDecoder.cpp
+    ${CMAKE_SOURCE_DIR}/src/WavPackDecoder.cpp
+    ${CMAKE_SOURCE_DIR}/src/VorbisDecoder.cpp
+    ${CMAKE_SOURCE_DIR}/src/CustomBackends.cpp
+    ${CMAKE_SOURCE_DIR}/src/Mp4Chapters.cpp
+    ${CMAKE_SOURCE_DIR}/src/Log.cpp
+)
+target_include_directories(convert_core_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/lib
+    ${FLAC_INCLUDE} ${LAME_INCLUDE} ${FDKAAC_INCLUDE}
+    ${OPUS_INCLUDE} ${OPUS_INCLUDE}/opus ${WAVPACK_INCLUDE}
+    ${TAGLIB_INCLUDE_DIRS})
+target_link_libraries(convert_core_test PRIVATE
+    ${TAGLIB_LIBRARIES} ${FLAC_LIB} ${LAME_LIB} ${FDKAAC_LIB}
+    ${OPUSENC_LIB} ${OPUSFILE_LIB} ${OPUS_LIB}
+    ${VORBISFILE_LIB} ${VORBIS_LIB} ${OGG_LIB} ${WAVPACK_LIB}
+    $<$<PLATFORM_ID:Linux>:dl> $<$<PLATFORM_ID:Linux>:pthread> $<$<PLATFORM_ID:Linux>:m>)
+if(WIN32 AND REMOCT_STATIC_PROBE)
+    target_compile_definitions(convert_core_test PRIVATE FLAC__NO_DLL)
+endif()
+add_test(NAME convert_core_test COMMAND convert_core_test)
+set_tests_properties(convert_core_test PROPERTIES TIMEOUT 120)
+
 # stream-record R1 — the frozen StreamRecorder engine contract, headless-proven
 # BEFORE any UI exists (probe-first). Synthetic f32 PCM through capture() (the
 # audio-thread entry) + scripted onTitle() splits, real Mp3Encoder/

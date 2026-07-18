@@ -58,6 +58,18 @@ Feature release: Opus and WavPack playback.
 
 ### Added
 
+- **Convert audio files to another format.** Press x in the file browser to
+  convert a single file, every audio file in the current folder (one level, not
+  subfolders), or a set you have marked. Press u to mark or unmark the
+  highlighted file and U to clear all marks; marked files show a marker and a
+  count in the browser, and marks stay put as you move between folders so you can
+  gather a set and convert it in one go. The convert picker reuses the same
+  format and quality controls as ripping (FLAC, MP3, WAV, Opus, WavPack, with the
+  per-format bitrate and CBR/VBR choices). Existing tags carry over to the new
+  file. Output is 44.1 kHz; a higher-rate source is resampled, and the picker
+  warns before converting one. Converting never overwrites the source or an
+  existing output (those are skipped), and conversion runs in the background so
+  playback continues.
 - **Per-format bitrate and a CBR/VBR toggle for MP3 and Opus.** The rip
   confirmation modal and the recording panel now let you tune each lossy
   format's quality on its own row. Move the row cursor with Up/Down, change the

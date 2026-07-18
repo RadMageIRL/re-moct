@@ -22,6 +22,7 @@
 // inline in ripTrack moved verbatim behind IEncoder — this TU no longer
 // touches either C API directly.
 #include "IEncoder.h"
+#include "EncoderFactory.h"   // makeEncoder decl (now external linkage; convert-core shares it)
 #include "FlacEncoder.h"
 #include "Mp3Encoder.h"
 #include "WavEncoder.h"
@@ -867,20 +868,10 @@ void CDRipper::tagFile(const std::string&         path,
 }
 
 // ─── Core track rip ───────────────────────────────────────────────────────────
-// ── Format-selection helpers (rip-format-select) ─────────────────────────────
-// The one place a RipFormat becomes a concrete IEncoder. Quality values come
-// from RipOptions (config-fed; defaults == the pre-config literals, pinned by
-// the seam oracle's argument-free constructions).
-static std::unique_ptr<IEncoder> makeEncoder(RipFormat f, const RipOptions& opt) {
-    switch (f) {
-        case RipFormat::Flac: return std::make_unique<FlacEncoder>(opt.flac_level);
-        case RipFormat::Mp3:  return std::make_unique<Mp3Encoder>(opt.mp3_vbr_q, opt.mp3_cbr, opt.mp3_cbr_bitrate);
-        case RipFormat::Wav:  return std::make_unique<WavEncoder>();
-        case RipFormat::Opus: return std::make_unique<OpusRipEncoder>(opt.opus_bitrate, opt.opus_vbr);
-        case RipFormat::WavPack: return std::make_unique<WavPackEncoder>(opt.wavpack_mode);
-    }
-    return nullptr;
-}
+// makeEncoder (the RipFormat -> IEncoder factory) moved to EncoderFactory.cpp so
+// the convert-core engine can link it without dragging in the whole rip TU. Its
+// declaration arrives via EncoderFactory.h (included above); the body is byte-
+// identical, so rip_encoder_seam_test is unaffected.
 
 // Per-track output list from the selection: table-ordered, absent formats
 // simply not present (no path, no encoder, no temp siblings — subset

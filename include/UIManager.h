@@ -26,6 +26,8 @@
 #include "CoverArtRender.h"
 #include "ArtMissCache.h"   // time-bounded art negative cache (radio-art-refresh-fix)
 #include "GainScan.h"       // batch ReplayGain over a folder (batch-r128)
+#include "ConvertJob.h"     // convert-core: decode -> IEncoder batch convert engine
+#include "MarkSet.h"        // convert-core: the browser's path-keyed marked set
 #include "core/INotify.h"
 #include "core/IMediaControl.h"   // OS media control seam (osmedia-seam)
 #include "MediaRouter.h"          // OS-command marshal + split sink
@@ -38,7 +40,7 @@ enum class Pane      { DirBrowser, Playlist };
 enum class RightPane { Playlist, Visualizer, Help, TrackInfo, Bookmarks, Lyrics, About, Devices, EQ, Queue, Chapters, SearchResults };
 
 // Modal overlays drawn on top of the normal layout
-enum class UIOverlay { None, RipConfirm, MBSearch, RecPanel };
+enum class UIOverlay { None, RipConfirm, MBSearch, RecPanel, ConvertScope, ConvertConfirm };
 
 class UIManager {
 public:
@@ -139,6 +141,12 @@ private:
     void drawRipConfirm();
     void drawMBSearch();
     void drawRecPanel();   // stream-record R2: the [Rec] panel (^E)
+    void drawConvertScope();    // convert-core: pick scope (this file/folder/marked)
+    void drawConvertConfirm();  // convert-core: pick output format + quality
+    // Absolute path of browser entry idx, respecting the browser mode (favs/
+    // recent entries are already absolute; normal-dir entries join current_dir_).
+    // "" for pseudo-entries ("..", "[Drives]", ...) and drive/radio modes.
+    std::string browserEntryPath(int idx) const;
     // rec-cover-art: the radio-art machinery's identity/pickup/trigger halves,
     // extracted from refreshRadioArt so the recording wiring can drive the
     // SAME fetch path (same guard, caches, providers) with the pane closed.
@@ -479,6 +487,15 @@ private:
     // kRipFormats, the [Rec] panel over its 3 rows (Opus/Mp3/Copy).
     int rip_focus_ = 0;
     int rec_focus_ = 0;
+    // convert-core: the marked-file set (path-keyed, survives re-sort/refresh/
+    // dir-change), the batch convert engine, and the convert overlay state.
+    MarkSet    marked_;
+    ConvertJob convert_job_;
+    int        convert_scope_ = 0;             // 1 = this file, 2 = folder, 3 = marked
+    std::string convert_src_dir_;              // folder scope: the dir to enumerate
+    std::string convert_single_;               // file scope: the one source path
+    RipFormat  convert_fmt_ = RipFormat::Flac; // single-select output format
+    int        convert_focus_ = 0;             // ConvertConfirm row cursor
     // Stream-record R2: the [Rec] panel's SETTINGS (session state seeded from
     // config, like rip_sel_ - config is load-once, the panel never writes
     // back). Lifecycle state (recording/elapsed/cuts/dropped) is deliberately

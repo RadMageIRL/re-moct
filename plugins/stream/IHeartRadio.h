@@ -59,7 +59,22 @@ public:
     // <=0 currently playing, >0 ended that many seconds ago, -1 unknown — and the
     // raw song is returned regardless of staleness so the caller can judge freshness.
     // With no out-param (probe path) a strict 30s gate applies and stale -> "".
-    std::string pollNowPlaying(long* endedSecsAgo = nullptr);
+    //
+    // Optional diagnostics (scope iheart-deeplog-guarddiag): observation-only. When a
+    // PollDiag* is given it records WHICH guard suppressed this poll and the
+    // monotonic ceiling vs the newest-aired startTime it held on, so a trackHistory
+    // freeze self-explains. Does not change control flow, returns, or accepted_max_start_.
+    struct PollDiag {
+        long        acceptedMaxStart = 0;   // accepted_max_start_ at ENTRY (monotonic ceiling)
+        long        newestAiredStart = 0;   // bestStart this poll (0 if none aired)
+        int         entryCount       = 0;   // data[].size()
+        int         chosenIdx        = -1;  // scan winner (best); != 0 => data[0] resurfacing
+        int         futureSkipped    = 0;   // entries rejected: startTime > now + FUTURE_GRACE
+        const char* heldBy           = "";  // ""=served | "monotonic" | "none-aired"
+                                            //   | "empty-meta" | "no-data" | "parse"
+                                            //   | "poll-fail" | "unresolved"
+    };
+    std::string pollNowPlaying(long* endedSecsAgo = nullptr, PollDiag* diag = nullptr);
 
     // Structured live now-playing from the currentTrackMeta endpoint — the source
     // the iHeart WEB PLAYER itself uses. Distinct from trackHistory: it reports the

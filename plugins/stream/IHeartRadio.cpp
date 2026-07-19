@@ -183,19 +183,25 @@ bool IHeartRadio::resolve(const std::string& url) {
 }
 
 // ── Public: poll now-playing (timestamp-gated) ───────────────────────────────
-std::string IHeartRadio::pollNowPlaying(long* endedSecsAgo) {
+std::string IHeartRadio::pollNowPlaying(long* endedSecsAgo, PollDiag* diag) {
     if (endedSecsAgo) *endedSecsAgo = -1;
-    if (!resolved_ || meta_url_.empty()) return {};
+    if (diag) { *diag = {}; diag->acceptedMaxStart = accepted_max_start_; }  // ceiling at ENTRY
+    if (!resolved_ || meta_url_.empty()) { if (diag) diag->heldBy = "unresolved"; return {}; }
     std::string body; long st = 0;
     if (!httpGet(meta_url_, body, st) || st != 200) {
         logmsg("iheart: trackHistory HTTP " + std::to_string(st));
+        if (diag) diag->heldBy = "poll-fail";
         return {};
     }
     json j;
-    try { j = json::parse(body); } catch (...) { return {}; }
-    if (!j.contains("data") || !j["data"].is_array() || j["data"].empty()) return {};
+    try { j = json::parse(body); } catch (...) { if (diag) diag->heldBy = "parse"; return {}; }
+    if (!j.contains("data") || !j["data"].is_array() || j["data"].empty()) {
+        if (diag) { diag->heldBy = "no-data"; diag->entryCount = 0; }
+        return {};
+    }
 
     const json& data = j["data"];
+    if (diag) diag->entryCount = (int)data.size();
     long now = (long)std::time(nullptr);
     const long FUTURE_GRACE = 60;   // tolerate small clock skew; reject genuinely-future scheduled entries
 
@@ -206,10 +212,12 @@ std::string IHeartRadio::pollNowPlaying(long* endedSecsAgo) {
     long bestStart = 0;
     for (int i = 0; i < (int)data.size(); ++i) {
         long s = data[i].value("startTime", 0L);
+        if (diag && s > now + FUTURE_GRACE) ++diag->futureSkipped;  // count only genuinely-future (s>0 implied)
         if (s <= 0 || s > now + FUTURE_GRACE) continue;          // skip undated / not-yet-aired
         if (best < 0 || s > bestStart) { best = i; bestStart = s; }
     }
-    if (best < 0) return {};                                     // nothing has aired yet
+    if (best < 0) { if (diag) diag->heldBy = "none-aired"; return {}; }  // nothing has aired yet
+    if (diag) { diag->chosenIdx = best; diag->newestAiredStart = bestStart; }  // accept path (best final)
 
     if (best != 0)
         logmsg("iheart: data[0] out-of-order (start=" + std::to_string(data[0].value("startTime", 0L))
@@ -222,6 +230,7 @@ std::string IHeartRadio::pollNowPlaying(long* endedSecsAgo) {
     if (bestStart < accepted_max_start_) {
         logmsg("iheart: trackHistory regressed (newest start=" + std::to_string(bestStart)
              + " < accepted=" + std::to_string(accepted_max_start_) + ") -> hold");
+        if (diag) diag->heldBy = "monotonic";   // (acceptedMaxStart, newestAiredStart) = ceiling vs offered
         return {};
     }
     accepted_max_start_ = bestStart;
@@ -237,7 +246,7 @@ std::string IHeartRadio::pollNowPlaying(long* endedSecsAgo) {
 
     std::string artist = t0.value("artist", std::string());
     std::string title  = t0.value("title",  std::string());
-    if (artist.empty() && title.empty()) return {};
+    if (artist.empty() && title.empty()) { if (diag) diag->heldBy = "empty-meta"; return {}; }
     std::string combined = artist.empty() ? title
                          : (title.empty() ? artist : artist + " - " + title);
 

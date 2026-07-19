@@ -57,6 +57,15 @@ struct Record {
     long        thEnded   = -1;     // now - endTime; climbs during a freeze
     bool        thCurrent = false;
 
+    // trackHistory guard diagnostics — scope iheart-deeplog-guarddiag
+    long        thAccMaxStart = 0;   // monotonic ceiling at tick entry
+    long        thNewestStart = 0;   // newest aired startTime this poll (0 if none)
+    int         thEntryCount  = 0;   // data[] length
+    int         thChosenIdx   = -1;  // scan winner; != 0 => data[0] resurfacing (Z100 reorder)
+    int         thFutureSkip  = 0;   // entries rejected as not-yet-aired
+    std::string thHeldBy;            // guard that suppressed (see PollDiag::heldBy)
+    bool        repinArmed    = false; // hls_repin_armed_ at tick (repin correlation)
+
     // computed target for this tick (pre-debounce)
     std::string tgtKind;            // "Song" | "Ad" | "Live"
     std::string tgtDisp;

@@ -871,8 +871,10 @@ void StreamSource::updateIHeartNowPlaying(const std::string& body) {
     if (last_iheart_poll_ == 0 || nowtick - last_iheart_poll_ >= 9000) {
         last_iheart_poll_ = nowtick;
         long ended = -1;
-        iheart_th_cache_ = iheart_.resolve(url_) ? iheart_.pollNowPlaying(&ended) : std::string();
+        IHeartRadio::PollDiag thDiag;
+        iheart_th_cache_ = iheart_.resolve(url_) ? iheart_.pollNowPlaying(&ended, &thDiag) : std::string();
         iheart_th_ended_ = ended;
+        iheart_th_diag_  = thDiag;   // cache beside th/thEnded so the Record reads a consistent snapshot every tick
         // currentTrackMeta: the web player's own now-playing source. Polled while the
         // deep log is on (probe), OR in digital mode -- there ctm rides the same timeline
         // as the audio and carries the album-art URL we surface to Discord.
@@ -976,6 +978,13 @@ void StreamSource::updateIHeartNowPlaying(const std::string& body) {
         dr.th        = iheart_th_cache_;
         dr.thEnded   = iheart_th_ended_;
         dr.thCurrent = d.thCurrent;
+        dr.thAccMaxStart = iheart_th_diag_.acceptedMaxStart;
+        dr.thNewestStart = iheart_th_diag_.newestAiredStart;
+        dr.thEntryCount  = iheart_th_diag_.entryCount;
+        dr.thChosenIdx   = iheart_th_diag_.chosenIdx;
+        dr.thFutureSkip  = iheart_th_diag_.futureSkipped;
+        dr.thHeldBy      = iheart_th_diag_.heldBy;
+        dr.repinArmed    = hls_repin_armed_;
         dr.tgtKind   = ihNowName(d.tgtKind);
         dr.tgtDisp   = d.tgtDisp;
         dr.stState   = ihNowName(d.stKind);

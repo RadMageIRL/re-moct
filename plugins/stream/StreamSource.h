@@ -258,6 +258,7 @@ private:
     uint32_t    last_iheart_poll_ = 0;      // trackHistory poll throttle (port::tickMs)
     std::string iheart_th_cache_;           // cached trackHistory result between throttled polls
     long        iheart_th_ended_  = -1;     // cached trackHistory staleness (now - endTime)
+    IHeartRadio::PollDiag iheart_th_diag_;  // cached poll guard-diag between throttled polls (scope iheart-deeplog-guarddiag)
     IHeartRadio::CurrentTrack iheart_ctm_;  // cached currentTrackMeta (polled while deep log is on, or in digital mode for album art)
     // Debounced reconciliation state machine (pure unit; see IHeartNowPlayingSM.h).
     IHeartNowPlayingSM ih_sm_;

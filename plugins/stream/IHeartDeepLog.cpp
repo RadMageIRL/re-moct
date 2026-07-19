@@ -31,7 +31,7 @@ namespace {
 constexpr unsigned long long kMaxBytes   = 5ull * 1024 * 1024;  // size roll at ~5 MB
 constexpr uint32_t           kHeartbeatMs = 30000;               // forced record cadence
 constexpr int               kKeepDays    = 5;                    // retention (days)
-constexpr int               kSchema      = 2;   // v2: + identity probe fields (idVariant/idProfileTail/idMintOk)
+constexpr int               kSchema      = 3;   // v3: + trackHistory guard diag (thHeldBy/thAccMaxStart/thNewestStart/thChosenIdx/thFutureSkip/thEntryCount/repinArmed)
 const char* const           kPrefix      = "remoct-deep-analysis-";
 const char* const           kSuffix      = ".log";
 
@@ -159,6 +159,9 @@ std::string sigOf(const IHeartDeepLog::Record& r) {
     s += r.mfCls;    s += US;
     s += r.mfSong;   s += US;
     s += r.th;       s += (r.thCurrent ? '1' : '0'); s += US;
+    s += r.thHeldBy; s += US;   // guard edge is a semantic change -> write immediately
+    s += std::to_string(r.thNewestStart); s += US;   // newest-aired advance/regression -> write
+    s += (r.repinArmed ? '1' : '0'); s += US;   // repin arm/fire edge (slow) -> capture without 30s heartbeat slop
     s += r.tgtKind;  s += US;
     s += r.tgtDisp;  s += US;
     s += r.stState;  s += US;
@@ -287,6 +290,13 @@ void emit(const Record& r) {
     j["th"]          = r.th;
     j["thEnded"]     = r.thEnded;
     j["thCurrent"]   = r.thCurrent;
+    j["thAccMaxStart"] = r.thAccMaxStart;
+    j["thNewestStart"] = r.thNewestStart;
+    j["thEntryCount"]  = r.thEntryCount;
+    j["thChosenIdx"]   = r.thChosenIdx;
+    j["thFutureSkip"]  = r.thFutureSkip;
+    j["thHeldBy"]      = r.thHeldBy;
+    j["repinArmed"]    = r.repinArmed;
 
     j["tgtKind"]     = r.tgtKind;
     j["tgtDisp"]     = r.tgtDisp;

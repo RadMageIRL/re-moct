@@ -13,7 +13,7 @@ iHeart's undocumented API and ICY/HLS streaming behavior.
 
 | Tool | What it does |
 |------|--------------|
-| `iheart_http_dump.cpp` | Reproduces RE-MOCT's digital (web-player) iHeart handshake, then polls the resolved variant playlist and dumps every `.m3u8` manifest revision verbatim - to inspect the steering tags (`EXT-X-PROGRAM-DATE-TIME`, `DISCONTINUITY`, `MEDIA-SEQUENCE`). Audio segments are not downloaded. |
+| `iheart_http_dump.cpp` | Reproduces RE-MOCT's digital (web-player) iHeart handshake, then polls the resolved variant playlist and dumps every `.m3u8` manifest revision verbatim - to inspect the steering tags (`EXT-X-PROGRAM-DATE-TIME`, `DISCONTINUITY`, `MEDIA-SEQUENCE`). Audio segments are not downloaded. Also carries an ad-tier classifier (`--analyze`/`--diff`) and a **dual-station `trackHistory` capture mode** (`--capture`) that logs the full `data[]` feed for two+ stations as JSON-lines plus the player's would-select state (the four `pollNowPlaying` guards ported verbatim), for the Z100-vs-Breeze ad-boundary metadata differential. Needs `-Ilib` (vendored `json.hpp`); see the file header for usage and the Phase 1/2 plan. |
 | `SniffIHeartRadio.cpp` | Active prober (not a packet sniffer) that walks iHeart's undocumented now-playing API for a station and dumps every stage's raw + pretty JSON - how a `zc####` HLS URL resolves to now-playing metadata. |
 | `StreamHandshakeProbe.cpp` | Answers whether iHeart's ad-reduced "digital" rendition will mint a token for an **arbitrary** listenerId/profileId or requires a real session. Prints the full redirect chain for RAW vs. web-player requests. |
 | `LatencyProbe.cpp` | Measures how far RE-MOCT's raw iHeart rendition sits behind the web player's, decomposing the metadata/audio lead into prime-buffer, live-edge lag, and metadata-ahead-of-playout components (shared segment-number timeline). |
@@ -26,8 +26,8 @@ Each file's header comment carries its exact build line. The self-contained WinI
 probes are typically just:
 
 ```bash
-# MSYS2 UCRT64 shell
-g++ -std=c++20 tools/src/iheart_http_dump.cpp -o iheart_http_dump.exe -lwininet
+# MSYS2 UCRT64 shell (-Ilib pulls in the vendored json.hpp the capture mode uses)
+g++ -std=c++20 -Ilib tools/src/iheart_http_dump.cpp -o iheart_http_dump.exe -lwininet
 ```
 
 > **Note:** the build/run lines inside the historical headers may reference the paths

@@ -5750,7 +5750,7 @@ void UIManager::handleInput(int ch) {
         }
         if (ch == 's' || ch == 'S') {          // Save as... -> the normal pane save bar
             ui_overlay_ = UIOverlay::None; redraw_needed_.store(true);
-            openInputBar(InputMode::SaveM3U, current_dir_ + "\\playlist.m3u");
+            openInputBar(InputMode::SaveM3U, (fs::path(current_dir_) / "playlist.m3u").string());
             return;
         }
         if (ch >= '1' && ch <= '3') { plexp_focus_ = ch - '1'; redraw_needed_.store(true); return; }
@@ -7001,7 +7001,7 @@ void UIManager::handleInput(int ch) {
                 plexp_src_ = pl_file; plexp_focus_ = 0;
                 ui_overlay_ = UIOverlay::PlaylistFormat; redraw_needed_.store(true);
             } else if (!playlist_.empty()) {        // original pane save, unchanged
-                openInputBar(InputMode::SaveM3U, current_dir_ + "\\playlist.m3u");
+                openInputBar(InputMode::SaveM3U, (fs::path(current_dir_) / "playlist.m3u").string());
             }
             break;
         }
@@ -7553,7 +7553,7 @@ void UIManager::gotoTabComplete() {
     goto_input_  = tab_matches_[(size_t)tab_idx_];
     // Append separator if it's a directory so user can keep drilling down
     if (fs::is_directory(goto_input_) && goto_input_.back() != '\\' && goto_input_.back() != '/')
-        goto_input_ += '\\';
+        goto_input_ += static_cast<char>(fs::path::preferred_separator);
     goto_cursor_ = (int)goto_input_.size();
 }
 

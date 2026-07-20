@@ -54,6 +54,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- On Linux, the save prompt and the goto bar's tab-completion no longer insert a
+  backslash as a path separator (a backslash is a valid filename character there);
+  both now use the platform separator, so saving a playlist and drilling into
+  directories produce valid paths. Windows is unaffected (still backslashes).
 - Closing a pop-up or menu no longer leaves stray cells in the inter-pane gutter;
   the dismissed overlay's footprint is repainted without the full-screen flash the
   Ctrl+L workaround caused.

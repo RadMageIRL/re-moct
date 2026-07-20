@@ -446,6 +446,50 @@ static std::string wouldSelect(const json& data, long now, long& accepted_max,
     return "SONG";
 }
 
+// ── capture-inband (Phase 2A) ────────────────────────────────────────────────
+// The trackHistory feed and its ported guards (wouldSelect) measure ONE thing:
+// whether the metadata feed is currently serving a fresh song. That is feed
+// HEALTH, not music airtime - trackHistory can be blind (LIVE) for hours while
+// music plays (the Sean Paul freeze). This channel reads what is ACTUALLY airing
+// from the media manifest's newest segment (song_spot/spotInstanceId, the same
+// in-band signal RE-MOCT classifies), independent of trackHistory. The pair
+// (state, inband) is what finally distinguishes "stuck on LIVE while music plays"
+// (the bug) from "LIVE and genuinely talk/ads" (correct). Media URL resolved once
+// per station and cached; re-resolved on any fetch failure.
+struct InbandNow {
+    const char* cls = "POLL-FAIL";  // "Music" | "Ad" | "Imaging" | "EMPTY" | "POLL-FAIL"
+    std::string spot, artist, title;
+    uint64_t    seq  = 0;
+    long        http = 0;
+};
+static InbandNow inbandNewest(HINTERNET hInet, const std::string& zcMaster, std::string& mediaUrl) {
+    InbandNow r;
+    if (mediaUrl.empty()) {                          // resolve master -> media variant
+        std::string master = buildDigitalUrl(zcMaster, "baseline");
+        std::string mbody, murl; DWORD mh = 0;
+        if (httpGet(hInet, master, &mbody, &murl, &mh) && mh == 200) {
+            std::string ref = firstUri(mbody);
+            if (!ref.empty()) mediaUrl = resolveUrl(murl, ref);
+        }
+        if (mediaUrl.empty()) { r.http = mh; return r; }
+    }
+    std::string body, furl; DWORD http = 0;
+    if (!httpGet(hInet, mediaUrl, &body, &furl, &http) || http != 200) {
+        mediaUrl.clear();                            // stale/expired -> re-resolve next tick
+        r.http = http; return r;
+    }
+    r.http = http;
+    std::map<uint64_t, Seg> tl;
+    ingest(body, tl);
+    if (tl.empty()) { r.cls = "EMPTY"; return r; }
+    const auto& it = tl.rbegin();                    // newest segment = what is airing now
+    Kind k = classify(it->second);
+    r.cls  = (k == Kind::Music) ? "Music" : (k == Kind::Ad ? "Ad" : "Imaging");
+    r.spot = it->second.song_spot; r.artist = it->second.artist; r.title = it->second.title;
+    r.seq  = it->first;
+    return r;
+}
+
 struct StationCap {
     std::string id;                 // "1469"
     std::string zc;                 // "zc1469"
@@ -453,6 +497,10 @@ struct StationCap {
     std::string lastState = "INIT";
     long        gapStart  = 0;      // epoch when SONG was lost (0 = not in a gap)
     std::string lastSong;           // last SONG string shown
+    std::string mediaUrl;           // cached in-band media playlist URL ("" = resolve)
+    long        ticks = 0, thFresh = 0;             // feedHealth: trackHistory fresh-song ticks
+    long        inMusic = 0, inAd = 0, inImaging = 0, inFail = 0;   // in-band airtime
+    long        blindWhileMusic = 0;                // trackHistory NOT fresh while music airs = the bug shape
 };
 
 static int runCapture(const std::vector<std::string>& ids, int durationSec, int pollSec,
@@ -530,7 +578,27 @@ static int runCapture(const std::vector<std::string>& ids, int durationSec, int 
             }
             rec["state"] = state; rec["selIdx"] = selIdx; rec["would"] = would;
             rec["ended"] = ended; rec["futureRej"] = futureRej; rec["acceptedMax"] = s.accepted_max;
+
+            // IN-BAND channel: what is actually airing now (independent of trackHistory).
+            InbandNow ib = inbandNewest(hInet, "https://stream.revma.ihrhls.com/" + s.zc + "/hls.m3u8", s.mediaUrl);
+            rec["inband"]       = ib.cls;              // Music | Ad | Imaging | EMPTY | POLL-FAIL
+            rec["inbandSpot"]   = ib.spot;             // song_spot char (M = music)
+            rec["inbandArtist"] = ib.artist;           // in-band now-playing (accurate through a th freeze)
+            rec["inbandTitle"]  = ib.title;
+            rec["inbandSeq"]    = (long long)ib.seq;
+            rec["inbandHttp"]   = ib.http;
             emit(rec.dump());
+
+            // Tallies: feedHealth (trackHistory) vs music airtime (in-band), and the
+            // headline bug rate = trackHistory NOT serving a fresh song WHILE music airs.
+            ++s.ticks;
+            const std::string ibc = ib.cls;
+            if (state == "SONG")   ++s.thFresh;
+            if      (ibc == "Music")   ++s.inMusic;
+            else if (ibc == "Ad")      ++s.inAd;
+            else if (ibc == "Imaging") ++s.inImaging;
+            else                       ++s.inFail;
+            if (state != "SONG" && ibc == "Music") ++s.blindWhileMusic;
 
             // TRANSITION: SONG -> (gap) -> SONG. Gap = any non-SONG state. The gap
             // duration is the number we care about; fromState says which guard held.
@@ -552,12 +620,25 @@ static int runCapture(const std::vector<std::string>& ids, int durationSec, int 
                 s.lastSong = would;
             }
             s.lastState = state;
-            hb += " " + s.zc + "=" + state;
+            hb += " " + s.zc + "=" + state + "/" + ib.cls;   // trackHistory-state / in-band-airing
         }
         // Heartbeat to stderr (~once a minute at 5s cadence) so a long run is observable.
         if (poll % 12 == 1)
             std::fprintf(stderr, "poll %d,%s, %d files rolled\n", poll, hb.c_str(), filesRolled);
         Sleep(pollSec * 1000);
+    }
+
+    // ── Summary: feedHealth (trackHistory) is NOT music airtime; the in-band channel is.
+    std::fprintf(stderr, "\n=== capture summary (feedHealth != music airtime) ===\n");
+    for (auto& s : st) {
+        double t = s.ticks ? (double)s.ticks : 1.0;
+        std::fprintf(stderr,
+            "[%s] feedHealth (trackHistory serving a fresh song)=%.0f%%  <- NOT music airtime\n"
+            "      IN-BAND airtime: music=%.0f%%  ad=%.0f%%  imaging/talk=%.0f%%  pollfail=%.0f%%\n"
+            "      >>> trackHistory-BLIND-while-music=%.0f%% (%ld/%ld ticks) = the metadata-accuracy gap\n",
+            s.zc.c_str(), 100.0*s.thFresh/t,
+            100.0*s.inMusic/t, 100.0*s.inAd/t, 100.0*s.inImaging/t, 100.0*s.inFail/t,
+            100.0*s.blindWhileMusic/t, s.blindWhileMusic, s.ticks);
     }
 
     if (log) std::fclose(log);

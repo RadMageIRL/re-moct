@@ -832,8 +832,11 @@ void UIManager::createWindows() {
     win_dir_      = newwin(pane_rows, left_cols,    2,              dir_x);
     win_playlist_ = newwin(pane_rows, right_cols,   2,              right_x);
     if (strip)
-        // Awesome full-width Spectrum strip, below the panes.
-        win_viz_ = newwin(viz_h, screen_cols_, 2 + pane_rows, 0);
+        // Awesome Spectrum strip, below the panes and aligned to the pane block:
+        // left edge == dir's left border (dir_x), width == left pane + gutter + right
+        // pane, so the right edge lands on the playlist's right border (screen_cols_-2).
+        // The middle gutter is spanned so the bar field is one continuous strip.
+        win_viz_ = newwin(viz_h, left_cols + gut + right_cols, 2 + pane_rows, dir_x);
     else if (!aw)
         // Classic right-pane visualizer overlay (same geometry as the queue).
         win_viz_ = newwin(pane_rows, right_cols, 2, right_x);
@@ -2998,8 +3001,14 @@ void UIManager::drawVisualizer() {
     // than the 64 DSP bins, each bar's level is linearly INTERPOLATED across the bins,
     // so every bar is distinct; the sub-slot remainder is a tiny centred margin.
     const int bar_w = 1, gap = 1, slot = bar_w + gap;
-    const int n_bars  = std::clamp(bar_area_cols / slot, 1, 4 * VIZ_BINS);
-    const int x_start = 1 + std::max(0, (bar_area_cols - n_bars * slot) / 2);
+    // Count the last bar with no trailing gap (drawn width == 2*n_bars - 1); the
+    // old n_bars*slot counted a phantom trailing gap that fell off the right edge,
+    // leaving an empty slot pinned there at even widths. Center on the real drawn
+    // width and push any single leftover column LEFT so the rightmost bar stays
+    // flush at the right border.
+    const int n_bars  = std::clamp((bar_area_cols + gap) / slot, 1, 4 * VIZ_BINS);
+    const int used    = n_bars * slot - gap;                              // = 2*n_bars - 1
+    const int x_start = 1 + std::max(0, (bar_area_cols - used + 1) / 2);   // slack -> left, right flush
 
     for (int b = 0; b < n_bars; ++b) {
         const int x0 = x_start + b * slot;

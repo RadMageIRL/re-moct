@@ -54,6 +54,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The now-playing marquee and the spectrum keep animating while a pop-up is open
+  (convert, playlist save, rip confirm, rec panel, MusicBrainz search) instead of
+  freezing until it is dismissed; the pop-up stays crisp on top.
+- In the Awesome theme, the spectrum strip lines up with the panes above it - its
+  left and right edges now match the browser and playlist borders instead of
+  overhanging, and the stray empty bar slot at the right edge is gone (it stays
+  gone across terminal resizes).
+- The text-entry cursor stays in the input field (save, goto, load, radio search,
+  and the rest) instead of blinking in the panes when opened on an idle screen.
 - On Linux, the save prompt and the goto bar's tab-completion no longer insert a
   backslash as a path separator (a backslash is a valid filename character there);
   both now use the platform separator, so saving a playlist and drilling into

@@ -1729,6 +1729,7 @@ void UIManager::run() {
                 else if (ui_overlay_ == UIOverlay::RecPanel) drawRecPanel();
                 else if (ui_overlay_ == UIOverlay::ConvertScope) drawConvertScope();
                 else if (ui_overlay_ == UIOverlay::ConvertConfirm) drawConvertConfirm();
+                else if (ui_overlay_ == UIOverlay::PlaylistFormat) drawPlaylistFormat();
                 overlay_drawn_ = ui_overlay_;   // remember what's on screen for the dismiss repaint
                 redraw_needed_.store(false);
             } else {
@@ -3126,7 +3127,7 @@ void UIManager::drawHelp() {
         { "Ctrl+T",         "Toggle Classic / Awesome theme" },
         { "F2",             "Spectrum style: classic / 80s LED"   },
         { "F3",             "Follow the playing track (cursor tracks the song)" },
-        { "F6",             "iHeart re-pin: off / ad-escape / hybrid / timed" },
+        { "F6",             "iHeart re-pin: off / ad-escape / hybrid / timed / live-edge" },
         { "F7  /  F8",      "Awesome theme: previous / next" },
         { "F  (Shift+F)",   "Toggle file-type column (FLAC/MP3/...) in the playlist" },
         { "F12",            "Refresh the [Drives] list (pick up hot-plugged drives)" },
@@ -4732,7 +4733,8 @@ void UIManager::drawProgress() {
                 audio_.streamUrl().find("ihrhls") != std::string::npos) {   // iHeart HLS host, within window
                 const char* rp = config_.repin_mode == 0 ? "off"
                                : config_.repin_mode == 1 ? "ad-escape"
-                               : config_.repin_mode == 2 ? "hybrid" : "timed";
+                               : config_.repin_mode == 2 ? "hybrid"
+                               : config_.repin_mode == 3 ? "timed" : "live-edge";
                 modeTag = std::string(config_.prefer_digital_stream ? "digital" : "raw")
                         + " - " + rp;
             }
@@ -5754,6 +5756,71 @@ void UIManager::handleInput(int ch) {
             convert_scope_ = 3; convert_focus_ = 0;
             ui_overlay_ = UIOverlay::ConvertConfirm; redraw_needed_.store(true); return;
         }
+        if (ch == '4' && playlist_.size() > 0) {   // playlist-export: current pane
+            plexp_mode_ = 1; plexp_focus_ = 0;
+            ui_overlay_ = UIOverlay::PlaylistFormat; redraw_needed_.store(true); return;
+        }
+        if (ch == '5' && !plexp_src_.empty()) {    // playlist-export: convert a playlist file
+            plexp_mode_ = 2; plexp_focus_ = 0;
+            ui_overlay_ = UIOverlay::PlaylistFormat; redraw_needed_.store(true); return;
+        }
+        return;   // modal
+    }
+
+    // ── Playlist export/convert format picker (playlist-export) ─────────────
+    //    Immediate text write via PlaylistManager::savePlaylist (dispatches by the
+    //    dst extension) - no job, no thread. [4] serializes the LIVE pane (the
+    //    serializers already skip CD/stream entries - locked decision: reuse
+    //    verbatim, note the skips); [5] round-trips src -> a SCRATCH manager ->
+    //    dst so the live pane is untouched. Dst is auto-targeted (current dir /
+    //    the source's dir) with auto-suffix on collision - never overwrites.
+    if (ui_overlay_ == UIOverlay::PlaylistFormat) {
+        static const char* kPlExts[] = { ".m3u8", ".pls", ".xspf" };
+        if (ch == 'n' || ch == 'N' || ch == 27) {
+            ui_overlay_ = UIOverlay::None; redraw_needed_.store(true); return;
+        }
+        if (ch >= '1' && ch <= '3') { plexp_focus_ = ch - '1'; redraw_needed_.store(true); return; }
+        if (ch == KEY_UP || ch == KEY_DOWN) {
+            plexp_focus_ = (plexp_focus_ + (ch == KEY_DOWN ? 1 : 2)) % 3;
+            redraw_needed_.store(true); return;
+        }
+        if (ch == '\n' || ch == '\r' || ch == KEY_ENTER) {
+            namespace fs = std::filesystem;
+            const std::string ext = kPlExts[plexp_focus_];
+            fs::path dir; std::string stem;
+            if (plexp_mode_ == 2 && !plexp_src_.empty()) {
+                dir  = fs::path(plexp_src_).parent_path();
+                stem = fs::path(plexp_src_).stem().string();
+            } else {
+                dir  = current_dir_.empty() ? fs::path(".") : fs::path(current_dir_);
+                stem = "RE-MOCT-playlist";
+            }
+            fs::path dst = dir / (stem + ext);
+            for (int suf = 1; fs::exists(dst) && suf < 100; ++suf)
+                dst = dir / (stem + "-" + std::to_string(suf) + ext);
+            bool ok = false; int n = 0, skipped = 0;
+            if (plexp_mode_ == 2) {
+                PlaylistManager scratch;                      // off the live pane by design
+                n  = scratch.loadPlaylist(plexp_src_);
+                ok = n > 0 && scratch.savePlaylist(dst.string());
+            } else {
+                for (std::size_t i = 0; i < playlist_.size(); ++i) {
+                    const std::string& pp = playlist_.at(i).path;
+                    if (isCDTrackPath(pp) || isStreamPath(pp)) ++skipped; else ++n;
+                }
+                ok = n > 0 && playlist_.savePlaylist(dst.string());
+            }
+            ui_overlay_ = UIOverlay::None; redraw_needed_.store(true);
+            if (!ok) {
+                showTrackToast("Playlist", n == 0 ? "Nothing exportable (streams/CD are skipped)"
+                                                  : "Write failed", "");
+            } else {
+                std::string note = std::to_string(n) + (n == 1 ? " entry" : " entries")
+                                 + (skipped ? " (" + std::to_string(skipped) + " stream/CD skipped)" : "");
+                showTrackToast("Playlist -> " + dst.filename().string(), note, "");
+            }
+            return;
+        }
         return;   // modal
     }
 
@@ -6397,19 +6464,20 @@ void UIManager::handleInput(int ch) {
             showTrackToast(config_.follow_playing ? "Follow playing: ON"
                                                   : "Follow playing: OFF", "", "");
             break;
-        case KEY_F(6): {  // cycle iHeart re-pin mode: off -> ad-escape -> hybrid -> timed (persisted)
+        case KEY_F(6): {  // cycle iHeart re-pin mode: off -> ad-escape -> hybrid -> timed -> live-edge (persisted)
             // Feed (Ctrl+K) and re-pin behaviour are independent axes; F6 changes only
             // the re-pin half. Read live by the producer/SM, so no reconnect is needed.
             // Flash the lower-left mode indicator for ~5s (confirm-on-change), and
             // confirm via the same status/toast surface F2 uses so the mode keys read
             // uniformly (f6-repin-finalize).
-            config_.repin_mode = (config_.repin_mode + 1) % 4;
+            config_.repin_mode = (config_.repin_mode + 1) % 5;
             config_.save();
             audio_.setRepinMode(config_.repin_mode);
             mode_tag_at_ = std::chrono::steady_clock::now();
             const char* rp6 = config_.repin_mode == 0 ? "off"
                             : config_.repin_mode == 1 ? "ad-escape"
-                            : config_.repin_mode == 2 ? "hybrid" : "timed";
+                            : config_.repin_mode == 2 ? "hybrid"
+                            : config_.repin_mode == 3 ? "timed" : "live-edge";
 #ifndef _WIN32
             status_msg_ = std::string("Re-pin: ") + rp6;
             status_msg_ticks_ = 0;
@@ -6990,15 +7058,22 @@ void UIManager::handleInput(int ch) {
                 rip_msg_ticks_ = 0; redraw_needed_.store(true);
                 break;
             }
-            convert_single_.clear(); convert_src_dir_.clear();
+            convert_single_.clear(); convert_src_dir_.clear(); plexp_src_.clear();
             if (focus_ == Pane::DirBrowser) {
                 std::string p = browserEntryPath(dir_cursor_);
                 if (!p.empty() && convertSupportedInput(p)) convert_single_ = p;
+                if (!p.empty()) {   // playlist-export [5]: a playlist file under the cursor
+                    std::string e = fs::path(p).extension().string();
+                    for (auto& c : e) c = (char)std::tolower((unsigned char)c);
+                    if (e == ".m3u" || e == ".m3u8" || e == ".pls" || e == ".xspf")
+                        plexp_src_ = p;
+                }
                 if (!in_drive_list_ && !in_radio_ && !in_favs_ && !in_recent_ && !in_books_)
                     convert_src_dir_ = current_dir_;
             }
-            if (convert_single_.empty() && convert_src_dir_.empty() && marked_.empty()) {
-                showTrackToast("Convert", "No file, folder, or marks here", "");
+            if (convert_single_.empty() && convert_src_dir_.empty() && marked_.empty()
+                && plexp_src_.empty() && playlist_.size() == 0) {
+                showTrackToast("Convert", "No file, folder, marks, or playlist here", "");
                 break;
             }
             convert_scope_ = 0; convert_focus_ = 0;
@@ -8231,7 +8306,7 @@ std::string UIManager::browserEntryPath(int idx) const {
 
 // convert-core: pick the convert scope (this file / this folder / marked set).
 void UIManager::drawConvertScope() {
-    const int BOX_W = 60, BOX_H = 11;
+    const int BOX_W = 60, BOX_H = 13;
     int y0 = (screen_rows_ - BOX_H) / 2, x0 = (screen_cols_ - BOX_W) / 2;
     if (y0 < 0) y0 = 0; if (x0 < 0) x0 = 0;
     WINDOW* w = newwin(BOX_H, BOX_W, y0, x0);
@@ -8265,7 +8340,69 @@ void UIManager::drawConvertScope() {
     row(6, !marked_.empty(), marked_.empty()
         ? "[3] Marked set: (none - press u to mark)"
         : "[3] Marked set: " + std::to_string((int)marked_.size()) + " file(s)");
-    mvwaddstr(w, 8, 3, "[1/2/3] pick   [Esc] cancel");
+    // playlist-export: listing transformation, not audio - [4]/[5] go to the
+    // playlist-format picker and an immediate savePlaylist write.
+    int pl_skip = 0;
+    for (std::size_t i = 0; i < playlist_.size(); ++i) {
+        const std::string& pp = playlist_.at(i).path;
+        if (isCDTrackPath(pp) || isStreamPath(pp)) ++pl_skip;
+    }
+    const int pl_keep = (int)playlist_.size() - pl_skip;
+    row(7, playlist_.size() > 0, playlist_.size() == 0
+        ? "[4] Export playlist pane: (empty)"
+        : "[4] Export playlist pane: " + std::to_string(pl_keep) +
+          (pl_keep == 1 ? " entry" : " entries") +
+          (pl_skip ? " (+" + std::to_string(pl_skip) + " stream/CD skipped)" : ""));
+    row(8, !plexp_src_.empty(), plexp_src_.empty()
+        ? "[5] Convert playlist file: (focus a .m3u/.pls/.xspf)"
+        : "[5] Convert playlist file: " +
+          sanitizeForDisplay(std::filesystem::path(plexp_src_).filename().string()));
+    mvwaddstr(w, 10, 3, "[1-5] pick   [Esc] cancel");
+    wrefresh(w); delwin(w);
+}
+
+// playlist-export: pick the playlist output format. The write is an immediate
+// PlaylistManager::savePlaylist text serialize (no job); dst is auto-targeted
+// with auto-suffix, previewed here so the user sees where it lands.
+void UIManager::drawPlaylistFormat() {
+    const int BOX_W = 60, BOX_H = 12;
+    int y0 = (screen_rows_ - BOX_H) / 2, x0 = (screen_cols_ - BOX_W) / 2;
+    if (y0 < 0) y0 = 0; if (x0 < 0) x0 = 0;
+    WINDOW* w = newwin(BOX_H, BOX_W, y0, x0);
+    if (!w) return;
+    wbkgd(w, config_.awesome_mode ? COLOR_PAIR(CP_DIM) : COLOR_PAIR(0));
+    werase(w);
+    const char* title = " PLAYLIST ";
+    panelFrame(w, title, true);
+    if (!config_.awesome_mode) mvwaddstr(w, 0, (BOX_W - (int)strlen(title)) / 2, title);
+
+    namespace fs = std::filesystem;
+    static const char* kPlNames[] = { "M3U8 (extended M3U)", "PLS", "XSPF" };
+    static const char* kPlExts[]  = { ".m3u8", ".pls", ".xspf" };
+    if (plexp_mode_ == 2)
+        mvwaddnstr(w, 2, 3, ("Convert: " +
+            sanitizeForDisplay(fs::path(plexp_src_).filename().string())).c_str(), BOX_W - 5);
+    else
+        mvwaddnstr(w, 2, 3, "Export the current playlist pane:", BOX_W - 5);
+    for (int i = 0; i < 3; ++i) {
+        if (i == plexp_focus_) wattron(w, A_REVERSE);
+        mvwaddnstr(w, 4 + i, 3,
+                   ("[" + std::to_string(i + 1) + "] " + kPlNames[i]).c_str(), BOX_W - 5);
+        if (i == plexp_focus_) wattroff(w, A_REVERSE);
+    }
+    // dst preview (same derivation as the Enter handler, incl. the collision suffix)
+    fs::path dir; std::string stem;
+    if (plexp_mode_ == 2 && !plexp_src_.empty()) {
+        dir = fs::path(plexp_src_).parent_path(); stem = fs::path(plexp_src_).stem().string();
+    } else {
+        dir = current_dir_.empty() ? fs::path(".") : fs::path(current_dir_);
+        stem = "RE-MOCT-playlist";
+    }
+    fs::path dst = dir / (stem + kPlExts[plexp_focus_]);
+    for (int suf = 1; fs::exists(dst) && suf < 100; ++suf)
+        dst = dir / (stem + "-" + std::to_string(suf) + kPlExts[plexp_focus_]);
+    mvwaddnstr(w, 8, 3, ("To: " + sanitizeForDisplay(dst.string())).c_str(), BOX_W - 5);
+    mvwaddstr(w, BOX_H - 2, 3, "[1-3/Up/Down] format   [Enter] write   [Esc] cancel");
     wrefresh(w); delwin(w);
 }
 

@@ -25,6 +25,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - F6 now confirms the new mode in the status line (matching F2's style) and is
   listed in the `?` help pane.
 
+### Added (iHeart re-pin - F6)
+
+- New F6 mode `live-edge`: follow the live edge the way the web player does.
+  Drift itself is the trigger - when playback falls behind the edge during ad-free
+  programming (a countdown or long talk block), it re-anchors automatically instead
+  of sitting on stale audio until a manual re-pin. No ad logic, always current
+  (including ads at the edge); the tradeoff is a smaller effective buffer, so it is
+  twitchier on a laggy connection than the escape modes. A healthy stream never
+  triggers it.
+
+### Added (playlists)
+
+- Export and convert playlists from the convert pop-up (`x`): [4] writes the
+  current playlist pane to M3U8, PLS, or XSPF; [5] converts a focused playlist
+  file to another of those formats. The write is immediate (no job), lands next
+  to the source (or in the current folder for a pane export) with an
+  auto-suffixed name instead of overwriting, and stream/CD entries are skipped
+  with a note - they do not belong in a portable playlist file.
+
 ### Fixed
 
 - Closing a pop-up or menu no longer leaves stray cells in the inter-pane gutter;

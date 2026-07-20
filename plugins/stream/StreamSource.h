@@ -234,6 +234,13 @@ private:
     // (and rarely also paid spotInstanceIds / cartcutId churn - blank slate is the norm
     // mid-break, so the segment CLASS is the load-bearing signal). Producer thread only.
     static constexpr uint32_t kRepinEvidenceWindowMs = 160000;    // ~ floor span + slack
+    // Live-Edge mode drift threshold (f6-live-edge): in mode 4 the trigger is DRIFT
+    // itself - when playback falls this many segments behind the live edge, re-anchor
+    // (what a browser HLS engine does by default: stay glued to the edge, snap forward
+    // on drift; no ad logic, no floor timer). Steady-state lag is <=2 segments on a
+    // healthy stream (measured over 5800 polls); 5 (~50s at 10s segments) sits clear of
+    // that so a normal show never fires. Tune on-air (conservative start).
+    static constexpr long long EDGE_LAG_MAX = 5;
     std::deque<std::pair<uint32_t,bool>>        repin_cls_hist_;  // (tickMs, newest seg is spot/ad)
     std::deque<std::pair<uint32_t,std::string>> repin_cart_hist_; // (tickMs, cartcutId) non-empty only
     uint32_t          repin_paid_tick_ = 0;         // last tick the newest seg was a PAID spot (0 = never)

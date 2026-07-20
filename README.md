@@ -39,6 +39,9 @@ and a playlist/rip view. The public feature guide is [`docs/index.html`](docs/in
   source tags plus embedded cover art to the new file
 - Batch ReplayGain over a folder (`Ctrl+O`): compute and write track gain for every
   supported file, using the same loudness math as the CD ripper
+- Export the playlist pane to M3U8 / PLS / XSPF, or convert a playlist file
+  between those formats - both from the convert pop-up (`x`); stream/CD entries
+  are skipped with a note
 
 **CD playback & ripping** (Ctrl+Y)
 - Red Book CD playback + MusicBrainz disc lookup (Ctrl+R)
@@ -64,7 +67,10 @@ and a playlist/rip view. The public feature guide is [`docs/index.html`](docs/in
   `ad-escape` re-pins only on hard ad evidence (a paid spot id or spot churn),
   `hybrid` (default) re-pins on that evidence or when the stalled window actually
   contains ad segments - so a long talk show is ridden out instead of thrashed -
-  and `timed` is the legacy duration-only escape. Independent of the `Ctrl+K` feed
+  `timed` is the legacy duration-only escape, and `live-edge` follows the live edge
+  the way the web player does (drift-triggered, always current - including ads; rides
+  closer to the edge, so it is twitchier on a laggy connection, while the other modes
+  keep more buffer and tolerate drift). Independent of the `Ctrl+K` feed
   toggle (web-player vs raw broadcast); pressing either flashes the current
   `<feed> - <repin>` mode in the status bar for a few seconds
 - Record the playing stream to disk (`Ctrl+E`): re-encode to Opus, MP3, or M4A, or
@@ -135,7 +141,7 @@ truecolor + Alt+Enter fullscreen); see [BUILD.md](BUILD.md).
 | `F12` | Refresh drive list | `;` | Audiobook chapter list |
 | `x` / `u` / `U` | Convert / mark / clear marks | `Ctrl+E` | Record playing stream |
 | `Ctrl+O` | Batch ReplayGain (normalize folder) | `Alt+Enter` | Fullscreen (Windows wingui) |
-| `Ctrl+N` | Nerd Font title icons toggle | `F6` | iHeart re-pin mode: off / ad-escape / hybrid / timed |
+| `Ctrl+N` | Nerd Font title icons toggle | `F6` | iHeart re-pin mode: off / ad-escape / hybrid / timed / live-edge |
 
 ## Configuration
 

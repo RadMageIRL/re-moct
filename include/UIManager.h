@@ -40,7 +40,7 @@ enum class Pane      { DirBrowser, Playlist };
 enum class RightPane { Playlist, Visualizer, Help, TrackInfo, Bookmarks, Lyrics, About, Devices, EQ, Queue, Chapters, SearchResults };
 
 // Modal overlays drawn on top of the normal layout
-enum class UIOverlay { None, RipConfirm, MBSearch, RecPanel, ConvertScope, ConvertConfirm };
+enum class UIOverlay { None, RipConfirm, MBSearch, RecPanel, ConvertScope, ConvertConfirm, PlaylistFormat };
 
 class UIManager {
 public:
@@ -147,6 +147,7 @@ private:
     void drawMBSearch();
     void drawRecPanel();   // stream-record R2: the [Rec] panel (^E)
     void drawConvertScope();    // convert-core: pick scope (this file/folder/marked)
+    void drawPlaylistFormat();  // playlist-export: pick m3u8/pls/xspf, immediate text write
     void drawConvertConfirm();  // convert-core: pick output format + quality
     // Absolute path of browser entry idx, respecting the browser mode (favs/
     // recent entries are already absolute; normal-dir entries join current_dir_).
@@ -499,6 +500,11 @@ private:
     MarkSet    marked_;
     ConvertJob convert_job_;
     int        convert_scope_ = 0;             // 1 = this file, 2 = folder, 3 = marked
+    // playlist-export: state for the [4]/[5] convert-popup entries. The write is an
+    // immediate PlaylistManager::savePlaylist text serialize - never a convert_job_.
+    int         plexp_mode_  = 0;              // 1 = export current pane, 2 = convert playlist file
+    std::string plexp_src_;                    // [5]: the source playlist under the browser cursor
+    int         plexp_focus_ = 0;              // format focus: 0 m3u8 / 1 pls / 2 xspf
     std::string convert_src_dir_;              // folder scope: the dir to enumerate
     std::string convert_single_;               // file scope: the one source path
     RipFormat  convert_fmt_ = RipFormat::Flac; // single-select output format

@@ -628,6 +628,25 @@ bool StreamSource::hlsPollMedia() {
          hls_.target_dur_ms, (unsigned long long)media_seq, total, new_count, disc?1:0, hls_.pending.size(),
          (unsigned long long)newest_seq, next_play, edge_lag, edge_lag * (hls_.target_dur_ms / 1000.0),
          ring_sec, cls, pdt?1:0, digital_active_.load()?1:0, hls_repin_armed_?1:0);
+
+    // Live-Edge mode (f6-live-edge, F6 mode 4): follow the live edge the way a browser
+    // HLS engine does - DRIFT itself is the trigger, no ad-evidence, no floor timer,
+    // no disc logic. When playback falls >= EDGE_LAG_MAX segments behind the edge,
+    // re-anchor via the same pending/arm/cooldown path the other triggers use, so a
+    // burst of drift = one re-anchor then the 90s cooldown (cannot storm). A healthy
+    // stream rides at <=2 segments (measured), well under the threshold, so a normal
+    // show never fires. This is the mode that fixes the ad-free countdown drift: the
+    // web player stays on the current song because it never leaves the edge; mode 4
+    // reproduces that (including playing through ads at the edge - always-current is
+    // the point; the escape modes 1-3 keep their event-triggered meaning and their
+    // drift-tolerant stability).
+    if (have_seq && repin_mode_.load() == 4 && hls_repin_armed_ &&
+        edge_lag >= EDGE_LAG_MAX) {
+        hls_repin_pending_.store(true);
+        hls_repin_armed_ = false;
+        hls_repin_cooldown_until_ = port::tickMs() + 90000;
+        slog("hlsPollMedia: live-edge drift %lld segs behind -> re-anchor to edge", edge_lag);
+    }
     return true;
 }
 
@@ -1087,7 +1106,8 @@ void StreamSource::updateIHeartNowPlaying(const std::string& body) {
     // spurious re-handshakes measured on one day's air), while real pods show spot/ad
     // segments in the timed window. Ad-Escape (1) = hard evidence only; Hybrid (2) =
     // hard evidence OR >=2 spot/ad segments in the window; Timed (3) = legacy
-    // duration-only (documented: will thrash talk); Off (0) never fires (SM-side).
+    // duration-only (documented: will thrash talk); Off (0) never fires (SM-side);
+    // Live-Edge (4) never fires HERE - its trigger is drift, in hlsPollMedia.
     // The caller still owns the shared armed/cooldown/pending atomics (also driven by
     // the discontinuity path in hlsPollMedia), so both triggers share one owner.
     if (d.liveStallFired) {

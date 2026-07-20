@@ -65,7 +65,7 @@ int main(){
     // 8) every ACTIVE mode shares the uniform floor: ad-escape (1) and timed (3) also
     //    ride out 39s and report at 159s - the SM no longer picks a floor by mode
     //    (evidence-gating of the actual fire is the caller's job; f6-repin-finalize).
-    { for (int m : {1, 2, 3}) {
+    { for (int m : {1, 2, 3, 4}) {
         IHeartNowPlayingSM sm;
         IHeartTick a=base(1000);   a.repinMode=m; sm.tick(a);
         IHeartTick b=base(2000);   b.repinMode=m; sm.tick(b);

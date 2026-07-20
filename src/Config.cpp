@@ -192,7 +192,7 @@ void DigiConfig::load() {
         else if (key == "awesome_theme")     try { awesome_theme = std::stoi(val); } catch (...) {}
         else if (key == "prefer_digital_stream") prefer_digital_stream = (val == "1");
         else if (key == "iheart_probe_minted")   iheart_probe_minted   = (val == "1");
-        else if (key == "repin_mode2")           try { repin_mode = std::clamp(std::stoi(val), 0, 3); } catch (...) {}
+        else if (key == "repin_mode2")           try { repin_mode = std::clamp(std::stoi(val), 0, 4); } catch (...) {}
         // Legacy key (pre-1.3.1 mode set): 0 off -> 0 off; 1 on and 2 smart both migrate
         // to 2 hybrid (the F6 modes were renamed by what makes them fire; nobody should
         // land on the near-inert ad-escape by accident). Saved back as repin_mode2 only,

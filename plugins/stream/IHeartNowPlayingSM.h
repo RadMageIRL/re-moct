@@ -38,7 +38,7 @@ struct IHeartTick {
     long        ctmEndedSecsAgo = -1;
     std::string stationName;             // iHeart 'name' ("" if unknown)
     bool        repinArmed      = false; // caller's hls_repin_armed_ (shared with disc path)
-    int         repinMode       = 2;     // F6: 0 off / 1 ad-escape / 2 hybrid / 3 timed.
+    int         repinMode       = 2;     // F6: 0 off / 1 ad-escape / 2 hybrid / 3 timed / 4 live-edge.
                                          // The SM only distinguishes 0 (never report a
                                          // stall) from active; evidence-gating is the
                                          // caller's job. Default matches the shipped mode.

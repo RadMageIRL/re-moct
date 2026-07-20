@@ -1772,6 +1772,13 @@ void UIManager::drawAnimatedPanes() {
     wnoutrefresh(win_title_);
     wnoutrefresh(win_cwd_);
     wnoutrefresh(win_progress_);
+    // Input bar open: the pane refreshes above leave the hardware cursor parked in
+    // the progress/spectrum window, so with curs_set(1) it blinks in the panes
+    // instead of the text field. Re-stage the cmdline LAST to re-home it. drawAll()
+    // already does this; this patches the quiet-tick path (reproduces as "straight
+    // to Shift+S at startup, no signal"). No-op under a popup (goto_active_ is false
+    // then, so the overlay-composite callers are unaffected).
+    if (goto_active_) drawCmdLine();   // -> drawGotoBar() re-wmoves + wnoutrefresh(win_cmdline_)
 }
 
 void UIManager::drawOverlay() {

@@ -39,9 +39,14 @@ and a playlist/rip view. The public feature guide is [`docs/index.html`](docs/in
   source tags plus embedded cover art to the new file
 - Batch ReplayGain over a folder (`Ctrl+O`): compute and write track gain for every
   supported file, using the same loudness math as the CD ripper
-- Export the playlist pane to M3U8 / PLS / XSPF, or convert a playlist file
-  between those formats - both from the convert pop-up (`x`); stream/CD entries
-  are skipped with a note
+- Transcode whole playlists from the convert pop-up (`x`): [4] converts every
+  file in the playlist pane and [5] converts every file a focused playlist file
+  references, through the same encoder and format picker as single files; output
+  lands beside each source, stream/CD entries are skipped
+- Save the playlist pane to a container (`Shift+S`): the format follows the
+  name's extension (.m3u / .m3u8 / .pls / .xspf); with the browser cursor on a
+  playlist file, `Shift+S` opens a pop-up to reformat that file into M3U8/PLS/XSPF
+  (never overwriting), with the plain save still reachable; stream/CD entries are skipped
 
 **CD playback & ripping** (Ctrl+Y)
 - Red Book CD playback + MusicBrainz disc lookup (Ctrl+R)

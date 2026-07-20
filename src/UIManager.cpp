@@ -5726,28 +5726,32 @@ void UIManager::handleInput(int ch) {
             convert_scope_ = 3; convert_focus_ = 0;
             ui_overlay_ = UIOverlay::ConvertConfirm; redraw_needed_.store(true); return;
         }
-        if (ch == '4' && playlist_.size() > 0) {   // playlist-export: current pane
-            plexp_mode_ = 1; plexp_focus_ = 0;
-            ui_overlay_ = UIOverlay::PlaylistFormat; redraw_needed_.store(true); return;
+        if (ch == '4' && playlist_.size() > 0) {   // audio transcode: live pane entries
+            convert_scope_ = 4; convert_focus_ = 0;
+            ui_overlay_ = UIOverlay::ConvertConfirm; redraw_needed_.store(true); return;
         }
-        if (ch == '5' && !plexp_src_.empty()) {    // playlist-export: convert a playlist file
-            plexp_mode_ = 2; plexp_focus_ = 0;
-            ui_overlay_ = UIOverlay::PlaylistFormat; redraw_needed_.store(true); return;
+        if (ch == '5' && !convert_pl_file_.empty()) {  // audio transcode: focused playlist file
+            convert_scope_ = 5; convert_focus_ = 0;
+            ui_overlay_ = UIOverlay::ConvertConfirm; redraw_needed_.store(true); return;
         }
         return;   // modal
     }
 
-    // ── Playlist export/convert format picker (playlist-export) ─────────────
-    //    Immediate text write via PlaylistManager::savePlaylist (dispatches by the
-    //    dst extension) - no job, no thread. [4] serializes the LIVE pane (the
-    //    serializers already skip CD/stream entries - locked decision: reuse
-    //    verbatim, note the skips); [5] round-trips src -> a SCRATCH manager ->
-    //    dst so the live pane is untouched. Dst is auto-targeted (current dir /
-    //    the source's dir) with auto-suffix on collision - never overwrites.
+    // ── Shift+S reformat popup (playlist file under the browser cursor) ──────
+    //    Reformat the focused playlist file into another container: pick a format
+    //    (preview shows where it lands, auto-suffixed, never overwrites), or [S]
+    //    to drop into the normal pane-save bar. Scratch-load keeps the live pane
+    //    untouched; the serializers skip CD/stream entries.
     if (ui_overlay_ == UIOverlay::PlaylistFormat) {
+        namespace fs = std::filesystem;
         static const char* kPlExts[] = { ".m3u8", ".pls", ".xspf" };
         if (ch == 'n' || ch == 'N' || ch == 27) {
             ui_overlay_ = UIOverlay::None; redraw_needed_.store(true); return;
+        }
+        if (ch == 's' || ch == 'S') {          // Save as... -> the normal pane save bar
+            ui_overlay_ = UIOverlay::None; redraw_needed_.store(true);
+            openInputBar(InputMode::SaveM3U, current_dir_ + "\\playlist.m3u");
+            return;
         }
         if (ch >= '1' && ch <= '3') { plexp_focus_ = ch - '1'; redraw_needed_.store(true); return; }
         if (ch == KEY_UP || ch == KEY_DOWN) {
@@ -5755,40 +5759,21 @@ void UIManager::handleInput(int ch) {
             redraw_needed_.store(true); return;
         }
         if (ch == '\n' || ch == '\r' || ch == KEY_ENTER) {
-            namespace fs = std::filesystem;
             const std::string ext = kPlExts[plexp_focus_];
-            fs::path dir; std::string stem;
-            if (plexp_mode_ == 2 && !plexp_src_.empty()) {
-                dir  = fs::path(plexp_src_).parent_path();
-                stem = fs::path(plexp_src_).stem().string();
-            } else {
-                dir  = current_dir_.empty() ? fs::path(".") : fs::path(current_dir_);
-                stem = "RE-MOCT-playlist";
-            }
+            fs::path dir = fs::path(plexp_src_).parent_path();
+            std::string stem = fs::path(plexp_src_).stem().string();
             fs::path dst = dir / (stem + ext);
-            for (int suf = 1; fs::exists(dst) && suf < 100; ++suf)
+            for (int suf = 1; fs::exists(dst) && suf < 100; ++suf)      // never overwrite
                 dst = dir / (stem + "-" + std::to_string(suf) + ext);
-            bool ok = false; int n = 0, skipped = 0;
-            if (plexp_mode_ == 2) {
-                PlaylistManager scratch;                      // off the live pane by design
-                n  = scratch.loadPlaylist(plexp_src_);
-                ok = n > 0 && scratch.savePlaylist(dst.string());
-            } else {
-                for (std::size_t i = 0; i < playlist_.size(); ++i) {
-                    const std::string& pp = playlist_.at(i).path;
-                    if (isCDTrackPath(pp) || isStreamPath(pp)) ++skipped; else ++n;
-                }
-                ok = n > 0 && playlist_.savePlaylist(dst.string());
-            }
+            PlaylistManager scratch;                                    // off the live pane by design
+            int n = scratch.loadPlaylist(plexp_src_);
+            bool ok = n > 0 && scratch.savePlaylist(dst.string());
             ui_overlay_ = UIOverlay::None; redraw_needed_.store(true);
-            if (!ok) {
-                showTrackToast("Playlist", n == 0 ? "Nothing exportable (streams/CD are skipped)"
-                                                  : "Write failed", "");
-            } else {
-                std::string note = std::to_string(n) + (n == 1 ? " entry" : " entries")
-                                 + (skipped ? " (" + std::to_string(skipped) + " stream/CD skipped)" : "");
-                showTrackToast("Playlist -> " + dst.filename().string(), note, "");
-            }
+            if (!ok)
+                showTrackToast("Playlist", n == 0 ? "Nothing to reformat" : "Write failed", "");
+            else
+                showTrackToast("Playlist -> " + dst.filename().string(),
+                               std::to_string(n) + (n == 1 ? " entry" : " entries"), "");
             return;
         }
         return;   // modal
@@ -5881,6 +5866,28 @@ void UIManager::handleInput(int ch) {
                     pairs.push_back({ s, convertDstPath(s, convert_fmt_) });
                 started = convert_job_.startFiles(std::move(pairs), convert_fmt_, opt);
                 if (started) marked_.clear();   // consumed: clear the marked set
+            } else if (convert_scope_ == 4) {                       // live pane, audio transcode
+                std::vector<ConvertPair> pairs;
+                for (std::size_t i = 0; i < playlist_.size(); ++i) {
+                    const std::string& s = playlist_.at(i).path;
+                    if (isCDTrackPath(s) || isStreamPath(s)) continue;   // skip radio/CD
+                    if (!convertSupportedInput(s)) continue;             // decodable only
+                    pairs.push_back({ s, convertDstPath(s, convert_fmt_) });
+                }
+                started = !pairs.empty()
+                        && convert_job_.startFiles(std::move(pairs), convert_fmt_, opt);
+            } else if (convert_scope_ == 5 && !convert_pl_file_.empty()) {  // focused playlist file
+                PlaylistManager scratch;                            // off the live pane by design
+                int n = scratch.loadPlaylist(convert_pl_file_);
+                std::vector<ConvertPair> pairs;
+                for (int i = 0; n > 0 && i < (int)scratch.size(); ++i) {
+                    const std::string& s = scratch.at((std::size_t)i).path;
+                    if (isCDTrackPath(s) || isStreamPath(s)) continue;
+                    if (!convertSupportedInput(s)) continue;
+                    pairs.push_back({ s, convertDstPath(s, convert_fmt_) });
+                }
+                started = !pairs.empty()
+                        && convert_job_.startFiles(std::move(pairs), convert_fmt_, opt);
             }
             ui_overlay_ = UIOverlay::None;
             if (started) { rip_status_ = "Converting..."; rip_msg_ticks_ = 0; }
@@ -6975,11 +6982,29 @@ void UIManager::handleInput(int ch) {
             break;
         case 's':
             audio_.stop(); break;
-        case 'S':
-            // Shift+S: save playlist as M3U
-            if (!playlist_.empty())
+        case 'S': {
+            // Shift+S: save the playlist pane to a container - the SaveM3U bar (type
+            // name + path, the extension picks the format). If the browser cursor is on
+            // a playlist file, open the reformat popup instead (with the plain save
+            // still reachable from inside it via [S]).
+            std::string pl_file;
+            if (focus_ == Pane::DirBrowser) {
+                std::string p = browserEntryPath(dir_cursor_);
+                if (!p.empty()) {
+                    std::string e = fs::path(p).extension().string();
+                    for (auto& c : e) c = (char)std::tolower((unsigned char)c);
+                    if (e == ".m3u" || e == ".m3u8" || e == ".pls" || e == ".xspf")
+                        pl_file = p;
+                }
+            }
+            if (!pl_file.empty()) {                 // reformat popup for the focused file
+                plexp_src_ = pl_file; plexp_focus_ = 0;
+                ui_overlay_ = UIOverlay::PlaylistFormat; redraw_needed_.store(true);
+            } else if (!playlist_.empty()) {        // original pane save, unchanged
                 openInputBar(InputMode::SaveM3U, current_dir_ + "\\playlist.m3u");
+            }
             break;
+        }
         case 'l': case 'L':
             openInputBar(InputMode::LoadM3U, current_dir_); break;
         case '!':
@@ -7028,21 +7053,21 @@ void UIManager::handleInput(int ch) {
                 rip_msg_ticks_ = 0; redraw_needed_.store(true);
                 break;
             }
-            convert_single_.clear(); convert_src_dir_.clear(); plexp_src_.clear();
+            convert_single_.clear(); convert_src_dir_.clear(); convert_pl_file_.clear();
             if (focus_ == Pane::DirBrowser) {
                 std::string p = browserEntryPath(dir_cursor_);
                 if (!p.empty() && convertSupportedInput(p)) convert_single_ = p;
-                if (!p.empty()) {   // playlist-export [5]: a playlist file under the cursor
+                if (!p.empty()) {   // [5] audio transcode: a playlist file under the cursor
                     std::string e = fs::path(p).extension().string();
                     for (auto& c : e) c = (char)std::tolower((unsigned char)c);
                     if (e == ".m3u" || e == ".m3u8" || e == ".pls" || e == ".xspf")
-                        plexp_src_ = p;
+                        convert_pl_file_ = p;
                 }
                 if (!in_drive_list_ && !in_radio_ && !in_favs_ && !in_recent_ && !in_books_)
                     convert_src_dir_ = current_dir_;
             }
             if (convert_single_.empty() && convert_src_dir_.empty() && marked_.empty()
-                && plexp_src_.empty() && playlist_.size() == 0) {
+                && convert_pl_file_.empty() && playlist_.size() == 0) {
                 showTrackToast("Convert", "No file, folder, marks, or playlist here", "");
                 break;
             }
@@ -8310,8 +8335,8 @@ void UIManager::drawConvertScope() {
     row(6, !marked_.empty(), marked_.empty()
         ? "[3] Marked set: (none - press u to mark)"
         : "[3] Marked set: " + std::to_string((int)marked_.size()) + " file(s)");
-    // playlist-export: listing transformation, not audio - [4]/[5] go to the
-    // playlist-format picker and an immediate savePlaylist write.
+    // [4]/[5] audio-transcode the pane / a focused playlist file's entries through
+    // the same encoder as [1]-[3]; CD/stream entries are skipped (counted here).
     int pl_skip = 0;
     for (std::size_t i = 0; i < playlist_.size(); ++i) {
         const std::string& pp = playlist_.at(i).path;
@@ -8319,41 +8344,39 @@ void UIManager::drawConvertScope() {
     }
     const int pl_keep = (int)playlist_.size() - pl_skip;
     row(7, playlist_.size() > 0, playlist_.size() == 0
-        ? "[4] Export playlist pane: (empty)"
-        : "[4] Export playlist pane: " + std::to_string(pl_keep) +
+        ? "[4] Playlist pane: (empty)"
+        : "[4] Playlist pane: " + std::to_string(pl_keep) +
           (pl_keep == 1 ? " entry" : " entries") +
           (pl_skip ? " (+" + std::to_string(pl_skip) + " stream/CD skipped)" : ""));
-    row(8, !plexp_src_.empty(), plexp_src_.empty()
-        ? "[5] Convert playlist file: (focus a .m3u/.pls/.xspf)"
-        : "[5] Convert playlist file: " +
-          sanitizeForDisplay(std::filesystem::path(plexp_src_).filename().string()));
+    row(8, !convert_pl_file_.empty(), convert_pl_file_.empty()
+        ? "[5] Playlist file: (focus a .m3u/.pls/.xspf)"
+        : "[5] Playlist file: " +
+          sanitizeForDisplay(std::filesystem::path(convert_pl_file_).filename().string()));
     mvwaddstr(w, 10, 3, "[1-5] pick   [Esc] cancel");
     wrefresh(w); delwin(w);
 }
 
-// playlist-export: pick the playlist output format. The write is an immediate
-// PlaylistManager::savePlaylist text serialize (no job); dst is auto-targeted
-// with auto-suffix, previewed here so the user sees where it lands.
+// Shift+S on a playlist file: pick a container to reformat it into, with the dst
+// preview (auto-suffixed, never overwrites), or [S] to fall back to the normal
+// pane save. The write itself is handled in the input path (scratch load -> save).
 void UIManager::drawPlaylistFormat() {
-    const int BOX_W = 60, BOX_H = 12;
+    const int BOX_W = 60, BOX_H = 13;
     int y0 = (screen_rows_ - BOX_H) / 2, x0 = (screen_cols_ - BOX_W) / 2;
-    if (y0 < 0) y0 = 0; if (x0 < 0) x0 = 0;
+    if (y0 < 0) y0 = 0;
+    if (x0 < 0) x0 = 0;
     WINDOW* w = newwin(BOX_H, BOX_W, y0, x0);
     if (!w) return;
     wbkgd(w, config_.awesome_mode ? COLOR_PAIR(CP_DIM) : COLOR_PAIR(0));
     werase(w);
-    const char* title = " PLAYLIST ";
+    const char* title = " SAVE PLAYLIST ";
     panelFrame(w, title, true);
     if (!config_.awesome_mode) mvwaddstr(w, 0, (BOX_W - (int)strlen(title)) / 2, title);
 
     namespace fs = std::filesystem;
     static const char* kPlNames[] = { "M3U8 (extended M3U)", "PLS", "XSPF" };
     static const char* kPlExts[]  = { ".m3u8", ".pls", ".xspf" };
-    if (plexp_mode_ == 2)
-        mvwaddnstr(w, 2, 3, ("Convert: " +
-            sanitizeForDisplay(fs::path(plexp_src_).filename().string())).c_str(), BOX_W - 5);
-    else
-        mvwaddnstr(w, 2, 3, "Export the current playlist pane:", BOX_W - 5);
+    mvwaddnstr(w, 2, 3, ("Reformat: " +
+        sanitizeForDisplay(fs::path(plexp_src_).filename().string())).c_str(), BOX_W - 5);
     for (int i = 0; i < 3; ++i) {
         if (i == plexp_focus_) wattron(w, A_REVERSE);
         mvwaddnstr(w, 4 + i, 3,
@@ -8361,17 +8384,13 @@ void UIManager::drawPlaylistFormat() {
         if (i == plexp_focus_) wattroff(w, A_REVERSE);
     }
     // dst preview (same derivation as the Enter handler, incl. the collision suffix)
-    fs::path dir; std::string stem;
-    if (plexp_mode_ == 2 && !plexp_src_.empty()) {
-        dir = fs::path(plexp_src_).parent_path(); stem = fs::path(plexp_src_).stem().string();
-    } else {
-        dir = current_dir_.empty() ? fs::path(".") : fs::path(current_dir_);
-        stem = "RE-MOCT-playlist";
-    }
+    fs::path dir = fs::path(plexp_src_).parent_path();
+    std::string stem = fs::path(plexp_src_).stem().string();
     fs::path dst = dir / (stem + kPlExts[plexp_focus_]);
     for (int suf = 1; fs::exists(dst) && suf < 100; ++suf)
         dst = dir / (stem + "-" + std::to_string(suf) + kPlExts[plexp_focus_]);
     mvwaddnstr(w, 8, 3, ("To: " + sanitizeForDisplay(dst.string())).c_str(), BOX_W - 5);
+    mvwaddnstr(w, 9, 3, "[S] Save as... (pane -> name + path)", BOX_W - 5);
     mvwaddstr(w, BOX_H - 2, 3, "[1-3/Up/Down] format   [Enter] write   [Esc] cancel");
     wrefresh(w); delwin(w);
 }
@@ -8395,6 +8414,15 @@ void UIManager::drawConvertConfirm() {
     if (convert_scope_ == 1) scope = "1 file: " + fs::path(convert_single_).filename().string();
     else if (convert_scope_ == 2) scope = "folder: " + fs::path(convert_src_dir_).filename().string();
     else if (convert_scope_ == 3) scope = std::to_string((int)marked_.size()) + " marked file(s)";
+    else if (convert_scope_ == 4) {
+        int keep = 0;
+        for (std::size_t i = 0; i < playlist_.size(); ++i) {
+            const std::string& pp = playlist_.at(i).path;
+            if (!isCDTrackPath(pp) && !isStreamPath(pp)) ++keep;
+        }
+        scope = std::to_string(keep) + (keep == 1 ? " pane entry" : " pane entries");
+    }
+    else if (convert_scope_ == 5) scope = "file: " + fs::path(convert_pl_file_).filename().string();
     mvwaddnstr(w, 2, 3, sanitizeForDisplay(scope).c_str(), BOX_W - 5);
 
     mvwaddstr(w, 4, 3, "Output format");

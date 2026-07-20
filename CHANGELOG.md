@@ -37,14 +37,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   twitchier on a laggy connection than the escape modes. A healthy stream never
   triggers it.
 
-### Added (playlists)
+### Added (convert)
 
-- Export and convert playlists from the convert pop-up (`x`): [4] writes the
-  current playlist pane to M3U8, PLS, or XSPF; [5] converts a focused playlist
-  file to another of those formats. The write is immediate (no job), lands next
-  to the source (or in the current folder for a pane export) with an
-  auto-suffixed name instead of overwriting, and stream/CD entries are skipped
-  with a note - they do not belong in a portable playlist file.
+- The convert pop-up (`x`) now transcodes whole playlists, not just single
+  files and folders: [4] converts every file in the current playlist pane and
+  [5] converts every file a focused playlist file references, both through the
+  same audio encoder and format picker as [1]-[3]. Output lands next to each
+  source file. Stream and CD entries are skipped (the row shows how many).
+- Save the current playlist pane to a container with `Shift+S`: type a `.m3u`,
+  `.m3u8`, `.pls`, or `.xspf` name and the format is chosen from the extension.
+  When the browser cursor is on a playlist file, `Shift+S` opens a small pop-up
+  to reformat that file into M3U8, PLS, or XSPF (written next to the source,
+  auto-suffixed so it never overwrites); the plain pane save is still one press
+  away with `[S]` inside the pop-up. Stream and CD entries are skipped - they do
+  not belong in a portable playlist file.
 
 ### Fixed
 

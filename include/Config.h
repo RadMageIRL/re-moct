@@ -90,7 +90,7 @@ struct DigiConfig {
     bool  viz_led = false;
     bool  prefer_digital_stream = false;   // iHeart: try web-player (ad-reduced) rendition; raw broadcast otherwise
     bool  iheart_probe_minted   = false;   // probe: use a minted anonymous profileId on the digital handshake (deep-log A/B only)
-    int   repin_mode            = 2;       // iHeart re-pin (F6): 0=off (play through ads), 1=on (re-pin long breaks), 2=smart (re-pin only long pods). Default smart
+    int   repin_mode            = 2;       // iHeart re-pin (F6): 0=off, 1=ad-escape (hard ad-evidence only), 2=hybrid (evidence or spot segments in the timed window; default), 3=timed (legacy duration-only - will thrash talk shows), 4=live-edge (browser-style: follow the live edge, drift-triggered, always current - twitchier on a laggy connection)
 
     // Nerd Font pane-title icons (Ctrl+N). Requires a Nerd Font terminal font.
     bool  nerd_icons = false;

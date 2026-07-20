@@ -5,6 +5,75 @@ All notable changes to RE-MOCT are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.1] - 2026-07-20
+
+### Changed (iHeart re-pin - F6)
+
+- The F6 re-pin modes are renamed by what makes them fire, and the re-pin now
+  requires ad evidence instead of duration alone: `off` never re-pins, `ad-escape`
+  fires only on hard ad evidence (a paid spot id or spot churn), `hybrid` (the new
+  default) fires on that evidence or when the stalled window actually contains ad
+  segments, and `timed` keeps the old duration-only behaviour. The old duration-only
+  escape treated a long talk show like a stuck ad pod and silently re-joined the
+  stream every ~3 minutes through entire shows - hybrid rides talk out and still
+  escapes real ad pods.
+- The immediate ad-onset re-pin is gated the same way, so a mid-show discontinuity
+  marker no longer triggers a pointless re-join.
+- Saved re-pin settings migrate automatically: the old `on` and `smart` modes both
+  become `hybrid`. The old 35-second `on` floor is retired; all active modes share
+  the ~2.5-minute floor.
+- F6 now confirms the new mode in the status line (matching F2's style, drawn
+  in yellow) and is listed in the `?` help pane. Ctrl+K confirms its feed
+  switch the same way. The transient lower-left mode tag on the now-playing
+  row is gone - it repeated what the status line already says.
+
+### Added (iHeart re-pin - F6)
+
+- New F6 mode `live-edge`: follow the live edge the way the web player does.
+  Drift itself is the trigger - when playback falls behind the edge during ad-free
+  programming (a countdown or long talk block), it re-anchors automatically instead
+  of sitting on stale audio until a manual re-pin. No ad logic, always current
+  (including ads at the edge); the tradeoff is a smaller effective buffer, so it is
+  twitchier on a laggy connection than the escape modes. A healthy stream never
+  triggers it.
+
+### Added (convert)
+
+- The convert pop-up (`x`) now transcodes whole playlists, not just single
+  files and folders: [4] converts every file in the current playlist pane and
+  [5] converts every file a focused playlist file references, both through the
+  same audio encoder and format picker as [1]-[3]. Output lands next to each
+  source file. Stream and CD entries are skipped (the row shows how many).
+- Save the current playlist pane to a container with `Shift+S`: type a `.m3u`,
+  `.m3u8`, `.pls`, or `.xspf` name and the format is chosen from the extension.
+  When the browser cursor is on a playlist file, `Shift+S` opens a small pop-up
+  to reformat that file into M3U8, PLS, or XSPF (written next to the source,
+  auto-suffixed so it never overwrites); the plain pane save is still one press
+  away with `[S]` inside the pop-up. Stream and CD entries are skipped - they do
+  not belong in a portable playlist file.
+
+### Fixed
+
+- On Windows, dragging the window by its title bar no longer freezes the display
+  until you let go - the spectrum and marquee keep animating during the move,
+  matching how a resize drag already behaved.
+- The now-playing marquee and the spectrum keep animating while a pop-up is open
+  (convert, playlist save, rip confirm, rec panel, MusicBrainz search) instead of
+  freezing until it is dismissed; the pop-up stays crisp on top.
+- In the Awesome theme, the spectrum strip lines up with the panes above it - its
+  left and right edges now match the browser and playlist borders instead of
+  overhanging, and the stray empty bar slot at the right edge is gone (it stays
+  gone across terminal resizes).
+- The text-entry cursor stays in the input field (save, goto, load, radio search,
+  and the rest) instead of blinking in the panes when opened on an idle screen.
+- On Linux, the save prompt and the goto bar's tab-completion no longer insert a
+  backslash as a path separator (a backslash is a valid filename character there);
+  both now use the platform separator, so saving a playlist and drilling into
+  directories produce valid paths. Windows is unaffected (still backslashes).
+- Closing a pop-up or menu no longer leaves stray cells in the inter-pane gutter;
+  the dismissed overlay's footprint is repainted without the full-screen flash the
+  Ctrl+L workaround caused.
+
 ## [1.3.0] - 2026-07-18
 
 Feature release: Opus and WavPack playback.

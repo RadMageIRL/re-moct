@@ -38,8 +38,10 @@ struct IHeartTick {
     long        ctmEndedSecsAgo = -1;
     std::string stationName;             // iHeart 'name' ("" if unknown)
     bool        repinArmed      = false; // caller's hls_repin_armed_ (shared with disc path)
-    int         repinMode       = 1;     // F6: 0 off / 1 on / 2 smart. Default 1 keeps the
-                                         // original floor timer for existing SM unit tests.
+    int         repinMode       = 2;     // F6: 0 off / 1 ad-escape / 2 hybrid / 3 timed / 4 live-edge.
+                                         // The SM only distinguishes 0 (never report a
+                                         // stall) from active; evidence-gating is the
+                                         // caller's job. Default matches the shipped mode.
 };
 
 // One tick's decision. Carries the pre-tick snapshot + computed target so the
@@ -74,18 +76,15 @@ public:
     const std::string& stateDisp() const { return stateDisp_; }
 
 private:
-    // How long the reconciler may sit on the LIVE floor (digital) before we assume a
-    // stall and force a live-edge re-pin. Healthy ad breaks clear in <=~30s; a real
-    // stall ran 7 min; 35s sits just above the healthy ceiling. (== old StreamSource.cpp:21)
-    // This is the 'on' (1) threshold. 'smart' (2) uses a longer floor so short aligned
-    // breaks self-resolve (ride out like the web player) and only genuine long pods trip
-    // the re-pin; 'off' (0) never fires. NOTE: the primary digital manifest shows blank
-    // slate (not paid-ad markers) during a break, so floor DURATION is the pod-length
-    // proxy here, not the spotInstanceId paid-ad flag (which is absent on the primary
-    // mid-break -- see docs/repin-refine-plan.md Section B). SMART_STALL_MS is a
-    // conservative starting value; Dos tunes it on-air.
-    static constexpr uint32_t LIVE_STALL_MS  = 35000;
-    static constexpr uint32_t SMART_STALL_MS = 150000;   // ~2.5 min: ride short breaks, catch long pods
+    // How long the reconciler may sit on the LIVE floor (digital) before it REPORTS a
+    // stall (f6-repin-finalize). One uniform floor for every active mode - the old 35s
+    // 'on' floor retired with the duration-only design. The SM only reports floor
+    // expiry (liveStallFired); the CALLER gates the actual re-pin on ad-evidence per
+    // the F6 mode (0 off / 1 ad-escape / 2 hybrid / 3 timed), because duration alone
+    // cannot tell a 30-min talk show from a stuck ad pod (measured: the duration-only
+    // escape fired every ~170s through whole shows). ~2.5 min rides out short aligned
+    // breaks like the web player; genuine long pods still trip it.
+    static constexpr uint32_t REPIN_FLOOR_MS = 150000;
 
     IHNow       state_      = IHNow::Live;
     std::string stateDisp_;

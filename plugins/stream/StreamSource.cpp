@@ -506,13 +506,38 @@ bool StreamSource::hlsPollMedia() {
     // discontinuity, then suppress for a cooldown (covers a whole pod, which
     // contains several discontinuities), then re-arm for the next break.
     if (digital_active_.load()) {
-        // F6 re-pin mode gates the immediate ad-onset re-pin. Only 'on' (1) fires it;
-        // 'smart' (2) rides the break out and lets the SM's longer floor timer catch
-        // genuine long pods; 'off' (0) never re-pins. The arm/cooldown bookkeeping is
-        // left untouched so a live mode switch stays coherent (armed stays true for the
-        // SM stall path in smart/off).
+        // F6 re-pin mode gates the immediate ad-onset re-pin (f6-repin-finalize).
+        // Ad-Escape (1) needs hard evidence (a PAID spot or cartcut churn); Hybrid (2)
+        // also accepts the disc landing on a spot/ad segment, parsed FRESH here - at a
+        // genuine ad onset the first ad segment arrives WITH the discontinuity, while a
+        // talk-show disc lands on 'other' and must not fire (measured: 122 of 190 logged
+        // discs sat on talk segments). Timed (3) keeps its legacy floor-only behaviour
+        // (no disc fire); Off (0) never re-pins. Arm/cooldown bookkeeping is untouched
+        // so a live mode switch stays coherent.
         const int rmode = repin_mode_.load();
-        if (disc && hls_repin_armed_ && rmode == 1) {
+        bool discFire = false;
+        if (disc && hls_repin_armed_ && (rmode == 1 || rmode == 2)) {
+            bool discSpot = false, discPaid = false;
+            size_t dle = body.rfind("#EXTINF");
+            if (dle != std::string::npos) {
+                std::string dseg = body.substr(dle);
+                char dsp = 0;
+                size_t dp = dseg.find("song_spot=");
+                if (dp != std::string::npos) {
+                    size_t c = dp + 10;
+                    while (c < dseg.size() && (dseg[c] == '\\' || dseg[c] == '"')) ++c;
+                    if (c < dseg.size()) dsp = dseg[c];
+                }
+                bool dneg = dseg.find("spotInstanceId=\\\"-1\\\"") != std::string::npos ||
+                            dseg.find("spotInstanceId=\"-1\"")     != std::string::npos;
+                discSpot = (dsp == 'T');
+                discPaid = (dsp == 'T' && !dneg);
+            }
+            const uint32_t dnow = port::tickMs();
+            discFire = (rmode == 1) ? (discPaid || repinHardEvidence(dnow))
+                                    : (discPaid || discSpot || repinHardEvidence(dnow));
+        }
+        if (discFire) {
             hls_repin_pending_.store(true);
             hls_repin_armed_ = false;
             hls_repin_cooldown_until_ = port::tickMs() + 90000;   // ~one ad pod
@@ -603,6 +628,25 @@ bool StreamSource::hlsPollMedia() {
          hls_.target_dur_ms, (unsigned long long)media_seq, total, new_count, disc?1:0, hls_.pending.size(),
          (unsigned long long)newest_seq, next_play, edge_lag, edge_lag * (hls_.target_dur_ms / 1000.0),
          ring_sec, cls, pdt?1:0, digital_active_.load()?1:0, hls_repin_armed_?1:0);
+
+    // Live-Edge mode (f6-live-edge, F6 mode 4): follow the live edge the way a browser
+    // HLS engine does - DRIFT itself is the trigger, no ad-evidence, no floor timer,
+    // no disc logic. When playback falls >= EDGE_LAG_MAX segments behind the edge,
+    // re-anchor via the same pending/arm/cooldown path the other triggers use, so a
+    // burst of drift = one re-anchor then the 90s cooldown (cannot storm). A healthy
+    // stream rides at <=2 segments (measured), well under the threshold, so a normal
+    // show never fires. This is the mode that fixes the ad-free countdown drift: the
+    // web player stays on the current song because it never leaves the edge; mode 4
+    // reproduces that (including playing through ads at the edge - always-current is
+    // the point; the escape modes 1-3 keep their event-triggered meaning and their
+    // drift-tolerant stability).
+    if (have_seq && repin_mode_.load() == 4 && hls_repin_armed_ &&
+        edge_lag >= EDGE_LAG_MAX) {
+        hls_repin_pending_.store(true);
+        hls_repin_armed_ = false;
+        hls_repin_cooldown_until_ = port::tickMs() + 90000;
+        slog("hlsPollMedia: live-edge drift %lld segs behind -> re-anchor to edge", edge_lag);
+    }
     return true;
 }
 
@@ -861,6 +905,40 @@ static IHeartMfCls classifyIHeartManifest(const std::string& body,
 //          current song) -> committed only after holding 3 ticks.
 //   Live : anything else — boundary, disagreement, or a manifest "ad" while
 //          trackHistory is frozen (can't confirm) -> "<station> - LIVE" after 2 ticks.
+// ── Ad-evidence tracker (f6-repin-finalize) ──────────────────────────────────
+// Producer thread only. Ring-pruned to the evidence window; the (int32_t) diffs
+// are the wrap-safe tick comparison (LP64: never (long)(u32-u32)).
+void StreamSource::noteRepinEvidence(uint32_t now, bool isSpotSeg, bool paid, const std::string& cartcut) {
+    repin_cls_hist_.emplace_back(now, isSpotSeg);
+    while (!repin_cls_hist_.empty() &&
+           (int32_t)(now - repin_cls_hist_.front().first) > (int32_t)kRepinEvidenceWindowMs)
+        repin_cls_hist_.pop_front();
+    if (!cartcut.empty()) {
+        repin_cart_hist_.emplace_back(now, cartcut);
+        while (!repin_cart_hist_.empty() &&
+               (int32_t)(now - repin_cart_hist_.front().first) > (int32_t)kRepinEvidenceWindowMs)
+            repin_cart_hist_.pop_front();
+    }
+    if (paid) repin_paid_tick_ = now;
+}
+bool StreamSource::repinHardEvidence(uint32_t now) const {
+    if (repin_paid_tick_ && (int32_t)(now - repin_paid_tick_) <= (int32_t)kRepinEvidenceWindowMs)
+        return true;
+    // >=2 DISTINCT cartcutIds in the window = a real pod churning spots. Tiny deque,
+    // quadratic scan is fine (and avoids a <set> include).
+    for (size_t i = 0; i < repin_cart_hist_.size(); ++i)
+        for (size_t j = i + 1; j < repin_cart_hist_.size(); ++j)
+            if (repin_cart_hist_[i].second != repin_cart_hist_[j].second)
+                return true;
+    return false;
+}
+int StreamSource::repinSpotSegsInWindow(uint32_t now) const {
+    int n = 0;
+    for (const auto& p : repin_cls_hist_)
+        if (p.second && (int32_t)(now - p.first) <= (int32_t)kRepinEvidenceWindowMs) ++n;
+    return n;
+}
+
 void StreamSource::updateIHeartNowPlaying(const std::string& body) {
     std::string mfArtist, mfTitle;
     IHeartMfCls cls   = classifyIHeartManifest(body, mfArtist, mfTitle);
@@ -871,8 +949,10 @@ void StreamSource::updateIHeartNowPlaying(const std::string& body) {
     if (last_iheart_poll_ == 0 || nowtick - last_iheart_poll_ >= 9000) {
         last_iheart_poll_ = nowtick;
         long ended = -1;
-        iheart_th_cache_ = iheart_.resolve(url_) ? iheart_.pollNowPlaying(&ended) : std::string();
+        IHeartRadio::PollDiag thDiag;
+        iheart_th_cache_ = iheart_.resolve(url_) ? iheart_.pollNowPlaying(&ended, &thDiag) : std::string();
         iheart_th_ended_ = ended;
+        iheart_th_diag_  = thDiag;   // cache beside th/thEnded so the Record reads a consistent snapshot every tick
         // currentTrackMeta: the web player's own now-playing source. Polled while the
         // deep log is on (probe), OR in digital mode -- there ctm rides the same timeline
         // as the audio and carries the album-art URL we surface to Discord.
@@ -921,7 +1001,7 @@ void StreamSource::updateIHeartNowPlaying(const std::string& body) {
     tk.ctmEndedSecsAgo = iheart_ctm_.endedSecsAgo;
     tk.stationName     = iheart_.stationName();
     tk.repinArmed      = hls_repin_armed_;
-    tk.repinMode       = repin_mode_.load();   // F6: 0 off / 1 on / 2 smart (floor-timer threshold)
+    tk.repinMode       = repin_mode_.load();   // F6: 0 off / 1 ad-escape / 2 hybrid / 3 timed
     IHeartDecision d   = ih_sm_.tick(tk);
 
     // ── Deep-analysis capture (opt-in, Ctrl+A; no-op unless enabled). Records the
@@ -971,11 +1051,22 @@ void StreamSource::updateIHeartNowPlaying(const std::string& body) {
                 };
                 dr.spotInstanceId = attr("spotInstanceId");
                 dr.cartcutId      = attr("cartcutId");
+                // f6-repin-finalize: feed the ad-evidence tracker from this same parse.
+                // Runs every manifest tick regardless of the deep log being enabled -
+                // the re-pin gates below depend on it.
+                noteRepinEvidence(port::tickMs(), spot == 'T', dr.spotPaid, dr.cartcutId);
             }
         }
         dr.th        = iheart_th_cache_;
         dr.thEnded   = iheart_th_ended_;
         dr.thCurrent = d.thCurrent;
+        dr.thAccMaxStart = iheart_th_diag_.acceptedMaxStart;
+        dr.thNewestStart = iheart_th_diag_.newestAiredStart;
+        dr.thEntryCount  = iheart_th_diag_.entryCount;
+        dr.thChosenIdx   = iheart_th_diag_.chosenIdx;
+        dr.thFutureSkip  = iheart_th_diag_.futureSkipped;
+        dr.thHeldBy      = iheart_th_diag_.heldBy;
+        dr.repinArmed    = hls_repin_armed_;
         dr.tgtKind   = ihNowName(d.tgtKind);
         dr.tgtDisp   = d.tgtDisp;
         dr.stState   = ihNowName(d.stKind);
@@ -1008,15 +1099,33 @@ void StreamSource::updateIHeartNowPlaying(const std::string& body) {
         if (!is_lane_) IHeartDeepLog::emit(dr);
     }
 
-    // Live-floor stall -> live-edge re-pin. The SM owns the floor timer and decides;
-    // the caller still owns the shared armed/cooldown/pending atomics (also driven by
+    // Live-floor stall -> live-edge re-pin. The SM owns the floor timer and reports the
+    // expiry; the CALLER gates the actual fire on ad-evidence per the F6 mode
+    // (f6-repin-finalize). Duration alone cannot tell a 30-min talk show from a stuck ad
+    // pod - the old duration-only escape fired every ~170s through whole shows (87
+    // spurious re-handshakes measured on one day's air), while real pods show spot/ad
+    // segments in the timed window. Ad-Escape (1) = hard evidence only; Hybrid (2) =
+    // hard evidence OR >=2 spot/ad segments in the window; Timed (3) = legacy
+    // duration-only (documented: will thrash talk); Off (0) never fires (SM-side);
+    // Live-Edge (4) never fires HERE - its trigger is drift, in hlsPollMedia.
+    // The caller still owns the shared armed/cooldown/pending atomics (also driven by
     // the discontinuity path in hlsPollMedia), so both triggers share one owner.
     if (d.liveStallFired) {
-        hls_repin_pending_.store(true);
-        hls_repin_armed_ = false;
-        hls_repin_cooldown_until_ = port::tickMs() + 90000;
-        slog("updateIHeart: LIVE-floor stall %lus -> requesting live-edge re-pin",
-             (unsigned long)(d.liveStallElapsedMs / 1000));
+        const int      rm    = repin_mode_.load();
+        const uint32_t nowms = port::tickMs();
+        const bool     hard  = repinHardEvidence(nowms);
+        const int      spots = repinSpotSegsInWindow(nowms);
+        const bool     fire  = (rm == 3) || (rm == 1 && hard) || (rm == 2 && (hard || spots >= 2));
+        if (fire) {
+            hls_repin_pending_.store(true);
+            hls_repin_armed_ = false;
+            hls_repin_cooldown_until_ = port::tickMs() + 90000;
+            slog("updateIHeart: LIVE-floor stall %lus -> requesting live-edge re-pin (mode=%d hard=%d spots=%d)",
+                 (unsigned long)(d.liveStallElapsedMs / 1000), rm, hard ? 1 : 0, spots);
+        } else {
+            slog("updateIHeart: LIVE-floor stall %lus suppressed - no ad evidence (mode=%d hard=%d spots=%d)",
+                 (unsigned long)(d.liveStallElapsedMs / 1000), rm, hard ? 1 : 0, spots);
+        }
     }
 
     // Commit publish (caller owns now_playing_ / np_pub_q_ / the mutex).

@@ -40,7 +40,7 @@ enum class Pane      { DirBrowser, Playlist };
 enum class RightPane { Playlist, Visualizer, Help, TrackInfo, Bookmarks, Lyrics, About, Devices, EQ, Queue, Chapters, SearchResults };
 
 // Modal overlays drawn on top of the normal layout
-enum class UIOverlay { None, RipConfirm, MBSearch, RecPanel, ConvertScope, ConvertConfirm };
+enum class UIOverlay { None, RipConfirm, MBSearch, RecPanel, ConvertScope, ConvertConfirm, PlaylistFormat };
 
 class UIManager {
 public:
@@ -61,6 +61,10 @@ public:
     // getch() loop is blocked there, so without this the window is blank mid-drag).
     // Registered as PDCurses' window-resized callback; a no-op elsewhere.
     void onWinguiLiveResize();
+    // wingui only: repaint tick pumped from a timer inside Windows' modal
+    // move/size loop, so the marquee/spectrum keep animating during a title-bar
+    // move (WM_MOVE never fires the resize callback). Renders one tickFrame().
+    void onWinguiPaintTick();
     const std::string& currentDir() const { return current_dir_; }
 #ifdef PDCURSES
     // wingui only (Alt+Enter): toggle a borderless window that fills the monitor,
@@ -121,6 +125,11 @@ private:
     int  paneVisibleRows(WINDOW* w) const;
 
     void drawAll();
+    // popup-artifact-repaint: on overlay dismiss, mark stdscr (the gutter/insets layer
+    // a popup physically overwrites but whose ncurses buffer is unchanged) and every
+    // pane dirty, so the following drawAll() re-pushes exactly the clobbered cells in
+    // z-order without a clearok full-screen flash.
+    void repaintAfterOverlay();
     void drawTitleBar();
     void drawCwd();
     void drawDirBrowser();
@@ -141,8 +150,19 @@ private:
     void drawRipConfirm();
     void drawMBSearch();
     void drawRecPanel();   // stream-record R2: the [Rec] panel (^E)
-    void drawConvertScope();    // convert-core: pick scope (this file/folder/marked)
+    void drawConvertScope();    // convert-core: pick scope (this file/folder/marked/pane/playlist)
+    void drawPlaylistFormat();  // Shift+S on a playlist file: reformat to m3u8/pls/xspf, or Save as
     void drawConvertConfirm();  // convert-core: pick output format + quality
+    // One frame of the main loop's post-input body (marquee/viz/breath advance +
+    // the draw block), extracted so run() and the wingui modal-move paint tick
+    // render identically. See run() / onWinguiPaintTick.
+    void tickFrame();
+    // viz-live-under-overlay: stage the animated background panes (title/marquee,
+    // cwd, progress, and the spectrum when shown) without flushing; the caller
+    // flushes (doupdate, or an overlay draw fn's wrefresh compositing on top).
+    void drawAnimatedPanes();
+    // Dispatch the current modal overlay to its draw fn (each wrefreshes itself).
+    void drawOverlay();
     // Absolute path of browser entry idx, respecting the browser mode (favs/
     // recent entries are already absolute; normal-dir entries join current_dir_).
     // "" for pseudo-entries ("..", "[Drives]", ...) and drive/radio modes.
@@ -476,6 +496,8 @@ private:
 
     CDRipper    cd_ripper_;
     UIOverlay   ui_overlay_    = UIOverlay::None;
+    UIOverlay   overlay_drawn_ = UIOverlay::None;   // last overlay actually rendered; the
+                                                    // None-transition triggers repaintAfterOverlay()
     // Session rip-format selection (rip-format-select): seeded ONCE from
     // config_.rip_formats in the ctor, toggled by the modal's digit keys,
     // NEVER written back to config (the conf key is the default only).
@@ -491,7 +513,12 @@ private:
     // dir-change), the batch convert engine, and the convert overlay state.
     MarkSet    marked_;
     ConvertJob convert_job_;
-    int        convert_scope_ = 0;             // 1 = this file, 2 = folder, 3 = marked
+    int        convert_scope_ = 0;             // 1 file, 2 folder, 3 marked, 4 pane, 5 playlist file
+    std::string convert_pl_file_;              // [5]: the focused playlist file whose entries transcode
+    // Shift+S reformat popup (PlaylistFormat overlay): the focused playlist file to
+    // re-serialize into another container, and the format-row cursor.
+    std::string plexp_src_;                    // focused playlist file under the S popup
+    int         plexp_focus_ = 0;              // format focus: 0 m3u8 / 1 pls / 2 xspf
     std::string convert_src_dir_;              // folder scope: the dir to enumerate
     std::string convert_single_;               // file scope: the one source path
     RipFormat  convert_fmt_ = RipFormat::Flac; // single-select output format
@@ -527,17 +554,20 @@ private:
     // (timeout(80)). Initialised past the timeout so it is hidden at startup.
     int         theme_tag_ticks_ = 125;
 
-#ifndef _WIN32
-    // Cmdline echo (KEPT past slice 5): a real notify-send toast now renders on
-    // a Linux desktop with a notification daemon, but headless/no-daemon Linux
-    // (WSL2, CI, SSH) shows nothing — so every showTrackToast message ALSO
-    // surfaces in the cmdline bar for a few seconds, the always-visible
-    // graceful-degradation surface (otherwise toast-only flows like ^B "logged
-    // in as" / ^G "approve in browser" look dead). Same shape as rip_status_/
-    // rip_msg_ticks_.
+    // Cmdline status line (both platforms). On Linux it is also the toast echo
+    // (KEPT past slice 5): a real notify-send toast renders on a desktop with a
+    // notification daemon, but headless/no-daemon Linux (WSL2, CI, SSH) shows
+    // nothing — so every showTrackToast message ALSO surfaces here for a few
+    // seconds (otherwise toast-only flows like ^B "logged in as" / ^G "approve
+    // in browser" look dead). Same shape as rip_status_/rip_msg_ticks_.
+    // The iHeart mode confirms (Ctrl+K feed / F6 re-pin) set it DIRECTLY on both
+    // platforms — they are in-place mode state, not a notification, so they never
+    // go through the toast path — and draw in yellow (CP_MODE) via the flag below;
+    // every other setter resets the flag so the next message goes back to the
+    // normal status colour.
     std::string status_msg_;
     int         status_msg_ticks_ = 0;
-#endif
+    bool        status_msg_yellow_ = false;
 
     // Transient warning on the cmdline bar (both platforms), e.g. "stop playback
     // first to edit tags". Rendered red in drawCmdLine() and expired after ~5s in
@@ -666,12 +696,6 @@ private:
     int    scanner_dir_ = 1;         // +1 / -1 sweep direction
     std::chrono::steady_clock::time_point scanner_last_ {};  // last wall-clock advance
 
-    // iHeart feed/re-pin mode indicator (drawProgress): a Ctrl+K or F6 toggle stamps
-    // this with the wall-clock; the tag shows for kModeTagMs then clears, giving the
-    // lower-left back to the now-playing text. Non-blocking (checked in the draw loop).
-    static constexpr long kModeTagMs = 5000;   // ~5s confirm-on-change window
-    std::chrono::steady_clock::time_point mode_tag_at_ {};   // last mode toggle (epoch == never)
-
     // Drive browser
     bool in_drive_list_ = false;
     static std::vector<std::string> listDrives();
@@ -698,7 +722,7 @@ private:
     static constexpr short CP_VIZ_LOW_B  = 15;
     static constexpr short CP_VIZ_MID_B  = 16;
     static constexpr short CP_VIZ_HIGH_B = 17;
-    static constexpr short CP_MODE       = 18;  // iHeart feed/re-pin indicator: yellow on default bg
+    static constexpr short CP_MODE       = 18;  // iHeart mode confirms (Ctrl+K/F6) on the cmdline: yellow on default bg
 
     // Art half-block cells allocate curses colours and pairs above the theme's
     // fixed CP_* range. The pair table is global; a collision here would let a

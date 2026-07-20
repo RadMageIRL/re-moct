@@ -104,11 +104,16 @@ extern "C" void PDC_set_window_resized_callback(void (*)(void));
 extern "C" HWND PDC_hWnd;   // wingui's GDI window handle (pdcscrn.c)
 extern "C" int PDC_cxChar, PDC_cyChar;   // wingui glyph cell size in px (pdcscrn.c)
 extern "C" int PDC_skip_size_snap;       // wingui: suppress the WM_SIZE cell-snap (pdcscrn.c)
+// wingui (pdcscrn.c): a callback pumped by a timer INSIDE Windows' modal move/size
+// loop, so the TUI animates during a title-bar move (WM_MOVE, which never fires the
+// resize callback above). Sibling of the resize callback.
+extern "C" void PDC_set_paint_tick_callback(void (*)(void));
 
 namespace {
 // Trampoline for the C resize callback -> the live UIManager (single UI instance).
 UIManager* g_wingui_ui = nullptr;
 void winguiResizeTrampoline() { if (g_wingui_ui) g_wingui_ui->onWinguiLiveResize(); }
+void winguiPaintTickTrampoline() { if (g_wingui_ui) g_wingui_ui->onWinguiPaintTick(); }
 
 // Make the wingui GDI window's title bar / border follow the OS light/dark theme
 // (Windows 10 20H1+). Reads HKCU AppsUseLightTheme (0 = dark) and applies
@@ -270,6 +275,9 @@ UIManager::UIManager(PlaylistManager& playlist, AudioManager& audio,
     // Repaint live during the modal resize-drag (see onWinguiLiveResize).
     g_wingui_ui = this;
     PDC_set_window_resized_callback(&winguiResizeTrampoline);
+    // Repaint live during a title-bar MOVE too (WM_MOVE fires no resize callback);
+    // a modal-loop timer drives this (see onWinguiPaintTick).
+    PDC_set_paint_tick_callback(&winguiPaintTickTrampoline);
 #endif
     setlocale(LC_ALL, "");
     cbreak();
@@ -348,6 +356,7 @@ void UIManager::showTrackToast(const std::string& title, const std::string& arti
     status_msg_ = sanitizeForDisplay(artist.empty() ? title
                                                     : artist + " - " + title);
     status_msg_ticks_ = 0;
+    status_msg_yellow_ = false;
     redraw_needed_.store(true);
 #endif
 }
@@ -831,8 +840,11 @@ void UIManager::createWindows() {
     win_dir_      = newwin(pane_rows, left_cols,    2,              dir_x);
     win_playlist_ = newwin(pane_rows, right_cols,   2,              right_x);
     if (strip)
-        // Awesome full-width Spectrum strip, below the panes.
-        win_viz_ = newwin(viz_h, screen_cols_, 2 + pane_rows, 0);
+        // Awesome Spectrum strip, below the panes and aligned to the pane block:
+        // left edge == dir's left border (dir_x), width == left pane + gutter + right
+        // pane, so the right edge lands on the playlist's right border (screen_cols_-2).
+        // The middle gutter is spanned so the bar field is one continuous strip.
+        win_viz_ = newwin(viz_h, left_cols + gut + right_cols, 2 + pane_rows, dir_x);
     else if (!aw)
         // Classic right-pane visualizer overlay (same geometry as the queue).
         win_viz_ = newwin(pane_rows, right_cols, 2, right_x);
@@ -1464,29 +1476,6 @@ void UIManager::run() {
         if (right_pane_ == RightPane::Lyrics)
             redraw_needed_.store(true);
 
-        // Force redraw when marquee is scrolling so title updates every tick
-        {
-            const auto& track = audio_.currentTrack();
-            std::string np = track.artist.empty() ? track.title : track.artist + " - " + track.title;
-            std::string right_approx = "  RE-MOCT v" REMOCT_VERSION " ";
-            int max_np = screen_cols_ - (int)right_approx.size() - 4;
-            if (!np.empty() && max_np > 0 && (int)np.size() > max_np)
-                redraw_needed_.store(true);
-        }
-
-        // Advance shared text scroll offset on wall-clock timer (~300ms per step)
-        // Using clock time instead of tick count so keypress rate doesn't affect speed
-        {
-            static auto last_scroll = std::chrono::steady_clock::now();
-            auto now = std::chrono::steady_clock::now();
-            if (std::chrono::duration_cast<std::chrono::milliseconds>(
-                    now - last_scroll).count() >= 300) {
-                last_scroll = now;
-                ++text_scroll_offset_;
-                redraw_needed_.store(true);
-            }
-        }
-
         // Sleep timer check
         if (sleep_minutes_ > 0) {
             auto elapsed = std::chrono::duration_cast<std::chrono::minutes>(
@@ -1592,14 +1581,12 @@ void UIManager::run() {
             warn_msg_ticks_ = 0;
             redraw_needed_.store(true);
         }
-#ifndef _WIN32
-        // Expire the toast-fallback status line (same cadence as rip_status_).
+        // Expire the cmdline status line (same cadence as rip_status_).
         if (!status_msg_.empty() && ++status_msg_ticks_ > 60) {
             status_msg_.clear();
             status_msg_ticks_ = 0;
             redraw_needed_.store(true);
         }
-#endif
         {
             int cur = (int)playlist_.current();
             if (cur != last_playlist_current_for_sync_) {
@@ -1688,71 +1675,152 @@ void UIManager::run() {
             } catch (...) {}
         }
 
-        // Always recompute viz bins so bars animate smoothly (Classic right-pane
-        // overlay OR the Awesome full-width strip).
-        if (right_pane_ == RightPane::Visualizer || vizStripShown())
-            computeVizBins();
+        tickFrame();
+    }
+}
 
-        // Animate the breathing progress head — only in Awesome mode while playing,
-        // so Classic mode keeps its repaint-on-change cadence (no extra cost).
-        if (config_.awesome_mode && audio_.state() == PlaybackState::Playing)
+// wingui-move-repaint: one frame of the main loop's post-input body - advance the
+// per-tick animation (marquee scroll, viz bins, Awesome progress breath) and run the
+// draw block. Extracted from run() so the modal-move paint tick (onWinguiPaintTick)
+// renders identically to a normal loop tick - overlay compositing and the input-bar
+// cursor re-home included, no divergence.
+void UIManager::tickFrame() {
+    // Force redraw when marquee is scrolling so title updates every tick
+    {
+        const auto& track = audio_.currentTrack();
+        std::string np = track.artist.empty() ? track.title : track.artist + " - " + track.title;
+        std::string right_approx = "  RE-MOCT v" REMOCT_VERSION " ";
+        int max_np = screen_cols_ - (int)right_approx.size() - 4;
+        if (!np.empty() && max_np > 0 && (int)np.size() > max_np)
             redraw_needed_.store(true);
+    }
 
-        // Terminal too small: resizeWindows() destroyed the pane windows and
-        // returned without recreating them (see its size guard). Both draw paths
-        // below dereference those windows (getmaxyx / wnoutrefresh), which crashes
-        // on a null WINDOW*. Paint a safe notice straight onto stdscr and skip all
-        // pane drawing until the terminal grows back to a usable size.
-        if (!win_dir_ || !win_title_ || !win_playlist_ ||
-            !win_progress_ || !win_cmdline_) {
-            werase(stdscr);
-            if (screen_rows_ > 0 && screen_cols_ > 0) {
-                const char* m1 = "Terminal too small";
-                const char* m2 = "(min 40 x 9)";
-                int y  = screen_rows_ / 2;
-                int x1 = (screen_cols_ - (int)strlen(m1)) / 2; if (x1 < 0) x1 = 0;
-                int x2 = (screen_cols_ - (int)strlen(m2)) / 2; if (x2 < 0) x2 = 0;
-                mvaddnstr(y, x1, m1, screen_cols_);
-                if (y + 1 < screen_rows_) mvaddnstr(y + 1, x2, m2, screen_cols_);
-            }
-            wnoutrefresh(stdscr);
-            doupdate();
-            redraw_needed_.store(false);
-        } else
-        if (redraw_needed_.load()) {
-            // slice 6: overlay dispatch is common — RipConfirm is live on Linux
-            // (^Y rip). MBSearch draw/input handlers are portable too; the overlay
-            // just never opens on Linux because ^F (case 6) stays gated.
-            if (ui_overlay_ != UIOverlay::None) {
-                if (ui_overlay_ == UIOverlay::RipConfirm) drawRipConfirm();
-                else if (ui_overlay_ == UIOverlay::MBSearch) drawMBSearch();
-                else if (ui_overlay_ == UIOverlay::RecPanel) drawRecPanel();
-                else if (ui_overlay_ == UIOverlay::ConvertScope) drawConvertScope();
-                else if (ui_overlay_ == UIOverlay::ConvertConfirm) drawConvertConfirm();
-                redraw_needed_.store(false);
-            } else {
-            drawAll();
-            redraw_needed_.store(false);
-            }
-        } else {
-            if (ui_overlay_ != UIOverlay::None) {
-                // No change — modal stays on screen, do nothing
-            } else {
-            drawTitleBar();
-            drawCwd();
-            drawProgress();
-            // Animate the spectrum: Classic right-pane overlay OR the Awesome strip.
-            if (right_pane_ == RightPane::Visualizer || vizStripShown()) {
-                drawVisualizer();
-                wnoutrefresh(win_viz_);
-            }
-            wnoutrefresh(win_title_);
-            wnoutrefresh(win_cwd_);
-            wnoutrefresh(win_progress_);
-            doupdate();
-            }
+    // Advance shared text scroll offset on wall-clock timer (~300ms per step)
+    // Using clock time instead of tick count so keypress rate doesn't affect speed
+    {
+        static auto last_scroll = std::chrono::steady_clock::now();
+        auto now = std::chrono::steady_clock::now();
+        if (std::chrono::duration_cast<std::chrono::milliseconds>(
+                now - last_scroll).count() >= 300) {
+            last_scroll = now;
+            ++text_scroll_offset_;
+            redraw_needed_.store(true);
         }
     }
+
+    // Always recompute viz bins so bars animate smoothly (Classic right-pane
+    // overlay OR the Awesome full-width strip).
+    if (right_pane_ == RightPane::Visualizer || vizStripShown())
+        computeVizBins();
+
+    // Animate the breathing progress head — only in Awesome mode while playing,
+    // so Classic mode keeps its repaint-on-change cadence (no extra cost).
+    if (config_.awesome_mode && audio_.state() == PlaybackState::Playing)
+        redraw_needed_.store(true);
+
+    // Terminal too small: resizeWindows() destroyed the pane windows and
+    // returned without recreating them (see its size guard). Both draw paths
+    // below dereference those windows (getmaxyx / wnoutrefresh), which crashes
+    // on a null WINDOW*. Paint a safe notice straight onto stdscr and skip all
+    // pane drawing until the terminal grows back to a usable size.
+    if (!win_dir_ || !win_title_ || !win_playlist_ ||
+        !win_progress_ || !win_cmdline_) {
+        werase(stdscr);
+        if (screen_rows_ > 0 && screen_cols_ > 0) {
+            const char* m1 = "Terminal too small";
+            const char* m2 = "(min 40 x 9)";
+            int y  = screen_rows_ / 2;
+            int x1 = (screen_cols_ - (int)strlen(m1)) / 2; if (x1 < 0) x1 = 0;
+            int x2 = (screen_cols_ - (int)strlen(m2)) / 2; if (x2 < 0) x2 = 0;
+            mvaddnstr(y, x1, m1, screen_cols_);
+            if (y + 1 < screen_rows_) mvaddnstr(y + 1, x2, m2, screen_cols_);
+        }
+        wnoutrefresh(stdscr);
+        doupdate();
+        redraw_needed_.store(false);
+    } else
+    if (redraw_needed_.load()) {
+        // slice 6: overlay dispatch is common — RipConfirm is live on Linux
+        // (^Y rip). MBSearch draw/input handlers are portable too; the overlay
+        // just never opens on Linux because ^F (case 6) stays gated.
+        if (ui_overlay_ != UIOverlay::None) {
+            // viz-live-under-overlay: composite the animated panes UNDER the
+            // popup so the marquee/spectrum keep moving behind it, then redraw
+            // the overlay last (its wrefresh flushes with the popup written
+            // last -> stays on top, one doupdate, no flicker).
+            drawAnimatedPanes();
+            drawOverlay();
+            overlay_drawn_ = ui_overlay_;   // remember what's on screen for the dismiss repaint
+            redraw_needed_.store(false);
+        } else {
+        // popup-artifact-repaint: any overlay -> None transition (all 5 types, all
+        // 13 dismiss sites) lands here; restore the cells the popup clobbered before
+        // the full redraw. Cheap no-op when no overlay was up.
+        if (overlay_drawn_ != UIOverlay::None) { repaintAfterOverlay(); overlay_drawn_ = UIOverlay::None; }
+        drawAll();
+        redraw_needed_.store(false);
+        }
+    } else {
+        if (ui_overlay_ != UIOverlay::None) {
+            // Quiet tick with a popup up: keep the animated panes alive under it
+            // (same composite as above). doupdate diffing makes this a no-op when
+            // nothing actually changed, so idle playback never busy-repaints.
+            drawAnimatedPanes();
+            drawOverlay();
+        } else {
+        drawAnimatedPanes();
+        doupdate();
+        }
+    }
+}
+
+// wingui-move-repaint: fires from a timer inside Windows' modal move/size loop
+// (WM_ENTERSIZEMOVE -> SetTimer), on the UI thread while getch() is blocked. Render
+// one frame so the marquee/spectrum keep animating while the title bar is held.
+// Unlike onWinguiLiveResize this must NOT resizeWindows() - a move has no size
+// change. Reentrancy-guarded (same-thread bool) exactly like onWinguiLiveResize.
+void UIManager::onWinguiPaintTick() {
+    static bool in_paint_tick = false;
+    if (in_paint_tick) return;
+    in_paint_tick = true;
+    tickFrame();
+    in_paint_tick = false;
+}
+
+// viz-live-under-overlay: the animated background pane set - staged (wnoutrefresh)
+// but NOT flushed here, so the caller controls the single doupdate (either its own,
+// or an overlay draw fn's wrefresh compositing the popup on top). This is the exact
+// set the no-overlay light path used to inline; kept in one place so "what animates"
+// has one definition. Dir/playlist panes are deliberately excluded (they don't
+// animate; repaintAfterOverlay restores them on dismiss).
+void UIManager::drawAnimatedPanes() {
+    drawTitleBar();
+    drawCwd();
+    drawProgress();
+    // Animate the spectrum: Classic right-pane overlay OR the Awesome strip.
+    if (right_pane_ == RightPane::Visualizer || vizStripShown()) {
+        drawVisualizer();
+        wnoutrefresh(win_viz_);
+    }
+    wnoutrefresh(win_title_);
+    wnoutrefresh(win_cwd_);
+    wnoutrefresh(win_progress_);
+    // Input bar open: the pane refreshes above leave the hardware cursor parked in
+    // the progress/spectrum window, so with curs_set(1) it blinks in the panes
+    // instead of the text field. Re-stage the cmdline LAST to re-home it. drawAll()
+    // already does this; this patches the quiet-tick path (reproduces as "straight
+    // to Shift+S at startup, no signal"). No-op under a popup (goto_active_ is false
+    // then, so the overlay-composite callers are unaffected).
+    if (goto_active_) drawCmdLine();   // -> drawGotoBar() re-wmoves + wnoutrefresh(win_cmdline_)
+}
+
+void UIManager::drawOverlay() {
+    if (ui_overlay_ == UIOverlay::RipConfirm) drawRipConfirm();
+    else if (ui_overlay_ == UIOverlay::MBSearch) drawMBSearch();
+    else if (ui_overlay_ == UIOverlay::RecPanel) drawRecPanel();
+    else if (ui_overlay_ == UIOverlay::ConvertScope) drawConvertScope();
+    else if (ui_overlay_ == UIOverlay::ConvertConfirm) drawConvertConfirm();
+    else if (ui_overlay_ == UIOverlay::PlaylistFormat) drawPlaylistFormat();
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1887,6 +1955,23 @@ void UIManager::computeVizBins() {
 // ─────────────────────────────────────────────────────────────────────────────
 // Drawing
 // ─────────────────────────────────────────────────────────────────────────────
+// popup-artifact-repaint: an overlay window physically overwrites stdscr's on-screen
+// cells - the inter-pane gutter, outer insets, and any cell no pane covers ARE stdscr
+// (Awesome fills it with CP_DIM; Classic with pair 0). But ncurses's stdscr BUFFER is
+// unchanged by the popup, so a plain wnoutrefresh(stdscr) does not re-push those cells
+// and the popup's leftovers persist in the gutter (Ctrl+L clears them, but via
+// clearok+werase = a full-screen flash). On dismiss, mark stdscr AND every pane dirty
+// so the drawAll() that follows re-pushes exactly the clobbered region in z-order
+// (stdscr background first, panes over) with drawAll's single wnoutrefresh+doupdate -
+// no clearok, no flash. Panes also self-heal via their per-frame redraw; stdscr is the
+// layer that otherwise never repaints, so touchwin(stdscr) is the load-bearing call.
+void UIManager::repaintAfterOverlay() {
+    if (stdscr) touchwin(stdscr);
+    for (WINDOW* w : { win_title_, win_cwd_, win_dir_, win_playlist_,
+                       win_viz_, win_progress_, win_cmdline_ })
+        if (w) touchwin(w);
+}
+
 void UIManager::drawAll() {
     // Backdrop: refresh stdscr first so the inter-pane gutter, outer insets, and any
     // cell no subwindow covers show the themed base (Awesome) or terminal default
@@ -2946,8 +3031,14 @@ void UIManager::drawVisualizer() {
     // than the 64 DSP bins, each bar's level is linearly INTERPOLATED across the bins,
     // so every bar is distinct; the sub-slot remainder is a tiny centred margin.
     const int bar_w = 1, gap = 1, slot = bar_w + gap;
-    const int n_bars  = std::clamp(bar_area_cols / slot, 1, 4 * VIZ_BINS);
-    const int x_start = 1 + std::max(0, (bar_area_cols - n_bars * slot) / 2);
+    // Count the last bar with no trailing gap (drawn width == 2*n_bars - 1); the
+    // old n_bars*slot counted a phantom trailing gap that fell off the right edge,
+    // leaving an empty slot pinned there at even widths. Center on the real drawn
+    // width and push any single leftover column LEFT so the rightmost bar stays
+    // flush at the right border.
+    const int n_bars  = std::clamp((bar_area_cols + gap) / slot, 1, 4 * VIZ_BINS);
+    const int used    = n_bars * slot - gap;                              // = 2*n_bars - 1
+    const int x_start = 1 + std::max(0, (bar_area_cols - used + 1) / 2);   // slack -> left, right flush
 
     for (int b = 0; b < n_bars; ++b) {
         const int x0 = x_start + b * slot;
@@ -3104,6 +3195,7 @@ void UIManager::drawHelp() {
         { "Ctrl+T",         "Toggle Classic / Awesome theme" },
         { "F2",             "Spectrum style: classic / 80s LED"   },
         { "F3",             "Follow the playing track (cursor tracks the song)" },
+        { "F6",             "iHeart re-pin: off / ad-escape / hybrid / timed / live-edge" },
         { "F7  /  F8",      "Awesome theme: previous / next" },
         { "F  (Shift+F)",   "Toggle file-type column (FLAC/MP3/...) in the playlist" },
         { "F12",            "Refresh the [Drives] list (pick up hot-plugged drives)" },
@@ -4693,30 +4785,7 @@ void UIManager::drawProgress() {
         right += "  vol:" + std::to_string((int)(audio_.volume()*100.0f+0.5f)) + "%";
         std::string left = title.empty() ? "(live stream)" : title;
 
-        // iHeart feed/re-pin mode indicator (Section C): a yellow tag at the lower-left,
-        // "<feed> - <repin>" e.g. "digital - smart" / "raw - off". Confirm-on-change: it
-        // shows only for ~kModeTagMs after a Ctrl+K/F6 toggle (mode_tag_at_), then clears
-        // so the now-playing title reoccupies the space. iHeart streams only (host sniff
-        // on the revma HLS domain); the title is shifted right by the tag width while it
-        // shows. Empty tag (idle, or non-iHeart) -> byte-identical to the plain layout.
-        std::string modeTag;
-        {
-            using namespace std::chrono;
-            const long sinceMs = (mode_tag_at_.time_since_epoch().count() == 0)
-                ? kModeTagMs + 1   // never toggled -> outside the window
-                : (long)duration_cast<milliseconds>(steady_clock::now() - mode_tag_at_).count();
-            if (sinceMs < kModeTagMs &&
-                audio_.streamUrl().find("ihrhls") != std::string::npos) {   // iHeart HLS host, within window
-                const char* rp = config_.repin_mode == 0 ? "off"
-                               : config_.repin_mode == 1 ? "on" : "smart";
-                modeTag = std::string(config_.prefer_digital_stream ? "digital" : "raw")
-                        + " - " + rp;
-            }
-        }
-        const int tag_x   = 1;
-        const int tag_w   = modeTag.empty() ? 0 : (int)modeTag.size() + 2;  // +2 gap after the tag
-        const int title_x = tag_x + tag_w;              // title starts past the tag (== 1 when no tag)
-
+        const int title_x = 1;
         const int right_w = (int)right.size();          // ASCII -> byte width == display width
         const int right_x = cols - right_w - 1;         // first col of the right block
         int left_cap = right_x - 1 - title_x;           // keep >=1 blank col before the right block
@@ -4725,11 +4794,6 @@ void UIManager::drawProgress() {
         const int left_w   = dispWidth(left);
         const int left_end = title_x + left_w;          // first free col past the title
 
-        if (!modeTag.empty()) {
-            wattron(win_progress_, COLOR_PAIR(CP_MODE) | A_BOLD);
-            mvwaddstr(win_progress_, 0, tag_x, modeTag.c_str());
-            wattroff(win_progress_, COLOR_PAIR(CP_MODE) | A_BOLD);
-        }
         wattron(win_progress_, COLOR_PAIR(CP_TITLE));
         if (left_w > 0) {
             std::wstring wl = utf8_to_wide(left);
@@ -4740,7 +4804,7 @@ void UIManager::drawProgress() {
         wattroff(win_progress_, COLOR_PAIR(CP_TITLE));
 
         // Scanner track = free cells between the title and the right block, 1-col
-        // padded each side so the bright head never touches text/tag. If the title
+        // padded each side so the bright head never touches text. If the title
         // fills the gap (long song, narrow window) there's no room -> draw nothing,
         // exactly the graceful-collapse the spectrum strip uses.
         const int track_x0 = left_end + 1;
@@ -4849,16 +4913,17 @@ void UIManager::drawCmdLine() {
         wnoutrefresh(win_cmdline_);
         return;
     }
-#ifndef _WIN32
-    // Toast fallback (see UIManager.h) — drawn exactly like rip_status_.
+    // Status line (see UIManager.h) — drawn exactly like rip_status_, except
+    // the iHeart mode confirms (Ctrl+K/F6) draw in yellow so they read as mode state.
+    // Both platforms: mode confirms are in-place status, never a toast.
     if (!status_msg_.empty()) {
-        wattron(win_cmdline_, COLOR_PAIR(CP_STATUS_OK) | A_BOLD);
+        const short sm_pair = status_msg_yellow_ ? CP_MODE : CP_STATUS_OK;
+        wattron(win_cmdline_, COLOR_PAIR(sm_pair) | A_BOLD);
         mvwaddnstr(win_cmdline_, 0, 1, status_msg_.c_str(), screen_cols_ - 2);
-        wattroff(win_cmdline_, COLOR_PAIR(CP_STATUS_OK) | A_BOLD);
+        wattroff(win_cmdline_, COLOR_PAIR(sm_pair) | A_BOLD);
         wnoutrefresh(win_cmdline_);
         return;
     }
-#endif
     // slice 6: MB/rip status on the cmdline is common — CD lookup (^R) and rip
     // (^Y) progress now render on Linux too. On Linux this runs AFTER the toast-
     // fallback above; on Windows there is no toast-fallback block, so this is the
@@ -5730,6 +5795,56 @@ void UIManager::handleInput(int ch) {
             convert_scope_ = 3; convert_focus_ = 0;
             ui_overlay_ = UIOverlay::ConvertConfirm; redraw_needed_.store(true); return;
         }
+        if (ch == '4' && playlist_.size() > 0) {   // audio transcode: live pane entries
+            convert_scope_ = 4; convert_focus_ = 0;
+            ui_overlay_ = UIOverlay::ConvertConfirm; redraw_needed_.store(true); return;
+        }
+        if (ch == '5' && !convert_pl_file_.empty()) {  // audio transcode: focused playlist file
+            convert_scope_ = 5; convert_focus_ = 0;
+            ui_overlay_ = UIOverlay::ConvertConfirm; redraw_needed_.store(true); return;
+        }
+        return;   // modal
+    }
+
+    // ── Shift+S reformat popup (playlist file under the browser cursor) ──────
+    //    Reformat the focused playlist file into another container: pick a format
+    //    (preview shows where it lands, auto-suffixed, never overwrites), or [S]
+    //    to drop into the normal pane-save bar. Scratch-load keeps the live pane
+    //    untouched; the serializers skip CD/stream entries.
+    if (ui_overlay_ == UIOverlay::PlaylistFormat) {
+        namespace fs = std::filesystem;
+        static const char* kPlExts[] = { ".m3u8", ".pls", ".xspf" };
+        if (ch == 'n' || ch == 'N' || ch == 27) {
+            ui_overlay_ = UIOverlay::None; redraw_needed_.store(true); return;
+        }
+        if (ch == 's' || ch == 'S') {          // Save as... -> the normal pane save bar
+            ui_overlay_ = UIOverlay::None; redraw_needed_.store(true);
+            openInputBar(InputMode::SaveM3U, (fs::path(current_dir_) / "playlist.m3u").string());
+            return;
+        }
+        if (ch >= '1' && ch <= '3') { plexp_focus_ = ch - '1'; redraw_needed_.store(true); return; }
+        if (ch == KEY_UP || ch == KEY_DOWN) {
+            plexp_focus_ = (plexp_focus_ + (ch == KEY_DOWN ? 1 : 2)) % 3;
+            redraw_needed_.store(true); return;
+        }
+        if (ch == '\n' || ch == '\r' || ch == KEY_ENTER) {
+            const std::string ext = kPlExts[plexp_focus_];
+            fs::path dir = fs::path(plexp_src_).parent_path();
+            std::string stem = fs::path(plexp_src_).stem().string();
+            fs::path dst = dir / (stem + ext);
+            for (int suf = 1; fs::exists(dst) && suf < 100; ++suf)      // never overwrite
+                dst = dir / (stem + "-" + std::to_string(suf) + ext);
+            PlaylistManager scratch;                                    // off the live pane by design
+            int n = scratch.loadPlaylist(plexp_src_);
+            bool ok = n > 0 && scratch.savePlaylist(dst.string());
+            ui_overlay_ = UIOverlay::None; redraw_needed_.store(true);
+            if (!ok)
+                showTrackToast("Playlist", n == 0 ? "Nothing to reformat" : "Write failed", "");
+            else
+                showTrackToast("Playlist -> " + dst.filename().string(),
+                               std::to_string(n) + (n == 1 ? " entry" : " entries"), "");
+            return;
+        }
         return;   // modal
     }
 
@@ -5820,6 +5935,28 @@ void UIManager::handleInput(int ch) {
                     pairs.push_back({ s, convertDstPath(s, convert_fmt_) });
                 started = convert_job_.startFiles(std::move(pairs), convert_fmt_, opt);
                 if (started) marked_.clear();   // consumed: clear the marked set
+            } else if (convert_scope_ == 4) {                       // live pane, audio transcode
+                std::vector<ConvertPair> pairs;
+                for (std::size_t i = 0; i < playlist_.size(); ++i) {
+                    const std::string& s = playlist_.at(i).path;
+                    if (isCDTrackPath(s) || isStreamPath(s)) continue;   // skip radio/CD
+                    if (!convertSupportedInput(s)) continue;             // decodable only
+                    pairs.push_back({ s, convertDstPath(s, convert_fmt_) });
+                }
+                started = !pairs.empty()
+                        && convert_job_.startFiles(std::move(pairs), convert_fmt_, opt);
+            } else if (convert_scope_ == 5 && !convert_pl_file_.empty()) {  // focused playlist file
+                PlaylistManager scratch;                            // off the live pane by design
+                int n = scratch.loadPlaylist(convert_pl_file_);
+                std::vector<ConvertPair> pairs;
+                for (int i = 0; n > 0 && i < (int)scratch.size(); ++i) {
+                    const std::string& s = scratch.at((std::size_t)i).path;
+                    if (isCDTrackPath(s) || isStreamPath(s)) continue;
+                    if (!convertSupportedInput(s)) continue;
+                    pairs.push_back({ s, convertDstPath(s, convert_fmt_) });
+                }
+                started = !pairs.empty()
+                        && convert_job_.startFiles(std::move(pairs), convert_fmt_, opt);
             }
             ui_overlay_ = UIOverlay::None;
             if (started) { rip_status_ = "Converting..."; rip_msg_ticks_ = 0; }
@@ -6307,9 +6444,12 @@ void UIManager::handleInput(int ch) {
             config_.prefer_digital_stream = !config_.prefer_digital_stream;
             config_.save();
             audio_.setPreferDigital(config_.prefer_digital_stream);
-            // Flash the lower-left feed/re-pin mode indicator for ~5s (confirm-on-change),
-            // then it clears and the now-playing text reoccupies the space.
-            mode_tag_at_ = std::chrono::steady_clock::now();
+            // Confirm ONCE, on the cmdline status row, in yellow — both platforms,
+            // never a toast (same surface as F6, the one place mode changes report).
+            status_msg_ = config_.prefer_digital_stream ? "Feed: digital (web player)"
+                                                        : "Feed: raw broadcast";
+            status_msg_ticks_ = 0;
+            status_msg_yellow_ = true;
             redraw_needed_.store(true);
             if (audio_.streamMode())                 // reconnect now so it takes effect
                 audio_.beginStream(audio_.streamUrl());
@@ -6358,6 +6498,7 @@ void UIManager::handleInput(int ch) {
 #ifndef _WIN32
             status_msg_ = config_.viz_led ? "Spectrum: 80s LED" : "Spectrum: classic bars";
             status_msg_ticks_ = 0;
+            status_msg_yellow_ = false;
 #else
             showTrackToast(config_.viz_led ? "Spectrum: 80s LED" : "Spectrum: classic bars", "", "");
 #endif
@@ -6373,16 +6514,24 @@ void UIManager::handleInput(int ch) {
             showTrackToast(config_.follow_playing ? "Follow playing: ON"
                                                   : "Follow playing: OFF", "", "");
             break;
-        case KEY_F(6):    // cycle iHeart re-pin mode: off -> on -> smart (persisted)
+        case KEY_F(6): {  // cycle iHeart re-pin mode: off -> ad-escape -> hybrid -> timed -> live-edge (persisted)
             // Feed (Ctrl+K) and re-pin behaviour are independent axes; F6 changes only
             // the re-pin half. Read live by the producer/SM, so no reconnect is needed.
-            // Flash the lower-left mode indicator for ~5s (confirm-on-change).
-            config_.repin_mode = (config_.repin_mode + 1) % 3;
+            // Confirm ONCE, on the cmdline status row, in yellow — both platforms,
+            // never a toast (it is in-place mode state, not a notification).
+            config_.repin_mode = (config_.repin_mode + 1) % 5;
             config_.save();
             audio_.setRepinMode(config_.repin_mode);
-            mode_tag_at_ = std::chrono::steady_clock::now();
+            const char* rp6 = config_.repin_mode == 0 ? "off"
+                            : config_.repin_mode == 1 ? "ad-escape"
+                            : config_.repin_mode == 2 ? "hybrid"
+                            : config_.repin_mode == 3 ? "timed" : "live-edge";
+            status_msg_ = std::string("Re-pin: ") + rp6;
+            status_msg_ticks_ = 0;
+            status_msg_yellow_ = true;
             redraw_needed_.store(true);
             break;
+        }
         case KEY_F(7):    // previous Awesome named palette (F7)
         case KEY_F(8): {  // next Awesome named palette (F8)
             if (!config_.awesome_mode) {
@@ -6391,6 +6540,7 @@ void UIManager::handleInput(int ch) {
 #ifndef _WIN32
                 status_msg_ = "Themes live in Awesome mode (Ctrl+T)";
                 status_msg_ticks_ = 0;
+                status_msg_yellow_ = false;
                 redraw_needed_.store(true);
 #else
                 showTrackToast("Themes live in Awesome mode (Ctrl+T)", "", "");
@@ -6901,11 +7051,29 @@ void UIManager::handleInput(int ch) {
             break;
         case 's':
             audio_.stop(); break;
-        case 'S':
-            // Shift+S: save playlist as M3U
-            if (!playlist_.empty())
-                openInputBar(InputMode::SaveM3U, current_dir_ + "\\playlist.m3u");
+        case 'S': {
+            // Shift+S: save the playlist pane to a container - the SaveM3U bar (type
+            // name + path, the extension picks the format). If the browser cursor is on
+            // a playlist file, open the reformat popup instead (with the plain save
+            // still reachable from inside it via [S]).
+            std::string pl_file;
+            if (focus_ == Pane::DirBrowser) {
+                std::string p = browserEntryPath(dir_cursor_);
+                if (!p.empty()) {
+                    std::string e = fs::path(p).extension().string();
+                    for (auto& c : e) c = (char)std::tolower((unsigned char)c);
+                    if (e == ".m3u" || e == ".m3u8" || e == ".pls" || e == ".xspf")
+                        pl_file = p;
+                }
+            }
+            if (!pl_file.empty()) {                 // reformat popup for the focused file
+                plexp_src_ = pl_file; plexp_focus_ = 0;
+                ui_overlay_ = UIOverlay::PlaylistFormat; redraw_needed_.store(true);
+            } else if (!playlist_.empty()) {        // original pane save, unchanged
+                openInputBar(InputMode::SaveM3U, (fs::path(current_dir_) / "playlist.m3u").string());
+            }
             break;
+        }
         case 'l': case 'L':
             openInputBar(InputMode::LoadM3U, current_dir_); break;
         case '!':
@@ -6954,15 +7122,22 @@ void UIManager::handleInput(int ch) {
                 rip_msg_ticks_ = 0; redraw_needed_.store(true);
                 break;
             }
-            convert_single_.clear(); convert_src_dir_.clear();
+            convert_single_.clear(); convert_src_dir_.clear(); convert_pl_file_.clear();
             if (focus_ == Pane::DirBrowser) {
                 std::string p = browserEntryPath(dir_cursor_);
                 if (!p.empty() && convertSupportedInput(p)) convert_single_ = p;
+                if (!p.empty()) {   // [5] audio transcode: a playlist file under the cursor
+                    std::string e = fs::path(p).extension().string();
+                    for (auto& c : e) c = (char)std::tolower((unsigned char)c);
+                    if (e == ".m3u" || e == ".m3u8" || e == ".pls" || e == ".xspf")
+                        convert_pl_file_ = p;
+                }
                 if (!in_drive_list_ && !in_radio_ && !in_favs_ && !in_recent_ && !in_books_)
                     convert_src_dir_ = current_dir_;
             }
-            if (convert_single_.empty() && convert_src_dir_.empty() && marked_.empty()) {
-                showTrackToast("Convert", "No file, folder, or marks here", "");
+            if (convert_single_.empty() && convert_src_dir_.empty() && marked_.empty()
+                && convert_pl_file_.empty() && playlist_.size() == 0) {
+                showTrackToast("Convert", "No file, folder, marks, or playlist here", "");
                 break;
             }
             convert_scope_ = 0; convert_focus_ = 0;
@@ -7447,7 +7622,7 @@ void UIManager::gotoTabComplete() {
     goto_input_  = tab_matches_[(size_t)tab_idx_];
     // Append separator if it's a directory so user can keep drilling down
     if (fs::is_directory(goto_input_) && goto_input_.back() != '\\' && goto_input_.back() != '/')
-        goto_input_ += '\\';
+        goto_input_ += static_cast<char>(fs::path::preferred_separator);
     goto_cursor_ = (int)goto_input_.size();
 }
 
@@ -8195,7 +8370,7 @@ std::string UIManager::browserEntryPath(int idx) const {
 
 // convert-core: pick the convert scope (this file / this folder / marked set).
 void UIManager::drawConvertScope() {
-    const int BOX_W = 60, BOX_H = 11;
+    const int BOX_W = 60, BOX_H = 13;
     int y0 = (screen_rows_ - BOX_H) / 2, x0 = (screen_cols_ - BOX_W) / 2;
     if (y0 < 0) y0 = 0; if (x0 < 0) x0 = 0;
     WINDOW* w = newwin(BOX_H, BOX_W, y0, x0);
@@ -8229,7 +8404,63 @@ void UIManager::drawConvertScope() {
     row(6, !marked_.empty(), marked_.empty()
         ? "[3] Marked set: (none - press u to mark)"
         : "[3] Marked set: " + std::to_string((int)marked_.size()) + " file(s)");
-    mvwaddstr(w, 8, 3, "[1/2/3] pick   [Esc] cancel");
+    // [4]/[5] audio-transcode the pane / a focused playlist file's entries through
+    // the same encoder as [1]-[3]; CD/stream entries are skipped (counted here).
+    int pl_skip = 0;
+    for (std::size_t i = 0; i < playlist_.size(); ++i) {
+        const std::string& pp = playlist_.at(i).path;
+        if (isCDTrackPath(pp) || isStreamPath(pp)) ++pl_skip;
+    }
+    const int pl_keep = (int)playlist_.size() - pl_skip;
+    row(7, playlist_.size() > 0, playlist_.size() == 0
+        ? "[4] Playlist pane: (empty)"
+        : "[4] Playlist pane: " + std::to_string(pl_keep) +
+          (pl_keep == 1 ? " entry" : " entries") +
+          (pl_skip ? " (+" + std::to_string(pl_skip) + " stream/CD skipped)" : ""));
+    row(8, !convert_pl_file_.empty(), convert_pl_file_.empty()
+        ? "[5] Playlist file: (focus a .m3u/.pls/.xspf)"
+        : "[5] Playlist file: " +
+          sanitizeForDisplay(std::filesystem::path(convert_pl_file_).filename().string()));
+    mvwaddstr(w, 10, 3, "[1-5] pick   [Esc] cancel");
+    wrefresh(w); delwin(w);
+}
+
+// Shift+S on a playlist file: pick a container to reformat it into, with the dst
+// preview (auto-suffixed, never overwrites), or [S] to fall back to the normal
+// pane save. The write itself is handled in the input path (scratch load -> save).
+void UIManager::drawPlaylistFormat() {
+    const int BOX_W = 60, BOX_H = 13;
+    int y0 = (screen_rows_ - BOX_H) / 2, x0 = (screen_cols_ - BOX_W) / 2;
+    if (y0 < 0) y0 = 0;
+    if (x0 < 0) x0 = 0;
+    WINDOW* w = newwin(BOX_H, BOX_W, y0, x0);
+    if (!w) return;
+    wbkgd(w, config_.awesome_mode ? COLOR_PAIR(CP_DIM) : COLOR_PAIR(0));
+    werase(w);
+    const char* title = " SAVE PLAYLIST ";
+    panelFrame(w, title, true);
+    if (!config_.awesome_mode) mvwaddstr(w, 0, (BOX_W - (int)strlen(title)) / 2, title);
+
+    namespace fs = std::filesystem;
+    static const char* kPlNames[] = { "M3U8 (extended M3U)", "PLS", "XSPF" };
+    static const char* kPlExts[]  = { ".m3u8", ".pls", ".xspf" };
+    mvwaddnstr(w, 2, 3, ("Reformat: " +
+        sanitizeForDisplay(fs::path(plexp_src_).filename().string())).c_str(), BOX_W - 5);
+    for (int i = 0; i < 3; ++i) {
+        if (i == plexp_focus_) wattron(w, A_REVERSE);
+        mvwaddnstr(w, 4 + i, 3,
+                   ("[" + std::to_string(i + 1) + "] " + kPlNames[i]).c_str(), BOX_W - 5);
+        if (i == plexp_focus_) wattroff(w, A_REVERSE);
+    }
+    // dst preview (same derivation as the Enter handler, incl. the collision suffix)
+    fs::path dir = fs::path(plexp_src_).parent_path();
+    std::string stem = fs::path(plexp_src_).stem().string();
+    fs::path dst = dir / (stem + kPlExts[plexp_focus_]);
+    for (int suf = 1; fs::exists(dst) && suf < 100; ++suf)
+        dst = dir / (stem + "-" + std::to_string(suf) + kPlExts[plexp_focus_]);
+    mvwaddnstr(w, 8, 3, ("To: " + sanitizeForDisplay(dst.string())).c_str(), BOX_W - 5);
+    mvwaddnstr(w, 9, 3, "[S] Save as... (pane -> name + path)", BOX_W - 5);
+    mvwaddstr(w, BOX_H - 2, 3, "[1-3/Up/Down] format   [Enter] write   [Esc] cancel");
     wrefresh(w); delwin(w);
 }
 
@@ -8252,6 +8483,15 @@ void UIManager::drawConvertConfirm() {
     if (convert_scope_ == 1) scope = "1 file: " + fs::path(convert_single_).filename().string();
     else if (convert_scope_ == 2) scope = "folder: " + fs::path(convert_src_dir_).filename().string();
     else if (convert_scope_ == 3) scope = std::to_string((int)marked_.size()) + " marked file(s)";
+    else if (convert_scope_ == 4) {
+        int keep = 0;
+        for (std::size_t i = 0; i < playlist_.size(); ++i) {
+            const std::string& pp = playlist_.at(i).path;
+            if (!isCDTrackPath(pp) && !isStreamPath(pp)) ++keep;
+        }
+        scope = std::to_string(keep) + (keep == 1 ? " pane entry" : " pane entries");
+    }
+    else if (convert_scope_ == 5) scope = "file: " + fs::path(convert_pl_file_).filename().string();
     mvwaddnstr(w, 2, 3, sanitizeForDisplay(scope).c_str(), BOX_W - 5);
 
     mvwaddstr(w, 4, 3, "Output format");

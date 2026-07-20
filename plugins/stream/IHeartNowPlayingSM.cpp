@@ -40,10 +40,10 @@ IHeartDecision IHeartNowPlayingSM::tick(const IHeartTick& in) {
     d.tgtKind = tgtKind; d.tgtDisp = tgtDisp;
 
     // ── LIVE-floor stall self-heal (StreamSource.cpp:746-760) ──
-    // F6 re-pin mode picks the floor threshold: off (0) never fires; on (1) = 35s
-    // (original); smart (2) = the longer SMART_STALL_MS so short breaks ride out.
+    // f6-repin-finalize: one uniform floor for every active mode; off (0) never fires.
+    // The SM only REPORTS the expiry - the caller gates the fire on ad-evidence.
     if (in.digitalActive && state_ == IHNow::Live) {
-        const uint32_t stallMs = (in.repinMode == 2) ? SMART_STALL_MS : LIVE_STALL_MS;
+        const uint32_t stallMs = REPIN_FLOOR_MS;
         if (liveSince_ == 0) {
             liveSince_ = in.nowMs;
         } else if (in.repinMode != 0 && in.repinArmed &&

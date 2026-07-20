@@ -540,17 +540,20 @@ private:
     // (timeout(80)). Initialised past the timeout so it is hidden at startup.
     int         theme_tag_ticks_ = 125;
 
-#ifndef _WIN32
-    // Cmdline echo (KEPT past slice 5): a real notify-send toast now renders on
-    // a Linux desktop with a notification daemon, but headless/no-daemon Linux
-    // (WSL2, CI, SSH) shows nothing — so every showTrackToast message ALSO
-    // surfaces in the cmdline bar for a few seconds, the always-visible
-    // graceful-degradation surface (otherwise toast-only flows like ^B "logged
-    // in as" / ^G "approve in browser" look dead). Same shape as rip_status_/
-    // rip_msg_ticks_.
+    // Cmdline status line (both platforms). On Linux it is also the toast echo
+    // (KEPT past slice 5): a real notify-send toast renders on a desktop with a
+    // notification daemon, but headless/no-daemon Linux (WSL2, CI, SSH) shows
+    // nothing — so every showTrackToast message ALSO surfaces here for a few
+    // seconds (otherwise toast-only flows like ^B "logged in as" / ^G "approve
+    // in browser" look dead). Same shape as rip_status_/rip_msg_ticks_.
+    // The iHeart mode confirms (Ctrl+K feed / F6 re-pin) set it DIRECTLY on both
+    // platforms — they are in-place mode state, not a notification, so they never
+    // go through the toast path — and draw in yellow (CP_MODE) via the flag below;
+    // every other setter resets the flag so the next message goes back to the
+    // normal status colour.
     std::string status_msg_;
     int         status_msg_ticks_ = 0;
-#endif
+    bool        status_msg_yellow_ = false;
 
     // Transient warning on the cmdline bar (both platforms), e.g. "stop playback
     // first to edit tags". Rendered red in drawCmdLine() and expired after ~5s in
@@ -679,12 +682,6 @@ private:
     int    scanner_dir_ = 1;         // +1 / -1 sweep direction
     std::chrono::steady_clock::time_point scanner_last_ {};  // last wall-clock advance
 
-    // iHeart feed/re-pin mode indicator (drawProgress): a Ctrl+K or F6 toggle stamps
-    // this with the wall-clock; the tag shows for kModeTagMs then clears, giving the
-    // lower-left back to the now-playing text. Non-blocking (checked in the draw loop).
-    static constexpr long kModeTagMs = 5000;   // ~5s confirm-on-change window
-    std::chrono::steady_clock::time_point mode_tag_at_ {};   // last mode toggle (epoch == never)
-
     // Drive browser
     bool in_drive_list_ = false;
     static std::vector<std::string> listDrives();
@@ -711,7 +708,7 @@ private:
     static constexpr short CP_VIZ_LOW_B  = 15;
     static constexpr short CP_VIZ_MID_B  = 16;
     static constexpr short CP_VIZ_HIGH_B = 17;
-    static constexpr short CP_MODE       = 18;  // iHeart feed/re-pin indicator: yellow on default bg
+    static constexpr short CP_MODE       = 18;  // iHeart mode confirms (Ctrl+K/F6) on the cmdline: yellow on default bg
 
     // Art half-block cells allocate curses colours and pairs above the theme's
     // fixed CP_* range. The pair table is global; a collision here would let a

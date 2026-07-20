@@ -348,6 +348,7 @@ void UIManager::showTrackToast(const std::string& title, const std::string& arti
     status_msg_ = sanitizeForDisplay(artist.empty() ? title
                                                     : artist + " - " + title);
     status_msg_ticks_ = 0;
+    status_msg_yellow_ = false;
     redraw_needed_.store(true);
 #endif
 }
@@ -1592,14 +1593,12 @@ void UIManager::run() {
             warn_msg_ticks_ = 0;
             redraw_needed_.store(true);
         }
-#ifndef _WIN32
-        // Expire the toast-fallback status line (same cadence as rip_status_).
+        // Expire the cmdline status line (same cadence as rip_status_).
         if (!status_msg_.empty() && ++status_msg_ticks_ > 60) {
             status_msg_.clear();
             status_msg_ticks_ = 0;
             redraw_needed_.store(true);
         }
-#endif
         {
             int cur = (int)playlist_.current();
             if (cur != last_playlist_current_for_sync_) {
@@ -4717,32 +4716,7 @@ void UIManager::drawProgress() {
         right += "  vol:" + std::to_string((int)(audio_.volume()*100.0f+0.5f)) + "%";
         std::string left = title.empty() ? "(live stream)" : title;
 
-        // iHeart feed/re-pin mode indicator (Section C): a yellow tag at the lower-left,
-        // "<feed> - <repin>" e.g. "digital - smart" / "raw - off". Confirm-on-change: it
-        // shows only for ~kModeTagMs after a Ctrl+K/F6 toggle (mode_tag_at_), then clears
-        // so the now-playing title reoccupies the space. iHeart streams only (host sniff
-        // on the revma HLS domain); the title is shifted right by the tag width while it
-        // shows. Empty tag (idle, or non-iHeart) -> byte-identical to the plain layout.
-        std::string modeTag;
-        {
-            using namespace std::chrono;
-            const long sinceMs = (mode_tag_at_.time_since_epoch().count() == 0)
-                ? kModeTagMs + 1   // never toggled -> outside the window
-                : (long)duration_cast<milliseconds>(steady_clock::now() - mode_tag_at_).count();
-            if (sinceMs < kModeTagMs &&
-                audio_.streamUrl().find("ihrhls") != std::string::npos) {   // iHeart HLS host, within window
-                const char* rp = config_.repin_mode == 0 ? "off"
-                               : config_.repin_mode == 1 ? "ad-escape"
-                               : config_.repin_mode == 2 ? "hybrid"
-                               : config_.repin_mode == 3 ? "timed" : "live-edge";
-                modeTag = std::string(config_.prefer_digital_stream ? "digital" : "raw")
-                        + " - " + rp;
-            }
-        }
-        const int tag_x   = 1;
-        const int tag_w   = modeTag.empty() ? 0 : (int)modeTag.size() + 2;  // +2 gap after the tag
-        const int title_x = tag_x + tag_w;              // title starts past the tag (== 1 when no tag)
-
+        const int title_x = 1;
         const int right_w = (int)right.size();          // ASCII -> byte width == display width
         const int right_x = cols - right_w - 1;         // first col of the right block
         int left_cap = right_x - 1 - title_x;           // keep >=1 blank col before the right block
@@ -4751,11 +4725,6 @@ void UIManager::drawProgress() {
         const int left_w   = dispWidth(left);
         const int left_end = title_x + left_w;          // first free col past the title
 
-        if (!modeTag.empty()) {
-            wattron(win_progress_, COLOR_PAIR(CP_MODE) | A_BOLD);
-            mvwaddstr(win_progress_, 0, tag_x, modeTag.c_str());
-            wattroff(win_progress_, COLOR_PAIR(CP_MODE) | A_BOLD);
-        }
         wattron(win_progress_, COLOR_PAIR(CP_TITLE));
         if (left_w > 0) {
             std::wstring wl = utf8_to_wide(left);
@@ -4766,7 +4735,7 @@ void UIManager::drawProgress() {
         wattroff(win_progress_, COLOR_PAIR(CP_TITLE));
 
         // Scanner track = free cells between the title and the right block, 1-col
-        // padded each side so the bright head never touches text/tag. If the title
+        // padded each side so the bright head never touches text. If the title
         // fills the gap (long song, narrow window) there's no room -> draw nothing,
         // exactly the graceful-collapse the spectrum strip uses.
         const int track_x0 = left_end + 1;
@@ -4875,16 +4844,17 @@ void UIManager::drawCmdLine() {
         wnoutrefresh(win_cmdline_);
         return;
     }
-#ifndef _WIN32
-    // Toast fallback (see UIManager.h) — drawn exactly like rip_status_.
+    // Status line (see UIManager.h) — drawn exactly like rip_status_, except
+    // the iHeart mode confirms (Ctrl+K/F6) draw in yellow so they read as mode state.
+    // Both platforms: mode confirms are in-place status, never a toast.
     if (!status_msg_.empty()) {
-        wattron(win_cmdline_, COLOR_PAIR(CP_STATUS_OK) | A_BOLD);
+        const short sm_pair = status_msg_yellow_ ? CP_MODE : CP_STATUS_OK;
+        wattron(win_cmdline_, COLOR_PAIR(sm_pair) | A_BOLD);
         mvwaddnstr(win_cmdline_, 0, 1, status_msg_.c_str(), screen_cols_ - 2);
-        wattroff(win_cmdline_, COLOR_PAIR(CP_STATUS_OK) | A_BOLD);
+        wattroff(win_cmdline_, COLOR_PAIR(sm_pair) | A_BOLD);
         wnoutrefresh(win_cmdline_);
         return;
     }
-#endif
     // slice 6: MB/rip status on the cmdline is common — CD lookup (^R) and rip
     // (^Y) progress now render on Linux too. On Linux this runs AFTER the toast-
     // fallback above; on Windows there is no toast-fallback block, so this is the
@@ -6398,9 +6368,12 @@ void UIManager::handleInput(int ch) {
             config_.prefer_digital_stream = !config_.prefer_digital_stream;
             config_.save();
             audio_.setPreferDigital(config_.prefer_digital_stream);
-            // Flash the lower-left feed/re-pin mode indicator for ~5s (confirm-on-change),
-            // then it clears and the now-playing text reoccupies the space.
-            mode_tag_at_ = std::chrono::steady_clock::now();
+            // Confirm ONCE, on the cmdline status row, in yellow — both platforms,
+            // never a toast (same surface as F6, the one place mode changes report).
+            status_msg_ = config_.prefer_digital_stream ? "Feed: digital (web player)"
+                                                        : "Feed: raw broadcast";
+            status_msg_ticks_ = 0;
+            status_msg_yellow_ = true;
             redraw_needed_.store(true);
             if (audio_.streamMode())                 // reconnect now so it takes effect
                 audio_.beginStream(audio_.streamUrl());
@@ -6449,6 +6422,7 @@ void UIManager::handleInput(int ch) {
 #ifndef _WIN32
             status_msg_ = config_.viz_led ? "Spectrum: 80s LED" : "Spectrum: classic bars";
             status_msg_ticks_ = 0;
+            status_msg_yellow_ = false;
 #else
             showTrackToast(config_.viz_led ? "Spectrum: 80s LED" : "Spectrum: classic bars", "", "");
 #endif
@@ -6467,23 +6441,18 @@ void UIManager::handleInput(int ch) {
         case KEY_F(6): {  // cycle iHeart re-pin mode: off -> ad-escape -> hybrid -> timed -> live-edge (persisted)
             // Feed (Ctrl+K) and re-pin behaviour are independent axes; F6 changes only
             // the re-pin half. Read live by the producer/SM, so no reconnect is needed.
-            // Flash the lower-left mode indicator for ~5s (confirm-on-change), and
-            // confirm via the same status/toast surface F2 uses so the mode keys read
-            // uniformly (f6-repin-finalize).
+            // Confirm ONCE, on the cmdline status row, in yellow — both platforms,
+            // never a toast (it is in-place mode state, not a notification).
             config_.repin_mode = (config_.repin_mode + 1) % 5;
             config_.save();
             audio_.setRepinMode(config_.repin_mode);
-            mode_tag_at_ = std::chrono::steady_clock::now();
             const char* rp6 = config_.repin_mode == 0 ? "off"
                             : config_.repin_mode == 1 ? "ad-escape"
                             : config_.repin_mode == 2 ? "hybrid"
                             : config_.repin_mode == 3 ? "timed" : "live-edge";
-#ifndef _WIN32
             status_msg_ = std::string("Re-pin: ") + rp6;
             status_msg_ticks_ = 0;
-#else
-            showTrackToast(std::string("Re-pin: ") + rp6, "", "");
-#endif
+            status_msg_yellow_ = true;
             redraw_needed_.store(true);
             break;
         }
@@ -6495,6 +6464,7 @@ void UIManager::handleInput(int ch) {
 #ifndef _WIN32
                 status_msg_ = "Themes live in Awesome mode (Ctrl+T)";
                 status_msg_ticks_ = 0;
+                status_msg_yellow_ = false;
                 redraw_needed_.store(true);
 #else
                 showTrackToast("Themes live in Awesome mode (Ctrl+T)", "", "");

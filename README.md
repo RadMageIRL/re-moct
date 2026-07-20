@@ -71,8 +71,8 @@ and a playlist/rip view. The public feature guide is [`docs/index.html`](docs/in
   the way the web player does (drift-triggered, always current - including ads; rides
   closer to the edge, so it is twitchier on a laggy connection, while the other modes
   keep more buffer and tolerate drift). Independent of the `Ctrl+K` feed
-  toggle (web-player vs raw broadcast); pressing either flashes the current
-  `<feed> - <repin>` mode in the status bar for a few seconds
+  toggle (web-player vs raw broadcast); pressing either confirms the new mode
+  in yellow on the bottom status row for a few seconds
 - Record the playing stream to disk (`Ctrl+E`): re-encode to Opus, MP3, or M4A, or
   an as-broadcast copy mode (no re-encode - the better choice for an AAC broadcast);
   per-song split from the station's metadata, a pulsing `[REC]` badge, cover-art per

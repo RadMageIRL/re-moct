@@ -22,8 +22,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Saved re-pin settings migrate automatically: the old `on` and `smart` modes both
   become `hybrid`. The old 35-second `on` floor is retired; all active modes share
   the ~2.5-minute floor.
-- F6 now confirms the new mode in the status line (matching F2's style) and is
-  listed in the `?` help pane.
+- F6 now confirms the new mode in the status line (matching F2's style, drawn
+  in yellow) and is listed in the `?` help pane. Ctrl+K confirms its feed
+  switch the same way. The transient lower-left mode tag on the now-playing
+  row is gone - it repeated what the status line already says.
 
 ### Added (iHeart re-pin - F6)
 

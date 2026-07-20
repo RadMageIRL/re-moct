@@ -225,7 +225,21 @@ private:
     std::atomic<bool> hls_repin_pending_{ false };  // producer should re-handshake at next safe point
     bool              hls_repin_armed_ = true;      // one-shot: fire once per ad break, then re-arm
     uint32_t          hls_repin_cooldown_until_ = 0;// re-arm only after this tick (suppress mid-pod)
-    std::atomic<int>  repin_mode_{ 2 };             // F6 re-pin mode: 0 off / 1 on / 2 smart (default)
+    std::atomic<int>  repin_mode_{ 2 };             // F6 re-pin mode: 0 off / 1 ad-escape / 2 hybrid (default) / 3 timed
+    // Ad-evidence tracker (f6-repin-finalize): gates BOTH re-pin triggers (floor stall +
+    // ad-onset disc) on evidence that the timed LIVE window is actually an ad break, not
+    // a talk show. Measured on real air: a long show floors LIVE with ZERO spot segments
+    // and the old duration-only escape fired every ~170s through it (87 spurious
+    // re-handshakes in one corpus); a real pod shows spot/ad segments in the window
+    // (and rarely also paid spotInstanceIds / cartcutId churn - blank slate is the norm
+    // mid-break, so the segment CLASS is the load-bearing signal). Producer thread only.
+    static constexpr uint32_t kRepinEvidenceWindowMs = 160000;    // ~ floor span + slack
+    std::deque<std::pair<uint32_t,bool>>        repin_cls_hist_;  // (tickMs, newest seg is spot/ad)
+    std::deque<std::pair<uint32_t,std::string>> repin_cart_hist_; // (tickMs, cartcutId) non-empty only
+    uint32_t          repin_paid_tick_ = 0;         // last tick the newest seg was a PAID spot (0 = never)
+    void noteRepinEvidence(uint32_t now, bool isSpotSeg, bool paid, const std::string& cartcut);
+    bool repinHardEvidence(uint32_t now) const;     // paid spot seen OR >=2 distinct cartcutIds in window
+    int  repinSpotSegsInWindow(uint32_t now) const; // spot/ad newest-seg polls in window
     // Prime-to-music-boundary (clip fix): on a re-pin, if the fresh manifest shows a
     // clean ad->music boundary in-window, prime from the song's first segment so
     // audio lands at the song start instead of ~2 segments behind live. All three are

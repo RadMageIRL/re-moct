@@ -5,6 +5,32 @@ All notable changes to RE-MOCT are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.1] - Unreleased
+
+### Changed (iHeart re-pin - F6)
+
+- The F6 re-pin modes are renamed by what makes them fire, and the re-pin now
+  requires ad evidence instead of duration alone: `off` never re-pins, `ad-escape`
+  fires only on hard ad evidence (a paid spot id or spot churn), `hybrid` (the new
+  default) fires on that evidence or when the stalled window actually contains ad
+  segments, and `timed` keeps the old duration-only behaviour. The old duration-only
+  escape treated a long talk show like a stuck ad pod and silently re-joined the
+  stream every ~3 minutes through entire shows - hybrid rides talk out and still
+  escapes real ad pods.
+- The immediate ad-onset re-pin is gated the same way, so a mid-show discontinuity
+  marker no longer triggers a pointless re-join.
+- Saved re-pin settings migrate automatically: the old `on` and `smart` modes both
+  become `hybrid`. The old 35-second `on` floor is retired; all active modes share
+  the ~2.5-minute floor.
+- F6 now confirms the new mode in the status line (matching F2's style) and is
+  listed in the `?` help pane.
+
+### Fixed
+
+- Closing a pop-up or menu no longer leaves stray cells in the inter-pane gutter;
+  the dismissed overlay's footprint is repainted without the full-screen flash the
+  Ctrl+L workaround caused.
+
 ## [1.3.0] - 2026-07-18
 
 Feature release: Opus and WavPack playback.

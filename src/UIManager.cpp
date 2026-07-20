@@ -1729,8 +1729,13 @@ void UIManager::run() {
                 else if (ui_overlay_ == UIOverlay::RecPanel) drawRecPanel();
                 else if (ui_overlay_ == UIOverlay::ConvertScope) drawConvertScope();
                 else if (ui_overlay_ == UIOverlay::ConvertConfirm) drawConvertConfirm();
+                overlay_drawn_ = ui_overlay_;   // remember what's on screen for the dismiss repaint
                 redraw_needed_.store(false);
             } else {
+            // popup-artifact-repaint: any overlay -> None transition (all 5 types, all
+            // 13 dismiss sites) lands here; restore the cells the popup clobbered before
+            // the full redraw. Cheap no-op when no overlay was up.
+            if (overlay_drawn_ != UIOverlay::None) { repaintAfterOverlay(); overlay_drawn_ = UIOverlay::None; }
             drawAll();
             redraw_needed_.store(false);
             }
@@ -1887,6 +1892,23 @@ void UIManager::computeVizBins() {
 // ─────────────────────────────────────────────────────────────────────────────
 // Drawing
 // ─────────────────────────────────────────────────────────────────────────────
+// popup-artifact-repaint: an overlay window physically overwrites stdscr's on-screen
+// cells - the inter-pane gutter, outer insets, and any cell no pane covers ARE stdscr
+// (Awesome fills it with CP_DIM; Classic with pair 0). But ncurses's stdscr BUFFER is
+// unchanged by the popup, so a plain wnoutrefresh(stdscr) does not re-push those cells
+// and the popup's leftovers persist in the gutter (Ctrl+L clears them, but via
+// clearok+werase = a full-screen flash). On dismiss, mark stdscr AND every pane dirty
+// so the drawAll() that follows re-pushes exactly the clobbered region in z-order
+// (stdscr background first, panes over) with drawAll's single wnoutrefresh+doupdate -
+// no clearok, no flash. Panes also self-heal via their per-frame redraw; stdscr is the
+// layer that otherwise never repaints, so touchwin(stdscr) is the load-bearing call.
+void UIManager::repaintAfterOverlay() {
+    if (stdscr) touchwin(stdscr);
+    for (WINDOW* w : { win_title_, win_cwd_, win_dir_, win_playlist_,
+                       win_viz_, win_progress_, win_cmdline_ })
+        if (w) touchwin(w);
+}
+
 void UIManager::drawAll() {
     // Backdrop: refresh stdscr first so the inter-pane gutter, outer insets, and any
     // cell no subwindow covers show the themed base (Awesome) or terminal default
@@ -3104,6 +3126,7 @@ void UIManager::drawHelp() {
         { "Ctrl+T",         "Toggle Classic / Awesome theme" },
         { "F2",             "Spectrum style: classic / 80s LED"   },
         { "F3",             "Follow the playing track (cursor tracks the song)" },
+        { "F6",             "iHeart re-pin: off / ad-escape / hybrid / timed" },
         { "F7  /  F8",      "Awesome theme: previous / next" },
         { "F  (Shift+F)",   "Toggle file-type column (FLAC/MP3/...) in the playlist" },
         { "F12",            "Refresh the [Drives] list (pick up hot-plugged drives)" },
@@ -4708,7 +4731,8 @@ void UIManager::drawProgress() {
             if (sinceMs < kModeTagMs &&
                 audio_.streamUrl().find("ihrhls") != std::string::npos) {   // iHeart HLS host, within window
                 const char* rp = config_.repin_mode == 0 ? "off"
-                               : config_.repin_mode == 1 ? "on" : "smart";
+                               : config_.repin_mode == 1 ? "ad-escape"
+                               : config_.repin_mode == 2 ? "hybrid" : "timed";
                 modeTag = std::string(config_.prefer_digital_stream ? "digital" : "raw")
                         + " - " + rp;
             }
@@ -6373,16 +6397,28 @@ void UIManager::handleInput(int ch) {
             showTrackToast(config_.follow_playing ? "Follow playing: ON"
                                                   : "Follow playing: OFF", "", "");
             break;
-        case KEY_F(6):    // cycle iHeart re-pin mode: off -> on -> smart (persisted)
+        case KEY_F(6): {  // cycle iHeart re-pin mode: off -> ad-escape -> hybrid -> timed (persisted)
             // Feed (Ctrl+K) and re-pin behaviour are independent axes; F6 changes only
             // the re-pin half. Read live by the producer/SM, so no reconnect is needed.
-            // Flash the lower-left mode indicator for ~5s (confirm-on-change).
-            config_.repin_mode = (config_.repin_mode + 1) % 3;
+            // Flash the lower-left mode indicator for ~5s (confirm-on-change), and
+            // confirm via the same status/toast surface F2 uses so the mode keys read
+            // uniformly (f6-repin-finalize).
+            config_.repin_mode = (config_.repin_mode + 1) % 4;
             config_.save();
             audio_.setRepinMode(config_.repin_mode);
             mode_tag_at_ = std::chrono::steady_clock::now();
+            const char* rp6 = config_.repin_mode == 0 ? "off"
+                            : config_.repin_mode == 1 ? "ad-escape"
+                            : config_.repin_mode == 2 ? "hybrid" : "timed";
+#ifndef _WIN32
+            status_msg_ = std::string("Re-pin: ") + rp6;
+            status_msg_ticks_ = 0;
+#else
+            showTrackToast(std::string("Re-pin: ") + rp6, "", "");
+#endif
             redraw_needed_.store(true);
             break;
+        }
         case KEY_F(7):    // previous Awesome named palette (F7)
         case KEY_F(8): {  // next Awesome named palette (F8)
             if (!config_.awesome_mode) {

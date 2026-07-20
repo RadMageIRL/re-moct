@@ -121,6 +121,11 @@ private:
     int  paneVisibleRows(WINDOW* w) const;
 
     void drawAll();
+    // popup-artifact-repaint: on overlay dismiss, mark stdscr (the gutter/insets layer
+    // a popup physically overwrites but whose ncurses buffer is unchanged) and every
+    // pane dirty, so the following drawAll() re-pushes exactly the clobbered cells in
+    // z-order without a clearok full-screen flash.
+    void repaintAfterOverlay();
     void drawTitleBar();
     void drawCwd();
     void drawDirBrowser();
@@ -476,6 +481,8 @@ private:
 
     CDRipper    cd_ripper_;
     UIOverlay   ui_overlay_    = UIOverlay::None;
+    UIOverlay   overlay_drawn_ = UIOverlay::None;   // last overlay actually rendered; the
+                                                    // None-transition triggers repaintAfterOverlay()
     // Session rip-format selection (rip-format-select): seeded ONCE from
     // config_.rip_formats in the ctor, toggled by the modal's digit keys,
     // NEVER written back to config (the conf key is the default only).

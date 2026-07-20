@@ -149,6 +149,12 @@ private:
     void drawConvertScope();    // convert-core: pick scope (this file/folder/marked/pane/playlist)
     void drawPlaylistFormat();  // Shift+S on a playlist file: reformat to m3u8/pls/xspf, or Save as
     void drawConvertConfirm();  // convert-core: pick output format + quality
+    // viz-live-under-overlay: stage the animated background panes (title/marquee,
+    // cwd, progress, and the spectrum when shown) without flushing; the caller
+    // flushes (doupdate, or an overlay draw fn's wrefresh compositing on top).
+    void drawAnimatedPanes();
+    // Dispatch the current modal overlay to its draw fn (each wrefreshes itself).
+    void drawOverlay();
     // Absolute path of browser entry idx, respecting the browser mode (favs/
     // recent entries are already absolute; normal-dir entries join current_dir_).
     // "" for pseudo-entries ("..", "[Drives]", ...) and drive/radio modes.

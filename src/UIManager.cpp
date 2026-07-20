@@ -1723,12 +1723,12 @@ void UIManager::run() {
             // (^Y rip). MBSearch draw/input handlers are portable too; the overlay
             // just never opens on Linux because ^F (case 6) stays gated.
             if (ui_overlay_ != UIOverlay::None) {
-                if (ui_overlay_ == UIOverlay::RipConfirm) drawRipConfirm();
-                else if (ui_overlay_ == UIOverlay::MBSearch) drawMBSearch();
-                else if (ui_overlay_ == UIOverlay::RecPanel) drawRecPanel();
-                else if (ui_overlay_ == UIOverlay::ConvertScope) drawConvertScope();
-                else if (ui_overlay_ == UIOverlay::ConvertConfirm) drawConvertConfirm();
-                else if (ui_overlay_ == UIOverlay::PlaylistFormat) drawPlaylistFormat();
+                // viz-live-under-overlay: composite the animated panes UNDER the
+                // popup so the marquee/spectrum keep moving behind it, then redraw
+                // the overlay last (its wrefresh flushes with the popup written
+                // last -> stays on top, one doupdate, no flicker).
+                drawAnimatedPanes();
+                drawOverlay();
                 overlay_drawn_ = ui_overlay_;   // remember what's on screen for the dismiss repaint
                 redraw_needed_.store(false);
             } else {
@@ -1741,23 +1741,46 @@ void UIManager::run() {
             }
         } else {
             if (ui_overlay_ != UIOverlay::None) {
-                // No change — modal stays on screen, do nothing
+                // Quiet tick with a popup up: keep the animated panes alive under it
+                // (same composite as above). doupdate diffing makes this a no-op when
+                // nothing actually changed, so idle playback never busy-repaints.
+                drawAnimatedPanes();
+                drawOverlay();
             } else {
-            drawTitleBar();
-            drawCwd();
-            drawProgress();
-            // Animate the spectrum: Classic right-pane overlay OR the Awesome strip.
-            if (right_pane_ == RightPane::Visualizer || vizStripShown()) {
-                drawVisualizer();
-                wnoutrefresh(win_viz_);
-            }
-            wnoutrefresh(win_title_);
-            wnoutrefresh(win_cwd_);
-            wnoutrefresh(win_progress_);
+            drawAnimatedPanes();
             doupdate();
             }
         }
     }
+}
+
+// viz-live-under-overlay: the animated background pane set - staged (wnoutrefresh)
+// but NOT flushed here, so the caller controls the single doupdate (either its own,
+// or an overlay draw fn's wrefresh compositing the popup on top). This is the exact
+// set the no-overlay light path used to inline; kept in one place so "what animates"
+// has one definition. Dir/playlist panes are deliberately excluded (they don't
+// animate; repaintAfterOverlay restores them on dismiss).
+void UIManager::drawAnimatedPanes() {
+    drawTitleBar();
+    drawCwd();
+    drawProgress();
+    // Animate the spectrum: Classic right-pane overlay OR the Awesome strip.
+    if (right_pane_ == RightPane::Visualizer || vizStripShown()) {
+        drawVisualizer();
+        wnoutrefresh(win_viz_);
+    }
+    wnoutrefresh(win_title_);
+    wnoutrefresh(win_cwd_);
+    wnoutrefresh(win_progress_);
+}
+
+void UIManager::drawOverlay() {
+    if (ui_overlay_ == UIOverlay::RipConfirm) drawRipConfirm();
+    else if (ui_overlay_ == UIOverlay::MBSearch) drawMBSearch();
+    else if (ui_overlay_ == UIOverlay::RecPanel) drawRecPanel();
+    else if (ui_overlay_ == UIOverlay::ConvertScope) drawConvertScope();
+    else if (ui_overlay_ == UIOverlay::ConvertConfirm) drawConvertConfirm();
+    else if (ui_overlay_ == UIOverlay::PlaylistFormat) drawPlaylistFormat();
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

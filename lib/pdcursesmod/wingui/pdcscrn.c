@@ -609,6 +609,9 @@ extern GLYPHSET *PDC_unicode_range_data;
 #endif         /* #ifdef USE_FALLBACK_FONT */
 
 #define TIMER_ID_FOR_BLINKING 0x2000
+/* RE-MOCT patch: modal move/size repaint tick id, distinct from the blink id
+   above and from the mouse timer's id 0 (SetTimer(hwnd, 0, ...) below). */
+#define TIMER_ID_FOR_MODAL_PAINT 0x5241
 
 /* When first loading a font,  we use 'get_character_sizes' to briefly
 load the (non-bold,  non-italic flavor of the) font,  get its height and
@@ -1209,6 +1212,14 @@ void PDC_set_window_resized_callback(resize_callback_fnptr callback) {
     resize_callback = callback;
 }
 
+/* RE-MOCT patch: invoked from a timer that runs during Windows' modal
+   move/size loop, so the TUI keeps painting while the app's getch() loop
+   is blocked mid-drag. Sibling of resize_callback (which only fires on
+   WM_SIZE, i.e. resize -- not a title-bar move). */
+typedef void(*paint_tick_fnptr)(void);
+static paint_tick_fnptr paint_tick_callback = NULL;
+void PDC_set_paint_tick_callback(paint_tick_fnptr cb) { paint_tick_callback = cb; }
+
 /* Under Wine,  it appears that the code to force the window size to be
 an integral number of columns and rows doesn't work.  This is because
 WM_SIZING messages aren't sent.  This appeared to be fixed as of Wine
@@ -1728,6 +1739,18 @@ static LRESULT ALIGN_STACK CALLBACK WndProc (const HWND hwnd,
     case WM_MOVE:
         return 0 ;
 
+    /* RE-MOCT patch: Windows delivers WM_TIMER inside the modal move/size loop,
+       so pump a repaint tick there - the app's getch() loop is blocked for the
+       whole drag. Started on enter, killed on exit; routed in WM_TIMER below.
+       Fires for a resize drag too (harmless: WM_SIZE already repaints, and the
+       app-side tick is reentrancy-guarded). */
+    case WM_ENTERSIZEMOVE:
+        SetTimer( hwnd, TIMER_ID_FOR_MODAL_PAINT, 33, NULL );  /* ~30 fps during the drag */
+        return 0;
+    case WM_EXITSIZEMOVE:
+        KillTimer( hwnd, TIMER_ID_FOR_MODAL_PAINT );
+        return 0;
+
     case WM_ERASEBKGND:      /* no need to erase background;  it'll */
         return 1;         /* all get painted over anyway */
 
@@ -1776,6 +1799,12 @@ static LRESULT ALIGN_STACK CALLBACK WndProc (const HWND hwnd,
         return 0 ;
 
     case WM_TIMER:
+        if( wParam == TIMER_ID_FOR_MODAL_PAINT)   /* RE-MOCT patch: modal-loop repaint */
+        {                                         /* handle FIRST - must not fall into */
+            if( paint_tick_callback)              /* the unknown-id mouse branch below */
+                paint_tick_callback( );
+            return 0;
+        }
         if( wParam != TIMER_ID_FOR_BLINKING)
         {
             KillTimer( PDC_hWnd, (int)wParam);

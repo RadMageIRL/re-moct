@@ -61,6 +61,10 @@ public:
     // getch() loop is blocked there, so without this the window is blank mid-drag).
     // Registered as PDCurses' window-resized callback; a no-op elsewhere.
     void onWinguiLiveResize();
+    // wingui only: repaint tick pumped from a timer inside Windows' modal
+    // move/size loop, so the marquee/spectrum keep animating during a title-bar
+    // move (WM_MOVE never fires the resize callback). Renders one tickFrame().
+    void onWinguiPaintTick();
     const std::string& currentDir() const { return current_dir_; }
 #ifdef PDCURSES
     // wingui only (Alt+Enter): toggle a borderless window that fills the monitor,
@@ -149,6 +153,10 @@ private:
     void drawConvertScope();    // convert-core: pick scope (this file/folder/marked/pane/playlist)
     void drawPlaylistFormat();  // Shift+S on a playlist file: reformat to m3u8/pls/xspf, or Save as
     void drawConvertConfirm();  // convert-core: pick output format + quality
+    // One frame of the main loop's post-input body (marquee/viz/breath advance +
+    // the draw block), extracted so run() and the wingui modal-move paint tick
+    // render identically. See run() / onWinguiPaintTick.
+    void tickFrame();
     // viz-live-under-overlay: stage the animated background panes (title/marquee,
     // cwd, progress, and the spectrum when shown) without flushing; the caller
     // flushes (doupdate, or an overlay draw fn's wrefresh compositing on top).

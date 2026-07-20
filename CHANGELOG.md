@@ -54,6 +54,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- On Windows, dragging the window by its title bar no longer freezes the display
+  until you let go - the spectrum and marquee keep animating during the move,
+  matching how a resize drag already behaved.
 - The now-playing marquee and the spectrum keep animating while a pop-up is open
   (convert, playlist save, rip confirm, rec panel, MusicBrainz search) instead of
   freezing until it is dismissed; the pop-up stays crisp on top.

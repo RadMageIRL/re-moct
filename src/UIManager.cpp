@@ -104,11 +104,16 @@ extern "C" void PDC_set_window_resized_callback(void (*)(void));
 extern "C" HWND PDC_hWnd;   // wingui's GDI window handle (pdcscrn.c)
 extern "C" int PDC_cxChar, PDC_cyChar;   // wingui glyph cell size in px (pdcscrn.c)
 extern "C" int PDC_skip_size_snap;       // wingui: suppress the WM_SIZE cell-snap (pdcscrn.c)
+// wingui (pdcscrn.c): a callback pumped by a timer INSIDE Windows' modal move/size
+// loop, so the TUI animates during a title-bar move (WM_MOVE, which never fires the
+// resize callback above). Sibling of the resize callback.
+extern "C" void PDC_set_paint_tick_callback(void (*)(void));
 
 namespace {
 // Trampoline for the C resize callback -> the live UIManager (single UI instance).
 UIManager* g_wingui_ui = nullptr;
 void winguiResizeTrampoline() { if (g_wingui_ui) g_wingui_ui->onWinguiLiveResize(); }
+void winguiPaintTickTrampoline() { if (g_wingui_ui) g_wingui_ui->onWinguiPaintTick(); }
 
 // Make the wingui GDI window's title bar / border follow the OS light/dark theme
 // (Windows 10 20H1+). Reads HKCU AppsUseLightTheme (0 = dark) and applies
@@ -270,6 +275,9 @@ UIManager::UIManager(PlaylistManager& playlist, AudioManager& audio,
     // Repaint live during the modal resize-drag (see onWinguiLiveResize).
     g_wingui_ui = this;
     PDC_set_window_resized_callback(&winguiResizeTrampoline);
+    // Repaint live during a title-bar MOVE too (WM_MOVE fires no resize callback);
+    // a modal-loop timer drives this (see onWinguiPaintTick).
+    PDC_set_paint_tick_callback(&winguiPaintTickTrampoline);
 #endif
     setlocale(LC_ALL, "");
     cbreak();
@@ -1468,29 +1476,6 @@ void UIManager::run() {
         if (right_pane_ == RightPane::Lyrics)
             redraw_needed_.store(true);
 
-        // Force redraw when marquee is scrolling so title updates every tick
-        {
-            const auto& track = audio_.currentTrack();
-            std::string np = track.artist.empty() ? track.title : track.artist + " - " + track.title;
-            std::string right_approx = "  RE-MOCT v" REMOCT_VERSION " ";
-            int max_np = screen_cols_ - (int)right_approx.size() - 4;
-            if (!np.empty() && max_np > 0 && (int)np.size() > max_np)
-                redraw_needed_.store(true);
-        }
-
-        // Advance shared text scroll offset on wall-clock timer (~300ms per step)
-        // Using clock time instead of tick count so keypress rate doesn't affect speed
-        {
-            static auto last_scroll = std::chrono::steady_clock::now();
-            auto now = std::chrono::steady_clock::now();
-            if (std::chrono::duration_cast<std::chrono::milliseconds>(
-                    now - last_scroll).count() >= 300) {
-                last_scroll = now;
-                ++text_scroll_offset_;
-                redraw_needed_.store(true);
-            }
-        }
-
         // Sleep timer check
         if (sleep_minutes_ > 0) {
             auto elapsed = std::chrono::duration_cast<std::chrono::minutes>(
@@ -1690,71 +1675,116 @@ void UIManager::run() {
             } catch (...) {}
         }
 
-        // Always recompute viz bins so bars animate smoothly (Classic right-pane
-        // overlay OR the Awesome full-width strip).
-        if (right_pane_ == RightPane::Visualizer || vizStripShown())
-            computeVizBins();
+        tickFrame();
+    }
+}
 
-        // Animate the breathing progress head — only in Awesome mode while playing,
-        // so Classic mode keeps its repaint-on-change cadence (no extra cost).
-        if (config_.awesome_mode && audio_.state() == PlaybackState::Playing)
+// wingui-move-repaint: one frame of the main loop's post-input body - advance the
+// per-tick animation (marquee scroll, viz bins, Awesome progress breath) and run the
+// draw block. Extracted from run() so the modal-move paint tick (onWinguiPaintTick)
+// renders identically to a normal loop tick - overlay compositing and the input-bar
+// cursor re-home included, no divergence.
+void UIManager::tickFrame() {
+    // Force redraw when marquee is scrolling so title updates every tick
+    {
+        const auto& track = audio_.currentTrack();
+        std::string np = track.artist.empty() ? track.title : track.artist + " - " + track.title;
+        std::string right_approx = "  RE-MOCT v" REMOCT_VERSION " ";
+        int max_np = screen_cols_ - (int)right_approx.size() - 4;
+        if (!np.empty() && max_np > 0 && (int)np.size() > max_np)
             redraw_needed_.store(true);
+    }
 
-        // Terminal too small: resizeWindows() destroyed the pane windows and
-        // returned without recreating them (see its size guard). Both draw paths
-        // below dereference those windows (getmaxyx / wnoutrefresh), which crashes
-        // on a null WINDOW*. Paint a safe notice straight onto stdscr and skip all
-        // pane drawing until the terminal grows back to a usable size.
-        if (!win_dir_ || !win_title_ || !win_playlist_ ||
-            !win_progress_ || !win_cmdline_) {
-            werase(stdscr);
-            if (screen_rows_ > 0 && screen_cols_ > 0) {
-                const char* m1 = "Terminal too small";
-                const char* m2 = "(min 40 x 9)";
-                int y  = screen_rows_ / 2;
-                int x1 = (screen_cols_ - (int)strlen(m1)) / 2; if (x1 < 0) x1 = 0;
-                int x2 = (screen_cols_ - (int)strlen(m2)) / 2; if (x2 < 0) x2 = 0;
-                mvaddnstr(y, x1, m1, screen_cols_);
-                if (y + 1 < screen_rows_) mvaddnstr(y + 1, x2, m2, screen_cols_);
-            }
-            wnoutrefresh(stdscr);
-            doupdate();
-            redraw_needed_.store(false);
-        } else
-        if (redraw_needed_.load()) {
-            // slice 6: overlay dispatch is common — RipConfirm is live on Linux
-            // (^Y rip). MBSearch draw/input handlers are portable too; the overlay
-            // just never opens on Linux because ^F (case 6) stays gated.
-            if (ui_overlay_ != UIOverlay::None) {
-                // viz-live-under-overlay: composite the animated panes UNDER the
-                // popup so the marquee/spectrum keep moving behind it, then redraw
-                // the overlay last (its wrefresh flushes with the popup written
-                // last -> stays on top, one doupdate, no flicker).
-                drawAnimatedPanes();
-                drawOverlay();
-                overlay_drawn_ = ui_overlay_;   // remember what's on screen for the dismiss repaint
-                redraw_needed_.store(false);
-            } else {
-            // popup-artifact-repaint: any overlay -> None transition (all 5 types, all
-            // 13 dismiss sites) lands here; restore the cells the popup clobbered before
-            // the full redraw. Cheap no-op when no overlay was up.
-            if (overlay_drawn_ != UIOverlay::None) { repaintAfterOverlay(); overlay_drawn_ = UIOverlay::None; }
-            drawAll();
-            redraw_needed_.store(false);
-            }
-        } else {
-            if (ui_overlay_ != UIOverlay::None) {
-                // Quiet tick with a popup up: keep the animated panes alive under it
-                // (same composite as above). doupdate diffing makes this a no-op when
-                // nothing actually changed, so idle playback never busy-repaints.
-                drawAnimatedPanes();
-                drawOverlay();
-            } else {
-            drawAnimatedPanes();
-            doupdate();
-            }
+    // Advance shared text scroll offset on wall-clock timer (~300ms per step)
+    // Using clock time instead of tick count so keypress rate doesn't affect speed
+    {
+        static auto last_scroll = std::chrono::steady_clock::now();
+        auto now = std::chrono::steady_clock::now();
+        if (std::chrono::duration_cast<std::chrono::milliseconds>(
+                now - last_scroll).count() >= 300) {
+            last_scroll = now;
+            ++text_scroll_offset_;
+            redraw_needed_.store(true);
         }
     }
+
+    // Always recompute viz bins so bars animate smoothly (Classic right-pane
+    // overlay OR the Awesome full-width strip).
+    if (right_pane_ == RightPane::Visualizer || vizStripShown())
+        computeVizBins();
+
+    // Animate the breathing progress head — only in Awesome mode while playing,
+    // so Classic mode keeps its repaint-on-change cadence (no extra cost).
+    if (config_.awesome_mode && audio_.state() == PlaybackState::Playing)
+        redraw_needed_.store(true);
+
+    // Terminal too small: resizeWindows() destroyed the pane windows and
+    // returned without recreating them (see its size guard). Both draw paths
+    // below dereference those windows (getmaxyx / wnoutrefresh), which crashes
+    // on a null WINDOW*. Paint a safe notice straight onto stdscr and skip all
+    // pane drawing until the terminal grows back to a usable size.
+    if (!win_dir_ || !win_title_ || !win_playlist_ ||
+        !win_progress_ || !win_cmdline_) {
+        werase(stdscr);
+        if (screen_rows_ > 0 && screen_cols_ > 0) {
+            const char* m1 = "Terminal too small";
+            const char* m2 = "(min 40 x 9)";
+            int y  = screen_rows_ / 2;
+            int x1 = (screen_cols_ - (int)strlen(m1)) / 2; if (x1 < 0) x1 = 0;
+            int x2 = (screen_cols_ - (int)strlen(m2)) / 2; if (x2 < 0) x2 = 0;
+            mvaddnstr(y, x1, m1, screen_cols_);
+            if (y + 1 < screen_rows_) mvaddnstr(y + 1, x2, m2, screen_cols_);
+        }
+        wnoutrefresh(stdscr);
+        doupdate();
+        redraw_needed_.store(false);
+    } else
+    if (redraw_needed_.load()) {
+        // slice 6: overlay dispatch is common — RipConfirm is live on Linux
+        // (^Y rip). MBSearch draw/input handlers are portable too; the overlay
+        // just never opens on Linux because ^F (case 6) stays gated.
+        if (ui_overlay_ != UIOverlay::None) {
+            // viz-live-under-overlay: composite the animated panes UNDER the
+            // popup so the marquee/spectrum keep moving behind it, then redraw
+            // the overlay last (its wrefresh flushes with the popup written
+            // last -> stays on top, one doupdate, no flicker).
+            drawAnimatedPanes();
+            drawOverlay();
+            overlay_drawn_ = ui_overlay_;   // remember what's on screen for the dismiss repaint
+            redraw_needed_.store(false);
+        } else {
+        // popup-artifact-repaint: any overlay -> None transition (all 5 types, all
+        // 13 dismiss sites) lands here; restore the cells the popup clobbered before
+        // the full redraw. Cheap no-op when no overlay was up.
+        if (overlay_drawn_ != UIOverlay::None) { repaintAfterOverlay(); overlay_drawn_ = UIOverlay::None; }
+        drawAll();
+        redraw_needed_.store(false);
+        }
+    } else {
+        if (ui_overlay_ != UIOverlay::None) {
+            // Quiet tick with a popup up: keep the animated panes alive under it
+            // (same composite as above). doupdate diffing makes this a no-op when
+            // nothing actually changed, so idle playback never busy-repaints.
+            drawAnimatedPanes();
+            drawOverlay();
+        } else {
+        drawAnimatedPanes();
+        doupdate();
+        }
+    }
+}
+
+// wingui-move-repaint: fires from a timer inside Windows' modal move/size loop
+// (WM_ENTERSIZEMOVE -> SetTimer), on the UI thread while getch() is blocked. Render
+// one frame so the marquee/spectrum keep animating while the title bar is held.
+// Unlike onWinguiLiveResize this must NOT resizeWindows() - a move has no size
+// change. Reentrancy-guarded (same-thread bool) exactly like onWinguiLiveResize.
+void UIManager::onWinguiPaintTick() {
+    static bool in_paint_tick = false;
+    if (in_paint_tick) return;
+    in_paint_tick = true;
+    tickFrame();
+    in_paint_tick = false;
 }
 
 // viz-live-under-overlay: the animated background pane set - staged (wnoutrefresh)

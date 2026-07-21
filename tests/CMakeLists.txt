@@ -133,6 +133,17 @@ target_include_directories(secret_store_test PRIVATE
 target_link_libraries(secret_store_test PRIVATE ${SECRET_LIBS})
 add_test(NAME secret_store_test COMMAND secret_store_test)
 
+# podcast-parser (Podcasts slice 1) - include/PodcastFeed.h proven in ISOLATION
+# before any [Podcasts] UI/HTTP wiring: the one genuinely-new, genuinely-messy
+# routine (RSS/Atom XML-in-the-wild) validated standalone. Header-only, so no
+# source to link. Inline rule cases + three real feed fixtures (ART19 + acast)
+# found via PODCAST_FIXTURE_DIR. Pure, both matrix jobs.
+add_executable(podcast_parse_test podcast_parse_test.cpp)
+target_include_directories(podcast_parse_test PRIVATE ${CMAKE_SOURCE_DIR}/include)
+target_compile_definitions(podcast_parse_test PRIVATE
+    PODCAST_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/podcasts")
+add_test(NAME podcast_parse_test COMMAND podcast_parse_test)
+
 # Viz FFT (Slice C) - include/VizFFT.h proven in ISOLATION before it touched
 # computeVizBins(): DC / bin-centred sines / 100 Hz-20 kHz sweep alias check
 # (the old stride-4 DFT folds above ~sr/8) / Parseval / frame-cost gate vs the

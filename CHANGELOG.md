@@ -5,6 +5,22 @@ All notable changes to RE-MOCT are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.2] - Unreleased
+
+### Security
+
+- The sensitive Last.fm and ListenBrainz credentials in `remoct.conf` (the shared
+  secret, the session key, the in-flight auth token, and the ListenBrainz token)
+  are no longer stored as plaintext. On Windows they are encrypted with DPAPI, tied
+  to your Windows user account; on Linux they are obfuscated with a machine-derived
+  key. The API key and usernames stay plaintext, so the file is still easy to read
+  and diff. This protects against casual disclosure - synced folders, backups,
+  pasted logs, screen shares - not against software running as your own user.
+- Because the protection is bound to the machine and user, the four protected
+  fields no longer carry over if you copy `remoct.conf` to another machine or user
+  account; you re-authenticate there. An existing plaintext config keeps working
+  and upgrades to the protected form on the next save.
+
 ## [1.3.1] - 2026-07-20
 
 ### Changed (iHeart re-pin - F6)

@@ -42,6 +42,19 @@ else()
     set(PLUGINLOADER_LIBS dl)
 endif()
 
+# secret-at-rest backend (DPAPI on Windows / machine-salt obfuscation + MD5 on
+# Linux). Config.cpp now calls secret::protect/unprotect, so EVERY test that links
+# Config.cpp must also link this backend (the "new dep in a shared TU" rule). The
+# Linux impl needs lib/ on the include path for md5.h.
+if(WIN32)
+    set(SECRET_IMPL ${CMAKE_SOURCE_DIR}/src/platform/win/SecretStoreWin.cpp)
+    set(SECRET_LIBS crypt32)
+else()
+    set(SECRET_IMPL ${CMAKE_SOURCE_DIR}/src/platform/linux/SecretStorePosix.cpp
+                    ${CMAKE_SOURCE_DIR}/lib/md5.c)
+    set(SECRET_LIBS "")
+endif()
+
 add_executable(iheart_sm_test
     iheart_sm_test.cpp
     ${CMAKE_SOURCE_DIR}/plugins/stream/IHeartNowPlayingSM.cpp   # moved in slice c
@@ -110,6 +123,15 @@ add_executable(md5_test
 )
 target_include_directories(md5_test PRIVATE ${CMAKE_SOURCE_DIR}/lib)
 add_test(NAME md5_test COMMAND md5_test)
+
+# secret-at-rest: base64 codec (round-trip + defensive decode) + secret protect/
+# unprotect through the REAL platform backend - DPAPI on Windows (needs crypt32),
+# machine-salt obfuscation + MD5 on Linux. Same test file, both matrix jobs.
+add_executable(secret_store_test secret_store_test.cpp ${SECRET_IMPL})
+target_include_directories(secret_store_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/lib)
+target_link_libraries(secret_store_test PRIVATE ${SECRET_LIBS})
+add_test(NAME secret_store_test COMMAND secret_store_test)
 
 # Viz FFT (Slice C) - include/VizFFT.h proven in ISOLATION before it touched
 # computeVizBins(): DC / bin-centred sines / 100 Hz-20 kHz sweep alias check
@@ -514,8 +536,11 @@ set_tests_properties(rip_encoder_seam_test PROPERTIES TIMEOUT 60)
 add_executable(encoder_quality_test
     encoder_quality_test.cpp
     ${CMAKE_SOURCE_DIR}/src/Config.cpp
+    ${SECRET_IMPL}   # Config.cpp -> secret::protect/unprotect
 )
-target_include_directories(encoder_quality_test PRIVATE ${CMAKE_SOURCE_DIR}/include)
+target_include_directories(encoder_quality_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/lib)
+target_link_libraries(encoder_quality_test PRIVATE ${SECRET_LIBS})
 add_test(NAME encoder_quality_test COMMAND encoder_quality_test)
 set_tests_properties(encoder_quality_test PROPERTIES TIMEOUT 30)
 

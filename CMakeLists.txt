@@ -100,6 +100,7 @@ if(WIN32)
         ${CMAKE_SOURCE_DIR}/src/platform/win/CdIoWin.cpp
         ${CMAKE_SOURCE_DIR}/src/platform/win/PluginLoaderWin.cpp  # slice c: LoadLibrary seam in the host
         ${CMAKE_SOURCE_DIR}/src/platform/win/MediaControlSmtc.cpp # osmedia-seam: SMTC (wingui) / no-op
+        ${CMAKE_SOURCE_DIR}/src/platform/win/SecretStoreWin.cpp   # secret-at-rest: DPAPI backend (needs crypt32)
     )
 endif()
 
@@ -116,6 +117,7 @@ if(UNIX)
         ${CMAKE_SOURCE_DIR}/src/platform/linux/CdIoSgIo.cpp
         ${CMAKE_SOURCE_DIR}/src/platform/linux/PluginLoaderPosix.cpp  # slice c: dlopen seam in the host
         ${CMAKE_SOURCE_DIR}/src/platform/linux/MediaControlMpris.cpp  # osmedia-seam: MPRIS over sd-bus
+        ${CMAKE_SOURCE_DIR}/src/platform/linux/SecretStorePosix.cpp   # secret-at-rest: machine-salt obfuscation backend
     )
     # Module-mode search only: under WSL2 the appended Windows PATH would let
     # config-mode find MSYS2's CURLConfig.cmake at /mnt/c (CMake treats PATH
@@ -135,6 +137,10 @@ if(UNIX)
         # stays platform-clean, and it's exercised by plugin_loader_test on both jobs.
         ${CMAKE_SOURCE_DIR}/src/platform/linux/PluginLoaderPosix.cpp
     )
+    # SecretStorePosix.cpp is intentionally NOT in this platform-clean check: like
+    # HttpCurl (curl) and MediaControlMpris (sd-bus), it pulls a dependency the
+    # narrow include/-only scope does not carry (lib/md5.h). It is still warning-
+    # built as part of the main target and covered by secret_store_test.
     target_include_directories(remoct_linux_seams PRIVATE ${CMAKE_SOURCE_DIR}/include)
     if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
         target_compile_options(remoct_linux_seams PRIVATE -Wall -Wextra -Wpedantic)
@@ -335,6 +341,7 @@ target_link_libraries(remoct PRIVATE
     $<$<PLATFORM_ID:Windows>:wininet>
     $<$<PLATFORM_ID:Windows>:shell32>
     $<$<PLATFORM_ID:Windows>:advapi32>
+    $<$<PLATFORM_ID:Windows>:crypt32>  # secret-at-rest: CryptProtectData/CryptUnprotectData (DPAPI)
     $<$<PLATFORM_ID:Windows>:dwmapi>   # DwmSetWindowAttribute: OS dark title bar (wingui)
     $<$<PLATFORM_ID:Windows>:runtimeobject>  # osmedia-seam: WinRT ABI for SMTC (RoInitialize/RoGetActivationFactory)
     $<$<PLATFORM_ID:Windows>:gdi32>          # osmedia-seam: SMTC HWND path (also via pdcurses_wingui in the wingui build)

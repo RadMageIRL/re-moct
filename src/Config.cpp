@@ -1,6 +1,7 @@
 #include "Config.h"
 #include "StringUtils.h"
 #include "AwesomeThemes.h"   // kNumAwesomeThemes for clamping awesome_theme on load
+#include "SecretStore.h"     // secret-at-rest: protect()/unprotect() the sensitive fields
 
 #include <fstream>
 #include <algorithm>
@@ -245,12 +246,17 @@ void DigiConfig::load() {
         else if (key == "wingui_font")        wingui_font        = val;
         else if (key == "wingui_cols")        try { wingui_cols = std::stoi(val); } catch (...) {}
         else if (key == "wingui_rows")        try { wingui_rows = std::stoi(val); } catch (...) {}
+        // secret-at-rest: the four sensitive fields are stored protected (DPAPI on
+        // Windows, machine-salt obfuscation on Linux) with a self-describing prefix.
+        // unprotect() passes legacy plaintext through unchanged and yields "" (empty
+        // -> re-auth) on a foreign/corrupt value. lastfm-key and the *-user fields
+        // stay plaintext (low value, keeps the conf debuggable).
         else if (key == "lastfm-key")       lastfm_key        = val;
-        else if (key == "lastfm-secret")    lastfm_secret     = val;
-        else if (key == "lastfm-session")   lastfm_session    = val;
+        else if (key == "lastfm-secret")    lastfm_secret     = secret::unprotect(val).value_or("");
+        else if (key == "lastfm-session")   lastfm_session    = secret::unprotect(val).value_or("");
         else if (key == "lastfm-user")      lastfm_user       = val;
-        else if (key == "lastfm-pending")   lastfm_pending    = val;
-        else if (key == "lb-token")          listenbrainz_token = val;
+        else if (key == "lastfm-pending")   lastfm_pending    = secret::unprotect(val).value_or("");
+        else if (key == "lb-token")          listenbrainz_token = secret::unprotect(val).value_or("");
         else if (key == "lb-user")           listenbrainz_user  = val;
         else if (key.substr(0,3) == "eq_" && key.size() == 4) {
             int b = key[3] - '0';
@@ -389,12 +395,14 @@ void DigiConfig::save() const {
         f << "wingui_font="       << wingui_font << "\n";
         if (wingui_cols > 0)      f << "wingui_cols="    << wingui_cols << "\n";
         if (wingui_rows > 0)      f << "wingui_rows="    << wingui_rows << "\n";
+        // secret-at-rest: protect() the four sensitive fields (output is clean
+        // base64, so nl() would be a no-op and is dropped); key + *-user stay plain.
         if (!lastfm_key.empty())     f << "lastfm-key="     << nl(lastfm_key)     << "\n";
-        if (!lastfm_secret.empty())  f << "lastfm-secret="  << nl(lastfm_secret)  << "\n";
-        if (!lastfm_session.empty()) f << "lastfm-session=" << nl(lastfm_session) << "\n";
+        if (!lastfm_secret.empty())  f << "lastfm-secret="  << secret::protect(lastfm_secret)  << "\n";
+        if (!lastfm_session.empty()) f << "lastfm-session=" << secret::protect(lastfm_session) << "\n";
         if (!lastfm_user.empty())    f << "lastfm-user="    << nl(lastfm_user)    << "\n";
-        if (!lastfm_pending.empty()) f << "lastfm-pending=" << nl(lastfm_pending) << "\n";
-        if (!listenbrainz_token.empty()) f << "lb-token=" << nl(listenbrainz_token) << "\n";
+        if (!lastfm_pending.empty()) f << "lastfm-pending=" << secret::protect(lastfm_pending) << "\n";
+        if (!listenbrainz_token.empty()) f << "lb-token=" << secret::protect(listenbrainz_token) << "\n";
         if (!listenbrainz_user.empty())  f << "lb-user="  << nl(listenbrainz_user)  << "\n";
         for (int b = 0; b < 10; ++b)
             f << "eq_" << b << "=" << eq_gains[b] << "\n";

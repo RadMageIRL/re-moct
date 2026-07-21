@@ -14,6 +14,8 @@
 #include "MBLookup.h"
 #include "CDRipper.h"
 #include "RadioBrowser.h"
+#include "PodcastFeed.h"    // podcasts slice 2: PodcastEpisode/PodcastFeed for the [Podcasts] section
+#include "PodcastClient.h"  // podcasts slice 2: the async feed fetch result type
 #include "LastFm.h"
 #include "ListenBrainz.h"
 #include "DiscordRP.h"
@@ -285,7 +287,7 @@ private:
     void computeVizBins();
 
     // Input bar state (goto dir / save M3U / load M3U)
-    enum class InputMode { Goto, SaveM3U, LoadM3U, StreamURL, StreamName, RadioSearch, LastfmKey, LastfmSecret, ListenBrainzToken, PlaylistSearch, RecDir, RecOffset };
+    enum class InputMode { Goto, SaveM3U, LoadM3U, StreamURL, StreamName, RadioSearch, LastfmKey, LastfmSecret, ListenBrainzToken, PlaylistSearch, RecDir, RecOffset, PodcastAddUrl };
     bool        goto_active_  = false;
     InputMode   input_mode_   = InputMode::Goto;
     std::string goto_input_;
@@ -583,6 +585,12 @@ private:
     bool in_radio_       = false;
     bool in_radio_search_ = false;       // showing radio-browser results in [Radio]
     bool in_books_       = false;        // showing the [Books] audiobook list
+    // [Podcasts] two-level state, mirroring [Radio] + its in_radio_search_ sub-mode:
+    //   in_podcasts_ && !in_podcast_feed_  -> level 1, subscribed feed list
+    //   in_podcasts_ &&  in_podcast_feed_  -> level 2, one feed's episode list
+    bool in_podcasts_    = false;
+    bool in_podcast_feed_ = false;
+    std::string podcast_feed_url_;       // the feed whose episodes are shown at level 2
     // Chapter table for the currently playing book (empty if none / not a book).
     std::vector<Mp4Chapter> current_chapters_;
     std::string             chapters_for_path_;   // path current_chapters_ reflects
@@ -654,6 +662,29 @@ private:
     bool        scrob_done_  = false;    // already scrobbled this track
     void        updateScrobbler();       // called each tick; fires now-playing + scrobble
     std::vector<RadioStation> radio_results_;
+    // [Podcasts] level-2 backing store: the episodes of the entered feed. The
+    // visible rows in dir_display_ are pre-formatted from these (title, date,
+    // duration), mirroring how radio_results_ backs the radio search list.
+    std::vector<PodcastEpisode> podcast_episodes_;
+
+    // Podcast feed fetch worker - mirrors the info_art / radio_art async idiom so
+    // subscribing to or entering a feed never freezes the TUI (feeds run large,
+    // up to ~22 MB). Single in-flight; a finished fetch is installed per-frame by
+    // pollPodcastFetch(). podcast_fetch_want_url_ is the staleness guard: a result
+    // for a feed the user has since navigated away from is discarded.
+    enum class PodcastFetchPurpose { Subscribe, Enter };
+    std::thread           podcast_fetch_thread_;
+    std::atomic<bool>     podcast_fetch_active_{false};  // worker in flight
+    std::atomic<bool>     podcast_fetch_done_{false};    // result ready for pickup
+    std::mutex            podcast_fetch_mtx_;
+    std::string           podcast_fetch_want_url_;       // feed URL the worker fetches (guarded)
+    PodcastFetchPurpose   podcast_fetch_purpose_ = PodcastFetchPurpose::Enter;  // (guarded)
+    PodcastClient::Result podcast_fetch_result_;         // worker output (guarded)
+    void startPodcastFetch(const std::string& url, PodcastFetchPurpose purpose);
+    void pollPodcastFetch();        // UI thread, per-frame: install a finished fetch
+    void enterPodcastSection();     // enter [Podcasts]: build the level-1 feed list
+    void showPodcastFeedList();     // (re)populate dir_entries_/dir_display_ at level 1
+
     int  fav_cursor_     = 0;
 
     void        refreshDir();

@@ -145,6 +145,23 @@ struct DigiConfig {
     bool isRadioStation(const std::string& url) const;
     std::string radioStationName(const std::string& url) const;   // "" if none
 
+    // Subscribed podcast feeds (feed URLs, most-recent-first), max 50, FIFO on
+    // overflow. Mirrors the radio storage shape. The side maps cache the show
+    // title and feed-art URL so the [Podcasts] list renders without re-fetching;
+    // both are refreshed on each successful feed fetch. Persisted plaintext as
+    // "podcast=<url>\t<title>\t<art>" (podcast feeds are non-sensitive, same
+    // category as radio/books; NOT routed through secret::protect).
+    std::vector<std::string> podcast_feeds;
+    std::unordered_map<std::string, std::string> podcast_feed_titles;
+    std::unordered_map<std::string, std::string> podcast_feed_art;
+    static constexpr int     PODCAST_MAX = 50;
+    void addPodcastFeed(const std::string& url, const std::string& title = "",
+                        const std::string& art = "");
+    void removePodcastFeed(const std::string& url);
+    bool isPodcastFeed(const std::string& url) const;
+    std::string podcastFeedTitle(const std::string& url) const;   // "" if none
+    std::string podcastFeedArt(const std::string& url) const;     // "" if none
+
     // Audiobooks: curated book paths (most-recent-first) + per-book resume
     // position in seconds. Mirrors the radio storage shape (list + side map).
     std::vector<std::string> audiobooks;

@@ -82,6 +82,7 @@ set(REMOCT_SOURCES
     src/ConvertJob.cpp            # convert-core: decode -> IEncoder batch convert engine
     src/Mp4Chapters.cpp
     src/RadioBrowser.cpp
+    src/PodcastClient.cpp         # podcasts slice 2: fetch feed URL over IHttp -> parsePodcastFeed
     src/LastFm.cpp
     src/Log.cpp
     src/ListenBrainz.cpp

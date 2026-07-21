@@ -115,6 +115,53 @@ std::string DigiConfig::radioStationName(const std::string& url) const {
     return it != radio_station_names.end() ? it->second : std::string();
 }
 
+void DigiConfig::addPodcastFeed(const std::string& url, const std::string& title,
+                                const std::string& art) {
+    if (url.empty()) return;
+    std::string keep_title = title, keep_art = art;
+    if (keep_title.empty()) {                     // preserve cached title on a nameless re-add
+        auto it = podcast_feed_titles.find(url);
+        if (it != podcast_feed_titles.end()) keep_title = it->second;
+    }
+    if (keep_art.empty()) {                        // preserve cached art likewise
+        auto it = podcast_feed_art.find(url);
+        if (it != podcast_feed_art.end()) keep_art = it->second;
+    }
+    removePodcastFeed(url);                         // dedup
+    podcast_feeds.insert(podcast_feeds.begin(), url);   // most-recent-first
+    if (!keep_title.empty()) podcast_feed_titles[url] = keep_title;
+    if (!keep_art.empty())   podcast_feed_art[url]    = keep_art;
+    if ((int)podcast_feeds.size() > PODCAST_MAX) {
+        for (size_t i = (size_t)PODCAST_MAX; i < podcast_feeds.size(); ++i) {
+            podcast_feed_titles.erase(podcast_feeds[i]);   // prune dropped side-map entries
+            podcast_feed_art.erase(podcast_feeds[i]);
+        }
+        podcast_feeds.resize((size_t)PODCAST_MAX);         // FIFO-evict the tail
+    }
+}
+
+void DigiConfig::removePodcastFeed(const std::string& url) {
+    podcast_feeds.erase(
+        std::remove(podcast_feeds.begin(), podcast_feeds.end(), url),
+        podcast_feeds.end());
+    podcast_feed_titles.erase(url);
+    podcast_feed_art.erase(url);
+}
+
+bool DigiConfig::isPodcastFeed(const std::string& url) const {
+    return std::find(podcast_feeds.begin(), podcast_feeds.end(), url) != podcast_feeds.end();
+}
+
+std::string DigiConfig::podcastFeedTitle(const std::string& url) const {
+    auto it = podcast_feed_titles.find(url);
+    return it != podcast_feed_titles.end() ? it->second : std::string();
+}
+
+std::string DigiConfig::podcastFeedArt(const std::string& url) const {
+    auto it = podcast_feed_art.find(url);
+    return it != podcast_feed_art.end() ? it->second : std::string();
+}
+
 void DigiConfig::addAudiobook(const std::string& path) {
     if (path.empty() || isCDTrackPath(path)) return;
     double keep = bookPos(path);                 // preserve resume across re-add
@@ -165,6 +212,9 @@ void DigiConfig::load() {
     fav_tracks.clear();
     radio_stations.clear();
     radio_station_names.clear();
+    podcast_feeds.clear();
+    podcast_feed_titles.clear();
+    podcast_feed_art.clear();
     recent_tracks.clear();
     track_stats.clear();
     audiobooks.clear();
@@ -281,6 +331,30 @@ void DigiConfig::load() {
                 if (!surl.empty()) {
                     radio_stations.push_back(surl);
                     if (!sname.empty()) radio_station_names[surl] = sname;
+                }
+            }
+        }
+        else if (key == "podcast") {
+            if (!val.empty()) {
+                // "podcast=<url>\t<title>\t<art>". Missing trailing fields (older
+                // or title-less lines) parse with tab==npos => stay empty.
+                std::string purl = val, ptitle, part;
+                auto t1 = val.find('\t');
+                if (t1 != std::string::npos) {
+                    purl = val.substr(0, t1);
+                    std::string rest = val.substr(t1 + 1);
+                    auto t2 = rest.find('\t');
+                    if (t2 != std::string::npos) {
+                        ptitle = rest.substr(0, t2);
+                        part   = rest.substr(t2 + 1);
+                    } else {
+                        ptitle = rest;
+                    }
+                }
+                if (!purl.empty()) {
+                    podcast_feeds.push_back(purl);
+                    if (!ptitle.empty()) podcast_feed_titles[purl] = ptitle;
+                    if (!part.empty())   podcast_feed_art[purl]    = part;
                 }
             }
         }
@@ -422,6 +496,23 @@ void DigiConfig::save() const {
             } else {
                 f << "station="  << url << "\n";
             }
+        }
+        for (const auto& pf : podcast_feeds) {
+            std::string url = nl(pf);
+            // Fold tabs (and CR/LF via nl) in title/art so the tab-delimited
+            // "podcast=<url>\t<title>\t<art>" line never mis-splits on reload.
+            auto fold = [](std::string s) {
+                for (char& c : s) if (c == '\t') c = ' ';
+                return s;
+            };
+            std::string title, art;
+            auto ti = podcast_feed_titles.find(pf);
+            if (ti != podcast_feed_titles.end()) title = fold(nl(ti->second));
+            auto ai = podcast_feed_art.find(pf);
+            if (ai != podcast_feed_art.end())    art   = fold(nl(ai->second));
+            if (!art.empty())        f << "podcast=" << url << "\t" << title << "\t" << art << "\n";
+            else if (!title.empty()) f << "podcast=" << url << "\t" << title << "\n";
+            else                     f << "podcast=" << url << "\n";
         }
         for (const auto& r : recent_tracks)
             if (!isCDTrackPath(r))

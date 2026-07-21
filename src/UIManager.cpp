@@ -372,6 +372,7 @@ UIManager::~UIManager() {
     if (discord_art_thread_.joinable()) discord_art_thread_.join();
     if (radio_art_thread_.joinable())   radio_art_thread_.join();
     if (info_art_thread_.joinable())    info_art_thread_.join();
+    if (podcast_fetch_thread_.joinable()) podcast_fetch_thread_.join();  // podcasts: never terminate on a joinable thread
     if (mb_search_win_) { delwin(mb_search_win_); mb_search_win_ = nullptr; }
 #ifdef PDCURSES
     // Remember the wingui window size for next launch (screen_rows_/cols_ track the
@@ -1285,6 +1286,7 @@ void UIManager::run() {
             std::chrono::steady_clock::now() - last_seek_apply_ >= std::chrono::milliseconds(100))
             flushPendingSeek();
         updateScrobbler();   // publishes now-playing to the OS on change (publishMedia)
+        pollPodcastFetch();  // podcasts: install a finished feed fetch off the worker thread
         // OS media control: per-tick position refresh (cheap; the impl throttles
         // its own signal emission) + clear on the transition to stopped so the OS
         // surface does not keep a dead track. Metadata itself is pushed on change
@@ -2723,6 +2725,10 @@ void UIManager::drawDirBrowser() {
     else if (in_recent_)  hdr = " [Recently Played] ";
     else if (in_favs_)    hdr = " [FAVs] (f:fav/unfav  Enter:play  Del:remove) ";
     else if (in_radio_)   hdr = " [Radio] (Enter:play  d/Del:remove) ";
+    else if (in_podcasts_) {
+        if (in_podcast_feed_) hdr = " [Podcasts] (Enter:play  [Back]:feeds) ";
+        else                  hdr = " [Podcasts] (Enter:open  /:add feed  d/Del:remove) ";
+    }
     else if (in_books_)   hdr = " [Books] (Enter:play  Del:remove) ";
     else {
         std::string leaf = fs::path(current_dir_).filename().string();
@@ -2758,8 +2764,8 @@ void UIManager::drawDirBrowser() {
         bool is_dir = in_drive_list_
                     || name == ".." || name == "[Drives]" || name == "[Recent]"
                     || name == "[FAVs]" || name == "[Bookmarks]" || name == "[Back]"
-                    || name == "[Radio]" || name == "[Books]"
-                    || (!in_recent_ && !in_favs_ && !in_radio_ && !in_books_ && fs::is_directory(fs::path(current_dir_) / name));
+                    || name == "[Radio]" || name == "[Books]" || name == "[Podcasts]"
+                    || (!in_recent_ && !in_favs_ && !in_radio_ && !in_podcasts_ && !in_books_ && fs::is_directory(fs::path(current_dir_) / name));
 
         // Dead path check for FAVs — grey out missing files
         bool dead_path = false;
@@ -5023,6 +5029,7 @@ void UIManager::drawGotoBar() {
         case InputMode::LoadM3U: prompt = " load m3u: ";  break;
         case InputMode::StreamURL: prompt = " radio url: "; break;
         case InputMode::StreamName: prompt = " station name (optional, Enter to skip): "; break;
+        case InputMode::PodcastAddUrl: prompt = " podcast feed url: "; break;
         case InputMode::RadioSearch: prompt = " search radio: "; break;
         case InputMode::LastfmKey:    prompt = " last.fm API key: "; break;
         case InputMode::LastfmSecret: prompt = " last.fm secret: ";  break;
@@ -6809,8 +6816,8 @@ void UIManager::handleInput(int ch) {
                 const std::string& nm = dir_entries_[(size_t)dir_cursor_];
                 // Build full path — dir_entries_ stores names, not full paths
                 std::string p;
-                if (in_recent_ || in_favs_ || in_radio_ || fs::path(nm).is_absolute()) {
-                    p = nm;  // recent/fav entries are already full paths
+                if (in_recent_ || in_favs_ || in_radio_ || in_podcasts_ || fs::path(nm).is_absolute()) {
+                    p = nm;  // recent/fav/radio/podcast entries are already full paths or URLs
                 } else {
                     p = (fs::path(current_dir_) / nm).string();
                 }
@@ -6918,7 +6925,7 @@ void UIManager::handleInput(int ch) {
                 fav_path = dir_entries_[(size_t)dir_cursor_];
             } else if (focus_ == Pane::DirBrowser
                        && dir_cursor_ < (int)dir_entries_.size()
-                       && !in_drive_list_ && !in_recent_ && !in_favs_ && !in_radio_ && !in_books_) {
+                       && !in_drive_list_ && !in_recent_ && !in_favs_ && !in_radio_ && !in_podcasts_ && !in_books_) {
                 const std::string& nm = dir_entries_[(size_t)dir_cursor_];
                 std::string full = (fs::path(nm).is_absolute()) ? nm
                                  : (fs::path(current_dir_) / nm).string();
@@ -6969,6 +6976,17 @@ void UIManager::handleInput(int ch) {
                         dir_cursor_ = std::max(0, (int)dir_entries_.size() - 1);
                 }
             }
+            if (focus_ == Pane::DirBrowser && in_podcasts_ && !in_podcast_feed_
+                && dir_cursor_ < (int)dir_entries_.size()) {
+                const std::string& nm = dir_entries_[(size_t)dir_cursor_];
+                if (nm != "[Back]" && !nm.empty()) {
+                    int keep = dir_cursor_;
+                    config_.removePodcastFeed(nm);
+                    config_.save();                    // persist the removal so it survives restart
+                    showPodcastFeedList();
+                    dir_cursor_ = std::clamp(keep, 0, std::max(0, (int)dir_entries_.size() - 1));
+                }
+            }
             if (focus_ == Pane::DirBrowser && in_books_
                 && dir_cursor_ < (int)dir_entries_.size()) {
                 const std::string& nm = dir_entries_[(size_t)dir_cursor_];
@@ -7001,7 +7019,7 @@ void UIManager::handleInput(int ch) {
         case 'b':
             // Cursor on an audiobook file in the normal browser -> toggle in [Books].
             if (focus_ == Pane::DirBrowser
-                && !in_drive_list_ && !in_recent_ && !in_favs_ && !in_radio_ && !in_books_
+                && !in_drive_list_ && !in_recent_ && !in_favs_ && !in_radio_ && !in_podcasts_ && !in_books_
                 && dir_cursor_ < (int)dir_entries_.size()) {
                 const std::string& nm = dir_entries_[(size_t)dir_cursor_];
                 std::string full = fs::path(nm).is_absolute() ? nm
@@ -7019,7 +7037,7 @@ void UIManager::handleInput(int ch) {
                 }
             }
             // Add current directory to bookmarks (not available from [Drives] list)
-            if (!in_drive_list_ && !in_recent_ && !in_radio_ && !current_dir_.empty()) {
+            if (!in_drive_list_ && !in_recent_ && !in_radio_ && !in_podcasts_ && !current_dir_.empty()) {
                 // Don't bookmark CD drive roots — physical drives are volatile
 #ifdef _WIN32
                 std::string dp = current_dir_;
@@ -7132,7 +7150,7 @@ void UIManager::handleInput(int ch) {
                     if (e == ".m3u" || e == ".m3u8" || e == ".pls" || e == ".xspf")
                         convert_pl_file_ = p;
                 }
-                if (!in_drive_list_ && !in_radio_ && !in_favs_ && !in_recent_ && !in_books_)
+                if (!in_drive_list_ && !in_radio_ && !in_podcasts_ && !in_favs_ && !in_recent_ && !in_books_)
                     convert_src_dir_ = current_dir_;
             }
             if (convert_single_.empty() && convert_src_dir_.empty() && marked_.empty()
@@ -7246,10 +7264,24 @@ void UIManager::handleInput(int ch) {
                         dir_cursor_ = std::max(0, (int)dir_entries_.size() - 1);
                 }
             }
+            else if (focus_ == Pane::DirBrowser && in_podcasts_ && !in_podcast_feed_
+                     && dir_cursor_ < (int)dir_entries_.size()) {
+                // 'd' also removes a subscribed feed from the [Podcasts] list (like Del)
+                const std::string& nm = dir_entries_[(size_t)dir_cursor_];
+                if (nm != "[Back]" && !nm.empty()) {
+                    int keep = dir_cursor_;
+                    config_.removePodcastFeed(nm);
+                    config_.save();
+                    showPodcastFeedList();
+                    dir_cursor_ = std::clamp(keep, 0, std::max(0, (int)dir_entries_.size() - 1));
+                }
+            }
             break;
         case '/':
             if (focus_ == Pane::DirBrowser && in_radio_)
                 openInputBar(InputMode::RadioSearch, "");
+            else if (focus_ == Pane::DirBrowser && in_podcasts_ && !in_podcast_feed_)
+                openInputBar(InputMode::PodcastAddUrl, "");   // paste a feed URL to subscribe
             break;
         case 'a': case 'A':
             if (focus_ == Pane::DirBrowser && dir_cursor_ < (int)dir_entries_.size()) {
@@ -7433,6 +7465,17 @@ void UIManager::gotoClose(bool commit) {
                     pending_stream_url_ = url;
                     openInputBar(InputMode::StreamName, "");
                 }
+                break;
+            }
+            case InputMode::PodcastAddUrl: {
+                std::string url = goto_input_;
+                while (!url.empty() && (url.front() == ' ' || url.front() == '\t'))
+                    url.erase(url.begin());
+                while (!url.empty() && (url.back() == ' ' || url.back() == '\t' ||
+                                        url.back() == '\r' || url.back() == '\n'))
+                    url.pop_back();
+                if (!url.empty())
+                    startPodcastFetch(url, PodcastFetchPurpose::Subscribe);   // fetch+parse off the UI thread
                 break;
             }
             case InputMode::StreamName: {
@@ -7795,6 +7838,7 @@ void UIManager::activateSelection() {
                 dir_cursor_ = 0; dir_scroll_ = 0;
                 return;
             }
+            if (name == "[Podcasts]") { enterPodcastSection(); return; }
             if (name == "[Books]") {
                 in_drive_list_ = false;
                 in_books_      = true;
@@ -7882,6 +7926,26 @@ void UIManager::activateSelection() {
             showTrackToast("Negotiating Radio Stream...", label, "");
             return;
         }
+        if (in_podcasts_) {
+            if (name == "[Back]") {
+                if (in_podcast_feed_) {          // level 2 -> back to the feed list
+                    showPodcastFeedList();
+                    return;
+                }
+                in_podcasts_ = false;            // level 1 -> leave the section
+                refreshDir();
+                return;
+            }
+            if (!in_podcast_feed_) {
+                // A feed row: fetch its episodes on a worker thread (feeds run large;
+                // never freeze the UI). The episode list installs when the fetch lands.
+                startPodcastFetch(name, PodcastFetchPurpose::Enter);
+                return;
+            }
+            // An episode row: playback arrives in a later slice.
+            showTrackToast("Podcast playback arrives in a later update", "", "");
+            return;
+        }
         if (in_favs_) {
             if (name == "[Back]") {
                 in_favs_ = false;
@@ -7942,6 +8006,7 @@ void UIManager::activateSelection() {
             dir_cursor_ = 0; dir_scroll_ = 0;
             return;
         }
+        if (name == "[Podcasts]") { enterPodcastSection(); return; }
         if (name == "[Recent]") {
             in_recent_ = true;
             in_favs_   = false;
@@ -8114,6 +8179,8 @@ void UIManager::enterDriveList() {
     in_favs_       = false;
     in_radio_      = false;
     in_books_      = false;
+    in_podcasts_     = false;
+    in_podcast_feed_ = false;
     dir_entries_   = listDrives();
     dir_display_   = dir_entries_;
     // Prepend virtual entries at top
@@ -8121,6 +8188,8 @@ void UIManager::enterDriveList() {
     dir_display_.insert(dir_display_.begin(), "[Bookmarks]");
     dir_entries_.insert(dir_entries_.begin(), "[Books]");
     dir_display_.insert(dir_display_.begin(), "[Books]");
+    dir_entries_.insert(dir_entries_.begin(), "[Podcasts]");
+    dir_display_.insert(dir_display_.begin(), "[Podcasts]");
     dir_entries_.insert(dir_entries_.begin(), "[Radio]");
     dir_display_.insert(dir_display_.begin(), "[Radio]");
     dir_entries_.insert(dir_entries_.begin(), "[FAVs]");
@@ -8236,6 +8305,8 @@ void UIManager::refreshDir() {
     in_favs_       = false;
     in_radio_      = false;
     in_books_      = false;
+    in_podcasts_     = false;
+    in_podcast_feed_ = false;
     dir_entries_.clear();
     dir_display_.clear();
     dir_poll_ticks_ = 0;
@@ -8254,6 +8325,8 @@ void UIManager::refreshDir() {
         dir_display_.push_back("[FAVs]");
         dir_entries_.push_back("[Radio]");
         dir_display_.push_back("[Radio]");
+        dir_entries_.push_back("[Podcasts]");
+        dir_display_.push_back("[Podcasts]");
         dir_entries_.push_back("[Books]");
         dir_display_.push_back("[Books]");
         if (!at_root) {
@@ -8298,6 +8371,8 @@ void UIManager::refreshDir() {
                 if (eb == "[FAVs]")                 return false;
                 if (ea == "[Radio]")                return true;
                 if (eb == "[Radio]")                return false;
+                if (ea == "[Podcasts]")             return true;
+                if (eb == "[Podcasts]")             return false;
                 if (ea == "[Books]")                return true;
                 if (eb == "[Books]")                return false;
                 if (ea == "..")                     return true;
@@ -8363,9 +8438,160 @@ std::string UIManager::browserEntryPath(int idx) const {
     if (idx < 0 || idx >= (int)dir_entries_.size()) return {};
     const std::string& nm = dir_entries_[(size_t)idx];
     if (nm.empty() || nm == ".." || nm == "[Back]" || nm.front() == '[') return {};
-    if (in_drive_list_ || in_radio_) return {};
+    if (in_drive_list_ || in_radio_ || in_podcasts_) return {};
     namespace fs = std::filesystem;
     return fs::path(nm).is_absolute() ? nm : (fs::path(current_dir_) / nm).string();
+}
+
+// ─── [Podcasts] section (slice 2) ────────────────────────────────────────────
+
+// Format one episode row: "Title  (YYYY-MM-DD, H:MM:SS)". Date derived from the
+// parsed epoch via pure civil-from-days (no libc timezone); duration from
+// duration_sec. Missing pieces are omitted. Single-string row, mirroring the
+// radio-search idiom (there is no column renderer in drawDirBrowser).
+static std::string podcastEpisodeLabel(const PodcastEpisode& ep) {
+    auto pad2 = [](long v) {
+        std::string s = std::to_string(v);
+        return s.size() < 2 ? "0" + s : s;
+    };
+    std::string meta;
+    if (ep.pub_date_unix > 0) {
+        // civil_from_days (Howard Hinnant), inverse of the parser's daysFromCivil.
+        long days = ep.pub_date_unix / 86400;
+        long z = days + 719468;
+        long era = (z >= 0 ? z : z - 146096) / 146097;
+        unsigned doe = (unsigned)(z - era * 146097);
+        unsigned yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+        long y = (long)yoe + era * 400;
+        unsigned doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+        unsigned mp = (5 * doy + 2) / 153;
+        unsigned d = doy - (153 * mp + 2) / 5 + 1;
+        unsigned m = mp + (mp < 10 ? 3 : -9);
+        y += (m <= 2);
+        meta = std::to_string(y) + "-" + pad2((long)m) + "-" + pad2((long)d);
+    }
+    if (ep.duration_sec > 0) {
+        long s = (long)ep.duration_sec, h = s / 3600, mm = (s % 3600) / 60, ss = s % 60;
+        std::string dur = h > 0 ? (std::to_string(h) + ":" + pad2(mm) + ":" + pad2(ss))
+                                : (std::to_string(mm) + ":" + pad2(ss));
+        meta += (meta.empty() ? "" : ", ") + dur;
+    }
+    std::string title = ep.title.empty() ? "(untitled)" : ep.title;
+    return title + (meta.empty() ? "" : "  (" + meta + ")");
+}
+
+// Enter the [Podcasts] section (level 1): clear the sibling section flags and
+// build the subscribed-feed list. Both entry paths (normal browser row and the
+// [Drives] list) funnel through here.
+void UIManager::enterPodcastSection() {
+    in_recent_ = false; in_favs_ = false; in_radio_ = false; in_radio_search_ = false;
+    in_books_ = false;  in_drive_list_ = false;
+    in_podcasts_ = true;
+    showPodcastFeedList();
+}
+
+// (Re)populate the browser with the subscribed feed list (level 1). A [Back] row
+// leads at index 0; each feed shows its cached title (or the URL if untitled).
+void UIManager::showPodcastFeedList() {
+    in_podcast_feed_ = false;
+    podcast_feed_url_.clear();
+    podcast_episodes_.clear();
+    dir_entries_.clear(); dir_display_.clear();
+    dir_entries_.push_back("[Back]"); dir_display_.push_back("[Back]");
+    for (const auto& url : config_.podcast_feeds) {
+        dir_entries_.push_back(url);
+        std::string title = config_.podcastFeedTitle(url);
+        dir_display_.push_back(sanitizeForDisplay(title.empty() ? url : title));
+    }
+    dir_cursor_ = 0; dir_scroll_ = 0;
+}
+
+// Spawn the one-shot feed-fetch worker (mirrors startInfoArtDecode / startRadioArtFetch):
+// the GET + parse run off the UI thread so a large feed never freezes the TUI.
+// Single in-flight; pollPodcastFetch() installs the result. `purpose` separates an
+// explicit subscribe from entering a feed to view its episodes.
+void UIManager::startPodcastFetch(const std::string& url, PodcastFetchPurpose purpose) {
+    if (url.empty()) return;
+    if (podcast_fetch_active_.load()) {                 // one at a time
+        showTrackToast("A feed is still loading...", "", "");
+        return;
+    }
+    podcast_fetch_active_.store(true);
+    podcast_fetch_done_.store(false);
+    { std::lock_guard<std::mutex> lk(podcast_fetch_mtx_);
+      podcast_fetch_want_url_ = url;
+      podcast_fetch_purpose_  = purpose;
+      podcast_fetch_result_   = PodcastClient::Result{}; }
+    if (podcast_fetch_thread_.joinable()) podcast_fetch_thread_.join();   // prior worker already done
+    std::string cached = config_.podcastFeedTitle(url);
+    showTrackToast(purpose == PodcastFetchPurpose::Subscribe
+                       ? std::string("Fetching feed...")
+                       : ("Loading " + (cached.empty() ? std::string("feed") : cached) + "..."),
+                   "", "");
+    std::string u = url;
+    podcast_fetch_thread_ = std::thread([this, u]() {
+        PodcastClient::Result r = PodcastClient::fetch(u);
+        { std::lock_guard<std::mutex> lk(podcast_fetch_mtx_); podcast_fetch_result_ = std::move(r); }
+        podcast_fetch_done_.store(true);
+    });
+}
+
+// UI thread, per-frame: pick up a finished feed fetch and act on it. Subscribe ->
+// persist + refresh the feed list; Enter -> swap in the episode list (level 2). A
+// result for a feed the user has since navigated away from is discarded.
+void UIManager::pollPodcastFetch() {
+    if (!podcast_fetch_done_.exchange(false)) return;
+    PodcastClient::Result r;
+    std::string url;
+    PodcastFetchPurpose purpose;
+    { std::lock_guard<std::mutex> lk(podcast_fetch_mtx_);
+      r = std::move(podcast_fetch_result_);
+      url = podcast_fetch_want_url_;
+      purpose = podcast_fetch_purpose_; }
+    if (podcast_fetch_thread_.joinable()) podcast_fetch_thread_.join();
+    podcast_fetch_active_.store(false);
+
+    if (purpose == PodcastFetchPurpose::Subscribe) {
+        if (!r.fetched) {
+            showTrackToast("Couldn't fetch feed", "", "");
+        } else if (!r.feed.ok) {
+            showTrackToast("Not a valid podcast feed", "", "");
+        } else {
+            config_.addPodcastFeed(url, r.feed.title, r.feed.image_url);
+            config_.save();
+            showTrackToast("Subscribed", r.feed.title.empty() ? url : r.feed.title, "");
+            if (in_podcasts_ && !in_podcast_feed_) showPodcastFeedList();   // reveal the new entry
+        }
+        requestRedraw();
+        return;
+    }
+
+    // Enter: install only if the user is still in the section (else discard).
+    if (!in_podcasts_) return;
+    if (!r.fetched) {
+        showTrackToast("Couldn't fetch feed", "", "");
+    } else if (!r.feed.ok || r.feed.episodes.empty()) {
+        showTrackToast("Not a valid podcast feed", "", "");
+    } else {
+        // Refresh the cached title/art in place (no reorder) if still subscribed.
+        if (config_.isPodcastFeed(url)) {
+            if (!r.feed.title.empty())     config_.podcast_feed_titles[url] = r.feed.title;
+            if (!r.feed.image_url.empty()) config_.podcast_feed_art[url]    = r.feed.image_url;
+            config_.save();
+        }
+        podcast_episodes_ = std::move(r.feed.episodes);
+        podcast_feed_url_ = url;
+        in_podcast_feed_  = true;
+        dir_entries_.clear(); dir_display_.clear();
+        dir_entries_.push_back("[Back]"); dir_display_.push_back("[Back]");
+        for (const auto& ep : podcast_episodes_) {
+            // Row id = the playable URL (slice 3 will use it); "" ids fall back to guid.
+            dir_entries_.push_back(ep.audio_url.empty() ? ep.guid : ep.audio_url);
+            dir_display_.push_back(sanitizeForDisplay(podcastEpisodeLabel(ep)));
+        }
+        dir_cursor_ = 0; dir_scroll_ = 0;
+    }
+    requestRedraw();
 }
 
 // convert-core: pick the convert scope (this file / this folder / marked set).

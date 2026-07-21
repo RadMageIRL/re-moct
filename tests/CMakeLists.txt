@@ -144,6 +144,21 @@ target_compile_definitions(podcast_parse_test PRIVATE
     PODCAST_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/podcasts")
 add_test(NAME podcast_parse_test COMMAND podcast_parse_test)
 
+# podcast-client (Podcasts slice 2) - the fetch-and-parse glue over the core::IHttp
+# seam, proven headless with a FakeHttp (core::setHttp). Asserts the feed-sized
+# request (64 MB cap / 30 s) and the fetched-vs-parsed distinction the honest
+# toasts use. Links the real HTTP impl only to define http()/setHttp() (the fake
+# overrides at runtime), exactly like scrobble_request_test. Both matrix jobs.
+add_executable(podcast_client_test
+    podcast_client_test.cpp
+    ${CMAKE_SOURCE_DIR}/src/PodcastClient.cpp
+    ${HTTP_IMPL}
+)
+target_include_directories(podcast_client_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/lib)
+target_link_libraries(podcast_client_test PRIVATE ${HTTP_LIBS})
+add_test(NAME podcast_client_test COMMAND podcast_client_test)
+
 # Viz FFT (Slice C) - include/VizFFT.h proven in ISOLATION before it touched
 # computeVizBins(): DC / bin-centred sines / 100 Hz-20 kHz sweep alias check
 # (the old stride-4 DFT folds above ~sr/8) / Parseval / frame-cost gate vs the

@@ -5,7 +5,21 @@ All notable changes to RE-MOCT are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.3.2] - Unreleased
+## [1.4.0] - Unreleased
+
+### Added (podcasts)
+
+- A new `[Podcasts]` section in the browser sidebar, alongside `[Radio]` and
+  `[Books]`. Press `/` inside it to paste a podcast feed URL; RE-MOCT fetches and
+  parses the feed and, if it is a valid podcast, subscribes to it and shows the
+  show by title. Subscriptions are saved and persist across restarts.
+- Open a subscribed feed with Enter to see its episodes - title, date, and length
+  per row - newest first, with the usual PgUp/PgDn/Home/End paging. `[Back]`
+  returns to the feed list. Remove a feed with `d` or `Del`, like a radio station.
+- Feeds are fetched in the background, so subscribing to or opening even a very
+  large show never freezes the interface. A feed that cannot be fetched or is not
+  a real podcast reports the problem and changes nothing. (Playing an episode
+  arrives in a later update.)
 
 ### Security
 

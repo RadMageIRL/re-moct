@@ -28,6 +28,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   The list marks each episode new, in-progress (with the resume time), or played,
   and an episode that reaches the end is marked played and stops (it does not
   auto-play the next one). Positions and states are saved across restarts.
+- Queue episodes for offline listening: Shift+D on an episode downloads it for
+  later (without playing). The queue holds up to 5 and downloads them one at a
+  time, in order, each row showing its percentage while it works and "queued"
+  while it waits; a download that fails is retried up to three times, then skipped
+  so one bad episode never stalls the rest. Downloaded episodes are marked so, and
+  play instantly and fully offline.
+- Delete a downloaded episode with d or Del to free space - your resume position
+  and played state are kept, so re-downloading picks up where you left off.
+- If you press play on an episode while a different one is still downloading,
+  RE-MOCT asks whether to wait (queue it to play next) or play now (interrupt the
+  download, which restarts later).
 
 ### Security
 

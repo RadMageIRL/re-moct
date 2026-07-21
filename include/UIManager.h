@@ -17,6 +17,7 @@
 #include "PodcastFeed.h"    // podcasts slice 2: PodcastEpisode/PodcastFeed for the [Podcasts] section
 #include "PodcastClient.h"  // podcasts slice 2: the async feed fetch result type
 #include <cstdint>          // podcasts slice 3: uint64_t/int32_t download-progress + cancel state
+#include <deque>            // podcasts slice 4: the download queue
 #include "LastFm.h"
 #include "ListenBrainz.h"
 #include "DiscordRP.h"
@@ -43,7 +44,7 @@ enum class Pane      { DirBrowser, Playlist };
 enum class RightPane { Playlist, Visualizer, Help, TrackInfo, Bookmarks, Lyrics, About, Devices, EQ, Queue, Chapters, SearchResults };
 
 // Modal overlays drawn on top of the normal layout
-enum class UIOverlay { None, RipConfirm, MBSearch, RecPanel, ConvertScope, ConvertConfirm, PlaylistFormat };
+enum class UIOverlay { None, RipConfirm, MBSearch, RecPanel, ConvertScope, ConvertConfirm, PlaylistFormat, PodcastPlayConflict };
 
 class UIManager {
 public:
@@ -690,24 +691,42 @@ private:
     void enterPodcastSection();     // enter [Podcasts]: build the level-1 feed list
     void showPodcastFeedList();     // (re)populate dir_entries_/dir_display_ at level 1
 
-    // Episode download-then-play (slice 3). Episodes must be LOCAL files to seek /
-    // resume / finish / show chapters (StreamSource is live-only), so an episode is
-    // downloaded to a cache file then played via the normal LocalFileSource path.
-    // Streaming-to-disk with rip-style % progress; single in-flight; cancellable so a
-    // mid-download quit aborts fast instead of blocking the join.
-    std::thread                podcast_dl_thread_;
-    std::atomic<bool>          podcast_dl_active_{false};   // download worker in flight
-    std::atomic<bool>          podcast_dl_done_{false};     // finished, ready for pickup
-    std::atomic<std::uint64_t> podcast_dl_received_{0};     // bytes so far (progress)
-    std::atomic<std::uint64_t> podcast_dl_total_{0};        // total bytes (0 = unknown)
-    std::int32_t               podcast_dl_cancel_ = 0;      // int32 cancel flag (atomic_ref)
-    std::mutex                 podcast_dl_mtx_;
-    std::string                podcast_dl_dest_;            // cache path being written (guarded)
-    std::string                podcast_dl_id_;              // episode id (guarded)
-    std::string                podcast_dl_title_;           // episode title for the status line (guarded)
-    bool                       podcast_dl_ok_ = false;      // worker result (guarded)
-    std::string                podcast_dl_status_;          // rip-style cmdline line
-    int                        podcast_dl_ticks_ = 0;       // linger counter (~5s after done)
+    // Episode download-then-play (slice 3) + managed download queue (slice 4).
+    // Episodes must be LOCAL files to seek / resume / finish / show chapters
+    // (StreamSource is live-only), so an episode is downloaded to a cache file then
+    // played via the normal LocalFileSource path. Streaming-to-disk with rip-style %
+    // progress; ONE transfer at a time; cancellable so a mid-download quit aborts fast.
+    //
+    // Slice 4: a FIFO queue (max 5) drives that single worker one item at a time.
+    // Both "download for later" and "play needs a download" feed the queue; a play
+    // request jumps to the front. play_when_done makes the item auto-play when it
+    // finishes; attempts drives retry-3-then-skip.
+    struct PodcastQueueItem {
+        std::string url, dest, id, title;
+        bool play_when_done = false;
+        int  attempts = 0;
+    };
+    std::deque<PodcastQueueItem> podcast_queue_;            // pending downloads (FIFO, front = next)
+    static constexpr int         PODCAST_QUEUE_MAX = 5;
+    PodcastQueueItem             podcast_dl_item_;          // the ACTIVE download (UI-thread only)
+    std::thread                  podcast_dl_thread_;
+    std::atomic<bool>            podcast_dl_active_{false};   // worker in flight
+    std::atomic<bool>            podcast_dl_done_{false};     // finished, ready for pickup
+    std::atomic<bool>            podcast_dl_ok_{false};       // worker result (set before done)
+    std::atomic<std::uint64_t>   podcast_dl_received_{0};     // bytes so far (progress)
+    std::atomic<std::uint64_t>   podcast_dl_total_{0};        // total bytes (0 = unknown)
+    std::int32_t                 podcast_dl_cancel_ = 0;      // int32 cancel flag (atomic_ref)
+    std::string                  podcast_dl_status_;          // rip-style cmdline line
+    int                          podcast_dl_ticks_ = 0;       // linger counter (~5s after done)
+    int                          podcast_conflict_index_ = -1;// episode pending the play-conflict popup
+
+    void enqueueEpisodeDownload(int episode_index, bool play_when_done, bool front);
+    void pumpPodcastQueue();                    // start the next queued item if idle
+    void startActiveDownload(const PodcastQueueItem& item);  // spawn the worker for one item
+    void deleteEpisodeDownload(int episode_index);           // remove the cached file (state kept)
+    bool episodeQueued(const std::string& id) const;         // in the pending queue?
+    std::string episodeCacheFile(const std::string& feed_url, const PodcastEpisode& ep) const;  // pure, no mkdir
+    void drawPodcastPlayConflict();             // the [W]ait / [P]lay-now / [Esc] popup
 
     // The podcast episode currently playing (resume latch + played-on-finish).
     std::string  podcast_playing_id_;          // episode id of the playing local file

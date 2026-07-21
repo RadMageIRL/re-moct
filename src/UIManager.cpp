@@ -1839,6 +1839,7 @@ void UIManager::drawOverlay() {
     else if (ui_overlay_ == UIOverlay::ConvertScope) drawConvertScope();
     else if (ui_overlay_ == UIOverlay::ConvertConfirm) drawConvertConfirm();
     else if (ui_overlay_ == UIOverlay::PlaylistFormat) drawPlaylistFormat();
+    else if (ui_overlay_ == UIOverlay::PodcastPlayConflict) drawPodcastPlayConflict();
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2742,7 +2743,7 @@ void UIManager::drawDirBrowser() {
     else if (in_favs_)    hdr = " [FAVs] (f:fav/unfav  Enter:play  Del:remove) ";
     else if (in_radio_)   hdr = " [Radio] (Enter:play  d/Del:remove) ";
     else if (in_podcasts_) {
-        if (in_podcast_feed_) hdr = " [Podcasts] (Enter:play  [Back]:feeds) ";
+        if (in_podcast_feed_) hdr = " [Podcasts] (Enter:play  D:download  d/Del:delete dl  [Back]:feeds) ";
         else                  hdr = " [Podcasts] (Enter:open  /:add feed  d/Del:remove) ";
     }
     else if (in_books_)   hdr = " [Books] (Enter:play  Del:remove) ";
@@ -2777,23 +2778,40 @@ void UIManager::drawDirBrowser() {
         // path (utf8_to_wide -> mvwaddnwstr), so the eject glyph renders for real.
         if (in_drive_list_ && cursor && driveHasMedia(name))
             display += "  ⏏ Shift+E";
-        // Podcast episode state glyph (slice 3): playing / played / in-progress (with
-        // the resume position) / new. Prepended into the display string so it shows in
-        // both icon and text modes. O(1) per visible row.
+        // Podcast episode state glyph (slice 3 + 4): download state (active % /
+        // queued / downloaded) combined with play state (playing / played /
+        // in-progress with resume time / new). Prepended into the display string so it
+        // shows in both icon and text modes. A few stats per visible row.
         if (in_podcasts_ && in_podcast_feed_ && idx >= 1 && name != "[Back]"
             && (size_t)(idx - 1) < podcast_episodes_.size()) {
-            std::string epid = podcastEpisodeId(podcast_episodes_[(size_t)(idx - 1)]);
-            bool   pl      = config_.podcastEpisodePlayed(epid);
-            double pp      = config_.podcastEpisodePos(epid);
-            bool   playing = !podcast_playing_id_.empty() && epid == podcast_playing_id_;
-            const char* glyph = playing ? "♪ " : pl ? "✓ "
-                              : (pp > 0.0 ? "▸ " : "· ");   // note / check / triangle / dot
-            std::string extra;
-            if (!pl && pp > 0.0) {   // in-progress: show where it will resume
-                long s = (long)pp, h = s / 3600, m = (s % 3600) / 60, se = s % 60;
-                auto p2 = [](long v){ std::string x = std::to_string(v); return x.size() < 2 ? "0"+x : x; };
-                extra = h > 0 ? ("  ▸" + std::to_string(h) + ":" + p2(m) + ":" + p2(se))
-                              : ("  ▸" + std::to_string(m) + ":" + p2(se));
+            const PodcastEpisode& ep = podcast_episodes_[(size_t)(idx - 1)];
+            std::string epid    = podcastEpisodeId(ep);
+            bool   pl           = config_.podcastEpisodePlayed(epid);
+            double pp           = config_.podcastEpisodePos(epid);
+            bool   playing      = !podcast_playing_id_.empty() && epid == podcast_playing_id_;
+            bool   active_dl    = podcast_dl_active_.load() && podcast_dl_item_.id == epid;
+            bool   queued       = episodeQueued(epid);
+            bool   downloaded   = false;
+            { std::error_code ec; std::string f = episodeCacheFile(podcast_feed_url_, ep);
+              downloaded = fs::exists(f, ec) && fs::file_size(f, ec) > 0; }
+
+            std::string glyph, extra;
+            if (active_dl) {                       // currently transferring -> live %
+                std::uint64_t recv = podcast_dl_received_.load(), tot = podcast_dl_total_.load();
+                int pct = tot > 0 ? (int)(100.0 * (double)recv / (double)tot) : 0;
+                glyph = std::to_string(pct) + "% ";
+            } else if (queued) {                   // waiting in the download queue
+                glyph = "… ";
+            } else {
+                std::string dlmark = downloaded ? "⤓" : "";   // downloaded marker
+                const char* pg = playing ? "♪" : pl ? "✓" : (pp > 0.0 ? "▸" : "·");
+                glyph = dlmark + std::string(pg) + " ";
+                if (!pl && pp > 0.0) {             // in-progress: show where it will resume
+                    long s = (long)pp, h = s / 3600, m = (s % 3600) / 60, se = s % 60;
+                    auto p2 = [](long v){ std::string x = std::to_string(v); return x.size() < 2 ? "0"+x : x; };
+                    extra = h > 0 ? ("  ▸" + std::to_string(h) + ":" + p2(m) + ":" + p2(se))
+                                  : ("  ▸" + std::to_string(m) + ":" + p2(se));
+                }
             }
             display = glyph + display + extra;
         }
@@ -5560,6 +5578,49 @@ void UIManager::handleInput(int ch) {
     // slice 6: overlay input is common. The RipConfirm modal (^Y) is live on Linux;
     // the MBSearch line is inert there (^F stays gated, so it never opens).
     if (ui_overlay_ == UIOverlay::MBSearch) { handleMBSearchInput(ch); return; }
+    // ── Podcast play-conflict popup: a DIFFERENT episode is downloading and the user
+    // pressed play. [W] wait (queue it to play next) / [P] play now (interrupt the
+    // active download, which restarts later) / [Esc] cancel.
+    if (ui_overlay_ == UIOverlay::PodcastPlayConflict) {
+        int idx = podcast_conflict_index_;
+        if (ch == 'w' || ch == 'W') {
+            ui_overlay_ = UIOverlay::None;
+            podcast_conflict_index_ = -1;
+            if (idx >= 0) enqueueEpisodeDownload(idx, /*play_when_done=*/true, /*front=*/true);
+            redraw_needed_.store(true);
+            return;
+        }
+        if (ch == 'p' || ch == 'P') {
+            ui_overlay_ = UIOverlay::None;
+            podcast_conflict_index_ = -1;
+            if (idx >= 0 && idx < (int)podcast_episodes_.size()) {
+                const PodcastEpisode& ep = podcast_episodes_[(size_t)idx];
+                if (!ep.audio_url.empty()) {
+                    PodcastQueueItem target;
+                    target.url = ep.audio_url;
+                    target.dest = episodeCachePath(podcast_feed_url_, ep);
+                    target.id = podcastEpisodeId(ep);
+                    target.title = ep.title.empty() ? target.id : ep.title;
+                    target.play_when_done = true;
+                    // Re-queue the interrupted transfer to resume AFTER the target, then
+                    // put the target at the very front and abort the active download. The
+                    // cancel is picked up by pollPodcastDownload, which pumps the target.
+                    podcast_queue_.push_front(podcast_dl_item_);
+                    podcast_queue_.push_front(target);
+                    std::atomic_ref<std::int32_t>(podcast_dl_cancel_).store(1);
+                }
+            }
+            redraw_needed_.store(true);
+            return;
+        }
+        if (ch == 27 || ch == 'n' || ch == 'N') {   // Esc / no -> do nothing
+            ui_overlay_ = UIOverlay::None;
+            podcast_conflict_index_ = -1;
+            redraw_needed_.store(true);
+            return;
+        }
+        return;   // swallow other keys while the popup is up
+    }
     // ── [Rec] panel (stream-record R2) — intercepts all input when active ──
     // The rip modal's structural disambiguation, minus its empty-selection
     // guard (a single-select radio always has exactly one format chosen):
@@ -7041,6 +7102,10 @@ void UIManager::handleInput(int ch) {
                     dir_cursor_ = std::clamp(keep, 0, std::max(0, (int)dir_entries_.size() - 1));
                 }
             }
+            if (focus_ == Pane::DirBrowser && in_podcasts_ && in_podcast_feed_
+                && dir_cursor_ >= 1) {
+                deleteEpisodeDownload(dir_cursor_ - 1);   // level 2: delete this episode's cached file
+            }
             if (focus_ == Pane::DirBrowser && in_books_
                 && dir_cursor_ < (int)dir_entries_.size()) {
                 const std::string& nm = dir_entries_[(size_t)dir_cursor_];
@@ -7330,12 +7395,21 @@ void UIManager::handleInput(int ch) {
                     dir_cursor_ = std::clamp(keep, 0, std::max(0, (int)dir_entries_.size() - 1));
                 }
             }
+            else if (focus_ == Pane::DirBrowser && in_podcasts_ && in_podcast_feed_
+                     && dir_cursor_ >= 1) {
+                deleteEpisodeDownload(dir_cursor_ - 1);   // level 2: delete this episode's cached file
+            }
             break;
         case '/':
             if (focus_ == Pane::DirBrowser && in_radio_)
                 openInputBar(InputMode::RadioSearch, "");
             else if (focus_ == Pane::DirBrowser && in_podcasts_ && !in_podcast_feed_)
                 openInputBar(InputMode::PodcastAddUrl, "");   // paste a feed URL to subscribe
+            break;
+        case 'D':   // Shift+D: download the highlighted episode for offline (podcast list)
+            if (focus_ == Pane::DirBrowser && in_podcasts_ && in_podcast_feed_
+                && dir_cursor_ >= 1)
+                enqueueEpisodeDownload(dir_cursor_ - 1, /*play_when_done=*/false, /*front=*/false);
             break;
         case 'a': case 'A':
             if (focus_ == Pane::DirBrowser && dir_cursor_ < (int)dir_entries_.size()) {
@@ -8656,7 +8730,10 @@ void UIManager::pollPodcastFetch() {
 // <music>/re-moct/podcasts/<feed-slug>/<episode>.<ext>. Mirrors the rip output
 // convention (CDRipper::musicRoot()/"re-moct"). Creates the dir. Extension is taken
 // from the audio URL (before any query), defaulting to .mp3.
-std::string UIManager::episodeCachePath(const std::string& feed_url, const PodcastEpisode& ep) {
+// Pure cache path for an episode - <Music>/re-moct/podcasts/<feed>/<ep>.<ext>. No
+// filesystem side effects, so the per-row "downloaded?" glyph check can call it every
+// frame. episodeCachePath() wraps this and also ensures the directory exists.
+std::string UIManager::episodeCacheFile(const std::string& feed_url, const PodcastEpisode& ep) const {
     std::string feed_title = config_.podcastFeedTitle(feed_url);
     std::string feed_slug  = sanitizePathComponent(feed_title.empty() ? feed_url : feed_title);
     std::string base       = sanitizePathComponent(ep.title.empty() ? podcastEpisodeId(ep) : ep.title);
@@ -8672,8 +8749,13 @@ std::string UIManager::episodeCachePath(const std::string& feed_url, const Podca
         }
     }
     fs::path dir = fs::path(CDRipper::musicRoot()) / "re-moct" / "podcasts" / feed_slug;
-    std::error_code ec; fs::create_directories(dir, ec);
     return (dir / (base + ext)).string();
+}
+
+std::string UIManager::episodeCachePath(const std::string& feed_url, const PodcastEpisode& ep) {
+    std::string path = episodeCacheFile(feed_url, ep);
+    std::error_code ec; fs::create_directories(fs::path(path).parent_path(), ec);
+    return path;
 }
 
 // Play a cached episode file: standalone (NOT added to the playlist, so it never
@@ -8689,47 +8771,147 @@ void UIManager::playEpisodeFile(const std::string& local_path, const std::string
     requestRedraw();
 }
 
-// Enter on an episode row: if the file is already cached, play it now; otherwise
-// stream it to the cache on a worker thread (rip-style progress), then play.
+bool UIManager::episodeQueued(const std::string& id) const {
+    for (const auto& q : podcast_queue_) if (q.id == id) return true;
+    return false;
+}
+
+// Enter on an episode row: play the cached file instantly if present; else start (or
+// queue) a download that auto-plays when done. If a DIFFERENT episode is mid-download,
+// ask the user (popup) whether to wait or interrupt.
 void UIManager::startEpisodePlay(int episode_index) {
     if (episode_index < 0 || episode_index >= (int)podcast_episodes_.size()) return;
     const PodcastEpisode& ep = podcast_episodes_[(size_t)episode_index];
     if (ep.audio_url.empty()) { showTrackToast("Episode has no audio", "", ""); return; }
-    if (podcast_dl_active_.load()) { showTrackToast("A download is already in progress", "", ""); return; }
 
     std::string id   = podcastEpisodeId(ep);
-    std::string dest = episodeCachePath(podcast_feed_url_, ep);
-
+    std::string file = episodeCacheFile(podcast_feed_url_, ep);
     std::error_code ec;
-    if (fs::exists(dest, ec) && fs::file_size(dest, ec) > 0) {
-        playEpisodeFile(dest, id);              // already downloaded
+    if (fs::exists(file, ec) && fs::file_size(file, ec) > 0) {
+        playEpisodeFile(file, id);              // already downloaded -> instant
         return;
     }
+    // Not downloaded. If a DIFFERENT episode is transferring, let the user decide.
+    if (podcast_dl_active_.load() && podcast_dl_item_.id != id) {
+        podcast_conflict_index_ = episode_index;
+        ui_overlay_ = UIOverlay::PodcastPlayConflict;
+        requestRedraw();
+        return;
+    }
+    // Nothing active (or THIS episode is the active/queued download) -> queue to play,
+    // jumping the front so it plays as soon as the current transfer (if any) frees up.
+    enqueueEpisodeDownload(episode_index, /*play_when_done=*/true, /*front=*/true);
+}
 
+// Queue an episode for download. play_when_done -> auto-play on completion; front ->
+// jump the queue (a play request). Rejects a full queue and dedups against the active
+// and queued items. Then pumps the queue.
+void UIManager::enqueueEpisodeDownload(int episode_index, bool play_when_done, bool front) {
+    if (episode_index < 0 || episode_index >= (int)podcast_episodes_.size()) return;
+    const PodcastEpisode& ep = podcast_episodes_[(size_t)episode_index];
+    if (ep.audio_url.empty()) { showTrackToast("Episode has no audio", "", ""); return; }
+
+    std::string id   = podcastEpisodeId(ep);
+    std::string dest = episodeCachePath(podcast_feed_url_, ep);   // ensures the dir exists
+    std::error_code ec;
+    if (fs::exists(dest, ec) && fs::file_size(dest, ec) > 0) {    // already downloaded
+        if (play_when_done) playEpisodeFile(dest, id);
+        else                showTrackToast("Already downloaded", "", "");
+        return;
+    }
+    if (podcast_dl_active_.load() && podcast_dl_item_.id == id) { // this one is transferring now
+        if (play_when_done) podcast_dl_item_.play_when_done = true;  // play it when it lands
+        else                showTrackToast("Already downloading", "", "");
+        return;
+    }
+    if (episodeQueued(id)) { showTrackToast("Already queued", "", ""); return; }
+    if ((int)podcast_queue_.size() >= PODCAST_QUEUE_MAX) {
+        showTrackToast("Download queue full (max 5)", "", "");
+        return;
+    }
+    PodcastQueueItem item;
+    item.url = ep.audio_url; item.dest = dest; item.id = id;
+    item.title = ep.title.empty() ? id : ep.title;
+    item.play_when_done = play_when_done;
+    if (front) podcast_queue_.push_front(item);
+    else       podcast_queue_.push_back(item);
+    if (!play_when_done) showTrackToast("Queued for download", sanitizeForDisplay(item.title), "");
+    pumpPodcastQueue();
+    requestRedraw();
+}
+
+// Start the next queued item if the single worker is idle.
+void UIManager::pumpPodcastQueue() {
+    if (podcast_dl_active_.load() || podcast_queue_.empty()) return;
+    PodcastQueueItem item = podcast_queue_.front();
+    podcast_queue_.pop_front();
+    startActiveDownload(item);
+}
+
+// Spawn the download worker for one item (the ONLY transfer at a time). If the file
+// appeared meanwhile, skip straight to done.
+void UIManager::startActiveDownload(const PodcastQueueItem& item) {
+    std::error_code ec;
+    if (fs::exists(item.dest, ec) && fs::file_size(item.dest, ec) > 0) {
+        if (item.play_when_done) playEpisodeFile(item.dest, item.id);
+        pumpPodcastQueue();
+        return;
+    }
+    podcast_dl_item_ = item;
     podcast_dl_active_.store(true);
     podcast_dl_done_.store(false);
+    podcast_dl_ok_.store(false);
     podcast_dl_received_.store(0);
     podcast_dl_total_.store(0);
     std::atomic_ref<std::int32_t>(podcast_dl_cancel_).store(0);
-    { std::lock_guard<std::mutex> lk(podcast_dl_mtx_);
-      podcast_dl_dest_  = dest;
-      podcast_dl_id_    = id;
-      podcast_dl_title_ = ep.title.empty() ? id : ep.title;
-      podcast_dl_ok_    = false; }
     if (podcast_dl_thread_.joinable()) podcast_dl_thread_.join();
-    podcast_dl_status_ = "Downloading " +
-        sanitizeForDisplay(ep.title.empty() ? std::string("episode") : ep.title) + "  [0%]";
+    podcast_dl_status_ = "Downloading " + sanitizeForDisplay(item.title) + "  [0%]";
     podcast_dl_ticks_ = 0;
-    std::string url = ep.audio_url;
+    std::string url = item.url, dest = item.dest;
     podcast_dl_thread_ = std::thread([this, url, dest]() {
         core::ProgressFn progress = [this](std::uint64_t recv, std::uint64_t total) {
             podcast_dl_received_.store(recv);
             podcast_dl_total_.store(total);
         };
         bool ok = PodcastClient::download(url, dest, progress, &podcast_dl_cancel_);
-        { std::lock_guard<std::mutex> lk(podcast_dl_mtx_); podcast_dl_ok_ = ok; }
-        podcast_dl_done_.store(true);
+        podcast_dl_ok_.store(ok);
+        podcast_dl_done_.store(true);   // set AFTER ok, so the reader sees a consistent result
     });
+    requestRedraw();
+}
+
+// Remove the pending/downloaded thing under the cursor (d/Del at the episode level):
+// a queued episode leaves the queue, a downloaded one's file is deleted. Resume /
+// played state is always kept, so a re-download resumes. Refuses the active transfer
+// and a currently-playing file.
+void UIManager::deleteEpisodeDownload(int episode_index) {
+    if (episode_index < 0 || episode_index >= (int)podcast_episodes_.size()) return;
+    const PodcastEpisode& ep = podcast_episodes_[(size_t)episode_index];
+    std::string id = podcastEpisodeId(ep);
+
+    if (podcast_dl_active_.load() && podcast_dl_item_.id == id) {
+        showTrackToast("Downloading now - can't delete yet", "", "");
+        return;
+    }
+    if (episodeQueued(id)) {                       // pending -> drop it from the queue
+        for (auto it = podcast_queue_.begin(); it != podcast_queue_.end(); ++it)
+            if (it->id == id) { podcast_queue_.erase(it); break; }
+        showTrackToast("Removed from download queue", sanitizeForDisplay(ep.title), "");
+        requestRedraw();
+        return;
+    }
+    std::string file = episodeCacheFile(podcast_feed_url_, ep);
+    std::error_code ec;
+    if (!fs::exists(file, ec) || fs::file_size(file, ec) == 0) {
+        showTrackToast("Not downloaded", "", "");
+        return;
+    }
+    if (file == podcast_playing_path_) {
+        showTrackToast("Stop the episode before deleting it", "", "");
+        return;
+    }
+    fs::remove(file, ec);
+    showTrackToast("Deleted download", sanitizeForDisplay(ep.title), "");
     requestRedraw();
 }
 
@@ -8740,29 +8922,39 @@ void UIManager::pollPodcastDownload() {
     if (podcast_dl_active_.load() && !podcast_dl_done_.load()) {
         std::uint64_t recv = podcast_dl_received_.load(), tot = podcast_dl_total_.load();
         int pct = tot > 0 ? (int)(100.0 * (double)recv / (double)tot) : 0;
-        std::string title;
-        { std::lock_guard<std::mutex> lk(podcast_dl_mtx_); title = podcast_dl_title_; }
-        std::string line = "Downloading " + sanitizeForDisplay(title) +
+        std::string line = "Downloading " + sanitizeForDisplay(podcast_dl_item_.title) +
                            "  [" + std::to_string(pct) + "%]";
         if (line != podcast_dl_status_) { podcast_dl_status_ = line; requestRedraw(); }
         return;
     }
     if (podcast_dl_done_.exchange(false)) {
-        std::string dest, id, title; bool ok;
-        { std::lock_guard<std::mutex> lk(podcast_dl_mtx_);
-          dest = podcast_dl_dest_; id = podcast_dl_id_; title = podcast_dl_title_; ok = podcast_dl_ok_; }
+        PodcastQueueItem item = podcast_dl_item_;      // the finished item (UI-thread copy)
+        bool ok = podcast_dl_ok_.load();
         if (podcast_dl_thread_.joinable()) podcast_dl_thread_.join();
         podcast_dl_active_.store(false);
         bool cancelled = std::atomic_ref<std::int32_t>(podcast_dl_cancel_).load() != 0;
+
         if (ok) {
-            podcast_dl_status_ = "Downloaded " + sanitizeForDisplay(title) + "  [100%]";
+            podcast_dl_status_ = "Downloaded " + sanitizeForDisplay(item.title) + "  [100%]";
             podcast_dl_ticks_ = 0;
-            playEpisodeFile(dest, id);
+            if (item.play_when_done) playEpisodeFile(item.dest, item.id);
+        } else if (cancelled) {
+            // Aborted (quit, or a play-now preempt that already re-queued this item).
+            podcast_dl_status_.clear();
+            podcast_dl_ticks_ = 0;
         } else {
-            podcast_dl_status_ = cancelled ? std::string()
-                                           : ("Download failed: " + sanitizeForDisplay(title));
+            // Failure: retry up to 3 times (fetchToFile already removed the partial),
+            // then skip so one dead URL never stalls the queue.
+            if (++item.attempts < 3) {
+                podcast_queue_.push_front(item);                 // restart from scratch
+                podcast_dl_status_ = "Retrying " + sanitizeForDisplay(item.title) +
+                                     "  (" + std::to_string(item.attempts) + "/3)";
+            } else {
+                podcast_dl_status_ = "Download failed: " + sanitizeForDisplay(item.title);
+            }
             podcast_dl_ticks_ = 0;
         }
+        pumpPodcastQueue();     // start the next queued item
         requestRedraw();
     }
 }
@@ -8832,6 +9024,35 @@ bool UIManager::onEpisodeTrackEnd() {
     audio_.stop();
     requestRedraw();
     return true;
+}
+
+// Podcast play-conflict popup (slice 4): a different episode is downloading and the
+// user pressed play. Offers wait-and-queue vs interrupt. Mirrors drawConvertScope's box.
+void UIManager::drawPodcastPlayConflict() {
+    const int BOX_W = 62, BOX_H = 9;
+    int y0 = (screen_rows_ - BOX_H) / 2, x0 = (screen_cols_ - BOX_W) / 2;
+    if (y0 < 0) y0 = 0;
+    if (x0 < 0) x0 = 0;
+    WINDOW* w = newwin(BOX_H, BOX_W, y0, x0);
+    if (!w) return;
+    wbkgd(w, config_.awesome_mode ? COLOR_PAIR(CP_DIM) : COLOR_PAIR(0));
+    werase(w);
+    const char* title = " DOWNLOAD IN PROGRESS ";
+    panelFrame(w, title, true);
+    if (!config_.awesome_mode) mvwaddstr(w, 0, (BOX_W - (int)strlen(title)) / 2, title);
+
+    std::string active = "Downloading: " + sanitizeForDisplay(podcast_dl_item_.title);
+    std::string want;
+    if (podcast_conflict_index_ >= 0 && podcast_conflict_index_ < (int)podcast_episodes_.size())
+        want = "You pressed play on: " +
+               sanitizeForDisplay(podcast_episodes_[(size_t)podcast_conflict_index_].title);
+    mvwaddnstr(w, 2, 3, active.c_str(), BOX_W - 5);
+    mvwaddnstr(w, 3, 3, want.c_str(),   BOX_W - 5);
+    mvwaddstr(w, 5, 3, "[W] Wait - queue this to play next");
+    mvwaddstr(w, 6, 3, "[P] Play now - interrupt the download (it restarts later)");
+    mvwaddstr(w, 7, 3, "[Esc] Cancel");
+    wrefresh(w);
+    delwin(w);
 }
 
 // convert-core: pick the convert scope (this file / this folder / marked set).

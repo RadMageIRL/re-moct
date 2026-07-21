@@ -159,6 +159,20 @@ target_include_directories(podcast_client_test PRIVATE
 target_link_libraries(podcast_client_test PRIVATE ${HTTP_LIBS})
 add_test(NAME podcast_client_test COMMAND podcast_client_test)
 
+# podcast-state (Podcasts slice 3) - the episode identity resolver (PodcastFeed.h)
+# + the DigiConfig podcast_progress round-trip (resume pos + played flag). Links
+# Config.cpp (+ the secret backend it now depends on), redirects the config dir to a
+# temp. Pure, both matrix jobs.
+add_executable(podcast_state_test
+    podcast_state_test.cpp
+    ${CMAKE_SOURCE_DIR}/src/Config.cpp
+    ${SECRET_IMPL}   # Config.cpp -> secret::protect/unprotect
+)
+target_include_directories(podcast_state_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/lib)
+target_link_libraries(podcast_state_test PRIVATE ${SECRET_LIBS})
+add_test(NAME podcast_state_test COMMAND podcast_state_test)
+
 # Viz FFT (Slice C) - include/VizFFT.h proven in ISOLATION before it touched
 # computeVizBins(): DC / bin-centred sines / 100 Hz-20 kHz sweep alias check
 # (the old stride-4 DFT folds above ~sr/8) / Parseval / frame-cost gate vs the

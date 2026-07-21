@@ -16,6 +16,7 @@
 #include "RadioBrowser.h"
 #include "PodcastFeed.h"    // podcasts slice 2: PodcastEpisode/PodcastFeed for the [Podcasts] section
 #include "PodcastClient.h"  // podcasts slice 2: the async feed fetch result type
+#include <cstdint>          // podcasts slice 3: uint64_t/int32_t download-progress + cancel state
 #include "LastFm.h"
 #include "ListenBrainz.h"
 #include "DiscordRP.h"
@@ -59,6 +60,10 @@ public:
 
     void run();
     void requestRedraw() { redraw_needed_.store(true); }
+    // Podcast episode finished (slice 3): if the ended track is the playing episode,
+    // mark it played and stop, returning true so the auto-advance callback in main
+    // does NOT advance into the music queue. Public: called from that callback.
+    bool onEpisodeTrackEnd();
     // wingui only: repaint live during Windows' modal resize-drag loop (the app's
     // getch() loop is blocked there, so without this the window is blank mid-drag).
     // Registered as PDCurses' window-resized callback; a no-op elsewhere.
@@ -684,6 +689,39 @@ private:
     void pollPodcastFetch();        // UI thread, per-frame: install a finished fetch
     void enterPodcastSection();     // enter [Podcasts]: build the level-1 feed list
     void showPodcastFeedList();     // (re)populate dir_entries_/dir_display_ at level 1
+
+    // Episode download-then-play (slice 3). Episodes must be LOCAL files to seek /
+    // resume / finish / show chapters (StreamSource is live-only), so an episode is
+    // downloaded to a cache file then played via the normal LocalFileSource path.
+    // Streaming-to-disk with rip-style % progress; single in-flight; cancellable so a
+    // mid-download quit aborts fast instead of blocking the join.
+    std::thread                podcast_dl_thread_;
+    std::atomic<bool>          podcast_dl_active_{false};   // download worker in flight
+    std::atomic<bool>          podcast_dl_done_{false};     // finished, ready for pickup
+    std::atomic<std::uint64_t> podcast_dl_received_{0};     // bytes so far (progress)
+    std::atomic<std::uint64_t> podcast_dl_total_{0};        // total bytes (0 = unknown)
+    std::int32_t               podcast_dl_cancel_ = 0;      // int32 cancel flag (atomic_ref)
+    std::mutex                 podcast_dl_mtx_;
+    std::string                podcast_dl_dest_;            // cache path being written (guarded)
+    std::string                podcast_dl_id_;              // episode id (guarded)
+    std::string                podcast_dl_title_;           // episode title for the status line (guarded)
+    bool                       podcast_dl_ok_ = false;      // worker result (guarded)
+    std::string                podcast_dl_status_;          // rip-style cmdline line
+    int                        podcast_dl_ticks_ = 0;       // linger counter (~5s after done)
+
+    // The podcast episode currently playing (resume latch + played-on-finish).
+    std::string  podcast_playing_id_;          // episode id of the playing local file
+    std::string  podcast_playing_path_;        // its local cache path
+    double       podcast_playing_pos_    = 0.0;// latched position (persisted on transition)
+    double       podcast_playing_dur_    = 0.0;// duration (for the finished threshold)
+    bool         podcast_resume_pending_ = false;  // one-shot silent seek to the saved pos
+
+    void startEpisodePlay(int episode_index);  // download-if-needed, then play
+    void playEpisodeFile(const std::string& local_path, const std::string& id);  // play a cached episode
+    void pollPodcastDownload();                // UI thread, per-frame: finish -> play + linger
+    void updatePodcastProgress();              // per-tick resume latch (mirrors updateBookProgress)
+    void flushPodcastProgress();               // persist resume pos on transition / quit
+    std::string episodeCachePath(const std::string& feed_url, const PodcastEpisode& ep);
 
     int  fav_cursor_     = 0;
 

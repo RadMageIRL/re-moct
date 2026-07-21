@@ -1,6 +1,8 @@
 #pragma once
 
 #include "PodcastFeed.h"
+#include "core/IHttp.h"   // core::ProgressFn for the streaming episode download
+#include <cstdint>
 #include <string>
 
 // Thin synchronous client: GET a podcast feed URL over the core::IHttp seam and
@@ -22,4 +24,12 @@ public:
     // ~22 MB Adam Carolla), so the body cap is generous; the timeout is loose
     // because the call runs on a worker thread and never freezes the UI.
     static Result fetch(const std::string& url);
+
+    // Stream an episode to a local file, reporting progress (slice 3). Runs on a
+    // worker thread in the UI. `cancel` is a plain int32 flag the caller writes via
+    // std::atomic_ref (0 = run, nonzero = abort) so a mid-download quit aborts fast;
+    // pass nullptr for non-cancellable. Returns true iff the file was fully written.
+    // Never throws. The body streams straight to disk (no in-memory buffer / cap).
+    static bool download(const std::string& url, const std::string& dest_path,
+                         const core::ProgressFn& progress, const std::int32_t* cancel);
 };

@@ -373,6 +373,9 @@ UIManager::~UIManager() {
     if (radio_art_thread_.joinable())   radio_art_thread_.join();
     if (info_art_thread_.joinable())    info_art_thread_.join();
     if (podcast_fetch_thread_.joinable()) podcast_fetch_thread_.join();  // podcasts: never terminate on a joinable thread
+    std::atomic_ref<std::int32_t>(podcast_dl_cancel_).store(1);          // abort a mid-download fast
+    if (podcast_dl_thread_.joinable()) podcast_dl_thread_.join();
+    flushPodcastProgress();   // persist the resume position if quitting mid-episode
     if (mb_search_win_) { delwin(mb_search_win_); mb_search_win_ = nullptr; }
 #ifdef PDCURSES
     // Remember the wingui window size for next launch (screen_rows_/cols_ track the
@@ -1287,6 +1290,7 @@ void UIManager::run() {
             flushPendingSeek();
         updateScrobbler();   // publishes now-playing to the OS on change (publishMedia)
         pollPodcastFetch();  // podcasts: install a finished feed fetch off the worker thread
+        pollPodcastDownload(); // podcasts: refresh download %, play the episode when it lands
         // OS media control: per-tick position refresh (cheap; the impl throttles
         // its own signal emission) + clear on the transition to stopped so the OS
         // surface does not keep a dead track. Metadata itself is pushed on change
@@ -1392,6 +1396,7 @@ void UIManager::run() {
             redraw_needed_.store(true);
         }
         updateBookProgress();
+        updatePodcastProgress();   // podcasts: episode resume latch + progress persist
         // Async stream connect/fail confirmation toasts. Un-gated at slice 5:
         // this was #ifdef _WIN32 slice-1 scaffolding from when notify was a
         // Linux no-op. Streams are ported (slices 2/3) and every dep here is
@@ -1567,6 +1572,17 @@ void UIManager::run() {
             }
         } else if (cd_ripper_.isActive()) {
             rip_msg_ticks_ = 0;
+        }
+        // Podcast download status: pinned while downloading, then lingers ~5s after
+        // it finishes (>60 ticks * ~80ms), matching the rip-line pattern.
+        if (!podcast_dl_status_.empty() && !podcast_dl_active_.load()) {
+            if (++podcast_dl_ticks_ > 60) {
+                podcast_dl_status_.clear();
+                podcast_dl_ticks_ = 0;
+                redraw_needed_.store(true);
+            }
+        } else if (podcast_dl_active_.load()) {
+            podcast_dl_ticks_ = 0;
         }
         // Age the [THEME:name] cwd tag (~10s). Repaint only at the fade point
         // (bold -> dim) and when it is removed - the tag is static in between, so
@@ -2761,6 +2777,26 @@ void UIManager::drawDirBrowser() {
         // path (utf8_to_wide -> mvwaddnwstr), so the eject glyph renders for real.
         if (in_drive_list_ && cursor && driveHasMedia(name))
             display += "  ⏏ Shift+E";
+        // Podcast episode state glyph (slice 3): playing / played / in-progress (with
+        // the resume position) / new. Prepended into the display string so it shows in
+        // both icon and text modes. O(1) per visible row.
+        if (in_podcasts_ && in_podcast_feed_ && idx >= 1 && name != "[Back]"
+            && (size_t)(idx - 1) < podcast_episodes_.size()) {
+            std::string epid = podcastEpisodeId(podcast_episodes_[(size_t)(idx - 1)]);
+            bool   pl      = config_.podcastEpisodePlayed(epid);
+            double pp      = config_.podcastEpisodePos(epid);
+            bool   playing = !podcast_playing_id_.empty() && epid == podcast_playing_id_;
+            const char* glyph = playing ? "♪ " : pl ? "✓ "
+                              : (pp > 0.0 ? "▸ " : "· ");   // note / check / triangle / dot
+            std::string extra;
+            if (!pl && pp > 0.0) {   // in-progress: show where it will resume
+                long s = (long)pp, h = s / 3600, m = (s % 3600) / 60, se = s % 60;
+                auto p2 = [](long v){ std::string x = std::to_string(v); return x.size() < 2 ? "0"+x : x; };
+                extra = h > 0 ? ("  ▸" + std::to_string(h) + ":" + p2(m) + ":" + p2(se))
+                              : ("  ▸" + std::to_string(m) + ":" + p2(se));
+            }
+            display = glyph + display + extra;
+        }
         bool is_dir = in_drive_list_
                     || name == ".." || name == "[Drives]" || name == "[Recent]"
                     || name == "[FAVs]" || name == "[Bookmarks]" || name == "[Back]"
@@ -4957,6 +4993,16 @@ void UIManager::drawCmdLine() {
         wnoutrefresh(win_cmdline_);
         return;
     }
+    if (!podcast_dl_status_.empty()) {
+        // Podcast episode download: same visual language as the rip progress line
+        // (green, bold when the download is done). Percent is embedded in the text.
+        bool dl_done = podcast_dl_status_.rfind("Downloaded", 0) == 0;
+        wattron(win_cmdline_, COLOR_PAIR(CP_STATUS_OK) | (dl_done ? A_BOLD : 0));
+        mvwaddnstr(win_cmdline_, 0, 1, podcast_dl_status_.c_str(), screen_cols_ - 2);
+        wattroff(win_cmdline_, COLOR_PAIR(CP_STATUS_OK) | (dl_done ? A_BOLD : 0));
+        wnoutrefresh(win_cmdline_);
+        return;
+    }
     if (!rip_status_.empty()) {
         // Green for ripping progress, normal for errors/done
         bool is_done = (rip_status_.find("complete") != std::string::npos
@@ -5370,6 +5416,14 @@ void UIManager::updateScrobbler() {
             }
         }
     }
+
+    // Podcasts are not music: a playing episode never reaches the scrobbler. The OS
+    // now-playing card + Discord above are fine; the Last.fm/ListenBrainz path below
+    // is skipped for an episode (the scrobble code itself is untouched - it is simply
+    // never invoked, like other non-music sources).
+    if (!podcast_playing_path_.empty() && !audio_.streamMode() && !audio_.cdMode()
+        && audio_.currentTrack().path == podcast_playing_path_)
+        return;
 
     const std::string& k  = config_.lastfm_key;
     const std::string& s  = config_.lastfm_secret;
@@ -7942,8 +7996,8 @@ void UIManager::activateSelection() {
                 startPodcastFetch(name, PodcastFetchPurpose::Enter);
                 return;
             }
-            // An episode row: playback arrives in a later slice.
-            showTrackToast("Podcast playback arrives in a later update", "", "");
+            // An episode row: download (if needed) then play, with resume + state.
+            startEpisodePlay(dir_cursor_ - 1);   // [Back] occupies index 0
             return;
         }
         if (in_favs_) {
@@ -8592,6 +8646,192 @@ void UIManager::pollPodcastFetch() {
         dir_cursor_ = 0; dir_scroll_ = 0;
     }
     requestRedraw();
+}
+
+// ─── Episode playback: download-then-play (slice 3) ──────────────────────────
+// Episodes must be LOCAL files to seek / resume / finish / show chapters (the live
+// StreamSource can do none of those), so an episode is fetched to a cache file and
+// played through the normal LocalFileSource path.
+
+// <music>/re-moct/podcasts/<feed-slug>/<episode>.<ext>. Mirrors the rip output
+// convention (CDRipper::musicRoot()/"re-moct"). Creates the dir. Extension is taken
+// from the audio URL (before any query), defaulting to .mp3.
+std::string UIManager::episodeCachePath(const std::string& feed_url, const PodcastEpisode& ep) {
+    std::string feed_title = config_.podcastFeedTitle(feed_url);
+    std::string feed_slug  = sanitizePathComponent(feed_title.empty() ? feed_url : feed_title);
+    std::string base       = sanitizePathComponent(ep.title.empty() ? podcastEpisodeId(ep) : ep.title);
+    if (base.size() > 120) base = base.substr(0, 120);       // keep within path limits
+    std::string ext = ".mp3";
+    {
+        std::string u = ep.audio_url;
+        if (auto q = u.find('?'); q != std::string::npos) u = u.substr(0, q);
+        std::string e = fs::path(u).extension().string();
+        if (!e.empty() && e.size() <= 5) {
+            for (char& c : e) c = (char)std::tolower((unsigned char)c);
+            ext = e;
+        }
+    }
+    fs::path dir = fs::path(CDRipper::musicRoot()) / "re-moct" / "podcasts" / feed_slug;
+    std::error_code ec; fs::create_directories(dir, ec);
+    return (dir / (base + ext)).string();
+}
+
+// Play a cached episode file: standalone (NOT added to the playlist, so it never
+// mixes into the music queue or scrobbles). Resume is applied by the per-tick
+// updatePodcastProgress one-shot, exactly like an audiobook.
+void UIManager::playEpisodeFile(const std::string& local_path, const std::string& id) {
+    audio_.play(local_path);
+    podcast_playing_id_     = id;
+    podcast_playing_path_   = local_path;
+    podcast_playing_pos_    = 0.0;
+    podcast_playing_dur_    = 0.0;              // refined from TagLib (track duration) each tick
+    podcast_resume_pending_ = true;             // silent one-shot seek to the saved position
+    requestRedraw();
+}
+
+// Enter on an episode row: if the file is already cached, play it now; otherwise
+// stream it to the cache on a worker thread (rip-style progress), then play.
+void UIManager::startEpisodePlay(int episode_index) {
+    if (episode_index < 0 || episode_index >= (int)podcast_episodes_.size()) return;
+    const PodcastEpisode& ep = podcast_episodes_[(size_t)episode_index];
+    if (ep.audio_url.empty()) { showTrackToast("Episode has no audio", "", ""); return; }
+    if (podcast_dl_active_.load()) { showTrackToast("A download is already in progress", "", ""); return; }
+
+    std::string id   = podcastEpisodeId(ep);
+    std::string dest = episodeCachePath(podcast_feed_url_, ep);
+
+    std::error_code ec;
+    if (fs::exists(dest, ec) && fs::file_size(dest, ec) > 0) {
+        playEpisodeFile(dest, id);              // already downloaded
+        return;
+    }
+
+    podcast_dl_active_.store(true);
+    podcast_dl_done_.store(false);
+    podcast_dl_received_.store(0);
+    podcast_dl_total_.store(0);
+    std::atomic_ref<std::int32_t>(podcast_dl_cancel_).store(0);
+    { std::lock_guard<std::mutex> lk(podcast_dl_mtx_);
+      podcast_dl_dest_  = dest;
+      podcast_dl_id_    = id;
+      podcast_dl_title_ = ep.title.empty() ? id : ep.title;
+      podcast_dl_ok_    = false; }
+    if (podcast_dl_thread_.joinable()) podcast_dl_thread_.join();
+    podcast_dl_status_ = "Downloading " +
+        sanitizeForDisplay(ep.title.empty() ? std::string("episode") : ep.title) + "  [0%]";
+    podcast_dl_ticks_ = 0;
+    std::string url = ep.audio_url;
+    podcast_dl_thread_ = std::thread([this, url, dest]() {
+        core::ProgressFn progress = [this](std::uint64_t recv, std::uint64_t total) {
+            podcast_dl_received_.store(recv);
+            podcast_dl_total_.store(total);
+        };
+        bool ok = PodcastClient::download(url, dest, progress, &podcast_dl_cancel_);
+        { std::lock_guard<std::mutex> lk(podcast_dl_mtx_); podcast_dl_ok_ = ok; }
+        podcast_dl_done_.store(true);
+    });
+    requestRedraw();
+}
+
+// UI thread, per-frame: refresh the live progress line while downloading, and on
+// completion play the file (or report failure). The status line lingers ~5s (the
+// tick-loop expiry owns the timer).
+void UIManager::pollPodcastDownload() {
+    if (podcast_dl_active_.load() && !podcast_dl_done_.load()) {
+        std::uint64_t recv = podcast_dl_received_.load(), tot = podcast_dl_total_.load();
+        int pct = tot > 0 ? (int)(100.0 * (double)recv / (double)tot) : 0;
+        std::string title;
+        { std::lock_guard<std::mutex> lk(podcast_dl_mtx_); title = podcast_dl_title_; }
+        std::string line = "Downloading " + sanitizeForDisplay(title) +
+                           "  [" + std::to_string(pct) + "%]";
+        if (line != podcast_dl_status_) { podcast_dl_status_ = line; requestRedraw(); }
+        return;
+    }
+    if (podcast_dl_done_.exchange(false)) {
+        std::string dest, id, title; bool ok;
+        { std::lock_guard<std::mutex> lk(podcast_dl_mtx_);
+          dest = podcast_dl_dest_; id = podcast_dl_id_; title = podcast_dl_title_; ok = podcast_dl_ok_; }
+        if (podcast_dl_thread_.joinable()) podcast_dl_thread_.join();
+        podcast_dl_active_.store(false);
+        bool cancelled = std::atomic_ref<std::int32_t>(podcast_dl_cancel_).load() != 0;
+        if (ok) {
+            podcast_dl_status_ = "Downloaded " + sanitizeForDisplay(title) + "  [100%]";
+            podcast_dl_ticks_ = 0;
+            playEpisodeFile(dest, id);
+        } else {
+            podcast_dl_status_ = cancelled ? std::string()
+                                           : ("Download failed: " + sanitizeForDisplay(title));
+            podcast_dl_ticks_ = 0;
+        }
+        requestRedraw();
+    }
+}
+
+// Per-tick resume latch (mirrors updateBookProgress): track the playing episode's
+// position, apply the silent one-shot resume, and flush progress on a transition.
+void UIManager::updatePodcastProgress() {
+    bool playing = (audio_.state() != PlaybackState::Stopped);
+    const auto& tr = audio_.currentTrack();
+    bool is_ep = playing && !podcast_playing_path_.empty() && tr.path == podcast_playing_path_;
+
+    if (!is_ep) {
+        if (!podcast_playing_id_.empty()) {     // transition: stopped or switched away
+            flushPodcastProgress();
+            podcast_playing_id_.clear();
+            podcast_playing_path_.clear();
+            podcast_playing_pos_ = 0.0;
+            podcast_playing_dur_ = 0.0;
+            podcast_resume_pending_ = false;
+        }
+        return;
+    }
+    if (podcast_resume_pending_) {
+        double saved = config_.podcastEpisodePos(podcast_playing_id_);
+        double pos   = audio_.positionSec();
+        if (saved <= 1.0)      podcast_resume_pending_ = false;        // nothing to resume
+        else if (pos < 2.0)  { audio_.seekTo(saved); podcast_resume_pending_ = false; }
+        else if (pos > 3.0)    podcast_resume_pending_ = false;        // already moved on
+        // else 2..3s: wait a tick for the decoder to settle
+    }
+    podcast_playing_pos_ = audio_.positionSec();
+    if (tr.duration_sec > 0) podcast_playing_dur_ = (double)tr.duration_sec;
+}
+
+// Persist the playing episode's resume position (mirrors flushBookProgress). Near
+// the start -> not-started (0). Within 15s of the end -> finished (played, 0).
+void UIManager::flushPodcastProgress() {
+    if (podcast_playing_id_.empty()) return;
+    double pos = podcast_playing_pos_, dur = podcast_playing_dur_;
+    if (pos < 5.0) {
+        config_.setPodcastEpisodePos(podcast_playing_id_, 0.0);
+    } else if (dur > 0.0 && pos > dur - 15.0) {
+        config_.setPodcastEpisodePos(podcast_playing_id_, 0.0);
+        config_.setPodcastEpisodePlayed(podcast_playing_id_, true);
+    } else {
+        config_.setPodcastEpisodePos(podcast_playing_id_, pos);
+    }
+    config_.save();
+}
+
+// Track-end hook (called from main's auto-advance callback BEFORE any playlist
+// advance): if the finished track is the podcast episode, mark it played and STOP -
+// no auto-advance into the music queue. Returns true if it consumed the event.
+bool UIManager::onEpisodeTrackEnd() {
+    const auto& tr = audio_.currentTrack();
+    if (podcast_playing_path_.empty() || tr.path != podcast_playing_path_) return false;
+    if (!podcast_playing_id_.empty()) {
+        config_.setPodcastEpisodePos(podcast_playing_id_, 0.0);
+        config_.setPodcastEpisodePlayed(podcast_playing_id_, true);
+        config_.save();
+    }
+    podcast_playing_id_.clear();
+    podcast_playing_path_.clear();
+    podcast_playing_pos_ = 0.0;
+    podcast_playing_dur_ = 0.0;
+    podcast_resume_pending_ = false;
+    audio_.stop();
+    requestRedraw();
+    return true;
 }
 
 // convert-core: pick the convert scope (this file / this folder / marked set).

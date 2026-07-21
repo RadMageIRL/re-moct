@@ -99,6 +99,10 @@ int main(int argc, char* argv[]) {
         // ── Auto-advance callback ─────────────────────────────────────────
         audio.setTrackEndCallback([&]() {
 
+            // Podcast episode finished: mark it played and STOP - no auto-advance
+            // into the music queue. g_ui is set before ui.run() (this fires during it).
+            if (g_ui && g_ui->onEpisodeTrackEnd()) return;
+
             // Helper: route a path to CD or file playback
             auto play_path = [&](const std::string& p) {
 #ifdef _WIN32

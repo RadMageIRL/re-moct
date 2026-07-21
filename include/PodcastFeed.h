@@ -57,6 +57,23 @@ struct PodcastFeed {
     int  skipped_episodes = 0;       // malformed / enclosure-less <item> blocks skipped
 };
 
+// Stable identity key for an episode (slice 3): guid -> audio_url -> hash of
+// (title + pub_date_raw). Used by both resume position and played-state. Pure; the
+// hash fallback is 64-bit FNV-1a rendered as "h:<hex>" so it can't collide with a
+// real guid/url. An episode with none of the three inputs returns "".
+inline std::string podcastEpisodeId(const PodcastEpisode& ep) {
+    if (!ep.guid.empty())      return ep.guid;
+    if (!ep.audio_url.empty()) return ep.audio_url;
+    if (ep.title.empty() && ep.pub_date_raw.empty()) return "";
+    std::string s = ep.title + "\n" + ep.pub_date_raw;
+    std::uint64_t h = 1469598103934665603ull;
+    for (unsigned char c : s) { h ^= c; h *= 1099511628211ull; }
+    static const char* hex = "0123456789abcdef";
+    std::string out = "h:";
+    for (int i = 60; i >= 0; i -= 4) out += hex[(h >> i) & 0xF];
+    return out;
+}
+
 namespace pf_detail {
 
 // ── Locate the first <tag …> element at or after `from`. ─────────────────────

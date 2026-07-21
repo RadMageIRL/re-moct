@@ -162,6 +162,19 @@ struct DigiConfig {
     std::string podcastFeedTitle(const std::string& url) const;   // "" if none
     std::string podcastFeedArt(const std::string& url) const;     // "" if none
 
+    // Per-episode resume + played state (slice 3). Mirrors/extends audiobook_pos:
+    // keyed by episode identity (guid/url/hash), value = resume seconds + a played
+    // flag (audiobooks encode "finished" as pos 0; podcasts want an explicit flag so
+    // "played" and "in-progress" are distinct states). Plaintext, non-sensitive,
+    // stored one line each as "pod_ep=<id>\t<seconds>\t<played 0/1>". Uncapped (an
+    // entry is tiny; slice 4+ may prune). "New" = the absence of a record.
+    struct PodcastEpState { double pos = 0.0; bool played = false; };
+    std::unordered_map<std::string, PodcastEpState> podcast_progress;
+    double podcastEpisodePos(const std::string& id) const;      // 0 if none
+    bool   podcastEpisodePlayed(const std::string& id) const;   // false if none
+    void   setPodcastEpisodePos(const std::string& id, double sec);
+    void   setPodcastEpisodePlayed(const std::string& id, bool played);
+
     // Audiobooks: curated book paths (most-recent-first) + per-book resume
     // position in seconds. Mirrors the radio storage shape (list + side map).
     std::vector<std::string> audiobooks;

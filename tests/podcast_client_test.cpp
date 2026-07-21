@@ -9,20 +9,51 @@
 #include "core/IHttp.h"
 
 #include <cstdio>
+#include <fstream>
+#include <sstream>
 #include <string>
+#include <filesystem>
 
 static int g_fail = 0;
 #define CHECK(c) do{ if(!(c)){ ++g_fail; \
     std::printf("FAIL %s:%d  %s\n", __FILE__, __LINE__, #c);} }while(0)
 
 // Fake transport: returns a preset response, captures the request it was handed.
+// fetchToFile writes canned bytes to the destination and reports progress, so the
+// download glue can be proven with no network.
 struct FakeHttp : core::IHttp {
     core::HttpResponse next;
     core::HttpRequest  last;
     int calls = 0;
+    // fetchToFile fakery
+    std::string        file_body;              // bytes to "download"
+    bool               file_ok   = true;       // simulate success/failure
+    core::HttpRequest  last_dl;
+    std::uint64_t      last_progress_recv = 0;  // last progress callback's received
+    std::uint64_t      last_progress_total = 0;
+    int                progress_calls = 0;
+
     core::HttpResponse fetch(const core::HttpRequest& req) override {
         last = req; ++calls;
         return next;
+    }
+    core::HttpResponse fetchToFile(const core::HttpRequest& req, const std::string& dest,
+                                   const core::ProgressFn& progress) override {
+        last_dl = req;
+        core::HttpResponse res;
+        if (!file_ok) { res.ok = false; return res; }         // no file written
+        std::ofstream f(dest, std::ios::binary);
+        f.write(file_body.data(), (std::streamsize)file_body.size());
+        f.close();
+        if (progress) {
+            progress(0, file_body.size());
+            progress(file_body.size(), file_body.size());
+            ++progress_calls;
+            last_progress_recv  = file_body.size();
+            last_progress_total = file_body.size();
+        }
+        res.ok = true; res.status = 200;
+        return res;
     }
 };
 
@@ -92,6 +123,50 @@ int main() {
         CHECK(h.calls == before);   // fetch() returns early, never hits the transport
         CHECK(!r.fetched);
         CHECK(!r.feed.ok);
+    }
+
+    // ---- (5) download() streams to a file + reports progress ----
+    {
+        namespace fs = std::filesystem;
+        std::error_code ec;
+        fs::path dest = fs::temp_directory_path(ec) / "remoct_podcast_dl_test.bin";
+        std::remove(dest.string().c_str());
+
+        h.file_ok = true;
+        h.file_body = "AUDIO-BYTES-xxxxxxxxxx";
+        h.progress_calls = 0;
+        std::uint64_t seen_recv = 0, seen_total = 0;
+        core::ProgressFn prog = [&](std::uint64_t r, std::uint64_t t){ seen_recv = r; seen_total = t; };
+        bool ok = PodcastClient::download("http://x/ep.mp3", dest.string(), prog, nullptr);
+        CHECK(ok);
+        CHECK(h.last_dl.url == "http://x/ep.mp3");
+        CHECK(h.last_dl.max_body == 0);                 // no cap: streams to disk
+        CHECK(h.last_dl.user_agent == "RE-MOCT/1.4 (podcast client)");
+        CHECK(h.progress_calls == 1);
+        CHECK(seen_recv == h.file_body.size() && seen_total == h.file_body.size());
+        // File actually written with the body.
+        std::ifstream in(dest.string(), std::ios::binary);
+        std::ostringstream ss; ss << in.rdbuf();
+        CHECK(ss.str() == h.file_body);
+        std::remove(dest.string().c_str());
+    }
+
+    // ---- (6) download() failure returns false ----
+    {
+        namespace fs = std::filesystem;
+        std::error_code ec;
+        fs::path dest = fs::temp_directory_path(ec) / "remoct_podcast_dl_fail.bin";
+        h.file_ok = false;
+        bool ok = PodcastClient::download("http://x/dead.mp3", dest.string(), {}, nullptr);
+        CHECK(!ok);
+    }
+
+    // ---- (7) empty url/dest: early-out, transport never reached, returns false ----
+    {
+        h.last_dl.url = "SENTINEL";
+        CHECK(!PodcastClient::download("", "/tmp/x", {}, nullptr));
+        CHECK(!PodcastClient::download("http://x/y", "", {}, nullptr));
+        CHECK(h.last_dl.url == "SENTINEL");   // fetchToFile never invoked
     }
 
     core::setHttp(nullptr);   // restore

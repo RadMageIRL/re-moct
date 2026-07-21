@@ -162,6 +162,27 @@ std::string DigiConfig::podcastFeedArt(const std::string& url) const {
     return it != podcast_feed_art.end() ? it->second : std::string();
 }
 
+double DigiConfig::podcastEpisodePos(const std::string& id) const {
+    auto it = podcast_progress.find(id);
+    return it != podcast_progress.end() ? it->second.pos : 0.0;
+}
+
+bool DigiConfig::podcastEpisodePlayed(const std::string& id) const {
+    auto it = podcast_progress.find(id);
+    return it != podcast_progress.end() ? it->second.played : false;
+}
+
+void DigiConfig::setPodcastEpisodePos(const std::string& id, double sec) {
+    if (id.empty()) return;
+    if (sec < 0) sec = 0;
+    podcast_progress[id].pos = sec;
+}
+
+void DigiConfig::setPodcastEpisodePlayed(const std::string& id, bool played) {
+    if (id.empty()) return;
+    podcast_progress[id].played = played;
+}
+
 void DigiConfig::addAudiobook(const std::string& path) {
     if (path.empty() || isCDTrackPath(path)) return;
     double keep = bookPos(path);                 // preserve resume across re-add
@@ -215,6 +236,7 @@ void DigiConfig::load() {
     podcast_feeds.clear();
     podcast_feed_titles.clear();
     podcast_feed_art.clear();
+    podcast_progress.clear();
     recent_tracks.clear();
     track_stats.clear();
     audiobooks.clear();
@@ -355,6 +377,26 @@ void DigiConfig::load() {
                     podcast_feeds.push_back(purl);
                     if (!ptitle.empty()) podcast_feed_titles[purl] = ptitle;
                     if (!part.empty())   podcast_feed_art[purl]    = part;
+                }
+            }
+        }
+        else if (key == "pod_ep") {
+            // "pod_ep=<id>\t<seconds>\t<played 0/1>". Older/shorter lines (missing
+            // trailing fields) parse with those fields defaulted.
+            if (!val.empty()) {
+                std::string id = val; double pos = 0.0; bool played = false;
+                auto t1 = val.find('\t');
+                if (t1 != std::string::npos) {
+                    id = val.substr(0, t1);
+                    std::string rest = val.substr(t1 + 1);
+                    auto t2 = rest.find('\t');
+                    std::string ps = (t2 == std::string::npos) ? rest : rest.substr(0, t2);
+                    try { pos = std::stod(ps); } catch (...) { pos = 0.0; }
+                    if (t2 != std::string::npos) played = (rest.substr(t2 + 1) == "1");
+                }
+                if (!id.empty()) {
+                    podcast_progress[id].pos    = pos;
+                    podcast_progress[id].played = played;
                 }
             }
         }
@@ -513,6 +555,13 @@ void DigiConfig::save() const {
             if (!art.empty())        f << "podcast=" << url << "\t" << title << "\t" << art << "\n";
             else if (!title.empty()) f << "podcast=" << url << "\t" << title << "\n";
             else                     f << "podcast=" << url << "\n";
+        }
+        for (const auto& kv : podcast_progress) {
+            // Skip pure-default entries (never played, no resume) to keep the file lean.
+            if (kv.second.pos <= 0.0 && !kv.second.played) continue;
+            std::string id = nl(kv.first);
+            for (char& c : id) if (c == '\t') c = ' ';   // fold tabs so the split is unambiguous
+            f << "pod_ep=" << id << "\t" << kv.second.pos << "\t" << (kv.second.played ? 1 : 0) << "\n";
         }
         for (const auto& r : recent_tracks)
             if (!isCDTrackPath(r))

@@ -29,6 +29,9 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <wininet.h>
+#include <cstdio>
+#include <cstdint>
+#include <cstdlib>
 
 namespace {
 
@@ -241,6 +244,67 @@ struct WinInetHttp final : core::IHttp {
 
         res = executeRequest(inet, req, /*keep_alive=*/false);
         InternetCloseHandle(inet);
+        return res;
+    }
+
+    // Streaming GET to a file (podcast episodes): the body goes straight to disk,
+    // never into memory. GET only. Reports progress per chunk and honors req.cancel
+    // so a mid-download quit aborts within one read instead of blocking on the join.
+    core::HttpResponse fetchToFile(const core::HttpRequest& req, const std::string& dest_path,
+                                   const core::ProgressFn& progress) override {
+        core::HttpResponse res;
+        if (wasCancelled(req)) { core::finalizeCancelled(res); return res; }
+
+        std::wstring wua = req.user_agent.empty() ? std::wstring(kDefaultUA)
+                                                  : toWideUtf8(req.user_agent);
+        HINTERNET inet = InternetOpenW(wua.c_str(), INTERNET_OPEN_TYPE_PRECONFIG,
+                                       nullptr, nullptr, 0);
+        if (!inet) return res;
+        if (req.timeout_ms > 0) {
+            DWORD to = (DWORD)req.timeout_ms;
+            InternetSetOptionW(inet, INTERNET_OPTION_CONNECT_TIMEOUT, &to, sizeof(to));
+            InternetSetOptionW(inet, INTERNET_OPTION_RECEIVE_TIMEOUT, &to, sizeof(to));
+        }
+        const DWORD flags = requestFlags(req, /*keep_alive=*/false);
+        std::wstring wurl = toWideUtf8(req.url);
+        HINTERNET conn = InternetOpenUrlW(inet, wurl.c_str(), nullptr, 0, flags, 0);
+        if (!conn) { InternetCloseHandle(inet); return res; }
+        res.status = queryStatus(conn);
+
+        // Content-Length (0 if chunked/absent -> total unknown, progress shows bytes).
+        std::uint64_t total = 0;
+        {
+            wchar_t clbuf[40]; DWORD cllen = sizeof(clbuf), idx = 0;
+            if (HttpQueryInfoW(conn, HTTP_QUERY_CONTENT_LENGTH, clbuf, &cllen, &idx))
+                total = _wcstoui64(clbuf, nullptr, 10);
+        }
+
+        FILE* f = _wfopen(toWideUtf8(dest_path).c_str(), L"wb");
+        if (!f) { InternetCloseHandle(conn); InternetCloseHandle(inet); return res; }
+
+        char buf[65536];
+        DWORD bytes = 0;
+        std::uint64_t received = 0;
+        bool ok = true, cancelled = false;
+        if (progress) progress(0, total);
+        for (;;) {
+            if (wasCancelled(req)) { cancelled = true; break; }
+            if (!InternetReadFile(conn, buf, sizeof(buf), &bytes)) { ok = false; break; }
+            if (bytes == 0) break;                                   // clean EOF
+            if (fwrite(buf, 1, bytes, f) != bytes) { ok = false; break; }
+            received += bytes;
+            if (req.max_body && received > req.max_body) { res.truncated = true; ok = false; break; }
+            if (progress) progress(received, total);
+        }
+        fclose(f);
+        InternetCloseHandle(conn);
+        InternetCloseHandle(inet);
+
+        std::wstring wdest = toWideUtf8(dest_path);
+        if (cancelled) { core::finalizeCancelled(res); _wremove(wdest.c_str()); return res; }
+        if (!ok)       { res.ok = false; _wremove(wdest.c_str()); return res; }   // partial removed
+        res.ok = true;
+        if (progress) progress(received, total ? total : received);
         return res;
     }
 

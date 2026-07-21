@@ -18,8 +18,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   returns to the feed list. Remove a feed with `d` or `Del`, like a radio station.
 - Feeds are fetched in the background, so subscribing to or opening even a very
   large show never freezes the interface. A feed that cannot be fetched or is not
-  a real podcast reports the problem and changes nothing. (Playing an episode
-  arrives in a later update.)
+  a real podcast reports the problem and changes nothing.
+- Play an episode by selecting it: RE-MOCT downloads it (with an on-screen
+  percentage, like a CD rip) and then plays it, so you get full seeking, the real
+  duration, and embedded chapters. The transport controls (pause, seek, volume)
+  work as they do for any track.
+- Episodes remember where you left off. Come back to a half-finished episode and
+  it resumes at your position; two episodes in progress keep their own positions.
+  The list marks each episode new, in-progress (with the resume time), or played,
+  and an episode that reaches the end is marked played and stops (it does not
+  auto-play the next one). Positions and states are saved across restarts.
 
 ### Security
 

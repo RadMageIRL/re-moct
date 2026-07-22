@@ -104,6 +104,11 @@ public:
     // URL-encode a UTF-8 string for use in query parameters
     static std::string urlEncode(const std::string& s);
 
+    // SHA-1 over a byte buffer -> 20-byte digest. Pure/stateless (no member or static
+    // state); public so other request-signing paths (e.g. Podcast Index auth) reuse it
+    // instead of vendoring a second hash. Used internally by the DiscID computation.
+    static void sha1(const uint8_t* data, size_t len, uint8_t out[20]);
+
 private:
     std::atomic<bool>   active_  { false };
     std::atomic<bool>   cancel_  { false };
@@ -134,8 +139,7 @@ private:
     // Parse Discogs /database/search response as fallback
     static std::vector<MBSearchResult> parseDiscogsJson(const std::string& json);
 
-    // DiscID internals
-    static void   sha1(const uint8_t* data, size_t len, uint8_t out[20]);
+    // DiscID internals (sha1 is declared public above for cross-path reuse)
     static std::string mb_base64(const uint8_t* data, size_t len);
 };
 

@@ -373,6 +373,7 @@ UIManager::~UIManager() {
     if (radio_art_thread_.joinable())   radio_art_thread_.join();
     if (info_art_thread_.joinable())    info_art_thread_.join();
     if (podcast_fetch_thread_.joinable()) podcast_fetch_thread_.join();  // podcasts: never terminate on a joinable thread
+    if (pi_search_thread_.joinable())   pi_search_thread_.join();        // slice 6: byterm search worker
     std::atomic_ref<std::int32_t>(podcast_dl_cancel_).store(1);          // abort a mid-download fast
     if (podcast_dl_thread_.joinable()) podcast_dl_thread_.join();
     if (podcast_art_thread_.joinable()) podcast_art_thread_.join();      // art fetch is bounded by bytesByUrl's timeout
@@ -1291,6 +1292,7 @@ void UIManager::run() {
             flushPendingSeek();
         updateScrobbler();   // publishes now-playing to the OS on change (publishMedia)
         pollPodcastFetch();  // podcasts: install a finished feed fetch off the worker thread
+        pollPodcastIndexSearch(); // podcasts slice 6: install finished byterm search results
         pollPodcastDownload(); // podcasts: refresh download %, play the episode when it lands
         // OS media control: per-tick position refresh (cheap; the impl throttles
         // its own signal emission) + clear on the transition to stopped so the OS
@@ -1853,6 +1855,7 @@ void UIManager::drawOverlay() {
     else if (ui_overlay_ == UIOverlay::ConvertConfirm) drawConvertConfirm();
     else if (ui_overlay_ == UIOverlay::PlaylistFormat) drawPlaylistFormat();
     else if (ui_overlay_ == UIOverlay::PodcastPlayConflict) drawPodcastPlayConflict();
+    else if (ui_overlay_ == UIOverlay::PodcastIndexCreds)   drawPodcastIndexCreds();
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2756,8 +2759,9 @@ void UIManager::drawDirBrowser() {
     else if (in_favs_)    hdr = " [FAVs] (f:fav/unfav  Enter:play  Del:remove) ";
     else if (in_radio_)   hdr = " [Radio] (Enter:play  d/Del:remove) ";
     else if (in_podcasts_) {
-        if (in_podcast_feed_) hdr = " [Podcasts] (Enter:play  D:download  d/Del:delete dl  [Back]:feeds) ";
-        else                  hdr = " [Podcasts] (Enter:open  a:add feed  d/Del:remove) ";
+        if (in_podcastindex_search_) hdr = " [Podcasts] search results (Enter:subscribe  [Back]:feeds) ";
+        else if (in_podcast_feed_)   hdr = " [Podcasts] (Enter:play  D:download  d/Del:delete dl  [Back]:feeds) ";
+        else                         hdr = " [Podcasts] (Enter:open  /:search  a:add feed  d/Del:remove) ";
     }
     else if (in_books_)   hdr = " [Books] (Enter:play  Del:remove) ";
     else {
@@ -2786,6 +2790,11 @@ void UIManager::drawDirBrowser() {
         std::string display = (idx < (int)dir_display_.size())
                             ? dir_display_[(size_t)idx] : name;
         bool cursor = (idx == dir_cursor_);
+        // Episode-row pins (empty for every other row). The Slice 3 state glyph is
+        // pinned at the left and the resume time at the right, so a long title
+        // marquees only BETWEEN them and the state never scrolls out of view.
+        std::string ep_glyph, ep_extra;
+        bool        is_episode_row = false;
         // Inline eject hint: highlighted row only, only for a CD drive with media
         // (cached at enumeration - see enterDriveList). Rows go through the wide
         // path (utf8_to_wide -> mvwaddnwstr), so the eject glyph renders for real.
@@ -2826,7 +2835,9 @@ void UIManager::drawDirBrowser() {
                                   : ("  ▸" + std::to_string(m) + ":" + p2(se));
                 }
             }
-            display = glyph + display + extra;
+            ep_glyph       = glyph;   // pinned left, not marqueed
+            ep_extra       = extra;   // pinned right (resume time)
+            is_episode_row = true;    // composition below pins these; display stays the bare title
         }
         bool is_dir = in_drive_list_
                     || name == ".." || name == "[Drives]" || name == "[Recent]"
@@ -2861,7 +2872,19 @@ void UIManager::drawDirBrowser() {
         std::string prefix = ico ? "  " : (is_dir ? "+ " : (marked ? "* " : "  "));
         int avail = cw - 1;
         std::string d;
-        if (ico) {
+        if (is_episode_row) {
+            // Pin the state glyph (after the prefix) and the resume time (right); marquee
+            // ONLY the title between them, so the Slice 3 state is readable at every
+            // scroll offset. Widths are per-row via dispWidth because the glyph varies
+            // (a "NN% " is wider than "· ", and the marks are non-ASCII) - never a
+            // hardcoded column count. Mirrors the playlist's pin-then-marquee shape; in
+            // icon mode the filetype-cell overlay below still fires (two pinned prefixes).
+            int head_w  = dispWidth(ep_glyph);
+            int tail_w  = dispWidth(ep_extra);
+            int title_w = avail - (int)prefix.size() - head_w - tail_w;
+            std::string t = (title_w > 0) ? scrollToWidth(display, title_w, text_scroll_offset_) : "";
+            d = prefix + ep_glyph + t + ep_extra;
+        } else if (ico) {
             // Keep the icon cell fixed: marquee only the name, not the prefix, so
             // a long scrolling filename never slides under the overlaid glyph.
             int name_w = avail - (int)prefix.size();
@@ -3274,6 +3297,7 @@ void UIManager::drawHelp() {
         { "F12",            "Refresh the [Drives] list (pick up hot-plugged drives)" },
         { "E  (Shift+E)",   "Eject highlighted CD drive (in [Drives])" },
         { "\\",             "Search the focused list - playlist or browser (jump to a row)" },
+        { "/",              "Find new online: stations in [Radio], podcasts in [Podcasts]" },
 #ifdef PDCURSES
         { "Alt+Enter",      "Toggle fullscreen (borderless)"      },
 #endif
@@ -5243,6 +5267,9 @@ void UIManager::drawGotoBar() {
         case InputMode::StreamURL: prompt = " radio url: "; break;
         case InputMode::StreamName: prompt = " station name (optional, Enter to skip): "; break;
         case InputMode::PodcastAddUrl: prompt = " podcast feed url: "; break;
+        case InputMode::PodcastIndexSearch: prompt = " search podcasts: "; break;
+        case InputMode::PodcastIndexKey:    prompt = " podcast index API key: "; break;
+        case InputMode::PodcastIndexSecret: prompt = " podcast index secret: "; break;
         case InputMode::RadioSearch: prompt = " search radio: "; break;
         case InputMode::LastfmKey:    prompt = " last.fm API key: "; break;
         case InputMode::LastfmSecret: prompt = " last.fm secret: ";  break;
@@ -5705,19 +5732,26 @@ void UIManager::startListenBrainzValidate(const std::string& token) {
     });
 }
 
+// Fire-and-forget browser launcher, factored from lastfmBeginAuth so the Last.fm auth
+// flow and the Podcast Index signup link share ONE call and ONE platform split (no
+// second launcher). Behaviour for the Last.fm URL is byte-identical to the prior
+// inline call. URLs used here are https with no shell-hostile characters.
+void UIManager::openUrlInBrowser(const std::string& url) {
+    if (url.empty()) return;
+#ifdef _WIN32
+    ShellExecuteA(nullptr, "open", url.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+#else
+    (void)std::system(("xdg-open '" + url + "' >/dev/null 2>&1 &").c_str());
+#endif
+}
+
 void UIManager::lastfmBeginAuth() {
     std::string token, url;
     if (LastFm::requestToken(config_.lastfm_key, config_.lastfm_secret, token, url)) {
         config_.lastfm_pending = token;   // persisted so it survives an app restart
         config_.save();
         sclog("beginAuth: token acquired, browser opened, auto-poll started");
-#ifdef _WIN32
-        ShellExecuteA(nullptr, "open", url.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
-#else
-        // xdg-open twin — same fire-and-forget contract as ShellExecuteA "open".
-        // (Last.fm auth URLs are https + query params; no shell-hostile chars.)
-        (void)std::system(("xdg-open '" + url + "' >/dev/null 2>&1 &").c_str());
-#endif
+        openUrlInBrowser(url);
         startLastfmPoll(token);           // auto-complete after you click allow
         showTrackToast("Last.fm: approve in browser - finishes automatically", "", "");
     } else {
@@ -5730,6 +5764,25 @@ void UIManager::handleInput(int ch) {
     // slice 6: overlay input is common. The RipConfirm modal (^Y) is live on Linux;
     // the MBSearch line is inert there (^F stays gated, so it never opens).
     if (ui_overlay_ == UIOverlay::MBSearch) { handleMBSearchInput(ch); return; }
+    // ── Podcast Index first-use credentials modal (slice 6): [S] open the signup page,
+    // [E] enter key+secret now (chains to the input bar), [Esc]/[C] cancel (nothing set).
+    if (ui_overlay_ == UIOverlay::PodcastIndexCreds) {
+        if (ch == 's' || ch == 'S') {
+            openUrlInBrowser("https://api.podcastindex.org/signup");
+            return;   // leave the modal up so they can then pick [E]
+        }
+        if (ch == 'e' || ch == 'E') {
+            ui_overlay_ = UIOverlay::None;
+            openInputBar(InputMode::PodcastIndexKey, "");
+            return;
+        }
+        if (ch == 27 || ch == 'c' || ch == 'C') {   // Esc / C
+            ui_overlay_ = UIOverlay::None;
+            redraw_needed_.store(true);
+            return;
+        }
+        return;   // modal captures all other keys
+    }
     // ── Podcast play-conflict popup: a DIFFERENT episode is downloading and the user
     // pressed play. [W] wait (queue it to play next) / [P] play now (interrupt the
     // active download, which restarts later) / [Esc] cancel.
@@ -6489,6 +6542,23 @@ void UIManager::handleInput(int ch) {
                 ++search_cursor_; redraw_needed_.store(true); return;
             case 'k': case 'K': case KEY_UP:
                 --search_cursor_; redraw_needed_.store(true); return;
+            case KEY_NPAGE: {   // PgDn - fast movement for large result sets
+                int page = std::max(1, paneVisibleRows(win_playlist_) - 1);
+                search_cursor_ = std::clamp(search_cursor_ + page, 0,
+                                   std::max(0, (int)search_results_.size() - 1));
+                redraw_needed_.store(true); return;
+            }
+            case KEY_PPAGE: {   // PgUp
+                int page = std::max(1, paneVisibleRows(win_playlist_) - 1);
+                search_cursor_ = std::clamp(search_cursor_ - page, 0,
+                                   std::max(0, (int)search_results_.size() - 1));
+                redraw_needed_.store(true); return;
+            }
+            case KEY_HOME:
+                search_cursor_ = 0; redraw_needed_.store(true); return;
+            case KEY_END:
+                search_cursor_ = std::max(0, (int)search_results_.size() - 1);
+                redraw_needed_.store(true); return;
             case '\n': case KEY_ENTER: case '\r':
                 if (!search_results_.empty()) {
                     search_cursor_ = std::clamp(search_cursor_, 0,
@@ -7571,11 +7641,20 @@ void UIManager::handleInput(int ch) {
             }
             break;
         case '/':
-            // Radio: online station search. Podcasts: '/' is intentionally left FREE
-            // (add-feed moved to 'a') so slice 6's Podcast Index online search can claim
-            // it, matching radio's "/ = find something new online" idiom - NOT a \-alias.
-            if (focus_ == Pane::DirBrowser && in_radio_)
+            // "/ = find something new online" in the section you're in. Radio: station
+            // search. Podcasts (feed level): Podcast Index search for new feeds. First
+            // use with no credentials -> the reactive signup/enter modal (never a
+            // startup nag). '\' stays focus-aware local search; these are distinct.
+            if (focus_ == Pane::DirBrowser && in_radio_) {
                 openInputBar(InputMode::RadioSearch, "");
+            } else if (focus_ == Pane::DirBrowser && in_podcasts_ && !in_podcast_feed_) {
+                if (config_.podcastindex_key.empty() || config_.podcastindex_secret.empty()) {
+                    ui_overlay_ = UIOverlay::PodcastIndexCreds;
+                    redraw_needed_.store(true);
+                } else {
+                    openInputBar(InputMode::PodcastIndexSearch, "");
+                }
+            }
             break;
         case 'D':   // Shift+D: download the highlighted episode for offline (podcast list)
             if (focus_ == Pane::DirBrowser && in_podcasts_ && in_podcast_feed_
@@ -7859,6 +7938,34 @@ void UIManager::gotoClose(bool commit) {
                     config_.lastfm_secret = sec;
                     config_.save();           // creds persisted
                     lastfmBeginAuth();        // start browser authorization
+                }
+                break;
+            }
+            case InputMode::PodcastIndexSearch: {
+                std::string q = goto_input_;
+                while (!q.empty() && (q.front()==' '||q.front()=='\t')) q.erase(q.begin());
+                while (!q.empty() && (q.back()==' '||q.back()=='\t'||q.back()=='\r'||q.back()=='\n')) q.pop_back();
+                if (!q.empty()) startPodcastIndexSearch(q);   // async worker; poll installs results
+                break;
+            }
+            case InputMode::PodcastIndexKey: {
+                std::string k = goto_input_;
+                while (!k.empty() && (k.front()==' '||k.front()=='\t')) k.erase(k.begin());
+                while (!k.empty() && (k.back()==' '||k.back()=='\t'||k.back()=='\r'||k.back()=='\n')) k.pop_back();
+                if (!k.empty()) {
+                    config_.podcastindex_key = k;
+                    openInputBar(InputMode::PodcastIndexSecret, "");   // chain to secret prompt
+                }
+                break;
+            }
+            case InputMode::PodcastIndexSecret: {
+                std::string sec = goto_input_;
+                while (!sec.empty() && (sec.front()==' '||sec.front()=='\t')) sec.erase(sec.begin());
+                while (!sec.empty() && (sec.back()==' '||sec.back()=='\t'||sec.back()=='\r'||sec.back()=='\n')) sec.pop_back();
+                if (!sec.empty()) {
+                    config_.podcastindex_secret = sec;
+                    config_.save();           // creds persisted (secret protected at rest)
+                    openInputBar(InputMode::PodcastIndexSearch, "");   // straight into searching
                 }
                 break;
             }
@@ -8258,12 +8365,26 @@ void UIManager::activateSelection() {
         }
         if (in_podcasts_) {
             if (name == "[Back]") {
-                if (in_podcast_feed_) {          // level 2 -> back to the feed list
+                if (in_podcastindex_search_ || in_podcast_feed_) {  // results/episodes -> feed list
                     showPodcastFeedList();
                     return;
                 }
                 in_podcasts_ = false;            // level 1 -> leave the section
                 refreshDir();
+                return;
+            }
+            if (in_podcastindex_search_) {
+                // A search result: subscribe via the EXISTING paste-URL path (the feed
+                // URL is dir_entries_[cursor] = name). The Subscribe completion refreshes
+                // the feed list (pollPodcastFetch), returning here with the new feed present.
+                int ri = dir_cursor_ - 1;        // [Back] occupies index 0
+                if (ri < 0 || ri >= (int)pi_results_.size()) return;
+                if (config_.isPodcastFeed(name)) {
+                    status_msg_ = "Already subscribed: " + sanitizeForDisplay(pi_results_[(size_t)ri].title);
+                    status_msg_ticks_ = 0; status_msg_yellow_ = true;
+                    return;
+                }
+                startPodcastFetch(name, PodcastFetchPurpose::Subscribe);
                 return;
             }
             if (!in_podcast_feed_) {
@@ -8637,6 +8758,7 @@ void UIManager::refreshDir() {
     in_books_      = false;
     in_podcasts_     = false;
     in_podcast_feed_ = false;
+    in_podcastindex_search_ = false;
     dir_entries_.clear();
     dir_display_.clear();
     dir_poll_ticks_ = 0;
@@ -8824,6 +8946,7 @@ void UIManager::enterPodcastSection() {
 // leads at index 0; each feed shows its cached title (or the URL if untitled).
 void UIManager::showPodcastFeedList() {
     in_podcast_feed_ = false;
+    in_podcastindex_search_ = false;   // leaving any search-results view back to the feed list
     podcast_feed_url_.clear();
     podcast_episodes_.clear();
     dir_entries_.clear(); dir_display_.clear();
@@ -8832,6 +8955,84 @@ void UIManager::showPodcastFeedList() {
         dir_entries_.push_back(url);
         std::string title = config_.podcastFeedTitle(url);
         dir_display_.push_back(sanitizeForDisplay(title.empty() ? url : title));
+    }
+    dir_cursor_ = 0; dir_scroll_ = 0;
+}
+
+// Spawn the byterm search worker (slice 6). Runs off the UI thread - a slow endpoint
+// or a disconnected network never blocks the TUI. Single in-flight; the credentials
+// and a per-call unix timestamp are captured by value so the worker never touches
+// config_ or the clock across the thread boundary. pollPodcastIndexSearch() installs.
+void UIManager::startPodcastIndexSearch(const std::string& term) {
+    if (pi_search_active_.load()) {                 // one at a time
+        showTrackToast("A podcast search is still running...", "", "");
+        return;
+    }
+    pi_search_active_.store(true);
+    pi_search_done_.store(false);
+    { std::lock_guard<std::mutex> lk(pi_search_mtx_);
+      pi_search_term_   = term;
+      pi_search_result_ = PodcastIndexSearchResult{}; }
+    if (pi_search_thread_.joinable()) pi_search_thread_.join();   // prior worker already done
+    status_msg_ = "Searching podcasts: " + term + "...";
+    status_msg_ticks_ = 0; status_msg_yellow_ = true;
+    std::string  key    = config_.podcastindex_key;
+    std::string  secret = config_.podcastindex_secret;
+    std::int64_t now    = (std::int64_t)std::time(nullptr);   // X-Auth-Date (captured, not read in worker)
+    std::string  t      = term;
+    pi_search_thread_ = std::thread([this, key, secret, t, now]() {
+        PodcastIndexSearchResult r = PodcastIndex::search(key, secret, t, now, 30);
+        { std::lock_guard<std::mutex> lk(pi_search_mtx_); pi_search_result_ = std::move(r); }
+        pi_search_done_.store(true);
+    });
+}
+
+// UI thread, per-frame: install a finished search. Every failure degrades to the
+// status line and leaves paste-URL subscribe fully working (non-load-bearing).
+void UIManager::pollPodcastIndexSearch() {
+    if (!pi_search_done_.exchange(false)) return;
+    PodcastIndexSearchResult r;
+    std::string term;
+    { std::lock_guard<std::mutex> lk(pi_search_mtx_);
+      r = std::move(pi_search_result_);
+      term = pi_search_term_; }
+    if (pi_search_thread_.joinable()) pi_search_thread_.join();
+    pi_search_active_.store(false);
+
+    // Discard if the user has since left the feed level of [Podcasts].
+    if (!in_podcasts_ || in_podcast_feed_) return;
+
+    auto yellow = [&](const std::string& m){ status_msg_ = m; status_msg_ticks_ = 0; status_msg_yellow_ = true; };
+    switch (r.status) {
+        case PodcastIndexStatus::NoCreds:
+            yellow("Podcast Index: no credentials - press / to set them"); return;
+        case PodcastIndexStatus::AuthFailed:
+            // A drifted system clock (>3 min) fails auth identically to a bad secret,
+            // so name both rather than sending the user to re-enter a correct key.
+            yellow("Podcast Index auth failed: check key/secret and system clock"); return;
+        case PodcastIndexStatus::NetworkError:
+            yellow("Podcast Index: network error - try again"); return;
+        case PodcastIndexStatus::Ok:
+            break;
+    }
+    pi_results_ = std::move(r.feeds);
+    if (pi_results_.empty()) { yellow("No podcasts found for \"" + term + "\""); return; }
+    showPodcastIndexResults();
+    redraw_needed_.store(true);
+}
+
+// (Re)populate the browser with search results (level-1 sub-mode). [Back] at index 0
+// returns to the feed list; each result shows "title (author)" and its dir_entries_
+// row is the FEED URL that Enter hands to the existing subscribe path.
+void UIManager::showPodcastIndexResults() {
+    in_podcast_feed_ = false;
+    in_podcastindex_search_ = true;
+    dir_entries_.clear(); dir_display_.clear();
+    dir_entries_.push_back("[Back]"); dir_display_.push_back("[Back]");
+    for (const auto& r : pi_results_) {
+        dir_entries_.push_back(r.url);
+        std::string info = r.title + (r.author.empty() ? "" : "  (" + r.author + ")");
+        dir_display_.push_back(sanitizeForDisplay(info));
     }
     dir_cursor_ = 0; dir_scroll_ = 0;
 }
@@ -9478,6 +9679,33 @@ void UIManager::drawPodcastPlayConflict() {
     mvwaddstr(w, 5, 3, "[W] Wait - queue this to play next");
     mvwaddstr(w, 6, 3, "[P] Play now - interrupt the download (it restarts later)");
     mvwaddstr(w, 7, 3, "[Esc] Cancel");
+    wrefresh(w);
+    delwin(w);
+}
+
+// First-use Podcast Index credentials modal (slice 6). Reactive - only shown when the
+// user presses / in [Podcasts] with no key/secret configured (never a startup nag). The
+// signup URL is shown as READABLE TEXT, not just behind [S], so a failed launcher, a
+// headless/SSH session, or a moved page is an inconvenience rather than a dead end.
+void UIManager::drawPodcastIndexCreds() {
+    const int BOX_W = 66, BOX_H = 11;
+    int y0 = (screen_rows_ - BOX_H) / 2, x0 = (screen_cols_ - BOX_W) / 2;
+    if (y0 < 0) y0 = 0;
+    if (x0 < 0) x0 = 0;
+    WINDOW* w = newwin(BOX_H, BOX_W, y0, x0);
+    if (!w) return;
+    wbkgd(w, config_.awesome_mode ? COLOR_PAIR(CP_DIM) : COLOR_PAIR(0));
+    werase(w);
+    const char* title = " PODCAST INDEX SEARCH ";
+    panelFrame(w, title, true);
+    if (!config_.awesome_mode) mvwaddstr(w, 0, (BOX_W - (int)strlen(title)) / 2, title);
+
+    mvwaddnstr(w, 2, 3, "Searching for new podcasts needs a free Podcast Index API key.", BOX_W - 5);
+    mvwaddnstr(w, 3, 3, "Register with just an email and get a key + secret instantly:", BOX_W - 5);
+    mvwaddnstr(w, 4, 5, "https://api.podcastindex.org/signup", BOX_W - 7);
+    mvwaddstr(w, 6, 3, "[S] Open that page in your browser");
+    mvwaddstr(w, 7, 3, "[E] Enter key and secret now");
+    mvwaddstr(w, 8, 3, "[Esc] Cancel");
     wrefresh(w);
     delwin(w);
 }

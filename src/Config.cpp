@@ -330,6 +330,8 @@ void DigiConfig::load() {
         else if (key == "lastfm-pending")   lastfm_pending    = secret::unprotect(val).value_or("");
         else if (key == "lb-token")          listenbrainz_token = secret::unprotect(val).value_or("");
         else if (key == "lb-user")           listenbrainz_user  = val;
+        else if (key == "podcastindex-key")    podcastindex_key    = val;
+        else if (key == "podcastindex-secret") podcastindex_secret = secret::unprotect(val).value_or("");
         else if (key.substr(0,3) == "eq_" && key.size() == 4) {
             int b = key[3] - '0';
             if (b >= 0 && b <= 9) try { eq_gains[b] = std::stof(val); } catch (...) {}
@@ -520,6 +522,8 @@ void DigiConfig::save() const {
         if (!lastfm_pending.empty()) f << "lastfm-pending=" << secret::protect(lastfm_pending) << "\n";
         if (!listenbrainz_token.empty()) f << "lb-token=" << secret::protect(listenbrainz_token) << "\n";
         if (!listenbrainz_user.empty())  f << "lb-user="  << nl(listenbrainz_user)  << "\n";
+        if (!podcastindex_key.empty())    f << "podcastindex-key="    << nl(podcastindex_key) << "\n";
+        if (!podcastindex_secret.empty()) f << "podcastindex-secret=" << secret::protect(podcastindex_secret) << "\n";
         for (int b = 0; b < 10; ++b)
             f << "eq_" << b << "=" << eq_gains[b] << "\n";
         for (const auto& p : playlist_paths)  f << "track="    << nl(p) << "\n";

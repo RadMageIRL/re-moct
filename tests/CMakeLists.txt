@@ -159,6 +159,23 @@ target_include_directories(podcast_client_test PRIVATE
 target_link_libraries(podcast_client_test PRIVATE ${HTTP_LIBS})
 add_test(NAME podcast_client_test COMMAND podcast_client_test)
 
+# podcast-index (Podcasts slice 6) - the byterm search client's PURE pieces:
+# authToken (reused MBLookup SHA-1 -> lowercase hex) and parse (feeds[] extraction +
+# defensive floor). No live network here; links the real HTTP impl only so http() is
+# defined (search() is not called), same as podcast_client_test. Both matrix jobs.
+add_executable(podcastindex_parse_test
+    podcastindex_parse_test.cpp
+    ${CMAKE_SOURCE_DIR}/src/PodcastIndex.cpp
+    ${CMAKE_SOURCE_DIR}/src/MBLookup.cpp
+    ${HTTP_IMPL}
+)
+target_include_directories(podcastindex_parse_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/lib)
+target_compile_definitions(podcastindex_parse_test PRIVATE
+    PODCASTINDEX_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/podcastindex")
+target_link_libraries(podcastindex_parse_test PRIVATE ${HTTP_LIBS})
+add_test(NAME podcastindex_parse_test COMMAND podcastindex_parse_test)
+
 # podcast-state (Podcasts slice 3) - the episode identity resolver (PodcastFeed.h)
 # + the DigiConfig podcast_progress round-trip (resume pos + played flag). Links
 # Config.cpp (+ the secret backend it now depends on), redirects the config dir to a

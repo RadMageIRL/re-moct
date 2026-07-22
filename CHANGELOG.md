@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [1.4.0] - Unreleased
 
+### Fixed
+
+- Podcast episode rows: the new/downloaded/in-progress/played state marker and the
+  resume time now stay pinned while a long title scrolls, instead of marqueeing off
+  with the text. The state is readable at every scroll position.
+
 ### Changed
 
 - Podcasts: add a feed with `a` (was `/`).
@@ -26,6 +32,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Find and subscribe to new podcasts by search, not only by pasting a feed URL.
+  Press `/` in the `[Podcasts]` section to search the Podcast Index directory;
+  matches appear in the same list as your feeds and Enter subscribes, returning to
+  your feed list with the show added. It uses your own free Podcast Index API key:
+  the first time you press `/`, RE-MOCT offers to open the signup page or let you
+  enter a key and secret (shown on screen so a launcher that cannot open a browser
+  is not a dead end), and the secret is protected at rest like the Last.fm one.
+  Every failure degrades to a status-line message: no key, a wrong key or a drifted
+  system clock, a network drop, or zero results never blocks pasting a URL, and a
+  search never freezes the interface. Already-subscribed shows are named, not
+  duplicated.
+- The `\` search-results list now takes PgUp/PgDn/Home/End for fast movement
+  through large result sets.
 - `\` now searches the list in the focused pane, not always the playlist. In the
   file browser it searches the current view - and because every browser section
   (`[Podcasts]` feeds and episodes, `[Radio]`, `[Books]`, `[FAVs]`, `[Recent]`,

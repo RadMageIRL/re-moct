@@ -23,6 +23,10 @@ struct DigiConfig {
     std::string              lastfm_pending;   // in-flight auth token (survives restart)
     std::string              listenbrainz_token; // user token (listenbrainz.org/settings)
     std::string              listenbrainz_user;  // username (from validate-token)
+    // Podcast Index search (slice 6) - user-supplied free credentials. Key stays
+    // plaintext (not sensitive); secret goes through secret::protect like lastfm_secret.
+    std::string              podcastindex_key;    // API key (user-provided)
+    std::string              podcastindex_secret; // API secret (user-provided)
     float                    volume           = 1.0f;
     int                      repeat_mode      = 0;
     bool                     shuffle          = false;

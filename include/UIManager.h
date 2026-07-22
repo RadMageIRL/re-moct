@@ -16,6 +16,7 @@
 #include "RadioBrowser.h"
 #include "PodcastFeed.h"    // podcasts slice 2: PodcastEpisode/PodcastFeed for the [Podcasts] section
 #include "PodcastClient.h"  // podcasts slice 2: the async feed fetch result type
+#include "PodcastIndex.h"   // podcasts slice 6: Podcast Index byterm search result types
 #include <cstdint>          // podcasts slice 3: uint64_t/int32_t download-progress + cancel state
 #include <deque>            // podcasts slice 4: the download queue
 #include "LastFm.h"
@@ -45,7 +46,7 @@ enum class RightPane { Playlist, Visualizer, Help, TrackInfo, Bookmarks, Lyrics,
 enum class SearchSource { Playlist, Browser };   // which list \-search targets (from focus_)
 
 // Modal overlays drawn on top of the normal layout
-enum class UIOverlay { None, RipConfirm, MBSearch, RecPanel, ConvertScope, ConvertConfirm, PlaylistFormat, PodcastPlayConflict };
+enum class UIOverlay { None, RipConfirm, MBSearch, RecPanel, ConvertScope, ConvertConfirm, PlaylistFormat, PodcastPlayConflict, PodcastIndexCreds };
 
 class UIManager {
 public:
@@ -297,7 +298,7 @@ private:
     void computeVizBins();
 
     // Input bar state (goto dir / save M3U / load M3U)
-    enum class InputMode { Goto, SaveM3U, LoadM3U, StreamURL, StreamName, RadioSearch, LastfmKey, LastfmSecret, ListenBrainzToken, PlaylistSearch, RecDir, RecOffset, PodcastAddUrl };
+    enum class InputMode { Goto, SaveM3U, LoadM3U, StreamURL, StreamName, RadioSearch, LastfmKey, LastfmSecret, ListenBrainzToken, PlaylistSearch, RecDir, RecOffset, PodcastAddUrl, PodcastIndexSearch, PodcastIndexKey, PodcastIndexSecret };
     bool        goto_active_  = false;
     InputMode   input_mode_   = InputMode::Goto;
     std::string goto_input_;
@@ -610,6 +611,7 @@ private:
     //   in_podcasts_ &&  in_podcast_feed_  -> level 2, one feed's episode list
     bool in_podcasts_    = false;
     bool in_podcast_feed_ = false;
+    bool in_podcastindex_search_ = false;  // slice 6: showing Podcast Index results at level 1
     std::string podcast_feed_url_;       // the feed whose episodes are shown at level 2
     // Chapter table for the currently playing book (empty if none / not a book).
     std::vector<Mp4Chapter> current_chapters_;
@@ -709,6 +711,24 @@ private:
     void pollPodcastFetch();        // UI thread, per-frame: install a finished fetch
     void enterPodcastSection();     // enter [Podcasts]: build the level-1 feed list
     void showPodcastFeedList();     // (re)populate dir_entries_/dir_display_ at level 1
+
+    // Podcast Index search (slice 6) - find NEW feeds by term, mirroring the radio
+    // results sub-mode (in_podcastindex_search_ + pi_results_ rendered through the
+    // shared dir_entries_/dir_display_). Search runs on a worker thread (the podcast-
+    // fetch async idiom, NOT radio's blocking call) so a slow/dead endpoint or a
+    // disconnected network never hangs the UI. Single in-flight; installed per-frame.
+    std::vector<PodcastIndexResult> pi_results_;
+    std::thread              pi_search_thread_;
+    std::atomic<bool>        pi_search_active_{false};
+    std::atomic<bool>        pi_search_done_{false};
+    std::mutex               pi_search_mtx_;
+    std::string              pi_search_term_;              // shown in the results header (guarded)
+    PodcastIndexSearchResult pi_search_result_;            // worker output (guarded)
+    void startPodcastIndexSearch(const std::string& term); // kick the async byterm search
+    void pollPodcastIndexSearch();  // UI thread, per-frame: install finished results
+    void showPodcastIndexResults(); // populate dir_entries_/dir_display_ with pi_results_
+    void drawPodcastIndexCreds();   // the [S]ignup / [E]nter / [Esc] first-use credentials modal
+    void openUrlInBrowser(const std::string& url);  // shared launcher (ShellExecute / xdg-open)
 
     // Episode download-then-play (slice 3) + managed download queue (slice 4).
     // Episodes must be LOCAL files to seek / resume / finish / show chapters

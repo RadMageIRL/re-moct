@@ -83,6 +83,7 @@ set(REMOCT_SOURCES
     src/Mp4Chapters.cpp
     src/RadioBrowser.cpp
     src/PodcastClient.cpp         # podcasts slice 2: fetch feed URL over IHttp -> parsePodcastFeed
+    src/PodcastIndex.cpp          # podcasts slice 6: Podcast Index byterm search over IHttp
     src/LastFm.cpp
     src/Log.cpp
     src/ListenBrainz.cpp

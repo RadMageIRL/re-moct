@@ -39,6 +39,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - If you press play on an episode while a different one is still downloading,
   RE-MOCT asks whether to wait (queue it to play next) or play now (interrupt the
   download, which restarts later).
+- A playing episode shows its cover in the art pane - the episode's own image if
+  it has one, otherwise the show's poster - as truecolor half-blocks, just like
+  album art for music. The show art is cached to disk, so a downloaded episode
+  still shows its poster offline. A show with no art simply leaves the pane empty.
+- In `[Podcasts]`, the info pane follows the highlighted row - playing or not. It
+  shows the highlighted show's poster (feed list) or the highlighted episode's
+  cover and title (episode list), never whatever music track the playlist last
+  pointed at. A playing episode's own cover shows when you browse away from the
+  podcast pane, so the pane still follows now-playing elsewhere.
 
 ### Security
 

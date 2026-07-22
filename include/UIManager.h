@@ -703,6 +703,9 @@ private:
     // finishes; attempts drives retry-3-then-skip.
     struct PodcastQueueItem {
         std::string url, dest, id, title;
+        std::string art_url;                // slice 5: episode-else-feed art URL
+        bool        art_is_feed = false;    // true -> disk-cacheable show art
+        std::string art_disk;               // feed-art cache path (when art_is_feed)
         bool play_when_done = false;
         int  attempts = 0;
     };
@@ -736,11 +739,39 @@ private:
     bool         podcast_resume_pending_ = false;  // one-shot silent seek to the saved pos
 
     void startEpisodePlay(int episode_index);  // download-if-needed, then play
-    void playEpisodeFile(const std::string& local_path, const std::string& id);  // play a cached episode
+    void playEpisodeFile(const std::string& local_path, const std::string& id,
+                         const std::string& art_url, bool art_is_feed,
+                         const std::string& art_disk);   // play a cached episode (slice 5: + its art)
+
+    // Podcast episode art (slice 5): the playing episode's cover in the Info pane,
+    // mirroring the radio-art path (URL -> CoverArt::bytesByUrl -> cover::render), NOT
+    // info_art_ (which decodes a local file's embedded art). Single in-flight async
+    // worker; feed show-art is disk-cached for offline, episode-level art is on-demand.
+    std::thread                 podcast_art_thread_;
+    std::atomic<bool>           podcast_art_active_{false};
+    std::atomic<bool>           podcast_art_done_{false};
+    std::mutex                  podcast_art_mtx_;
+    std::string                 podcast_art_want_url_;    // (guarded) URL the worker fetched for
+    std::vector<std::uint8_t>   podcast_art_result_;      // (guarded) fetched bytes
+    std::string                 podcast_art_have_url_;    // URL whose bytes are in podcast_art_bytes_
+    std::vector<std::uint8_t>   podcast_art_bytes_;       // resolved bytes (UI thread)
+    cover::Rendered             podcast_art_;             // rendered grid (drawn like radio_art_)
+    std::string                 podcast_art_render_key_;  // "<url>|<box>" of podcast_art_
+    // The playing episode's resolved art (set by playEpisodeFile).
+    std::string                 podcast_playing_art_url_;
+    bool                        podcast_playing_art_is_feed_ = false;
+    std::string                 podcast_playing_art_disk_;
+    void startPodcastArtFetch(const std::string& url, bool is_feed, const std::string& disk);
+    void refreshPodcastArt(const std::string& url, bool is_feed, const std::string& disk,
+                           int box_cols, int box_rows);   // UI thread, per-frame
+    void resolveEpisodeArt(const PodcastEpisode& ep, std::string& url,
+                           bool& is_feed, std::string& disk) const;
+    std::string feedArtDiskPath(const std::string& feed_url, const std::string& art_url) const;
     void pollPodcastDownload();                // UI thread, per-frame: finish -> play + linger
     void updatePodcastProgress();              // per-tick resume latch (mirrors updateBookProgress)
     void flushPodcastProgress();               // persist resume pos on transition / quit
     std::string episodeCachePath(const std::string& feed_url, const PodcastEpisode& ep);
+    void migrateEpisodeCacheNames();           // feed entry: legacy Unicode cache names -> ASCII
 
     int  fav_cursor_     = 0;
 

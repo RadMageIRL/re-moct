@@ -800,7 +800,15 @@ private:
     std::string                 podcast_playing_art_url_;
     bool                        podcast_playing_art_is_feed_ = false;
     std::string                 podcast_playing_art_disk_;
+    // THE playing-item predicate: true iff the current audio is a podcast episode
+    // (state-derived, since episodes play as local files). One definition so every
+    // consumer decides on purpose instead of inheriting music behaviour.
+    bool isPlayingPodcast() const;
     void startPodcastArtFetch(const std::string& url, bool is_feed, const std::string& disk);
+    // Resolve the playing episode's RSS-art BYTES independent of the Info pane (picks up
+    // a finished fetch, kicks one if needed). Factored from refreshPodcastArt so the OS
+    // media card can show the art with the Info pane closed, mirroring radio_bytes_.
+    void resolvePodcastArtBytes(const std::string& url, bool is_feed, const std::string& disk);
     void refreshPodcastArt(const std::string& url, bool is_feed, const std::string& disk,
                            int box_cols, int box_rows);   // UI thread, per-frame
     void resolveEpisodeArt(const PodcastEpisode& ep, std::string& url,

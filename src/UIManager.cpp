@@ -2471,7 +2471,11 @@ void UIManager::flushBookProgress() {
 void UIManager::updateBookProgress() {
     const auto& tr = audio_.currentTrack();
     bool playing = (audio_.state() != PlaybackState::Stopped);
-    bool isBook  = playing && !tr.path.empty() && PlaylistManager::isAudiobook(tr.path);
+    // A .m4b PODCAST episode matches isAudiobook by extension, which would latch BOTH
+    // the book resume (here) and the podcast resume - a double seek. The podcast resume
+    // owns an episode, so exclude it here (ruling F).
+    bool isBook  = playing && !tr.path.empty() && PlaylistManager::isAudiobook(tr.path)
+                 && !isPlayingPodcast();
     std::string active = isBook ? tr.path : std::string();
 
     if (active != book_progress_path_) {           // transition: flush old, latch new
@@ -4631,9 +4635,8 @@ void UIManager::drawTrackInfo() {
     // IT - its own tags + art - so the info pane follows now-playing like radio/music,
     // instead of the last (unrelated) playlist track. Yields to podcast_browse above.
     const bool show_podcast = !podcast_browse
-        && !podcast_playing_path_.empty()
+        && isPlayingPodcast()
         && audio_.state() != PlaybackState::Stopped
-        && audio_.currentTrack().path == podcast_playing_path_
         && !(focus_ == Pane::Playlist && pl_cursor_ < (int)playlist_.size());
     if (show_podcast) {
         pod_entry.path          = podcast_playing_path_;
@@ -5507,7 +5510,12 @@ void UIManager::updateScrobbler() {
         while (!x.empty() && (x.back()==' '||x.back()=='\t')) x.pop_back();
     };
     trim(artist); trim(track);
-    if (artist.empty() || track.empty()) {
+    // Episodes routinely ship no artist ID3 tag (LocalFileSource leaves artist empty;
+    // title falls back to the filename). Require only a title for a podcast so the OS
+    // card / Discord still publish with the RSS art - otherwise the whole publish below
+    // is skipped and nothing shows. Music/radio keep both-required as the junk filter
+    // (empty metadata = ad break / unresolved stream).
+    if (track.empty() || (artist.empty() && !isPlayingPodcast())) {
         static bool warned = false;
         if (!warned) { sclog("skip: empty artist/track (radio=%d) np=\"%s\"",
                              (int)is_radio, audio_.streamMode() ? audio_.streamNowPlaying().c_str() : "(file)"); warned = true; }
@@ -5526,7 +5534,17 @@ void UIManager::updateScrobbler() {
     static const std::vector<uint8_t> kNoArt;
     const std::vector<uint8_t>* art_bytes = &kNoArt;
     std::string art_url;
-    if (audio_.streamMode()) {
+    if (isPlayingPodcast()) {
+        // Podcast episode (ruling A): the OS card shows the RSS art, not the file's
+        // embedded picture. Resolve the bytes here every tick - independent of the Info
+        // pane - so the card has art even with the pane closed (mirrors radio_bytes_);
+        // also hand the URL through for the MPRIS art-URL path.
+        resolvePodcastArtBytes(podcast_playing_art_url_, podcast_playing_art_is_feed_,
+                               podcast_playing_art_disk_);
+        art_url = podcast_playing_art_url_;
+        if (podcast_art_have_url_ == podcast_playing_art_url_ && !podcast_art_bytes_.empty())
+            art_bytes = &podcast_art_bytes_;
+    } else if (audio_.streamMode()) {
         if (radio_bytes_resolved_ && !radio_bytes_.empty()) art_bytes = &radio_bytes_;
     } else {
         const std::string& p = audio_.currentTrack().path;
@@ -5559,7 +5577,12 @@ void UIManager::updateScrobbler() {
             // the same proven lookup files use. radio / no album -> the logo.
             std::string image = "remoct_logo";
             const std::string key = artist + "\t" + track;
-            if (!radio_art.empty()) {
+            if (isPlayingPodcast()) {
+                // Episode (ruling B): the RSS art URL directly. Discord fetches URLs (like
+                // radio art), so no ID3-tag cover lookup (which finds the wrong album) and
+                // no CAA dice. Logo stays if the feed has no art.
+                if (!podcast_playing_art_url_.empty()) image = podcast_playing_art_url_;
+            } else if (!radio_art.empty()) {
                 image = radio_art;                            // iHeart digital cover for the live song
             } else if (!audio_.streamMode() && !album.empty()) {
                 if (key == discord_art_cache_key_ && !discord_art_cache_url_.empty())
@@ -5605,9 +5628,11 @@ void UIManager::updateScrobbler() {
                     // re-hitting iTunes/Deezer. Logo is already on screen.
                     discord_art_neg_.add(forkey, port::tickMs());
                 }
-            } else if (!audio_.streamMode() && !discord_album_.empty()) {
+            } else if (!audio_.streamMode() && !discord_album_.empty() && !isPlayingPodcast()) {
                 // The finished lookup was for a since-skipped track — retry for the
                 // one we actually landed on (unless already cached). Covers file+cd.
+                // Skipped for an episode: its art is the RSS URL, never a tag lookup, so
+                // a stale music lookup landing mid-episode must not start a new one.
                 if (!(curkey == discord_art_cache_key_ && !discord_art_cache_url_.empty()))
                     startDiscordArtLookup(discord_artist_, discord_album_, curkey);
             }
@@ -5615,11 +5640,11 @@ void UIManager::updateScrobbler() {
     }
 
     // Podcasts are not music: a playing episode never reaches the scrobbler. The OS
-    // now-playing card + Discord above are fine; the Last.fm/ListenBrainz path below
-    // is skipped for an episode (the scrobble code itself is untouched - it is simply
-    // never invoked, like other non-music sources).
-    if (!podcast_playing_path_.empty() && !audio_.streamMode() && !audio_.cdMode()
-        && audio_.currentTrack().path == podcast_playing_path_)
+    // now-playing card + Discord above publish it with the show's RSS art (handled via
+    // isPlayingPodcast above); only the Last.fm/ListenBrainz path below is skipped (the
+    // scrobble code itself is untouched - it is simply never invoked, like other
+    // non-music sources). This is the load-bearing exclusion point, via the one predicate.
+    if (isPlayingPodcast())
         return;
 
     const std::string& k  = config_.lastfm_key;
@@ -9325,10 +9350,13 @@ void UIManager::startPodcastArtFetch(const std::string& url, bool is_feed, const
 // URL's bytes aren't in hand, and (re)render into podcast_art_ when the URL or box
 // changes. Mirrors refreshRadioArt. The caller resolves which art (playing episode
 // vs highlighted preview) and passes its url/is_feed/disk triple.
-void UIManager::refreshPodcastArt(const std::string& url, bool is_feed,
-                                  const std::string& disk, int box_cols, int box_rows) {
-    if (url.empty()) { podcast_art_ = cover::Rendered{}; podcast_art_render_key_.clear(); return; }
-
+// Byte resolution only (no render): pick up a finished fetch for `url` and kick one if
+// the resolved bytes aren't for it yet. Single in-flight. Called both per-tick from the
+// publish path (so the OS card has art with the Info pane closed) and by refreshPodcastArt
+// (which then renders). Sharing one pickup point avoids a double-exchange race.
+void UIManager::resolvePodcastArtBytes(const std::string& url, bool is_feed,
+                                       const std::string& disk) {
+    if (url.empty()) return;
     if (podcast_art_done_.exchange(false)) {            // pick up a finished fetch
         std::vector<std::uint8_t> bytes; std::string forurl;
         { std::lock_guard<std::mutex> lk(podcast_art_mtx_);
@@ -9344,6 +9372,13 @@ void UIManager::refreshPodcastArt(const std::string& url, bool is_feed,
     }
     if (podcast_art_have_url_ != url && !podcast_art_active_.load())
         startPodcastArtFetch(url, is_feed, disk);
+}
+
+void UIManager::refreshPodcastArt(const std::string& url, bool is_feed,
+                                  const std::string& disk, int box_cols, int box_rows) {
+    if (url.empty()) { podcast_art_ = cover::Rendered{}; podcast_art_render_key_.clear(); return; }
+
+    resolvePodcastArtBytes(url, is_feed, disk);         // pickup + fetch trigger (shared)
 
     std::string rkey = url + "|" + std::to_string(box_cols) + "x" + std::to_string(box_rows);
     if (rkey == podcast_art_render_key_) return;
@@ -9353,6 +9388,18 @@ void UIManager::refreshPodcastArt(const std::string& url, bool is_feed,
     if (podcast_art_bytes_.empty() || box_cols < 4 || box_rows < 2) return;
     cover::Rendered r = cover::render(podcast_art_bytes_, box_cols, box_rows);
     if (r.ok) podcast_art_ = std::move(r);
+}
+
+// THE playing-item predicate. Episodes play as local files, so "what is playing" is
+// state-derived: an episode is playing iff we launched one (podcast_playing_path_ set)
+// and the audio layer is still on that exact file, and it is not a stream/CD. Every
+// consumer that must treat an episode differently from music routes through this - one
+// definition, no drift. Deliberately NOT path-based: an episode played as an ordinary
+// browser file is a file (Dos ruling D), and it never sets podcast_playing_path_.
+bool UIManager::isPlayingPodcast() const {
+    return !podcast_playing_path_.empty()
+        && !audio_.streamMode() && !audio_.cdMode()
+        && audio_.currentTrack().path == podcast_playing_path_;
 }
 
 // Play a cached episode file: standalone (NOT added to the playlist, so it never
@@ -9590,7 +9637,7 @@ void UIManager::pollPodcastDownload() {
 void UIManager::updatePodcastProgress() {
     bool playing = (audio_.state() != PlaybackState::Stopped);
     const auto& tr = audio_.currentTrack();
-    bool is_ep = playing && !podcast_playing_path_.empty() && tr.path == podcast_playing_path_;
+    bool is_ep = playing && isPlayingPodcast();   // identity via the one predicate; `playing` gates the transition/flush
 
     if (!is_ep) {
         if (!podcast_playing_id_.empty()) {     // transition: stopped or switched away

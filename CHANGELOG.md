@@ -12,6 +12,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Podcast episode rows: the new/downloaded/in-progress/played state marker and the
   resume time now stay pinned while a long title scrolls, instead of marqueeing off
   with the text. The state is readable at every scroll position.
+- A playing podcast episode now shows the show's cover art on the OS media controls
+  (Windows and Linux) and in Discord Rich Presence, instead of the audio file's
+  embedded picture or a mistaken album lookup. An `.m4b` episode no longer resumes
+  twice (the audiobook and podcast resume no longer both fire on it).
 
 ### Changed
 

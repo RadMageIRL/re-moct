@@ -2764,7 +2764,7 @@ void UIManager::drawDirBrowser() {
     else if (in_radio_)   hdr = " [Radio] (Enter:play  d/Del:remove) ";
     else if (in_podcasts_) {
         if (in_podcastindex_search_) hdr = " [Podcasts] search results (Enter:subscribe  [Back]:feeds) ";
-        else if (in_podcast_feed_)   hdr = " [Podcasts] (Enter:play  D:download  d/Del:delete dl  [Back]:feeds) ";
+        else if (in_podcast_feed_)   hdr = " [Podcasts] (Enter:play  D:download  d/Del:delete dl  y:played  [Back]:feeds) ";
         else                         hdr = " [Podcasts] (Enter:open  /:search  a:add feed  d/Del:remove) ";
     }
     else if (in_books_)   hdr = " [Books] (Enter:play  Del:remove) ";
@@ -7685,6 +7685,19 @@ void UIManager::handleInput(int ch) {
             if (focus_ == Pane::DirBrowser && in_podcasts_ && in_podcast_feed_
                 && dir_cursor_ >= 1)
                 enqueueEpisodeDownload(dir_cursor_ - 1, /*play_when_done=*/false, /*front=*/false);
+            break;
+        case 'y': case 'Y':   // mark the highlighted episode played / unplayed (toggle)
+            // Episode level only. Status change ONLY: the resume position and the
+            // downloaded file are left untouched in both directions (setPodcastEpisodePlayed
+            // writes just the played flag). The row glyph re-renders the new state.
+            if (focus_ == Pane::DirBrowser && in_podcasts_ && in_podcast_feed_
+                && dir_cursor_ >= 1 && (size_t)(dir_cursor_ - 1) < podcast_episodes_.size()) {
+                const PodcastEpisode& ep = podcast_episodes_[(size_t)(dir_cursor_ - 1)];
+                std::string epid = podcastEpisodeId(ep);
+                config_.setPodcastEpisodePlayed(epid, !config_.podcastEpisodePlayed(epid));
+                config_.save();               // persist across restart
+                redraw_needed_.store(true);
+            }
             break;
         case 'a': case 'A':
             if (focus_ == Pane::DirBrowser && in_podcasts_) {

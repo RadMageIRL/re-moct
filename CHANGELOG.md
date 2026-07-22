@@ -36,6 +36,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Mark a podcast episode played or unplayed by hand: `y` on an episode toggles its
+  state, and the row marker updates. It is a status change only - your resume
+  position and the downloaded file are left exactly as they were.
 - Find and subscribe to new podcasts by search, not only by pasting a feed URL.
   Press `/` in the `[Podcasts]` section to search the Podcast Index directory;
   matches appear in the same list as your feeds and Enter subscribes, returning to

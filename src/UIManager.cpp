@@ -1566,7 +1566,12 @@ void UIManager::run() {
             }
         }
         if (!rip_status_.empty() && !cd_ripper_.isActive()) {
-            if (++rip_msg_ticks_ > 100) {
+            // Post-completion linger only (this branch runs after !isActive; per-track
+            // statuses during an active rip are held by the else-if below and never
+            // expire here). ~5s to match podcast-download completion. This line is
+            // shared by rip / ReplayGain-scan / convert completion, so all three
+            // finished-operation messages now linger the same ~5s.
+            if (++rip_msg_ticks_ > 60) {
                 rip_status_.clear();
                 rip_msg_ticks_ = 0;
                 redraw_needed_.store(true);
@@ -1584,6 +1589,13 @@ void UIManager::run() {
             }
         } else if (podcast_dl_active_.load()) {
             podcast_dl_ticks_ = 0;
+        }
+        // Feed-fetch working state: keep the "Loading ..." status alive for the whole
+        // fetch, but ONLY while status_msg_ still holds that exact text - so an
+        // unrelated status set mid-fetch expires on its own instead of being pinned.
+        if (podcast_fetch_active_.load() && !podcast_fetch_pin_.empty()
+            && status_msg_ == podcast_fetch_pin_) {
+            status_msg_ticks_ = 0;
         }
         // Age the [THEME:name] cwd tag (~10s). Repaint only at the fade point
         // (bold -> dim) and when it is removed - the tag is static in between, so
@@ -2745,7 +2757,7 @@ void UIManager::drawDirBrowser() {
     else if (in_radio_)   hdr = " [Radio] (Enter:play  d/Del:remove) ";
     else if (in_podcasts_) {
         if (in_podcast_feed_) hdr = " [Podcasts] (Enter:play  D:download  d/Del:delete dl  [Back]:feeds) ";
-        else                  hdr = " [Podcasts] (Enter:open  /:add feed  d/Del:remove) ";
+        else                  hdr = " [Podcasts] (Enter:open  a:add feed  d/Del:remove) ";
     }
     else if (in_books_)   hdr = " [Books] (Enter:play  Del:remove) ";
     else {
@@ -3261,7 +3273,7 @@ void UIManager::drawHelp() {
         { "F  (Shift+F)",   "Toggle file-type column (FLAC/MP3/...) in the playlist" },
         { "F12",            "Refresh the [Drives] list (pick up hot-plugged drives)" },
         { "E  (Shift+E)",   "Eject highlighted CD drive (in [Drives])" },
-        { "\\",             "Search playlist (jump to a track)" },
+        { "\\",             "Search the focused list - playlist or browser (jump to a row)" },
 #ifdef PDCURSES
         { "Alt+Enter",      "Toggle fullscreen (borderless)"      },
 #endif
@@ -3423,6 +3435,13 @@ void UIManager::drawSearchResults() {
     int rows, cols;
     getmaxyx(w, rows, cols);
 
+    // Active source (set at \-time): playlist rows, or the browser's dir_display_.
+    const bool browse = (search_source_ == SearchSource::Browser);
+    const std::size_t src_n = browse ? dir_display_.size() : playlist_.size();
+    auto src_row = [&](std::size_t pi) -> const std::string& {
+        return browse ? dir_display_[pi] : playlist_.at(pi).display_title;
+    };
+
     std::string hdr = " Search: " + search_query_ + "  ["
                     + std::to_string(search_results_.size())
                     + " matches  Enter:jump  Esc:close] ";
@@ -3441,18 +3460,38 @@ void UIManager::drawSearchResults() {
         int scroll  = std::max(0, search_cursor_ - visible/2);
         scroll      = std::min(scroll, std::max(0, (int)search_results_.size() - visible));
 
+        // Validate-on-use (browser): if a visible row's live text no longer matches
+        // the snapshot taken at search time, the list was rebuilt underneath us (dir
+        // poll, async feed load, Back, anything) - the stored indices now point at
+        // other rows. Close rather than render/jump into a stale list. Immune to how
+        // or where the rebuild happened; no invalidate-on-change wiring required.
+        if (browse) {
+            for (int i = 0; i < visible; ++i) {
+                int ri = scroll + i;
+                if (ri >= (int)search_results_.size()) break;
+                std::size_t pi = search_results_[(size_t)ri];
+                if (pi >= src_n || src_row(pi) != search_labels_[(size_t)ri]) {
+                    right_pane_ = RightPane::Playlist;
+                    search_results_.clear();
+                    search_labels_.clear();
+                    redraw_needed_.store(true);
+                    return;
+                }
+            }
+        }
+
         for (int i = 0; i < visible; ++i) {
             int ri = scroll + i;
             if (ri >= (int)search_results_.size()) break;
             std::size_t pi = search_results_[(size_t)ri];
-            if (pi >= playlist_.size()) continue;   // list shrank since search
+            if (pi >= src_n) continue;   // list shrank since search
             bool cursor = (ri == search_cursor_);
             if (cursor) wattron(w, COLOR_PAIR(CP_SELECTED)|A_BOLD);
             else        wattron(w, COLOR_PAIR(CP_DIM)|A_BOLD);
 
             // Column-aware UTF-8 (the drawBookmarks shape): marquee + pad in
             // display columns, draw via the wide API.
-            std::string body = " " + scrollToWidth(playlist_.at(pi).display_title,
+            std::string body = " " + scrollToWidth(src_row(pi),
                                                    cols - 2, text_scroll_offset_);
             std::wstring wline = utf8_to_wide(padToWidth(body, cols));
             mvwaddnwstr(w, i+1, 0, wline.c_str(), (int)wline.size());
@@ -3484,6 +3523,51 @@ void UIManager::jumpToPlaylistIndex(std::size_t idx) {
     focus_ = Pane::Playlist;      // put the user's eyes where the cursor landed
     right_pane_ = RightPane::Playlist;
     redraw_needed_.store(true);
+}
+
+// Browser twin of jumpToPlaylistIndex. Unlike the playlist jump, focus STAYS on the
+// browser (the user searched the left pane and wants to land there), and the browser
+// has no draw-time scroll invariant, so we clamp dir_scroll_ ourselves. Closing the
+// results overlay (right_pane_ -> Playlist) returns the right pane to its normal view.
+void UIManager::jumpToBrowserIndex(std::size_t idx) {
+    if (idx >= dir_entries_.size()) return;
+    dir_cursor_ = (int)idx;
+    ensureDirCursorVisible();
+    focus_ = Pane::DirBrowser;
+    right_pane_ = RightPane::Playlist;
+    redraw_needed_.store(true);
+}
+
+// The browser has no draw-time cursor-visible invariant (j/k nudge per-handler), so
+// several sites clamp dir_scroll_ by hand after a cursor move; this is that clamp,
+// factored. NOT idempotent scroll math like ensurePlaylistCursorVisible - it only
+// pulls the view to cover dir_cursor_ (never re-centres), matching the prior inline.
+void UIManager::ensureDirCursorVisible() {
+    int vis = paneVisibleRows(win_dir_);
+    if (dir_cursor_ < dir_scroll_) dir_scroll_ = dir_cursor_;
+    else if (vis > 0 && dir_cursor_ >= dir_scroll_ + vis)
+        dir_scroll_ = dir_cursor_ - vis + 1;
+}
+
+// Display-only: names the browser list the user is looking at, for the \-search
+// not-found message ("... in browser: <label>"). Reads the in_* sub-mode flags, but
+// purely to LABEL - search routing/jumping stays keyed on focus_/search_source_.
+// Mirrors the sections drawDirBrowser's header names (minus the key hints).
+std::string UIManager::browserSectionLabel() const {
+    if (in_drive_list_) return "Drives";
+    if (in_recent_)     return "Recent";
+    if (in_favs_)       return "FAVs";
+    if (in_radio_)      return "Radio";
+    if (in_books_)      return "Books";
+    if (in_podcasts_) {
+        if (in_podcast_feed_) {
+            std::string t = config_.podcastFeedTitle(podcast_feed_url_);
+            if (!t.empty()) return sanitizeForDisplay(t);
+        }
+        return "Podcasts";
+    }
+    std::string leaf = fs::path(current_dir_).filename().string();
+    return leaf.empty() ? current_dir_ : leaf;
 }
 
 // ── Lyrics pane ───────────────────────────────────────────────────────────────
@@ -4625,7 +4709,7 @@ void UIManager::drawTrackInfo() {
         else
             addInt("Year", ct.year);
         addInt("Track",       ct.track_num);
-        addInt("Duration",    ct.duration_sec,  "s");
+        add("Duration",       ct.duration_sec > 0 ? formatTime(ct.duration_sec) : "");  // H:MM:SS, not raw "192s"
         addInt("Bitrate",     ct.bitrate_kbps,  " kbps");
         addInt("Sample Rate", ct.sample_rate,    " Hz");
         addInt("Channels",    ct.channels);
@@ -5163,7 +5247,10 @@ void UIManager::drawGotoBar() {
         case InputMode::LastfmKey:    prompt = " last.fm API key: "; break;
         case InputMode::LastfmSecret: prompt = " last.fm secret: ";  break;
         case InputMode::ListenBrainzToken: prompt = " listenbrainz token: "; break;
-        case InputMode::PlaylistSearch: prompt = " search playlist: "; break;
+        case InputMode::PlaylistSearch:   // serves both sources; label from search_source_
+            prompt = (search_source_ == SearchSource::Browser) ? " search list: "
+                                                               : " search playlist: ";
+            break;
         case InputMode::RecDir: prompt = " recordings dir: "; break;
         case InputMode::RecOffset: prompt = " split hold ms (0-5000): "; break;
     }
@@ -6388,12 +6475,14 @@ void UIManager::handleInput(int ch) {
         }
     }
 
-    // Playlist-search results — pick-to-jump (mirrors the Bookmarks popup)
+    // Focus-aware search results — pick-to-jump (mirrors the Bookmarks popup)
     if (right_pane_ == RightPane::SearchResults) {
         switch (ch) {
             case 17: audio_.stop(); running_ = false; return;
             case 27: case '\\':   // Esc / \ close without jumping
                 right_pane_ = RightPane::Playlist;
+                search_results_.clear();
+                search_labels_.clear();
                 redraw_needed_.store(true);
                 return;
             case 'j': case 'J': case KEY_DOWN:
@@ -6404,7 +6493,24 @@ void UIManager::handleInput(int ch) {
                 if (!search_results_.empty()) {
                     search_cursor_ = std::clamp(search_cursor_, 0,
                                        (int)search_results_.size()-1);
-                    jumpToPlaylistIndex(search_results_[(size_t)search_cursor_]);
+                    std::size_t pi = search_results_[(size_t)search_cursor_];
+                    if (search_source_ == SearchSource::Browser) {
+                        // Validate-on-use: the target's live text must still equal the
+                        // snapshot from search time, else the list changed underneath
+                        // and this index now points elsewhere - refuse the jump.
+                        if (pi < dir_display_.size()
+                            && dir_display_[pi] == search_labels_[(size_t)search_cursor_]) {
+                            jumpToBrowserIndex(pi);
+                        } else {
+                            showTrackToast("List changed - search closed", "", "");
+                            right_pane_ = RightPane::Playlist;
+                            search_results_.clear();
+                            search_labels_.clear();
+                            redraw_needed_.store(true);
+                        }
+                    } else {
+                        jumpToPlaylistIndex(pi);
+                    }
                 }
                 return;
             default: return;
@@ -6772,14 +6878,8 @@ void UIManager::handleInput(int ch) {
                         if (dir_entries_[i] == sel) { dir_cursor_ = (int)i; break; }
                 }
                 // The dir browser has no draw-time scroll invariant (j/k nudge
-                // per-handler), so re-clamp scroll to keep the restored cursor
-                // visible ourselves.
-                {
-                    int v = paneVisibleRows(win_dir_);
-                    if (dir_cursor_ < dir_scroll_) dir_scroll_ = dir_cursor_;
-                    else if (v > 0 && dir_cursor_ >= dir_scroll_ + v)
-                        dir_scroll_ = dir_cursor_ - v + 1;
-                }
+                // per-handler), so re-clamp scroll to keep the restored cursor visible.
+                ensureDirCursorVisible();
                 showTrackToast("Drives refreshed", "", "");
                 redraw_needed_.store(true);
             }
@@ -7245,11 +7345,16 @@ void UIManager::handleInput(int ch) {
             break;
         case 'g': case 'G':
             gotoOpen(); break;
-        case '\\':   // playlist search - pick-to-jump (never a filter)
+        case '\\':   // focus-aware list search - pick-to-jump (never a filter)
             // Same modal guard as the other input-bar keys; the goto machinery
-            // supplies the input line, cursor, backspace, and Esc for free.
-            if (ui_overlay_ == UIOverlay::None)
+            // supplies the input line, cursor, backspace, and Esc for free. The
+            // ONLY read of pane identity: focus_ picks the source (Playlist vs the
+            // browser's dir_display_, which covers every browser sub-mode at once).
+            if (ui_overlay_ == UIOverlay::None) {
+                search_source_ = (focus_ == Pane::DirBrowser)
+                    ? SearchSource::Browser : SearchSource::Playlist;
                 openInputBar(InputMode::PlaylistSearch, "");
+            }
             break;
         case 's':
             audio_.stop(); break;
@@ -7466,10 +7571,11 @@ void UIManager::handleInput(int ch) {
             }
             break;
         case '/':
+            // Radio: online station search. Podcasts: '/' is intentionally left FREE
+            // (add-feed moved to 'a') so slice 6's Podcast Index online search can claim
+            // it, matching radio's "/ = find something new online" idiom - NOT a \-alias.
             if (focus_ == Pane::DirBrowser && in_radio_)
                 openInputBar(InputMode::RadioSearch, "");
-            else if (focus_ == Pane::DirBrowser && in_podcasts_ && !in_podcast_feed_)
-                openInputBar(InputMode::PodcastAddUrl, "");   // paste a feed URL to subscribe
             break;
         case 'D':   // Shift+D: download the highlighted episode for offline (podcast list)
             if (focus_ == Pane::DirBrowser && in_podcasts_ && in_podcast_feed_
@@ -7477,7 +7583,15 @@ void UIManager::handleInput(int ch) {
                 enqueueEpisodeDownload(dir_cursor_ - 1, /*play_when_done=*/false, /*front=*/false);
             break;
         case 'a': case 'A':
-            if (focus_ == Pane::DirBrowser && dir_cursor_ < (int)dir_entries_.size()) {
+            if (focus_ == Pane::DirBrowser && in_podcasts_) {
+                // Podcasts: 'a' = add a feed by URL, at the FEED level only (mirrors the
+                // original '/' scoping). Episode level has no add-feed verb -> explicit
+                // no-op: must NOT fall through to the file-add below, which would build
+                // current_dir_/<episode-URL> (not a file/dir -> silent accidental no-op,
+                // the very trap that made 'a' look "unbound" here).
+                if (!in_podcast_feed_)
+                    openInputBar(InputMode::PodcastAddUrl, "");
+            } else if (focus_ == Pane::DirBrowser && dir_cursor_ < (int)dir_entries_.size()) {
                 fs::path full = fs::path(current_dir_) / dir_entries_[(size_t)dir_cursor_];
                 if (PlaylistManager::isSupportedAudio(full.string()))
                     playlist_.addTrack(full.string());
@@ -7760,26 +7874,46 @@ void UIManager::gotoClose(bool commit) {
             }
             case InputMode::PlaylistSearch: {
                 // Use goto_input_ raw, NOT the separator-stripped `target` - the
-                // stripping above is path-mode behaviour and would mangle a
-                // query ending in '/' or '\'. Match case-insensitively against
-                // display_title: exactly the text each playlist row shows.
+                // stripping above is path-mode behaviour and would mangle a query
+                // ending in '/' or '\'. Match case-insensitively against the row's
+                // display text (WYSIWYG: exactly what's on screen). search_source_
+                // (set from focus_ at \-time) picks the list; the browser source
+                // covers dirs, feeds, episodes, radio, books, favs, recent, drives
+                // in one branch (all funnel through dir_display_) - NOT the in_*
+                // sub-mode flags. search_labels_ mirrors the matched text for the
+                // pick UI's validate-on-use guard.
                 std::string q = goto_input_;
                 for (char& c : q) c = (char)std::tolower((unsigned char)c);
                 search_results_.clear();
+                search_labels_.clear();
                 search_query_ = goto_input_;
+                const bool browse = (search_source_ == SearchSource::Browser);
+                const std::size_t n = browse ? dir_display_.size() : playlist_.size();
                 if (!q.empty()) {
-                    for (std::size_t i = 0; i < playlist_.size(); ++i) {
-                        std::string disp = playlist_.at(i).display_title;
+                    for (std::size_t i = 0; i < n; ++i) {
+                        const std::string& row = browse ? dir_display_[i]
+                                                        : playlist_.at(i).display_title;
+                        std::string disp = row;
                         for (char& c : disp) c = (char)std::tolower((unsigned char)c);
-                        if (disp.find(q) != std::string::npos)
+                        if (disp.find(q) != std::string::npos) {
                             search_results_.push_back(i);
+                            search_labels_.push_back(row);   // snapshot for validate-on-use
+                        }
                     }
                 }
                 if (search_results_.empty()) {
-                    showTrackToast("No matches for: " + goto_input_, "", "");
+                    // Status line (not a toast): name the query AND the list searched,
+                    // so a not-found from the now focus-aware \ never reads as flaky and
+                    // a misroute (searched the wrong pane) is visible at a glance.
+                    status_msg_ = browse
+                        ? ("No match for \"" + goto_input_ + "\" in browser: " + browserSectionLabel())
+                        : ("No match for \"" + goto_input_ + "\" in playlist");
+                    status_msg_ticks_  = 0;
+                    status_msg_yellow_ = true;
                 } else if (search_results_.size() == 1) {
                     // Single hit: jump straight, skip the overlay.
-                    jumpToPlaylistIndex(search_results_[0]);
+                    if (browse) jumpToBrowserIndex(search_results_[0]);
+                    else        jumpToPlaylistIndex(search_results_[0]);
                 } else {
                     search_cursor_ = 0;
                     right_pane_ = RightPane::SearchResults;
@@ -7919,6 +8053,15 @@ void UIManager::handleGotoInput(int ch) {
 }
 
 void UIManager::toggleFocus() {
+    // Defensive: a search-results overlay is bound to the pane it searched, so a focus
+    // flip must close it. In practice the pick-list handler captures all input (Tab
+    // never reaches here while it's open), so this is belt-and-suspenders - but it keeps
+    // the overlay from ever outliving its pane if that capture is later loosened.
+    if (right_pane_ == RightPane::SearchResults) {
+        right_pane_ = RightPane::Playlist;
+        search_results_.clear();
+        search_labels_.clear();
+    }
     focus_ = (focus_ == Pane::DirBrowser) ? Pane::Playlist : Pane::DirBrowser;
 }
 
@@ -7953,10 +8096,7 @@ void UIManager::navigatePage(int dir) {
         dir_cursor_ = std::clamp(dir_cursor_ + dir * v, 0, n - 1);
         // No draw-time scroll invariant in the browser (j/k nudge per-handler):
         // clamp scroll to keep the paged cursor visible ourselves.
-        int vis = paneVisibleRows(win_dir_);
-        if (dir_cursor_ < dir_scroll_) dir_scroll_ = dir_cursor_;
-        else if (vis > 0 && dir_cursor_ >= dir_scroll_ + vis)
-            dir_scroll_ = dir_cursor_ - vis + 1;
+        ensureDirCursorVisible();
     } else {
         int n = (int)playlist_.size();
         if (n == 0) return;
@@ -7973,10 +8113,7 @@ void UIManager::navigateHomeEnd(bool to_end) {
         int n = (int)dir_entries_.size();
         if (n == 0) return;
         dir_cursor_ = to_end ? n - 1 : 0;
-        int vis = paneVisibleRows(win_dir_);
-        if (dir_cursor_ < dir_scroll_) dir_scroll_ = dir_cursor_;
-        else if (vis > 0 && dir_cursor_ >= dir_scroll_ + vis)
-            dir_scroll_ = dir_cursor_ - vis + 1;
+        ensureDirCursorVisible();
     } else {
         int n = (int)playlist_.size();
         if (n == 0) return;
@@ -8716,11 +8853,17 @@ void UIManager::startPodcastFetch(const std::string& url, PodcastFetchPurpose pu
       podcast_fetch_purpose_  = purpose;
       podcast_fetch_result_   = PodcastClient::Result{}; }
     if (podcast_fetch_thread_.joinable()) podcast_fetch_thread_.join();   // prior worker already done
+    // Working state in the status line (same voice as download progress), not a toast.
+    // Pinned for the whole fetch via podcast_fetch_pin_ (a 22 MB / thousands-of-items
+    // feed can outlast the 5s status linger); the tick loop holds it only while
+    // status_msg_ still equals this text.
     std::string cached = config_.podcastFeedTitle(url);
-    showTrackToast(purpose == PodcastFetchPurpose::Subscribe
+    podcast_fetch_pin_ = purpose == PodcastFetchPurpose::Subscribe
                        ? std::string("Fetching feed...")
-                       : ("Loading " + (cached.empty() ? std::string("feed") : cached) + "..."),
-                   "", "");
+                       : ("Loading " + (cached.empty() ? std::string("feed") : cached) + "...");
+    status_msg_        = podcast_fetch_pin_;
+    status_msg_ticks_  = 0;
+    status_msg_yellow_ = true;
     std::string u = url;
     podcast_fetch_thread_ = std::thread([this, u]() {
         PodcastClient::Result r = PodcastClient::fetch(u);
@@ -8743,6 +8886,10 @@ void UIManager::pollPodcastFetch() {
       purpose = podcast_fetch_purpose_; }
     if (podcast_fetch_thread_.joinable()) podcast_fetch_thread_.join();
     podcast_fetch_active_.store(false);
+    // Fetch done: retire the loading line if it's still showing (success -> the list
+    // appears; errors set their own toast below), and drop the pin guard.
+    if (status_msg_ == podcast_fetch_pin_) { status_msg_.clear(); status_msg_ticks_ = 0; }
+    podcast_fetch_pin_.clear();
 
     if (purpose == PodcastFetchPurpose::Subscribe) {
         if (!r.fetched) {

@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [1.4.0] - Unreleased
 
+### Changed
+
+- Podcasts: add a feed with `a` (was `/`).
+- Durations display as `H:MM:SS` (or `M:SS` under an hour) instead of raw seconds -
+  the Track Info pane now shows `3:12`, not `192s`, and reads sensibly for long
+  podcast episodes and multi-hour audiobooks. Display only; saved positions and
+  playlist/cue files are unchanged.
+- Searching a list with `\` and finding nothing now reports it in the status line
+  (naming the query and which list was searched, e.g. `No match for "…" in browser:
+  Music`) instead of a pop-up toast - so a focus-aware miss reads clearly and a
+  wrong-pane search is obvious.
+- Entering a podcast feed shows a "Loading …" working state in the status line, in
+  the same voice as download progress, instead of a toast; it stays up for the whole
+  fetch of a large feed.
+- Finished-operation status messages - a completed rip, ReplayGain scan, or convert -
+  now linger about 5 seconds, matching a finished podcast download.
+
+### Added
+
+- `\` now searches the list in the focused pane, not always the playlist. In the
+  file browser it searches the current view - and because every browser section
+  (`[Podcasts]` feeds and episodes, `[Radio]`, `[Books]`, `[FAVs]`, `[Recent]`,
+  `[Drives]`, and plain directories) shares one list, they all gain search at
+  once; the file browser had none before. Matching is case-insensitive over the
+  text shown on the row; a single hit jumps straight to it, several open the same
+  pick-list as playlist search, and Enter lands on the row with the browser still
+  focused. Playlist search is unchanged. If the list is rebuilt while a result
+  overlay is open, the overlay closes rather than jump to a since-moved row.
+
 ### Added (podcasts)
 
 - A new `[Podcasts]` section in the browser sidebar, alongside `[Radio]` and

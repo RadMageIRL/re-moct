@@ -42,6 +42,7 @@ struct DigiConfig;
 
 enum class Pane      { DirBrowser, Playlist };
 enum class RightPane { Playlist, Visualizer, Help, TrackInfo, Bookmarks, Lyrics, About, Devices, EQ, Queue, Chapters, SearchResults };
+enum class SearchSource { Playlist, Browser };   // which list \-search targets (from focus_)
 
 // Modal overlays drawn on top of the normal layout
 enum class UIOverlay { None, RipConfirm, MBSearch, RecPanel, ConvertScope, ConvertConfirm, PlaylistFormat, PodcastPlayConflict };
@@ -268,6 +269,9 @@ private:
     // cursor just lets the next draw reveal it. Idempotent. See lessons.md - do NOT
     // reintroduce per-handler "if cursor < scroll then nudge" math.
     void ensurePlaylistCursorVisible();
+    void ensureDirCursorVisible();   // browser twin: clamp dir_scroll_ to keep dir_cursor_ shown
+    std::string browserSectionLabel() const;   // display-only: names the current browser list
+                                               // (dir leaf / feed title / section) for messages
 
     // Screen dims
     int screen_rows_ = 0;
@@ -423,17 +427,27 @@ private:
     int         cd_poll_ticks_   = 0;
     int         cd_fail_count_   = 0;
 
-    // Playlist search (\): pick-to-jump, deliberately NOT a filter. The results
-    // overlay lists matches; picking one moves pl_cursor_ to the track's REAL
-    // playlist index and closes - the list is never narrowed or reordered, so
-    // there is no display-index/real-index duality (the proxy-vs-direct bug
-    // class the three cursor bugs came from). Matching is a case-insensitive
-    // substring over display_title - exactly the text each row shows.
-    std::vector<std::size_t> search_results_;   // real playlist indices
+    // Focus-aware search (\): pick-to-jump, deliberately NOT a filter. The results
+    // overlay lists matches; picking one moves the ACTIVE pane's cursor to the row's
+    // REAL index and closes - the list is never narrowed or reordered, so there is
+    // no display-index/real-index duality (the proxy-vs-direct bug class the three
+    // cursor bugs came from). Matching is a case-insensitive substring over the row's
+    // display text. search_source_ (set from focus_ at \-time) selects the source:
+    //   Playlist -> playlist_ / pl_cursor_ / jumpToPlaylistIndex
+    //   Browser  -> dir_display_ / dir_cursor_ / jumpToBrowserIndex (all sub-modes)
+    // search_labels_ stores each match's display string as it was at search time; the
+    // pick UI compares it to the live row on draw and on Enter (validate-on-use), so a
+    // list rebuilt underneath the overlay (dir poll, async feed load, anything) closes
+    // it rather than ever jumping to a stale row. Immune to which/how-many rebuild
+    // sites exist - no invalidate-on-change wiring needed.
+    std::vector<std::size_t> search_results_;   // indices into the active source
+    std::vector<std::string> search_labels_;    // matched display text, parallel to results
+    SearchSource search_source_ = SearchSource::Playlist;
     int         search_cursor_ = 0;             // cursor within search_results_
     std::string search_query_;                  // shown in the results header
     void drawSearchResults();
     void jumpToPlaylistIndex(std::size_t idx);
+    void jumpToBrowserIndex(std::size_t idx);   // browser twin: keeps focus on DirBrowser
 
     // Slice 3: lazily reopen the CD handle for an action (play / rip / MB) on a
     // stopped-but-loaded disc — stop() closes the handle (probe B2: holding it
@@ -686,6 +700,11 @@ private:
     std::string           podcast_fetch_want_url_;       // feed URL the worker fetches (guarded)
     PodcastFetchPurpose   podcast_fetch_purpose_ = PodcastFetchPurpose::Enter;  // (guarded)
     PodcastClient::Result podcast_fetch_result_;         // worker output (guarded)
+    // Guard token for the feed-loading status pin: holds the exact "Loading ..." text
+    // shown at fetch start. The tick loop keeps status_msg_ alive while a fetch is in
+    // flight ONLY when status_msg_ still equals this - so an unrelated status set mid-
+    // fetch expires on its own instead of inheriting the pin. Cleared on pickup.
+    std::string           podcast_fetch_pin_;
     void startPodcastFetch(const std::string& url, PodcastFetchPurpose purpose);
     void pollPodcastFetch();        // UI thread, per-frame: install a finished fetch
     void enterPodcastSection();     // enter [Podcasts]: build the level-1 feed list

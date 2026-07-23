@@ -28,6 +28,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   tape-speed track end. With playback speed set off normal, the end-of-track
   handoff started the queued track and then immediately restarted it from zero,
   doubling the first fraction of a second - audible on a quiet intro.
+- The OS media controls now show the real duration while a CD plays, instead of
+  duration 0. The in-app progress bar was always right; only the OS card read
+  from the wrong clock.
 - Reaching the end of the playlist now stops playback cleanly. With repeat off,
   the last track used to finish and then hang - the player stayed stuck showing
   the finished track at full duration with the play indicator still up, and the

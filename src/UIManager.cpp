@@ -1319,6 +1319,14 @@ void UIManager::run() {
                 double pos = audio_.streamMode() ? (double)audio_.streamPositionSec()
                                                  : audio_.positionSec();
                 double dur = audio_.streamMode() ? 0.0 : audio_.durationSec();
+                // CD override, mirroring drawProgress: durationSec() reads the
+                // file-decoder duration, which is 0 in CD mode - without this
+                // the OS card showed duration 0 for a playing CD. (Streams
+                // stay 0 above: live, no meaningful duration.)
+                if (audio_.cdMode()) {
+                    pos = (double)audio_.cdPositionSec();
+                    dur = (double)audio_.cdDurationSec();
+                }
                 media_->updatePosition(pos, dur, st);
             }
         }

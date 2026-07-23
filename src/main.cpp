@@ -182,18 +182,41 @@ int main(int argc, char* argv[]) {
             playlist.selectAt(config.playlist_current);
 
         // ── Preload-only callback (after crossfade swap) ──────────────────
-        // Advances the playlist index past the track that just faded out - the
-        // ONE job the reconcile poll (XF C3, UIManager::reconcileNextArm) cannot
-        // do, because only this callback knows a swap consumed the armed track.
-        // The arming that used to follow lives in the poll now; it re-arms on
-        // the next tick against the freshly advanced index. (next() under
-        // repeat-one is identity, so no mode check is needed.)
+        // Accounts for WHAT the swap consumed - the one job the reconcile poll
+        // (XF C3, UIManager::reconcileNextArm) cannot do, because only this
+        // callback fires exactly once per completed swap.
+        //
+        // Since C3 the armed track can be the QUEUE HEAD, and a completed
+        // crossfade consumes it WITHOUT passing through the track-end callback's
+        // queue-pop (a crossfade completion raises preload_next_flag_, never
+        // track_ended_flag_). The head must be popped HERE, or it stays queued,
+        // the poll re-arms the same entry on the next tick, and queue item 1
+        // replays forever - never advancing, never returning to the playlist.
+        //
+        // The identity test is exact: installPendingSwap() ran at the top of
+        // THIS pollEvents pass (C1), so currentTrack() is already the swapped-in
+        // track, and its .path is the verbatim string the poll armed from
+        // queueAt(0) (LocalFileSource carries the open path unchanged). If the
+        // head does NOT match, the head was removed or replaced mid-fade while
+        // the committed fade played the old entry anyway - nothing to consume,
+        // leave the queue alone.
+        //
+        // Queue empty -> the swap consumed the playlist successor: advance the
+        // index past it, as always. (next() under repeat-one is identity, so no
+        // mode check is needed.) The pop deliberately does NOT advance the
+        // playlist index - a queued track is an override lane, and afterwards
+        // playback resumes from the playlist position it interrupted, exactly
+        // as the track-end pop path behaves.
         audio.setPreloadNextCallback([&]() {
-            // Only advance playlist index if no queue override is pending
+            if (!playlist.queueEmpty() &&
+                playlist.queueAt(0).path == audio.currentTrack().path) {
+                playlist.queuePop();
+                return;
+            }
             if (playlist.queueEmpty())
                 playlist.next();
-            // If queue has items, leave playlist index where it is —
-            // on_track_end_ will consume queue and advance correctly
+            // Queue has items but the head was not what swapped in: leave the
+            // playlist index where it is — on_track_end_ / the poll handle it.
         });
 
         // ── Auto-advance callback ─────────────────────────────────────────

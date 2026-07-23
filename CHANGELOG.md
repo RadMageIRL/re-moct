@@ -24,6 +24,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and starting the app again restored the mode on screen but not in the audio
   engine, so the engine-side repeat safeguards sat inert until the repeat key
   was pressed once. The restored mode now reaches everything it should.
+- A queued track no longer stutters its first moment when it starts at a
+  tape-speed track end. With playback speed set off normal, the end-of-track
+  handoff started the queued track and then immediately restarted it from zero,
+  doubling the first fraction of a second - audible on a quiet intro.
 - Reaching the end of the playlist now stops playback cleanly. With repeat off,
   the last track used to finish and then hang - the player stayed stuck showing
   the finished track at full duration with the play indicator still up, and the

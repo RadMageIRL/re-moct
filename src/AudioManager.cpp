@@ -219,7 +219,7 @@ bool AudioManager::play(const std::string& path) {
     }
     teardown();
     teardownNext();
-    track_ended_flag_.store(false);
+    track_ended_flag_.store(false); track_end_advanced_.store(false);
 
     // Open the file as a source object (slice B). LocalFileSource::open =
     // open_decoder + zero-format guard + prime_decoder + populate_track_info,
@@ -236,7 +236,7 @@ bool AudioManager::play(const std::string& path) {
     ma_device_set_master_volume(&device_, volume_.load());
     ma_device_start(&device_);
     state_.store(PlaybackState::Playing);
-    track_ended_flag_.store(false);
+    track_ended_flag_.store(false); track_end_advanced_.store(false);
 
     // Seed duration from TagLib (already available in current_track_)
     // This avoids calling ma_decoder_get_length_in_pcm_frames from UI thread
@@ -466,7 +466,7 @@ void AudioManager::stop() {
             ma_device_uninit(&device_);
             device_initialised_ = false;
         }
-        track_ended_flag_.store(false);  // don't advance playlist on manual stop
+        track_ended_flag_.store(false); track_end_advanced_.store(false);  // don't advance playlist on manual stop
         return;
     }
     if (stream_mode_.load()) {
@@ -481,12 +481,12 @@ void AudioManager::stop() {
             ma_device_uninit(&device_);
             device_initialised_ = false;
         }
-        track_ended_flag_.store(false);
+        track_ended_flag_.store(false); track_end_advanced_.store(false);
         return;
     }
     teardown();
     teardownNext();
-    track_ended_flag_.store(false);  // don't advance playlist on manual stop
+    track_ended_flag_.store(false); track_end_advanced_.store(false);  // don't advance playlist on manual stop
     current_track_ = {};
 }
 
@@ -910,12 +910,14 @@ void AudioManager::onDataCallback(void* output, ma_uint32 frame_count) {
                         (remaining - fr) * ch * sizeof(float));
             }
             initCrossfade();
+            track_end_advanced_.store(true);   // swap done - callback accounts, must NOT restart
             track_ended_flag_.store(true);
         } else {
             // No next track preloaded — silence remainder
             if (frames_read_a < frame_count)
                 std::memset(out + frames_read_a * ch, 0,
                     (frame_count - (ma_uint32)frames_read_a) * ch * sizeof(float));
+            track_end_advanced_.store(false);  // ended into silence - callback starts the next
             track_ended_flag_.store(true);
         }
     }
@@ -1222,7 +1224,7 @@ bool AudioManager::openCD(const std::string& drive_letter) {
     // teardown handles already-stopped device safely
     teardown();
     teardownNext();
-    track_ended_flag_.store(false);
+    track_ended_flag_.store(false); track_end_advanced_.store(false);
     // Entering CD mode means no file is the current track. Clear it so a stale
     // file identity can't leak into the UI while a CD plays - nowPlayingRow()
     // would resolve the old file's playlist row and the F3 follow-sync would
@@ -1314,7 +1316,7 @@ void AudioManager::startStreamConnectLocked(const std::string& url) {
     stream_mode_.store(false);
     teardown();        // stops + uninits device_ and file decoder_
     teardownNext();
-    track_ended_flag_.store(false);
+    track_ended_flag_.store(false); track_end_advanced_.store(false);
     state_.store(PlaybackState::Stopped);
     // Starting a stream means no file is the current track. Clear it so a stale
     // file identity (e.g. a just-drained override-queue song) can't drive the

@@ -107,7 +107,14 @@ public:
     void setTrackEndCallback(TrackEndCallback cb)    { on_track_end_    = std::move(cb); }
     void setPreloadNextCallback(TrackEndCallback cb) { on_preload_next_ = std::move(cb); }
     void signalTrackEnd() { track_ended_flag_.store(true); }
-    void clearTrackEnd()  { track_ended_flag_.store(false); }
+    void clearTrackEnd()  { track_ended_flag_.store(false); track_end_advanced_.store(false); }
+    // One-shot: true when the track_end being handled was a gapless-splice
+    // ADVANCE (the audio thread already swapped the armed track in; it is
+    // playing). The track-end callback then only ACCOUNTS - pops the consumed
+    // queue head or advances the index - and never restarts the track from
+    // zero, which was an audible double-start. False = the track ended into
+    // silence and the callback must actually start whatever plays next.
+    bool takeTrackEndAdvanced() { return track_end_advanced_.exchange(false); }
     bool pollPreloadNext() { return preload_next_flag_.exchange(false); }
 
     // ── CD Audio mode ────────────────────────────────────────────────────────
@@ -230,6 +237,7 @@ private:
 
     std::atomic<PlaybackState> state_ { PlaybackState::Stopped };
     std::atomic<bool>          track_ended_flag_ { false };
+    std::atomic<bool>          track_end_advanced_ { false };  // splice-advance marker, see takeTrackEndAdvanced
     std::atomic<bool>          preload_next_flag_{ false }; // crossfade done — preload only
     std::atomic<bool>          bpm_needed_flag_  { false };
     std::atomic<bool>          seeking_ { false };

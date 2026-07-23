@@ -239,6 +239,27 @@ int main(int argc, char* argv[]) {
             // into the music queue. g_ui is set before ui.run() (this fires during it).
             if (g_ui && g_ui->onEpisodeTrackEnd()) return;
 
+            // ── Gapless-splice advance: account, never restart ────────────
+            // When crossfade is inactive at a boundary (crossfade_secs 0, or a
+            // varispeed track end - speed != 1 suppresses the fade trigger but
+            // not arming), the audio thread's splice already swapped the armed
+            // track in: it IS playing. This callback's only job then is the
+            // same accounting the crossfade-completion callback does - pop the
+            // consumed queue head, or advance the playlist index - and NOT the
+            // restart-from-zero it used to do, which doubled the first ~10-90ms
+            // of the track (audible on a quiet intro). Identity test exact as
+            // in the preload callback: installPendingSwap ran at the top of
+            // this pollEvents pass, and paths ride verbatim.
+            if (audio.takeTrackEndAdvanced()) {
+                if (!playlist.queueEmpty() &&
+                    playlist.queueAt(0).path == audio.currentTrack().path)
+                    playlist.queuePop();
+                else if (playlist.queueEmpty() &&
+                         playlist.repeatMode() != RepeatMode::One)
+                    playlist.next();
+                return;
+            }
+
             // Helper: route a path to CD or file playback
             auto play_path = [&](const std::string& p) {
 #ifdef _WIN32

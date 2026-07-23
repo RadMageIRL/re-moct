@@ -20,6 +20,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Reaching the end of the playlist now stops playback cleanly. With repeat off,
+  the last track used to finish and then hang - the player stayed stuck showing
+  the finished track at full duration with the play indicator still up, and the
+  only way out was stopping it by hand. Playback now goes to stopped at the end,
+  the same as pressing next past the last track always did.
 - Repeat-one no longer bleeds the next track. With crossfade on, a track set to
   repeat could be heard mixing with the following track for the whole crossfade
   before looping back to itself, and it recurred on every loop. Repeat-one now

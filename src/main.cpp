@@ -308,6 +308,18 @@ int main(int argc, char* argv[]) {
             if (playlist.next().has_value()) {
                 if (auto p = playlist.currentPath(); p.has_value())
                     play_path(p.value());
+            } else {
+                // End of playlist (repeat off, shuffle order exhausted or last
+                // row done): STOP. Without this the callback returned having
+                // done nothing while the engine stayed in Playing at EOF -
+                // silence out, position pinned at full duration, and
+                // track_ended re-firing every callback pass - so the UI showed
+                // the finished track "playing" at 3:34/3:34 forever. stop()
+                // from inside on_track_end_ is the podcast-finish path's
+                // proven shape (UIManager::onEpisodeTrackEnd), and it also
+                // clears track_ended_flag_, ending the re-fire loop. Matches
+                // what n at the end of the playlist has always done.
+                audio.stop();
             }
         });
 

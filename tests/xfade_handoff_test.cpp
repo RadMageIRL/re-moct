@@ -336,7 +336,17 @@ int main() {
                         i + 1, ep_start[i], ep_end[i], ep_end[i] - ep_start[i],
                         100.0 * (ep_end[i] - ep_start[i]) / (am.crossfade_secs * 1000.0));
 
-        // NOTE: still measurement-only. C2 turns these numbers into assertions.
+        // C2 (R1a/R1b): under repeat-one the armed next track must never reach the
+        // output. The current track here is digital silence, so ANY energy in the
+        // ring is the next track. Measured at 0.8977 before the fix against a
+        // written amplitude of 0.90, so this threshold has ~90x margin.
+        CHECK(max_peak < 0.01f);
+        CHECK(n_ep == 0);
+        // C2 (R1b): with the splice guarded, repeat-one falls to the silence-fill
+        // branch, which restores track_ended_flag_. That is what re-enables the
+        // queue drain in repeat-one (the starvation corollary). Before the fix the
+        // crossfade-completion path fires preload_next instead and this stays 0.
+        CHECK(g_end.load() >= 1);
         am.stop();
         am.setRepeatOne(false);
         std::remove(P2S.c_str()); std::remove(P2L.c_str());

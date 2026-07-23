@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Repeat-one no longer bleeds the next track. With crossfade on, a track set to
+  repeat could be heard mixing with the following track for the whole crossfade
+  before looping back to itself, and it recurred on every loop. Repeat-one now
+  loops cleanly and silently, whatever else is queued up behind it.
+- Queued tracks now play while repeat-one is on. Queueing a track with repeat-one
+  active could leave it stuck in the queue indefinitely, because the repeating
+  track never signalled that it had ended. The queue drains normally again.
 - Windows: the OS media controls (lock screen and the volume/media flyout) now show
   "RE-MOCT" as the app instead of "Unknown app". On launch RE-MOCT ensures a
   Start-menu shortcut to itself exists carrying its application id (the silent,

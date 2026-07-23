@@ -174,12 +174,17 @@ void AudioManager::teardownNext() {
             device_initialised_ && ma_device_is_started(&device_)) {
             ma_device_stop(&device_);
             crossfading_.store(false);
-            next_src_.reset();
+            next_src_.reset();          // free inside the quiesced window
             ma_device_start(&device_);
-        } else {
-            next_src_.reset();
         }
     }
+    // Unconditional: initCrossfade's repeat-one branch un-publishes the armed
+    // decoder from the audio thread without freeing it (it cannot free there), so
+    // next_src_ can still be owned while the flag reads false. Freeing here is the
+    // main-thread counterpart to that. No-op when the branch above already freed
+    // it, and safe when the flag is false - both audio-thread read sites (the
+    // crossfade mix and the gapless splice) are gated on that flag.
+    next_src_.reset();
     next_path_.clear();
 }
 
@@ -385,6 +390,13 @@ void AudioManager::initCrossfade() {
     if (repeat_one_.load()) {
         // Seek current decoder back to start instead (raw, unprimed — baseline)
         if (file_src_) file_src_->seekToFrame(0);
+        // Un-publish the armed decoder so a later pass cannot read it. Flag ONLY:
+        // no reset() (that would free heap on the audio thread) and no retiring
+        // into retired_src_ (which is reaped solely under track_swap_flag_, a flag
+        // this branch never sets - so it would never be reaped, and a second pass
+        // through here would free the previous one from the callback). teardownNext
+        // frees next_src_ unconditionally on the main thread instead.
+        next_decoder_initialised_.store(false, std::memory_order_release);
         return;
     }
 
@@ -808,8 +820,12 @@ void AudioManager::onDataCallback(void* output, ma_uint32 frame_count) {
     // consume from the decoder, and tape-speed near a track boundary is an edge
     // not worth the extra accounting. A crossfade already in flight finishes via
     // the normal (non-varispeed) read path below.
+    // Suppressed under repeat-one for the same reason the swap is declined below:
+    // the loop must not sound the armed track at all. Deciding this only at
+    // initCrossfade() was too late - by then the fade had already run to full gain,
+    // so the next track was audible for the whole crossfade before being declined.
     if (crossfade_secs > 0.0f && next_decoder_initialised_.load() && !crossfading_.load()
-        && speed_.load() == 1.0f) {
+        && !repeat_one_.load() && speed_.load() == 1.0f) {
         double pos = positionSec();
         double dur = durationSec();
         if (dur > 0.0 && (dur - pos) <= (double)crossfade_secs) {
@@ -878,8 +894,12 @@ void AudioManager::onDataCallback(void* output, ma_uint32 frame_count) {
             preload_next_flag_.store(true);
         }
     } else if (track_done) {
-        // Gapless: if next is preloaded, switch immediately with no gap
-        if (next_decoder_initialised_.load()) {
+        // Gapless: if next is preloaded, switch immediately with no gap.
+        // Repeat-one is excluded so the tail-fill below cannot sound the armed
+        // track either; it falls to the silence-fill else, which sets
+        // track_ended_flag_ and lets the normal repeat-one replay (and the queue
+        // drain that shares that callback) run.
+        if (next_decoder_initialised_.load() && !repeat_one_.load()) {
             // Fill remainder from next decoder
             ma_uint32 remaining = frame_count - (ma_uint32)frames_read_a;
             if (remaining > 0) {

@@ -219,7 +219,12 @@ int main(int argc, char* argv[]) {
                 if (audio.cdMode()) audio.closeCD();
 #endif
                 audio.play(p);
-                if (playlist.queueEmpty()) {
+                // Repeat-one guard, matching the startup preload and
+                // UIManager::maybePreloadNext. Without it, draining a queued track
+                // under repeat-one arms peekNext(), which in repeat-one is the
+                // PLAYLIST current track - a foreign decoder against the queued
+                // track now playing.
+                if (playlist.queueEmpty() && playlist.repeatMode() != RepeatMode::One) {
                     if (auto peek = playlist.peekNext(); peek.has_value())
                         if (!isCDTrackPath(peek.value()) && !isStreamPath(peek.value()))
                             audio.preloadNext(peek.value());

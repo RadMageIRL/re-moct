@@ -387,9 +387,16 @@ int main() {
             // same sequence either way. The queue loop is elided (queue stays
             // empty here); C2's guard shape is retained.
             am2.setPreloadNextCallback([&]{
-                if (pl.queueEmpty()) {
+                // Product shape: consume a swap-played queue head first; the
+                // advance is mode-guarded because next() NAVIGATES under
+                // repeat-one since XF item 4.
+                if (!pl.queueEmpty() &&
+                    pl.queueAt(0).path == am2.currentTrack().path) {
+                    pl.queuePop();
+                    return;
+                }
+                if (pl.queueEmpty() && pl.repeatMode() != RepeatMode::One) {
                     pl.next();
-                    if (pl.repeatMode() == RepeatMode::One) return;
                     if (auto peek = pl.peekNext(); peek.has_value())
                         am2.preloadNext(peek.value());
                 }
@@ -397,6 +404,18 @@ int main() {
             std::atomic<int> loops{0};
             am2.setTrackEndCallback([&]{
                 ++loops;
+                // Product shape: a gapless-splice advance is accounting only.
+                // (Inert in these scenarios - nothing is armed at any EOF here -
+                // but kept faithful to main.cpp.)
+                if (am2.takeTrackEndAdvanced()) {
+                    if (!pl.queueEmpty() &&
+                        pl.queueAt(0).path == am2.currentTrack().path)
+                        pl.queuePop();
+                    else if (pl.queueEmpty() &&
+                             pl.repeatMode() != RepeatMode::One)
+                        pl.next();
+                    return;
+                }
                 if (pl.repeatMode() == RepeatMode::One) {
                     if (auto p = pl.currentPath(); p.has_value()) {
                         am2.play(p.value());
@@ -411,14 +430,20 @@ int main() {
                     if (auto p = pl.currentPath(); p.has_value()) am2.play(p.value());
             });
 
+            // Product shape (XF item 1): the repeat-change callback is the ONE
+            // sync point. The desync scenario leaves it UNWIRED - that models
+            // the pre-item-1 startup this campaign abolished, kept as an
+            // engine-robustness case (playlist-side guards must hold even with
+            // the audio flag stale).
+            if (!desync)
+                pl.setRepeatChanged([&](RepeatMode m) {
+                    am2.setRepeatOne(m == RepeatMode::One);
+                    if (m == RepeatMode::One) am2.clearNext();
+                });
             if (press_at_remaining < 0.0) {
-                // Mode is One BEFORE playback - config restore. desync=true is
-                // the shipping main.cpp: playlist gets the mode, audio does not.
-                pl.setRepeat(RepeatMode::One);
-                if (!desync) am2.setRepeatOne(true);
+                pl.setRepeat(RepeatMode::One);     // config restore
             } else {
                 pl.setRepeat(RepeatMode::All);     // in-session: starts on All
-                am2.setRepeatOne(false);
             }
 
             if (!am2.play(PS)) { std::printf("P3 %s: SKIP (no device)\n", name); return; }
@@ -442,10 +467,9 @@ int main() {
                 double rem = am2.durationSec() - am2.positionSec();
                 if (!pressed && press_at_remaining >= 0.0 &&
                     am2.durationSec() > 0.0 && rem <= press_at_remaining) {
-                    // The r handler, verbatim: cycle to One, push, clear.
+                    // The r handler, current shape: a bare mode change - the
+                    // repeat-change callback pushes the flag and clears the arm.
                     pl.setRepeat(RepeatMode::One);
-                    am2.setRepeatOne(true);
-                    am2.clearNext();
                     pressed = true;
                     press_tick = GetTickCount();
                 }

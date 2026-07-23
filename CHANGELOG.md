@@ -18,6 +18,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   cuts (that fade is already sounding), and removing a queued track before it
   starts means the fade goes to whatever is actually next.
 
+### Changed
+
+- Next and previous now navigate under repeat-one, and behave the same as each
+  other. Pressing n used to replay the repeating track while p skipped backward -
+  an inconsistency, not a design. Both now move through the playlist normally
+  with repeat-one staying on, and whatever ends up playing becomes the track
+  that repeats.
+
 ### Fixed
 
 - Repeat-one now works immediately after a relaunch. Quitting with repeat-one on

@@ -193,8 +193,13 @@ std::optional<std::string> PlaylistManager::currentPath() const {
 std::optional<std::string> PlaylistManager::next() {
     if (entries_.empty()) return std::nullopt;
 
-    if (repeat_ == RepeatMode::One)
-        return entries_[current_].path;
+    // No repeat-one branch (XF item 4): next() NAVIGATES, matching previous(),
+    // which never had one - so n and p behave identically under repeat-one and
+    // whatever ends up playing becomes the track that repeats. Auto-advance
+    // never reaches here under repeat-one: the track-end callback's repeat-one
+    // branch returns first (now ABOVE its CD block - the one auto path that
+    // used to lean on the old early return), and the preload callback checks
+    // the mode before advancing.
 
     if (shuffle_) {
         std::size_t next_pos = shuffle_pos_ + 1;

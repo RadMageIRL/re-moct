@@ -215,18 +215,21 @@ int main(int argc, char* argv[]) {
         // leave the queue alone.
         //
         // Queue empty -> the swap consumed the playlist successor: advance the
-        // index past it, as always. (next() under repeat-one is identity, so no
-        // mode check is needed.) The pop deliberately does NOT advance the
-        // playlist index - a queued track is an override lane, and afterwards
-        // playback resumes from the playlist position it interrupted, exactly
-        // as the track-end pop path behaves.
+        // index past it, as always. The repeat-one check is real since XF item
+        // 4: next() NAVIGATES under repeat-one now (the old identity early
+        // return is gone), and a swap cannot happen under repeat-one anyway
+        // (R1a/b) - the guard keeps that invariant local. The pop deliberately
+        // does NOT advance the playlist index - a queued track is an override
+        // lane, and afterwards playback resumes from the playlist position it
+        // interrupted, exactly as the track-end pop path behaves.
         audio.setPreloadNextCallback([&]() {
             if (!playlist.queueEmpty() &&
                 playlist.queueAt(0).path == audio.currentTrack().path) {
                 playlist.queuePop();
                 return;
             }
-            if (playlist.queueEmpty())
+            if (playlist.queueEmpty() &&
+                playlist.repeatMode() != RepeatMode::One)
                 playlist.next();
             // Queue has items but the head was not what swapped in: leave the
             // playlist index where it is — on_track_end_ / the poll handle it.
@@ -317,6 +320,18 @@ int main(int argc, char* argv[]) {
                 return;
             }
 
+            // ── Repeat-one: replay the current row ────────────────────────
+            // ABOVE the CD block on purpose (XF item 4): with next()'s old
+            // repeat-one early return removed so n/p can navigate, the CD
+            // block's next() would ADVANCE the disc under repeat-one. Handling
+            // repeat-one first keeps CD repeat-one looping - play_path routes
+            // CD rows through parseCDPath/playCDTrack itself.
+            if (playlist.repeatMode() == RepeatMode::One) {
+                if (auto p = playlist.currentPath(); p.has_value())
+                    play_path(p.value());
+                return;
+            }
+
             // ── Normal playlist advance ───────────────────────────────────
 #ifdef _WIN32
             if (audio.cdMode()) {
@@ -334,11 +349,6 @@ int main(int argc, char* argv[]) {
                 } else { return; }
             }
 #endif
-            if (playlist.repeatMode() == RepeatMode::One) {
-                if (auto p = playlist.currentPath(); p.has_value())
-                    play_path(p.value());
-                return;
-            }
             if (playlist.next().has_value()) {
                 if (auto p = playlist.currentPath(); p.has_value())
                     play_path(p.value());

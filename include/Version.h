@@ -9,7 +9,7 @@
 //
 // This is the copyright/product version only. The plugin C-ABI version
 // (REMOCT_ABI_VERSION in include/core/remoct_plugin.h) is deliberately separate.
-#define REMOCT_VERSION "1.3.2"
+#define REMOCT_VERSION "1.4.0"
 
 // Wide (UTF-16) form for the Win32 seam, which speaks wchar_t literals. Two-level
 // indirection so the macro argument is expanded before the L## paste.

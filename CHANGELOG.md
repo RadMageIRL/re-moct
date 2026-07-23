@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [1.4.0] - Unreleased
 
+### Added
+
+- Queued tracks now crossfade. Jumping to a queued track - and from one queued
+  track to the next - used to hard-cut even with crossfade on; only the return
+  to the playlist after the queue drained ever faded. Now every queue transition
+  fades like a normal track change, using the same crossfade length. The queue
+  still behaves as before otherwise: queued tracks play first, then playback
+  returns to the playlist. Queueing a track during an already-running fade still
+  cuts (that fade is already sounding), and removing a queued track before it
+  starts means the fade goes to whatever is actually next.
+
 ### Fixed
 
 - Repeat-one no longer bleeds the next track. With crossfade on, a track set to

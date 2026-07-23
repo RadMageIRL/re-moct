@@ -22,6 +22,8 @@
 // ~15s wall clock.
 #ifdef _WIN32
 #include "AudioManager.h"
+#include "PlaylistManager.h"
+#include "NextArm.h"
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -350,6 +352,236 @@ int main() {
         am.stop();
         am.setRepeatOne(false);
         std::remove(P2S.c_str()); std::remove(P2L.c_str());
+    }
+
+    // ── P3: PRODUCT-PATH repeat-one (the route the P2 block does not model) ───
+    // P2 drives setRepeatOne() directly with counter callbacks. The product's
+    // repeat mode can instead arrive via config restore (which sets ONLY the
+    // playlist's mode - main.cpp never pushes it to AudioManager), and the
+    // product's callbacks arm/advance through PlaylistManager. This block wires
+    // the REAL PlaylistManager and main.cpp-shaped callbacks and measures three
+    // scenarios Dos's hardware gate exercises. Measurement first, like XF-P.
+    {
+        const std::string PS = "xfp3_silent.wav", PL = "xfp3_loud.wav";
+        CHECK(writeWav(PS, 2.0, 440.0, 0.0));     // silent current track
+        CHECK(writeWav(PL, 3.0, 880.0, 0.9));     // full-scale playlist neighbour
+
+        // Fresh manager per scenario - mirrors a fresh app launch.
+        auto run_scenario = [&](const char* name, bool desync, double press_at_remaining) {
+            // press_at_remaining: seconds before the boundary to execute the
+            // r-handler sequence; <0 = never (mode is One from the start).
+            AudioManager am2;
+            am2.setVolume(0.0f);
+            am2.toggleMute();
+            am2.crossfade_secs = 1.0f;
+
+            PlaylistManager pl;
+            pl.addTrack(PS);                       // index 0 - "A", the loop track
+            pl.addTrack(PL);                       // index 1 - "B", the neighbour
+            pl.selectAt(0);
+
+            // Product-shaped callbacks. NOTE (C3): main.cpp's preload callback no
+            // longer arms inline - the reconcile poll does - but the arm decisions
+            // modelled here (successor under All, nothing under One) are exactly
+            // what the poll produces in these scenarios, so the engine sees the
+            // same sequence either way. The queue loop is elided (queue stays
+            // empty here); C2's guard shape is retained.
+            am2.setPreloadNextCallback([&]{
+                if (pl.queueEmpty()) {
+                    pl.next();
+                    if (pl.repeatMode() == RepeatMode::One) return;
+                    if (auto peek = pl.peekNext(); peek.has_value())
+                        am2.preloadNext(peek.value());
+                }
+            });
+            std::atomic<int> loops{0};
+            am2.setTrackEndCallback([&]{
+                ++loops;
+                if (pl.repeatMode() == RepeatMode::One) {
+                    if (auto p = pl.currentPath(); p.has_value()) {
+                        am2.play(p.value());
+                        if (pl.queueEmpty() && pl.repeatMode() != RepeatMode::One) {
+                            if (auto peek = pl.peekNext(); peek.has_value())
+                                am2.preloadNext(peek.value());
+                        }
+                    }
+                    return;
+                }
+                if (pl.next().has_value())
+                    if (auto p = pl.currentPath(); p.has_value()) am2.play(p.value());
+            });
+
+            if (press_at_remaining < 0.0) {
+                // Mode is One BEFORE playback - config restore. desync=true is
+                // the shipping main.cpp: playlist gets the mode, audio does not.
+                pl.setRepeat(RepeatMode::One);
+                if (!desync) am2.setRepeatOne(true);
+            } else {
+                pl.setRepeat(RepeatMode::All);     // in-session: starts on All
+                am2.setRepeatOne(false);
+            }
+
+            if (!am2.play(PS)) { std::printf("P3 %s: SKIP (no device)\n", name); return; }
+            // UIManager::maybePreloadNext, verbatim guard shape:
+            if (pl.repeatMode() != RepeatMode::One && pl.queueEmpty())
+                if (auto peek = pl.peekNext(); peek.has_value())
+                    am2.preloadNext(peek.value());
+
+            bool pressed = false;
+            DWORD press_tick = 0;
+            // max_total: whole run. after_press: from the press instant - includes
+            // ~46ms of PRE-press ring history, so it approximates the fade gain at
+            // the press. after_settle: from press+150ms, ring fully refreshed -
+            // ONLY genuinely post-press emission. after_settle > 0 would mean the
+            // abort failed and the fade kept sounding: a real product defect.
+            float max_after_press = 0.0f, max_after_settle = 0.0f, max_total = 0.0f;
+            int   swaps_to_loud = 0;
+            DWORD t0 = GetTickCount();
+            while ((long)(GetTickCount() - t0) < 7000 && loops.load() < 3) {
+                am2.pollEvents();
+                double rem = am2.durationSec() - am2.positionSec();
+                if (!pressed && press_at_remaining >= 0.0 &&
+                    am2.durationSec() > 0.0 && rem <= press_at_remaining) {
+                    // The r handler, verbatim: cycle to One, push, clear.
+                    pl.setRepeat(RepeatMode::One);
+                    am2.setRepeatOne(true);
+                    am2.clearNext();
+                    pressed = true;
+                    press_tick = GetTickCount();
+                }
+                float pk = vizPeak(am2);
+                if (pk > max_total) max_total = pk;
+                if (pressed && pk > max_after_press) max_after_press = pk;
+                if (pressed && (long)(GetTickCount() - press_tick) > 150 &&
+                    pk > max_after_settle) max_after_settle = pk;
+                if (am2.currentTrack().path == PL) ++swaps_to_loud;
+                Sleep(2);
+            }
+            std::printf("P3 %-22s loops=%d  max_viz=%.4f  after_press=%.4f  "
+                        "after_settle=%.4f  loud_was_current=%s  final=%s\n",
+                        name, loops.load(), max_total, max_after_press, max_after_settle,
+                        swaps_to_loud ? "YES" : "no",
+                        am2.currentTrack().path == PS ? "A" :
+                        am2.currentTrack().path == PL ? "B" : "?");
+
+            // Assertions on the settled facts (all hold on the current tree):
+            // the loop must converge on A and never adopt the neighbour...
+            CHECK(loops.load() >= 3);
+            CHECK(am2.currentTrack().path == PS);
+            // ...steady-state repeat-one - INCLUDING the shipping config-restore
+            // desync - must be bleed-free (this is the case the P2 block missed)...
+            if (press_at_remaining < 0.0) CHECK(max_total < 0.01f);
+            // ...and after an in-session r press the abort must actually silence
+            // the fade: zero post-settle emission. Pre-press fade audio is the
+            // legitimate All-mode fade and is NOT asserted against.
+            if (press_at_remaining >= 0.0) CHECK(max_after_settle < 0.01f);
+            am2.stop();
+        };
+
+        run_scenario("restore-desync",  true,  -1.0);   // shipping startup path
+        run_scenario("restore-synced",  false, -1.0);   // with the startup push
+        run_scenario("press@0.5s",      false,  0.5);   // gate item 3, mid-fade
+        run_scenario("press@0.1s",      false,  0.1);   // gate item 3, race window
+
+        std::remove(PS.c_str()); std::remove(PL.c_str());
+    }
+
+    // ── P4 (C3): reconcile convergence - the armed decoder follows the resolver
+    // within ONE reconcile call after every queue/playlist mutation ────────────
+    // Drives NextArm.h's reconcile core against the REAL AudioManager and REAL
+    // PlaylistManager - the same call UIManager makes each tick. This is the
+    // harness finally able to represent the playing track and the playlist row
+    // diverging (queue pop) and re-converging.
+    {
+        const std::string P4A = "xfp4_a.wav", P4B = "xfp4_b.wav", P4C = "xfp4_c.wav";
+        CHECK(writeWav(P4A, 30.0, 440.0));   // long: no boundary during the test
+        CHECK(writeWav(P4B, 5.0, 880.0));
+        CHECK(writeWav(P4C, 5.0, 660.0));
+
+        AudioManager am4;
+        am4.setVolume(0.0f);
+        am4.toggleMute();
+        am4.crossfade_secs = 2.0f;
+
+        PlaylistManager pl;
+        pl.addTrack(P4A); pl.addTrack(P4B); pl.addTrack(P4C);
+        pl.selectAt(0);
+
+        std::string armed, failed;
+        auto tick = [&]{ am4.pollEvents(); reconcileNextArm(am4, pl, armed, failed); };
+
+        if (!am4.play(P4A)) { std::printf("P4: SKIP (no device)\n"); }
+        else {
+            // 1. steady state: successor armed in one call
+            tick();
+            CHECK(am4.hasNextArmed()); CHECK(armed == P4B);
+
+            // 2. queueAdd overrides peekNext in one call
+            PlaylistEntry qc; qc.path = P4C;
+            pl.queueAdd(qc);
+            tick();
+            CHECK(am4.hasNextArmed()); CHECK(armed == P4C);
+
+            // 3. stacking a second queue entry does NOT re-arm (FIFO head rule)
+            PlaylistEntry qb; qb.path = P4B;
+            pl.queueAdd(qb);
+            const std::string before = armed;
+            tick();
+            CHECK(armed == before && armed == P4C);
+
+            // 4. queueClear falls back to the playlist successor
+            pl.queueClear();
+            tick();
+            CHECK(am4.hasNextArmed()); CHECK(armed == P4B);
+
+            // 5. repeat-one clears the arm entirely
+            pl.setRepeat(RepeatMode::One);
+            tick();
+            CHECK(!am4.hasNextArmed()); CHECK(armed.empty());
+
+            // 6. leaving repeat-one re-arms
+            pl.setRepeat(RepeatMode::Off);
+            tick();
+            CHECK(am4.hasNextArmed()); CHECK(armed == P4B);
+
+            // 7. a stream queue head arms NOTHING (hard cut preserved)
+            PlaylistEntry qs; qs.path = "https://example.com/live.m3u8";
+            pl.queueAdd(qs);
+            tick();
+            CHECK(!am4.hasNextArmed());
+            pl.queueClear();
+            tick();
+            CHECK(am4.hasNextArmed()); CHECK(armed == P4B);
+
+            // 8. failure latch: an unopenable queue head does not arm, does not
+            // wedge, and recovery is immediate once the queue clears
+            PlaylistEntry qbad; qbad.path = "C:\\xr\\does-not-exist.wav";
+            pl.queueAdd(qbad);
+            tick();
+            CHECK(!am4.hasNextArmed()); CHECK(failed == qbad.path);
+            tick();                              // latched: no re-attempt storm
+            CHECK(!am4.hasNextArmed());
+            pl.queueClear();
+            tick();
+            CHECK(am4.hasNextArmed()); CHECK(armed == P4B); CHECK(failed.empty());
+
+            // 9. shuffle toggle re-resolves (arm follows the shuffle successor)
+            pl.setShuffle(true);
+            tick();
+            const std::string want = resolveNextPath(pl);
+            if (!want.empty()) CHECK(armed == want);
+            pl.setShuffle(false);
+
+            // 10. removeAt of the armed successor re-resolves in one call
+            pl.selectAt(0);
+            tick();
+            pl.removeAt(1);                      // drop P4B, successor becomes P4C
+            tick();
+            CHECK(armed == P4C);
+
+            am4.stop();
+        }
+        std::remove(P4A.c_str()); std::remove(P4B.c_str()); std::remove(P4C.c_str());
     }
 
     std::remove(A.c_str());

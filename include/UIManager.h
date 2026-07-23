@@ -156,7 +156,13 @@ private:
     void drawQueue();
     void drawFavs();
     bool saveTagEdits();   // true only if the file was actually written; UI updates gated on it
-    void maybePreloadNext();
+    // Queue-aware preload (XF C3): per-tick convergence of the armed next
+    // decoder onto resolveNextPath (NextArm.h). Replaces the old per-call-site
+    // maybePreloadNext arming. Runs right after audio_.pollEvents() in run() -
+    // pollEvents fires the callbacks that advance the playlist index, so the
+    // resolver must see the post-advance state. Guards keep arming scoped to
+    // active LOCAL FILE playback (never CD/stream/podcast/stopped).
+    void reconcileNextArm();
     void drawRipConfirm();
     void drawMBSearch();
     void drawRecPanel();   // stream-record R2: the [Rec] panel (^E)
@@ -244,6 +250,11 @@ private:
     int pl_scroll_ = 0;
     int pl_cursor_ = 0;
     int last_playlist_current_for_sync_ = 0;  // for move-up/down cursor fix
+    // Queue-aware preload (XF C3), UI-thread-only mirrors for NextArm.h's
+    // reconcile: the last path handed to preloadNext, and the failure latch.
+    // Never read back from AudioManager - next_path_ is audio-thread-mutated.
+    std::string armed_next_;
+    std::string failed_next_;
     // Last nowPlayingRow() seen by the run-loop follow-sync (-1 = none). The
     // F3 cursor snap triggers on a CHANGE in this, not in playlist_.current():
     // starting a stream never moves current(), so song->radio / CD->radio were

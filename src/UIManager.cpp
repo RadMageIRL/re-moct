@@ -17,6 +17,7 @@
 #include <unistd.h>
 #endif
 #include "StringUtils.h"
+#include "NextArm.h"   // XF C3: queue-aware preload (resolver + reconcile core)
 #include "EncoderQuality.h"
 #include "AudioManager.h"
 #include "PlaylistManager.h"
@@ -949,12 +950,16 @@ int UIManager::paneVisibleRows(WINDOW* w) const {
 // ─────────────────────────────────────────────────────────────────────────────
 // Main loop
 // ─────────────────────────────────────────────────────────────────────────────
-void UIManager::maybePreloadNext() {
-    if (playlist_.repeatMode() == RepeatMode::One) return;
-    if (!playlist_.queueEmpty()) return;  // queue handles next
-    if (auto peek = playlist_.peekNext(); peek.has_value())
-        if (!isCDTrackPath(peek.value()) && !isStreamPath(peek.value()))
-            audio_.preloadNext(peek.value());
+void UIManager::reconcileNextArm() {
+    // Arm only while a LOCAL FILE is actively sounding. CD and stream modes never
+    // preload (their transitions are hard cuts by design), stopped has nothing to
+    // follow, and a podcast episode is STANDALONE - arming a music row under it
+    // would let the gapless splice auto-advance an episode into the music
+    // playlist, which podcasts never do (see isPlayingPodcast, cb14936).
+    if (audio_.state() == PlaybackState::Stopped) return;
+    if (audio_.streamMode() || audio_.cdMode()) return;
+    if (isPlayingPodcast()) return;
+    ::reconcileNextArm(audio_, playlist_, armed_next_, failed_next_);
 }
 
 void UIManager::flushPendingSeek() {
@@ -1061,7 +1066,6 @@ void UIManager::manualNext() {
         }
         if (audio_.cdMode()) audio_.closeCD();
         audio_.play(path);
-        maybePreloadNext();
     };
     if (!playlist_.queueEmpty()) {
         if (auto qe = playlist_.queuePop(); qe.has_value()) {
@@ -1270,6 +1274,11 @@ void UIManager::run() {
 
     while (running_) {
         audio_.pollEvents();
+        // XF C3: converge the armed next decoder on the resolver every tick,
+        // AFTER pollEvents - its callbacks advance the playlist index, and the
+        // resolver must see the post-advance state. This one poll replaces the
+        // fifteen per-call-site arming sites that predated it.
+        reconcileNextArm();
         // OS media control (osmedia-seam): service the transport (Linux MPRIS bus;
         // Windows no-op) then drain queued transport commands on THIS (UI) thread,
         // beside the seek flush. Commands from an OS callback are applied here, not
@@ -6539,7 +6548,6 @@ void UIManager::handleInput(int ch) {
                             return;
                         }
                         config_.addRecentTrack(chapters_for_path_);
-                        maybePreloadNext();
                     }
                     audio_.seekTo(current_chapters_[(size_t)chapter_cursor_].start_sec);
                     redraw_needed_.store(true);
@@ -6762,13 +6770,11 @@ void UIManager::handleInput(int ch) {
             case 'n': case 'N':
                 if (auto p = playlist_.next(); p.has_value()) {
                     audio_.play(p.value());
-                    maybePreloadNext();
                 } else audio_.stop();
                 return;
             case 'p': case 'P':
                 if (auto p = playlist_.previous(); p.has_value()) {
                     audio_.play(p.value());
-                    maybePreloadNext();
                 }
                 return;
             default: return;
@@ -6786,13 +6792,11 @@ void UIManager::handleInput(int ch) {
             case 'n': case 'N':
                 if (auto p = playlist_.next(); p.has_value()) {
                     audio_.play(p.value());
-                    maybePreloadNext();
                 } else audio_.stop();
                 break;
             case 'p': case 'P':
                 if (auto p = playlist_.previous(); p.has_value()) {
                     audio_.play(p.value());
-                    maybePreloadNext();
                 }
                 break;
             case '[': requestSeek(-5.0); break;
@@ -7802,7 +7806,6 @@ void UIManager::gotoClose(bool commit) {
                             playlist_.selectAt(before);
                             if (auto path = playlist_.currentPath(); path.has_value()) {
                                 audio_.play(path.value());
-                                maybePreloadNext();
                             }
                         }
                     } else {
@@ -7860,7 +7863,6 @@ void UIManager::gotoClose(bool commit) {
                         playlist_.selectAt(before);
                         if (auto path = playlist_.currentPath(); path.has_value()) {
                             audio_.play(path.value());
-                            maybePreloadNext();
                         }
                     }
                 } else {
@@ -8348,7 +8350,6 @@ void UIManager::activateSelection() {
                 playlist_.selectAt(idx);
                 if (auto p = playlist_.currentPath(); p.has_value()) {
                     audio_.play(p.value());
-                    maybePreloadNext();
                 }
             }
             return;
@@ -8449,7 +8450,6 @@ void UIManager::activateSelection() {
                 if (auto p = playlist_.currentPath(); p.has_value()) {
                     audio_.play(p.value());
                     config_.addRecentTrack(p.value());
-                    maybePreloadNext();
                 }
                 // Also navigate browser to that file's parent dir
                 fs::path parent = fs::path(name).parent_path();
@@ -8475,7 +8475,6 @@ void UIManager::activateSelection() {
                     audio_.play(p.value());
                     config_.addAudiobook(p.value());   // keep/refresh in [Books]
                     config_.addRecentTrack(p.value());
-                    maybePreloadNext();
                 }
             }
             return;
@@ -8559,7 +8558,6 @@ void UIManager::activateSelection() {
             if (auto p = playlist_.currentPath(); p.has_value()) {
                 audio_.play(p.value());
                 config_.addRecentTrack(p.value());
-                maybePreloadNext();
             }
         } else {
             // M3U file — load it
@@ -8586,7 +8584,6 @@ void UIManager::activateSelection() {
                 // Regular file — exits CD mode automatically inside play()
                 audio_.play(path);
                 config_.addRecentTrack(path);
-                maybePreloadNext();
             }
         }
     }

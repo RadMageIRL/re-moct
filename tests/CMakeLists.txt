@@ -190,6 +190,23 @@ target_include_directories(podcast_state_test PRIVATE
 target_link_libraries(podcast_state_test PRIVATE ${SECRET_LIBS})
 add_test(NAME podcast_state_test COMMAND podcast_state_test)
 
+# Queue-aware preload (XF C3) - resolveNextPath (NextArm.h) precedence table
+# against the REAL PlaylistManager: repeat-one beats all, queue head beats
+# peekNext, FIFO head-only, CD/stream rejected, shuffle + repeat-all wrap.
+# Device-free (only the resolver is instantiated; reconcileNextArm never called
+# here so no AudioManager linkage) - both matrix jobs. The reconcile/arming half
+# is xfade_handoff_test's P4 block (needs a device). NextArm.h pulls in
+# AudioManager.h for the reconcile decl, hence the lib/ + taglib include dirs.
+add_executable(next_resolver_test
+    next_resolver_test.cpp
+    ${CMAKE_SOURCE_DIR}/src/PlaylistManager.cpp
+)
+target_include_directories(next_resolver_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/lib
+    ${TAGLIB_INCLUDE_DIRS} ${FDKAAC_INCLUDE} ${OPUS_INCLUDE} ${WAVPACK_INCLUDE})
+target_link_libraries(next_resolver_test PRIVATE ${TAGLIB_LIBRARIES})
+add_test(NAME next_resolver_test COMMAND next_resolver_test)
+
 # Viz FFT (Slice C) - include/VizFFT.h proven in ISOLATION before it touched
 # computeVizBins(): DC / bin-centred sines / 100 Hz-20 kHz sweep alias check
 # (the old stride-4 DFT folds above ~sr/8) / Parseval / frame-cost gate vs the
@@ -400,6 +417,9 @@ if(WIN32)
     add_executable(xfade_handoff_test
         xfade_handoff_test.cpp
         ${CMAKE_SOURCE_DIR}/src/AudioManager.cpp
+        # P3 product-path block: the real PlaylistManager drives the repeat/queue
+        # decisions exactly as main.cpp's callbacks do (TagLib already linked).
+        ${CMAKE_SOURCE_DIR}/src/PlaylistManager.cpp
         # stream-record R1: AudioManager owns the capture engine (the tap's
         # teardown ordering lives inside AudioManager), so this target carries
         # the recorder + its two encoders. Inert here — nothing arms it.

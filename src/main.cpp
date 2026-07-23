@@ -182,15 +182,16 @@ int main(int argc, char* argv[]) {
             playlist.selectAt(config.playlist_current);
 
         // ── Preload-only callback (after crossfade swap) ──────────────────
+        // Advances the playlist index past the track that just faded out - the
+        // ONE job the reconcile poll (XF C3, UIManager::reconcileNextArm) cannot
+        // do, because only this callback knows a swap consumed the armed track.
+        // The arming that used to follow lives in the poll now; it re-arms on
+        // the next tick against the freshly advanced index. (next() under
+        // repeat-one is identity, so no mode check is needed.)
         audio.setPreloadNextCallback([&]() {
             // Only advance playlist index if no queue override is pending
-            if (playlist.queueEmpty()) {
+            if (playlist.queueEmpty())
                 playlist.next();
-                if (playlist.repeatMode() == RepeatMode::One) return;
-                if (auto peek = playlist.peekNext(); peek.has_value())
-                    if (!isCDTrackPath(peek.value()) && !isStreamPath(peek.value()))
-                        audio.preloadNext(peek.value());
-            }
             // If queue has items, leave playlist index where it is —
             // on_track_end_ will consume queue and advance correctly
         });
@@ -219,16 +220,10 @@ int main(int argc, char* argv[]) {
                 if (audio.cdMode()) audio.closeCD();
 #endif
                 audio.play(p);
-                // Repeat-one guard, matching the startup preload and
-                // UIManager::maybePreloadNext. Without it, draining a queued track
-                // under repeat-one arms peekNext(), which in repeat-one is the
-                // PLAYLIST current track - a foreign decoder against the queued
-                // track now playing.
-                if (playlist.queueEmpty() && playlist.repeatMode() != RepeatMode::One) {
-                    if (auto peek = playlist.peekNext(); peek.has_value())
-                        if (!isCDTrackPath(peek.value()) && !isStreamPath(peek.value()))
-                            audio.preloadNext(peek.value());
-                }
+                // No arming here (XF C3): the reconcile poll re-arms on the next
+                // UI tick against the resolver - queue head first, then peekNext,
+                // never under repeat-one. This retires the C2 repeat-one guard
+                // that lived here along with the arm itself.
             };
 
             // ── Queue priority ────────────────────────────────────────────
@@ -301,12 +296,6 @@ int main(int argc, char* argv[]) {
             else
                 playlist.addDirectory(arg);
         }
-
-        // ── Preload next track ────────────────────────────────────────────
-        if (playlist.repeatMode() != RepeatMode::One)
-            if (auto peek = playlist.peekNext(); peek.has_value())
-                if (!isCDTrackPath(peek.value()) && !isStreamPath(peek.value()))
-                    audio.preloadNext(peek.value());
 
         // ── Start UI ──────────────────────────────────────────────────────
         UIManager ui(playlist, audio, config,

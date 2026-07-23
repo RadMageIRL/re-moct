@@ -59,6 +59,12 @@ public:
     // of snapping to the incoming track's 0% mid-overlap. Read-only; no side effects.
     bool isCrossfading() const { return crossfading_.load(std::memory_order_acquire); }
 
+    // True while a next track is armed (preloadNext published, not yet consumed
+    // by a swap). The UI-thread arm poll (NextArm.h) keys off this; it is the
+    // ONLY armed-state read the UI gets - next_path_ is audio-thread-mutated, so
+    // no string accessor exists on purpose.
+    bool hasNextArmed() const { return next_decoder_initialised_.load(std::memory_order_acquire); }
+
     // Volume
     void  setVolume(float v);
     void  adjustVolume(float delta);

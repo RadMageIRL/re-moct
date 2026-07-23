@@ -340,6 +340,7 @@ target_link_libraries(remoct PRIVATE
     $<$<PLATFORM_ID:Windows>:winmm>
     $<$<PLATFORM_ID:Windows>:ws2_32>
     $<$<PLATFORM_ID:Windows>:ole32>
+    $<$<PLATFORM_ID:Windows>:uuid>     # first-run AUMID shortcut: CLSID_ShellLink / IID_IShellLinkW / IID_IPropertyStore GUIDs
     $<$<PLATFORM_ID:Windows>:wininet>
     $<$<PLATFORM_ID:Windows>:shell32>
     $<$<PLATFORM_ID:Windows>:advapi32>

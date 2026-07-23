@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Windows: the OS media controls (lock screen and the volume/media flyout) now show
+  "RE-MOCT" as the app instead of "Unknown app". On launch RE-MOCT ensures a
+  Start-menu shortcut to itself exists carrying its application id (the silent,
+  no-installer way Windows resolves an app name); it heals the shortcut if the exe
+  moved. Cosmetic only and best-effort - it never blocks or affects startup, and
+  Linux is unaffected.
 - Podcast episode rows: the new/downloaded/in-progress/played state marker and the
   resume time now stay pinned while a long title scrolls, instead of marqueeing off
   with the text. The state is readable at every scroll position.

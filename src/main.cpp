@@ -8,6 +8,10 @@
 
 #ifdef _WIN32
 #  include <windows.h>
+#  include <shlobj.h>      // IShellLinkW, CLSID_ShellLink, IPersistFile
+#  include <shobjidl.h>    // SetCurrentProcessExplicitAppUserModelID
+#  include <propsys.h>     // IPropertyStore
+#  include <objbase.h>     // CoInitializeEx, PropVariant*
 #endif
 
 #include "UIManager.h"
@@ -22,7 +26,102 @@
 namespace fs = std::filesystem;
 
 #ifdef _WIN32
+// THE AppUserModelID string - used for BOTH the shortcut stamp and the process call.
+// If the two ever differ, Windows duplicates the taskbar icon, so it is defined exactly
+// ONCE. NOTE: the .lnk BASENAME ("RE-MOCT") is also load-bearing - the media card shows
+// the display name of the shortcut whose AUMID matches, so a future rename of the file
+// would silently change the card name. Keep the constant and the basename in sync.
+static const wchar_t* const kRemoctAumid = L"RE-MOCT";
+
+// PKEY_AppUserModel_ID = {9F4C2855-9F79-4B39-A8D0-E1D42DE1D5F3}, PID 5. Defined here so
+// we don't depend on propkey.h's INITGUID plumbing under MinGW.
+static const PROPERTYKEY kPkeyAumid = {
+    { 0x9F4C2855, 0x9F79, 0x4B39, { 0xA8, 0xD0, 0xE1, 0xD4, 0x2D, 0xE1, 0xD5, 0xF3 } }, 5 };
+
+// Best-effort: ensure a Start-menu shortcut to THIS exe exists and carries the AUMID, so
+// the Windows media card resolves "RE-MOCT" instead of "Unknown app". Check-and-heal
+// every launch: create if missing, repoint if the exe moved, else no-op. Cosmetic only -
+// every step is HRESULT-guarded and NOTHING here can block or crash startup; on any
+// failure (read-only APPDATA, locked .lnk, COM failure) the card simply stays "Unknown
+// app", which is the pre-slice behaviour. UI launch never depends on this.
+static void ensureStartMenuShortcut() noexcept {
+    wchar_t exe[MAX_PATH];
+    if (GetModuleFileNameW(nullptr, exe, MAX_PATH) == 0) return;
+
+    wchar_t appdata[MAX_PATH];
+    DWORD an = GetEnvironmentVariableW(L"APPDATA", appdata, MAX_PATH);
+    if (an == 0 || an >= MAX_PATH) return;
+
+    wchar_t lnk[MAX_PATH];
+    if (_snwprintf(lnk, MAX_PATH,
+                   L"%ls\\Microsoft\\Windows\\Start Menu\\Programs\\RE-MOCT.lnk", appdata) < 0)
+        return;
+
+    HRESULT hrco = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+    if (FAILED(hrco) && hrco != RPC_E_CHANGED_MODE) return;   // COM unavailable -> bail
+    const bool weInit = SUCCEEDED(hrco);                      // only uninit what we init'd
+
+    IShellLinkW* link = nullptr;
+    if (SUCCEEDED(CoCreateInstance(CLSID_ShellLink, nullptr, CLSCTX_INPROC_SERVER,
+                                   IID_IShellLinkW, (void**)&link))) {
+        bool need_write = true;
+
+        // Existing .lnk: load it and decide whether it is already correct (no-op case).
+        IPersistFile* pf = nullptr;
+        if (SUCCEEDED(link->QueryInterface(IID_IPersistFile, (void**)&pf))) {
+            if (SUCCEEDED(pf->Load(lnk, STGM_READ))) {
+                wchar_t cur[MAX_PATH] = L"";
+                link->GetPath(cur, MAX_PATH, nullptr, SLGP_RAWPATH);
+                bool target_ok = (_wcsicmp(cur, exe) == 0);
+                bool aumid_ok  = false;
+                IPropertyStore* ps = nullptr;
+                if (SUCCEEDED(link->QueryInterface(IID_IPropertyStore, (void**)&ps))) {
+                    PROPVARIANT r; PropVariantInit(&r);
+                    if (SUCCEEDED(ps->GetValue(kPkeyAumid, &r)) && r.vt == VT_LPWSTR)
+                        aumid_ok = (wcscmp(r.pwszVal, kRemoctAumid) == 0);
+                    PropVariantClear(&r);
+                    ps->Release();
+                }
+                if (target_ok && aumid_ok) need_write = false;
+            }
+            pf->Release();
+        }
+
+        if (need_write) {   // create, or repoint/re-stamp a stale one
+            link->SetPath(exe);
+            wchar_t dir[MAX_PATH]; wcscpy(dir, exe);
+            if (wchar_t* slash = wcsrchr(dir, L'\\')) { *slash = 0; link->SetWorkingDirectory(dir); }
+            link->SetDescription(L"RE-MOCT - Music On Console Terminal");
+
+            IPropertyStore* ps = nullptr;
+            if (SUCCEEDED(link->QueryInterface(IID_IPropertyStore, (void**)&ps))) {
+                PROPVARIANT pv{}; pv.vt = VT_LPWSTR;
+                size_t n = wcslen(kRemoctAumid) + 1;
+                pv.pwszVal = (LPWSTR)CoTaskMemAlloc(n * sizeof(wchar_t));
+                if (pv.pwszVal) {
+                    wcscpy(pv.pwszVal, kRemoctAumid);
+                    if (SUCCEEDED(ps->SetValue(kPkeyAumid, pv))) ps->Commit();
+                }
+                PropVariantClear(&pv);   // frees pwszVal via CoTaskMemFree (matches CoTaskMemAlloc)
+                ps->Release();
+            }
+            IPersistFile* pfw = nullptr;
+            if (SUCCEEDED(link->QueryInterface(IID_IPersistFile, (void**)&pfw))) {
+                pfw->Save(lnk, TRUE);
+                pfw->Release();
+            }
+        }
+        link->Release();
+    }
+
+    if (weInit) CoUninitialize();
+}
+
 static void win32_console_init() {
+    // Media-card identity: heal the Start-menu shortcut, then set the SAME AUMID on the
+    // process (before initscr / any window / SMTC). Both best-effort; neither gates UI.
+    ensureStartMenuShortcut();
+    SetCurrentProcessExplicitAppUserModelID(kRemoctAumid);
     SetConsoleOutputCP(CP_UTF8);
     SetConsoleCP(CP_UTF8);
     HANDLE h = GetStdHandle(STD_OUTPUT_HANDLE);

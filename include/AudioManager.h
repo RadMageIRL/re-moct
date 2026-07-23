@@ -217,6 +217,10 @@ private:
 
     void initCrossfade();    // swap decoders, start fade
     void teardownNext();     // discard preloaded decoder
+    // Install a swap the audio thread has already performed. MAIN THREAD ONLY,
+    // and acquires no lock: its two callers (pollEvents, teardownNext) are both
+    // UI-thread, and teardownNext runs with state_mutex_ already held.
+    void installPendingSwap();
 
     std::atomic<PlaybackState> state_ { PlaybackState::Stopped };
     std::atomic<bool>          track_ended_flag_ { false };

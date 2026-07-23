@@ -40,7 +40,7 @@ static int g_fail = 0;
 
 // ─── Fixture: canonical 16-bit stereo 44100 WAV, sine at `freq` ────────────────
 
-static bool writeWav(const std::string& path, double secs, double freq) {
+static bool writeWav(const std::string& path, double secs, double freq, double amp = 0.4) {
     const uint32_t sr = 44100, ch = 2;
     const uint32_t frames     = (uint32_t)(secs * sr);
     const uint32_t data_bytes = frames * ch * 2;
@@ -53,11 +53,25 @@ static bool writeWav(const std::string& path, double secs, double freq) {
     u16(1); u16((uint16_t)ch); u32(sr); u32(sr * ch * 2); u16((uint16_t)(ch * 2)); u16(16);
     std::fwrite("data", 1, 4, f); u32(data_bytes);
     for (uint32_t i = 0; i < frames; ++i) {
-        int16_t s = (int16_t)(0.4 * 32767.0 * std::sin(2.0 * 3.14159265358979 * freq * (double)i / sr));
+        int16_t s = (int16_t)(amp * 32767.0 * std::sin(2.0 * 3.14159265358979 * freq * (double)i / sr));
         u16((uint16_t)s); u16((uint16_t)s);
     }
     std::fclose(f);
     return true;
+}
+
+// ─── Viz-ring peak: the only public window onto the mixed callback output ─────
+// copySamples() drains the last n mono samples the callback pushed. The callback
+// feeds the ring from the PROCESSED output but BEFORE the mute memset
+// (AudioManager.cpp, "Feed visualizer ... but BEFORE mute"), and setVolume() only
+// moves the device master volume — neither scales what lands here. So a muted,
+// zero-volume run still reports true post-mix sample amplitude.
+static float vizPeak(const AudioManager& am) {
+    float buf[256];
+    int n = am.copySamples(buf, 256);   // const — reads the ring, no mutation
+    float pk = 0.0f;
+    for (int i = 0; i < n; ++i) { float a = std::fabs(buf[i]); if (a > pk) pk = a; }
+    return pk;
 }
 
 // ─── pollEvents pump (the test main thread plays the app's UI-loop role) ──────
@@ -190,6 +204,142 @@ int main() {
         CHECK(am.currentTrack().path == C);               // C installed, B discarded
         CHECK(am.state() == PlaybackState::Playing);
         am.stop();
+    }
+
+    // ═══ XF REGRESSIONS (were the XF-P probes) ═══════════════════════════════
+    // These began as printf-only probes that measured the two defects. Now that
+    // C1/C2 fix them they assert. Each printf is retained: when one of these
+    // fails, the measured value is the diagnosis.
+
+    // ── P1 (C1): preloadNext() inside the post-swap, pre-install window ───────
+    // Forces: A hits EOF -> the AUDIO thread runs initCrossfade() (swap + set
+    // track_swap_flag_) -> WITHOUT pollEvents() draining that flag, the main
+    // thread calls preloadNext(C) -> then pollEvents(). Reports which identity
+    // survives into current_track_.
+    //
+    // Swap detection without pumping: initCrossfade stores cached_duration_ =
+    // next_track_info_.duration_sec (AudioManager.cpp:382) two statements BEFORE
+    // track_swap_flag_.store(true) (:384). durationSec() (:507) returns that
+    // atomic directly and is the only swap-visible observable that does not
+    // require pollEvents() — currentTrack() cannot serve, since it is written
+    // only inside pollEvents(). Distinct per-fixture durations make it a clean
+    // discriminator: P1A 2.0s -> P1B 3.0s.
+    {
+        const std::string P1A = "xfp_a2.wav", P1B = "xfp_b3.wav", P1C = "xfp_c4.wav";
+        CHECK(writeWav(P1A, 2.0, 440.0));
+        CHECK(writeWav(P1B, 3.0, 880.0));
+        CHECK(writeWav(P1C, 4.0, 660.0));
+
+        g_end = 0; g_pre = 0;
+        am.crossfade_secs = 0.0f;                 // gapless swap path
+        CHECK(am.play(P1A));
+        am.pollEvents();                          // install P1A as current
+        CHECK(am.preloadNext(P1B));
+        std::printf("P1 armed:        current=%s dur_field=%d durationSec=%.2f\n",
+                    am.currentTrack().path.c_str(),
+                    am.currentTrack().duration_sec, am.durationSec());
+        am.seekTo(1.4);                           // ~0.6s to EOF
+
+        bool swapped = false;
+        DWORD t0 = GetTickCount();
+        while ((long)(GetTickCount() - t0) < 6000) {
+            if (am.durationSec() > 2.5) { swapped = true; break; }   // P1B's 3.0s
+            Sleep(1);                             // NOTE: no pollEvents() here
+        }
+        CHECK(swapped);
+        Sleep(5);   // close the ~microsecond gap between :382 and :384 with a
+                    // ~1000x margin; nothing but pollEvents() drains the flag,
+                    // and this thread is the only caller of it.
+
+        std::printf("P1 post-swap:    current=%s dur_field=%d durationSec=%.2f  "
+                    "(no pollEvents since swap)\n",
+                    am.currentTrack().path.c_str(),
+                    am.currentTrack().duration_sec, am.durationSec());
+
+        CHECK(am.preloadNext(P1C));               // ← the contested call
+        am.pollEvents();                          // ← the install that may be lost
+
+        const std::string got = am.currentTrack().path;
+        const char* which = got == P1A ? "A" : got == P1B ? "B" : got == P1C ? "C"
+                          : got.empty() ? "<empty>" : "<other>";
+        std::printf("P1 RESULT:       currentTrack=%s [%s]  dur_field=%d  "
+                    "durationSec=%.2f  state=%d  end_cb=%d preload_cb=%d\n",
+                    got.c_str(), which, am.currentTrack().duration_sec,
+                    am.durationSec(), (int)am.state(), g_end.load(), g_pre.load());
+        std::printf("P1 COHERENCE:    path=%s dur_field=%d vs durationSec=%.2f -> %s\n",
+                    which, am.currentTrack().duration_sec, am.durationSec(),
+                    (std::fabs((double)am.currentTrack().duration_sec - am.durationSec()) < 0.6)
+                        ? "AGREE" : "MISMATCH (torn identity)");
+
+        // C1: the identity installed must be the track that actually swapped in.
+        // Pre-C1 this is P1A (the swap was cancelled by preloadNext's teardown);
+        // with the flag clear merely MOVED it is P1C (a track never audible).
+        CHECK(got == P1B);
+        // C1: and the payload must be coherent — current_track_'s duration field
+        // must agree with the audio thread's cached_duration_, both describing B.
+        CHECK(std::fabs((double)am.currentTrack().duration_sec - am.durationSec()) < 0.6);
+        am.stop();
+        std::remove(P1A.c_str()); std::remove(P1B.c_str()); std::remove(P1C.c_str());
+    }
+
+    // ── P2: repeat-one crossfade contamination baseline ───────────────────────
+    // Claim under test: with setRepeatOne(true) and a next track armed, the
+    // trigger at AudioManager.cpp:791 fires regardless, and the next track is
+    // AUDIBLE for crossfade_secs before initCrossfade (:358-362) declines the swap.
+    // Discriminator: a SILENT current track against a full-scale next, so any
+    // non-zero viz energy is unambiguously the next track's contribution.
+    {
+        const std::string P2S = "xfp_silent.wav", P2L = "xfp_loud.wav";
+        CHECK(writeWav(P2S, 2.0, 440.0, 0.0));    // silent A
+        CHECK(writeWav(P2L, 3.0, 880.0, 0.9));    // full-scale B
+
+        g_end = 0; g_pre = 0;
+        am.crossfade_secs = 1.0f;
+        am.setRepeatOne(true);
+        CHECK(am.play(P2S));
+        am.pollEvents();
+        CHECK(am.preloadNext(P2L));
+        am.seekTo(0.2);
+
+        Sleep(200);                               // flush the 2048-sample ring (~46ms)
+        float baseline = vizPeak(am);
+        std::printf("P2 baseline:     viz_peak=%.4f (silent track playing) -> %s\n",
+                    baseline, baseline < 0.01f ? "clean" : "DIRTY, result suspect");
+
+        // Sample the ring across several repeat-one loops, segmenting into
+        // contamination EPISODES (cold->hot->cold) so the per-episode span can be
+        // compared against crossfade_secs directly.
+        int   first_ms = -1, hot = 0, total = 0;
+        float max_peak = 0.0f;
+        int   ep_start[8], ep_end[8], n_ep = 0;
+        bool  was_hot = false;
+        DWORD t0 = GetTickCount();
+        while ((long)(GetTickCount() - t0) < 5000) {
+            am.pollEvents();
+            float pk = vizPeak(am);
+            int   ms = (int)(GetTickCount() - t0);
+            if (pk > max_peak) max_peak = pk;
+            ++total;
+            bool is_hot = (pk > 0.01f);
+            if (is_hot) { ++hot; if (first_ms < 0) first_ms = ms; }
+            if (is_hot && !was_hot && n_ep < 8) { ep_start[n_ep] = ms; ep_end[n_ep] = ms; ++n_ep; }
+            else if (is_hot && n_ep > 0)        { ep_end[n_ep - 1] = ms; }
+            was_hot = is_hot;
+            Sleep(2);
+        }
+        std::printf("P2 RESULT:       contamination=%s  max_viz_peak=%.4f  "
+                    "first=%dms  hot=%d/%d samples  vs crossfade_secs=%.2fs\n",
+                    first_ms >= 0 ? "PRESENT" : "ABSENT", max_peak,
+                    first_ms, hot, total, am.crossfade_secs);
+        for (int i = 0; i < n_ep; ++i)
+            std::printf("P2 episode %d:    %d..%dms  span=%dms  (%.0f%% of crossfade_secs)\n",
+                        i + 1, ep_start[i], ep_end[i], ep_end[i] - ep_start[i],
+                        100.0 * (ep_end[i] - ep_start[i]) / (am.crossfade_secs * 1000.0));
+
+        // NOTE: still measurement-only. C2 turns these numbers into assertions.
+        am.stop();
+        am.setRepeatOne(false);
+        std::remove(P2S.c_str()); std::remove(P2L.c_str());
     }
 
     std::remove(A.c_str());

@@ -126,7 +126,37 @@ void AudioManager::clearNext() {
     teardownNext();
 }
 
+// Install a swap the audio thread has already performed, on the main thread.
+//
+// If track_swap_flag_ is set then the swap ALREADY HAPPENED — file_src_ is the new
+// track and it is audible. The only question is whether the UI's identity follows.
+// Draining is therefore always correct: refusing to install can only desynchronize
+// current_track_ from what is playing.
+//
+// Called from pollEvents() (the normal tick) and from the top of teardownNext(),
+// because next_track_info_ is a SINGLE SLOT serving two roles — the payload of a
+// swap awaiting install, and the info of a newly armed preload. preloadNext()
+// overwrites it, so any teardown must drain the pending payload BEFORE the clobber.
+// (Simply cancelling the install instead was measured: it strands the previous
+// track's title against the new track's audio. Cancelling later, after the slot is
+// overwritten, installs a track that was armed but never played. Drain-first is the
+// only ordering that installs the track that actually swapped in.)
+//
+// Takes no lock and must not: pollEvents() holds none, teardownNext()'s callers all
+// hold state_mutex_, and both entry points are the UI thread, so they cannot race.
+void AudioManager::installPendingSwap() {
+    if (track_swap_flag_.exchange(false)) {
+        current_track_ = next_track_info_;
+        // Reap the source the audio thread retired at the swap (slice B): the
+        // seq_cst exchange above synchronizes-with the flag store that followed
+        // the swap, so retired_src_ is fully written and quiescent here — the
+        // free happens on the main thread, never in the audio callback.
+        retired_src_.reset();
+    }
+}
+
 void AudioManager::teardownNext() {
+    installPendingSwap();   // drain before next_track_info_ can be clobbered
     if (next_decoder_initialised_.load(std::memory_order_acquire)) {
         // Clear the published flag FIRST so the audio thread starts no new
         // crossfade or gapless read of next_decoder_ (every such read is gated on
@@ -151,9 +181,6 @@ void AudioManager::teardownNext() {
         }
     }
     next_path_.clear();
-    // Cancel any pending deferred swap: the preload it referred to is gone, so
-    // pollEvents must not install a now-stale next_track_info_ over current_track_.
-    track_swap_flag_.store(false);
 }
 
 // ─── play ────────────────────────────────────────────────────────────────────
@@ -549,14 +576,7 @@ void AudioManager::pollEvents() {
     // overwrites next_track_info_). next_track_info_ is stable here: the audio
     // thread finished reading it before setting the flag, and next_decoder_
     // initialised_ is false post-swap so no preload can overwrite it until below.
-    if (track_swap_flag_.exchange(false)) {
-        current_track_ = next_track_info_;
-        // Reap the source the audio thread retired at the swap (slice B): the
-        // seq_cst exchange above synchronizes-with the flag store that followed
-        // the swap, so retired_src_ is fully written and quiescent here — the
-        // free happens on the main thread, never in the audio callback.
-        retired_src_.reset();
-    }
+    installPendingSwap();
     if (bpm_needed_flag_.exchange(false))
         startBpmDetection(current_track_.path,
                           file_src_ ? (int)file_src_->sampleRate() : 44100);

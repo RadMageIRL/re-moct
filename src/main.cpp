@@ -153,6 +153,19 @@ int main(int argc, char* argv[]) {
         PlaylistManager playlist;
         DigiConfig      config;
 
+        // Repeat-mode ownership (XF): the playlist is the authority; this
+        // callback is the ONE sync point for the derived audio-side flag.
+        // Wired BEFORE the config restore below so the persisted mode syncs
+        // at startup too - the desync this kills was exactly the restore
+        // path forgetting the push (mode=One on the playlist, repeat_one_
+        // false, every C2 guard inert until the first r press). Entering
+        // repeat-one also discards any armed next track, whatever route the
+        // mode change arrived by.
+        playlist.setRepeatChanged([&](RepeatMode m) {
+            audio.setRepeatOne(m == RepeatMode::One);
+            if (m == RepeatMode::One) audio.clearNext();
+        });
+
         // ── Load saved config ─────────────────────────────────────────────
         config.load();
         audio.setVolume(config.volume);

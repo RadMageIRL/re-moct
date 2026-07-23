@@ -7494,11 +7494,11 @@ void UIManager::handleInput(int ch) {
             }
             break;
         case 'r': case 'R':
+            // The repeat-change callback (main.cpp, playlist.setRepeatChanged)
+            // pushes the audio-side flag and clears the armed next on entering
+            // One - this handler no longer syncs manually, so no route into a
+            // mode change can forget.
             playlist_.cycleRepeat();
-            audio_.setRepeatOne(playlist_.repeatMode() == RepeatMode::One);
-            // Clear preloaded next track when switching to repeat-one
-            if (playlist_.repeatMode() == RepeatMode::One)
-                audio_.clearNext();
             break;
         case 'z':
             playlist_.toggleShuffle(); break;

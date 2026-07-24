@@ -6574,22 +6574,52 @@ void UIManager::handleInput(int ch) {
                 if (!current_chapters_.empty()) {
                     chapter_cursor_ = std::clamp(chapter_cursor_, 0,
                                        (int)current_chapters_.size()-1);
-                    // Browsed book (chapters belong to a file that isn't playing):
-                    // start playing it at the chosen chapter. Select its playlist
-                    // row first so current()/auto-advance stay coherent - the same
-                    // bookkeeping as a normal playlist play. Seek-only (the original
-                    // behaviour) would seek the WRONG file's timeline.
+                    // Browsed item (chapters belong to a file that isn't
+                    // playing): start playing it at the chosen chapter. An
+                    // explicit chapter selection WINS over any stored resume
+                    // position - both resume mechanisms are one-shot pendings
+                    // that fire only while pos < 2s, so without suppression a
+                    // chapter-1 pick on a half-finished book or episode would
+                    // be yanked to the saved spot a tick later.
                     if (chapters_for_path_ != audio_.currentTrack().path) {
-                        for (std::size_t i = 0; i < playlist_.size(); ++i)
-                            if (playlist_.at(i).path == chapters_for_path_) {
-                                playlist_.selectAt(i);
-                                break;
+                        if (!chapters_ep_id_.empty()) {
+                            // Podcast episode: play through the podcast machinery
+                            // so the episode keeps its identity (art, no-scrobble,
+                            // played state) - never a bare file play, and never a
+                            // playlist row (episodes are standalone by design).
+                            std::error_code ec;
+                            if (!fs::exists(chapters_for_path_, ec)) {   // deleted since ;
+                                showTrackToast("Episode file is gone - download it again", "", "");
+                                return;
                             }
-                        if (!audio_.play(chapters_for_path_)) {
-                            showTrackToast("Cannot play file", "", "");
-                            return;
+                            playEpisodeFile(chapters_for_path_, chapters_ep_id_,
+                                            chapters_ep_art_url_,
+                                            chapters_ep_art_is_feed_,
+                                            chapters_ep_art_disk_);
+                            podcast_resume_pending_ = false;   // the choice wins
+                        } else {
+                            // Plain file or book: full playlist bookkeeping.
+                            // addTrack dedups, so a playlist-origin row reuses its
+                            // existing row; a [Books]/browser file joins the
+                            // playlist exactly as its Enter handler would.
+                            std::size_t idx = playlist_.addTrack(chapters_for_path_);
+                            if (idx != std::string::npos) playlist_.selectAt(idx);
+                            if (!audio_.play(chapters_for_path_)) {
+                                showTrackToast("Cannot play file", "", "");
+                                return;
+                            }
+                            if (PlaylistManager::isAudiobook(chapters_for_path_)) {
+                                config_.addAudiobook(chapters_for_path_);  // keep in [Books]
+                                // Pre-latch the book-progress transition so
+                                // updateBookProgress does not arm its one-shot
+                                // resume over the chapter seek below.
+                                flushBookProgress();
+                                book_progress_path_  = chapters_for_path_;
+                                book_progress_dur_   = 0.0;
+                                book_resume_pending_ = false;
+                            }
+                            config_.addRecentTrack(chapters_for_path_);
                         }
-                        config_.addRecentTrack(chapters_for_path_);
                     }
                     audio_.seekTo(current_chapters_[(size_t)chapter_cursor_].start_sec);
                     redraw_needed_.store(true);
@@ -7602,16 +7632,49 @@ void UIManager::handleInput(int ch) {
         case ',': jumpChapter(-1); break;
         case '.': jumpChapter(+1); break;
         case ';':
-            // Toggle the chapter list. Loads chapters for the HIGHLIGHTED playlist
-            // row (not just the playing track), so a book's chapters can be browsed
-            // before playing it. (Browser-pane highlight is out of scope - playlist
-            // rows only; with nothing relevant highlighted the playing track's list,
-            // kept fresh by the title-bar draw, is what opens.)
+            // Toggle the chapter list. Loads chapters for the HIGHLIGHTED row in
+            // the FOCUSED pane - a playlist row, a [Books]/browser file, or a
+            // downloaded podcast episode - so chapters can be browsed before
+            // playing anything. Browsing is exactly when a chapter list is
+            // useful: you are deciding what to listen to. (Previously only
+            // playlist rows were consulted, so [Books] and [Podcasts] reported
+            // "no chapters" without ever looking.)
             if (right_pane_ == RightPane::Chapters) {
                 right_pane_ = RightPane::Playlist;
             } else {
-                if (focus_ == Pane::Playlist && pl_cursor_ < (int)playlist_.size())
+                if (focus_ == Pane::Playlist && pl_cursor_ < (int)playlist_.size()) {
                     refreshChaptersIfNeeded(playlist_.at((size_t)pl_cursor_).path);
+                    chapters_ep_id_.clear();
+                } else if (focus_ == Pane::DirBrowser) {
+                    if (in_podcasts_ && in_podcast_feed_ && dir_cursor_ >= 1 &&
+                        dir_cursor_ - 1 < (int)podcast_episodes_.size()) {
+                        // Episode row: chapters live in the DOWNLOADED file (the
+                        // reader parses the local container, and episodes play as
+                        // local files by construction - the live stream path can
+                        // neither be parsed nor seeked). Not downloaded -> say
+                        // that, not "no chapters".
+                        const PodcastEpisode& ep =
+                            podcast_episodes_[(size_t)(dir_cursor_ - 1)];
+                        std::error_code ec;
+                        std::string f = episodeCacheFile(podcast_feed_url_, ep);
+                        if (fs::exists(f, ec) && fs::file_size(f, ec) > 0) {
+                            refreshChaptersIfNeeded(f);
+                            chapters_ep_id_ = podcastEpisodeId(ep);
+                            resolveEpisodeArt(ep, chapters_ep_art_url_,
+                                              chapters_ep_art_is_feed_,
+                                              chapters_ep_art_disk_);
+                        } else {
+                            showTrackToast("Download the episode to view chapters", "", "");
+                            break;
+                        }
+                    } else {
+                        std::string p = browserEntryPath(dir_cursor_);
+                        if (!p.empty() && PlaylistManager::isSupportedAudio(p)) {
+                            refreshChaptersIfNeeded(p);
+                            chapters_ep_id_.clear();
+                        }
+                    }
+                }
                 if (!current_chapters_.empty()) {
                     // Playing book: open on the chapter under the playhead. Browsed
                     // (not playing) book: the playhead is another file's position -

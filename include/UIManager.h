@@ -811,6 +811,14 @@ private:
     std::string                 podcast_playing_art_url_;
     bool                        podcast_playing_art_is_feed_ = false;
     std::string                 podcast_playing_art_disk_;
+    // Chapter-pane origin: when ; loaded chapters from a PODCAST episode's cache
+    // file, these carry the playEpisodeFile identity so selecting a chapter can
+    // start the episode AS a podcast (art, no-scrobble, played state). Empty
+    // id = the chapter list belongs to a plain file or book.
+    std::string                 chapters_ep_id_;
+    std::string                 chapters_ep_art_url_;
+    bool                        chapters_ep_art_is_feed_ = false;
+    std::string                 chapters_ep_art_disk_;
     // THE playing-item predicate: true iff the current audio is a podcast episode
     // (state-derived, since episodes play as local files). One definition so every
     // consumer decides on purpose instead of inheriting music behaviour.

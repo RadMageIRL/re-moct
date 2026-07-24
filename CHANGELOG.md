@@ -35,7 +35,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Repeat-one now works immediately after a relaunch. Quitting with repeat-one on
+- The chapter list (`;`) now works from the file browser - `[Books]`, plain
+  directories, and downloaded podcast episodes - not only from the playlist. It
+  used to answer "no chapters" for a book browsed in `[Books]` without ever
+  looking at the file; the same book showed its chapters fine from the playlist.
+  Selecting a chapter starts playback at that chapter, wherever the list was
+  opened from, and an explicit chapter choice wins over a stored resume
+  position - picking chapter 1 of a half-finished book starts at chapter 1, not
+  at the old bookmark. A podcast episode that is not downloaded says so
+  ("Download the episode to view chapters") instead of claiming it has no
+  chapters - chapters are read from, and played from, the downloaded file.
   and starting the app again restored the mode on screen but not in the audio
   engine, so the engine-side repeat safeguards sat inert until the repeat key
   was pressed once. The restored mode now reaches everything it should.

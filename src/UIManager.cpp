@@ -2199,7 +2199,7 @@ void UIManager::drawRipConfirm() {   // slice 6: common (ncurses + portable CDSo
     mvwaddstr(w, mode_y, 3, "Select ripping mode");
     struct { const char* key; const char* label; const char* desc; } opts[] = {
         { "[A]", "AccurateRip ", "Network CRC verify + offset correction" },
-        { "[C]", "CUETools    ", "Disc-wide CRC32, no network required" },
+        { "[C]", "CUETools    ", "Online CRC32 check, one verdict per disc" },
         { "[Y]", "Local       ", "Best-effort rip, fast, no verification" },
         { "[B]", "Local 2-pass", "Best-effort + read-twice determinism check" },
         { "[N]", "Cancel      ", "Go back" },

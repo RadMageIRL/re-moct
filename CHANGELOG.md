@@ -44,6 +44,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- CUETools rip mode now records its verdict in the files it produces, and says
+  plainly that the verdict covers the whole disc. Ripping with [C] computes a
+  CRC32 across the disc and checks it against the CUETools database; that result
+  used to appear on screen and then be gone. Every track from the rip now
+  carries the verdict and the disc ID it was checked under, so a rip can be
+  re-checked later without reading the disc again. The verdict is one result for
+  the whole disc, unlike AccurateRip which reports each track separately with a
+  confidence count, and the wording on screen and in the rip log now says so.
+  The [C] menu entry no longer claims no network is required, because the
+  database check is an online lookup; only [Y] and [B] work entirely offline.
 - Crossfade is now configurable - and off by default. A new `crossfade` key in
   remoct.conf sets the fade length in seconds; 0 (or absent) means no fade, the
   MPD convention. Until now every transition faded over a fixed two seconds with

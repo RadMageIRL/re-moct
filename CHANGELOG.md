@@ -29,6 +29,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   returns to the playlist. Queueing a track during an already-running fade still
   cuts (that fade is already sounding), and removing a queued track before it
   starts means the fade goes to whatever is actually next.
+- `remoct --version` and `remoct --help` (also `-V` and `-h`). Until now every
+  argument was treated as a file or folder to play, so asking the program what
+  version it was launched it instead. Both flags now print and exit without
+  opening an audio device or taking over the terminal, which is what a packaged
+  install expects when it checks itself after installing. The help lists the
+  usage and points at `?` for the key bindings.
+- An `install.sh` for building and installing from source on Linux. It builds a
+  release, installs the player and its streaming plugin to a prefix (default
+  /usr/local, `--prefix` for anything else), and asks for elevation only when
+  the destination actually needs it. `--no-build` installs an existing build,
+  `--link` points the installed command at your build tree for development, and
+  `--uninstall` removes exactly what was installed.
 
 ### Changed
 

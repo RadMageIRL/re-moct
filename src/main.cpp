@@ -19,11 +19,36 @@
 #include "PlaylistManager.h"
 #include "Config.h"
 #include "StringUtils.h"
+#include "Version.h"
 #ifdef _WIN32
 #include "CDSource.h"
 #endif
 
 namespace fs = std::filesystem;
+
+// ─── Informational command-line flags ────────────────────────────────────────
+// Version tag single-sourced from Version.h with the honest per-platform suffix -
+// the same form the status line and About panel show.
+#ifdef _WIN32
+static const char* const kVersionTag = "v" REMOCT_VERSION "-win";
+#else
+static const char* const kVersionTag = "v" REMOCT_VERSION "-linux";
+#endif
+
+static const char* const kUsage =
+    "RE-MOCT - Music On Console Terminal\n"
+    "\n"
+    "Usage: remoct [FILE|DIRECTORY]...\n"
+    "\n"
+    "Audio files are added to the playlist; a directory is searched recursively\n"
+    "and its audio files added in sorted order. With no arguments, the previous\n"
+    "session's playlist and browser location are restored.\n"
+    "\n"
+    "Options:\n"
+    "  -h, --help     show this message and exit\n"
+    "  -V, --version  show the version and exit\n"
+    "\n"
+    "Press ? inside RE-MOCT for the key bindings.\n";
 
 #ifdef _WIN32
 // THE AppUserModelID string - used for BOTH the shortcut stamp and the process call.
@@ -146,6 +171,24 @@ static void handle_sigsegv(int) {
 }
 
 int main(int argc, char* argv[]) {
+    // Informational flags are answered FIRST, before any initialisation: they must
+    // print to a plain stdout and exit, never opening an audio device, stamping the
+    // Windows Start-menu shortcut, or putting the terminal into curses mode. A
+    // packaged install runs `remoct --version` as its post-install check, and
+    // anything short of an immediate quiet exit drops that user into the player.
+    // Arguments that match nothing here stay file/directory operands, as before.
+    for (int i = 1; i < argc; ++i) {
+        const std::string arg(argv[i]);
+        if (arg == "--version" || arg == "-V") {
+            std::cout << "RE-MOCT " << kVersionTag << "\n";
+            return 0;
+        }
+        if (arg == "--help" || arg == "-h") {
+            std::cout << kUsage;
+            return 0;
+        }
+    }
+
     win32_console_init();
 
     try {

@@ -33,8 +33,9 @@ public:
 
     static constexpr int VIZ_BUF_SIZE = 2048;
 
-    // Crossfade duration in seconds (0 = gapless/instant, default 2s)
-    float crossfade_secs = 2.0f;
+    // Crossfade duration in seconds (0 = gapless/instant - the default; the
+    // product sets this from the "crossfade" config key at startup)
+    float crossfade_secs = 0.0f;
 
     AudioManager();
     ~AudioManager();

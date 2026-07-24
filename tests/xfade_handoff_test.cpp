@@ -608,6 +608,86 @@ int main() {
         std::remove(P4A.c_str()); std::remove(P4B.c_str()); std::remove(P4C.c_str());
     }
 
+    // ── P5: crossfade OFF (the new product DEFAULT) - splice advances, queue
+    // drains, nothing restarts, end of playlist stops ─────────────────────────
+    // crossfade=0 was compile-time unreachable until the config key landed; now
+    // it is what every user gets out of the box, so the whole product path gets
+    // a net: play A with C queued -> the gapless splice consumes the queue head
+    // (accounting pops it, NO restart), C ends -> splice consumes the playlist
+    // successor B (index advances, NO restart), B ends -> nothing armed ->
+    // silence -> stop. The double-start defect this guards against was a play()
+    // call from the track-end callback, so the assertion is exact: the product-
+    // shaped callbacks make ZERO play calls across the whole run.
+    {
+        const std::string P5A = "xfp5_a.wav", P5B = "xfp5_b.wav", P5C = "xfp5_c.wav";
+        CHECK(writeWav(P5A, 2.0, 440.0));
+        CHECK(writeWav(P5B, 2.0, 880.0));
+        CHECK(writeWav(P5C, 2.0, 660.0));
+
+        AudioManager am5;
+        am5.setVolume(0.0f);
+        am5.toggleMute();
+        am5.crossfade_secs = 0.0f;              // the shipping default now
+
+        PlaylistManager pl;
+        pl.addTrack(P5A); pl.addTrack(P5B);
+        pl.selectAt(0);
+        PlaylistEntry qc; qc.path = P5C;
+        pl.queueAdd(qc);                        // the override detour
+
+        std::string armed, failed;
+        std::atomic<int> cb_plays{0}, ends{0};
+        bool stopped_at_end = false;
+
+        am5.setPreloadNextCallback([&]{         // product shape (crossfade only;
+            if (!pl.queueEmpty() &&             // inert at 0, kept faithful)
+                pl.queueAt(0).path == am5.currentTrack().path) { pl.queuePop(); return; }
+            if (pl.queueEmpty() && pl.repeatMode() != RepeatMode::One) pl.next();
+        });
+        am5.setTrackEndCallback([&]{
+            ++ends;
+            if (am5.takeTrackEndAdvanced()) {   // splice advance: account only
+                if (!pl.queueEmpty() &&
+                    pl.queueAt(0).path == am5.currentTrack().path) pl.queuePop();
+                else if (pl.queueEmpty() && pl.repeatMode() != RepeatMode::One) pl.next();
+                return;
+            }
+            if (!pl.queueEmpty()) {             // hard path: pop and play
+                if (auto qe = pl.queuePop(); qe.has_value()) {
+                    ++cb_plays; am5.play(qe->path);
+                }
+                return;
+            }
+            if (pl.repeatMode() == RepeatMode::One) {
+                if (auto p = pl.currentPath(); p.has_value()) { ++cb_plays; am5.play(p.value()); }
+                return;
+            }
+            if (pl.next().has_value()) {
+                if (auto p = pl.currentPath(); p.has_value()) { ++cb_plays; am5.play(p.value()); }
+            } else {
+                am5.stop();                     // end of playlist: stop, not wedge
+                stopped_at_end = true;
+            }
+        });
+
+        CHECK(am5.play(P5A));
+        DWORD t0 = GetTickCount();
+        while ((long)(GetTickCount() - t0) < 12000 && !stopped_at_end) {
+            am5.pollEvents();
+            reconcileNextArm(am5, pl, armed, failed);   // the run-loop poll
+            Sleep(5);
+        }
+        std::printf("P5: ends=%d cb_plays=%d queue=%d cur[%zu]=%s stopped=%d\n",
+                    ends.load(), cb_plays.load(), pl.queueSize(), pl.current(),
+                    pl.currentPath().value_or("<none>").c_str(), (int)stopped_at_end);
+        CHECK(stopped_at_end);                  // reached the end and STOPPED
+        CHECK(cb_plays.load() == 0);            // no restart anywhere = no double-start
+        CHECK(pl.queueEmpty());                 // the queued track was consumed once
+        CHECK(pl.currentPath().value_or("") == P5B);   // index followed the splices
+        CHECK(am5.state() == PlaybackState::Stopped);
+        std::remove(P5A.c_str()); std::remove(P5B.c_str()); std::remove(P5C.c_str());
+    }
+
     std::remove(A.c_str());
     std::remove(B.c_str());
     std::remove(C.c_str());

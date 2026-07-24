@@ -20,6 +20,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Crossfade is now configurable - and off by default. A new `crossfade` key in
+  remoct.conf sets the fade length in seconds; 0 (or absent) means no fade, the
+  MPD convention. Until now every transition faded over a fixed two seconds with
+  no way to change or disable it, which damaged gapless album transitions. Album
+  listeners get clean gapless boundaries out of the box; set `crossfade=2` to
+  keep the old behaviour. Values are clamped to 0-30 and a malformed value falls
+  back to off.
 - Next and previous now navigate under repeat-one, and behave the same as each
   other. Pressing n used to replay the repeating track while p skipped backward -
   an inconsistency, not a design. Both now move through the playlist normally

@@ -254,6 +254,7 @@ void DigiConfig::load() {
         if      (key == "last_dir")         last_dir          = val;
         else if (key == "playlist_current") try { playlist_current = (std::size_t)std::stoul(val); } catch (...) {}
         else if (key == "volume")           try { volume          = std::stof(val); } catch (...) {}
+        else if (key == "crossfade")        try { crossfade_secs  = std::stof(val); } catch (...) {}
         else if (key == "repeat_mode")      try { repeat_mode      = std::stoi(val); } catch (...) {}
         else if (key == "shuffle")          shuffle           = (val == "1");
         else if (key == "toast_enabled")    toast_enabled     = (val == "1");
@@ -437,6 +438,9 @@ void DigiConfig::load() {
     }
 
     volume      = std::max(0.0f, std::min(2.0f, volume));
+    // 0 = off; a fade longer than 30s is a config typo, not a wish. (NaN from a
+    // malformed value falls to 0 here: both comparisons are false against NaN.)
+    crossfade_secs = std::max(0.0f, std::min(30.0f, crossfade_secs));
     repeat_mode = std::max(0, std::min(2, repeat_mode));
     if (awesome_theme < 0 || awesome_theme >= kNumAwesomeThemes) awesome_theme = 0;
     if (playlist_current >= playlist_paths.size() && !playlist_paths.empty())
@@ -468,6 +472,7 @@ void DigiConfig::save() const {
         f << "last_dir="         << nl(last_dir)     << "\n";
         f << "playlist_current=" << playlist_current << "\n";
         f << "volume="           << volume           << "\n";
+        f << "crossfade="        << crossfade_secs   << "\n";
         f << "repeat_mode="      << repeat_mode      << "\n";
         f << "shuffle="          << (shuffle ? "1" : "0") << "\n";
         f << "toast_enabled="    << (toast_enabled ? "1" : "0") << "\n";

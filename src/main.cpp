@@ -169,6 +169,10 @@ int main(int argc, char* argv[]) {
         // ── Load saved config ─────────────────────────────────────────────
         config.load();
         audio.setVolume(config.volume);
+        // Crossfade length (0 = off, the default). Applied before any playback
+        // exists, so the plain member write cannot race the audio callback; a
+        // future live-set path must make this atomic first.
+        audio.crossfade_secs = config.crossfade_secs;
         playlist.setRepeat(static_cast<RepeatMode>(config.repeat_mode));
         playlist.setShuffle(config.shuffle);
         // Restore EQ

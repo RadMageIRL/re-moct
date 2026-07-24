@@ -28,6 +28,9 @@ struct DigiConfig {
     std::string              podcastindex_key;    // API key (user-provided)
     std::string              podcastindex_secret; // API secret (user-provided)
     float                    volume           = 1.0f;
+    // Crossfade duration in seconds; 0 = off (the default - the MPD convention,
+    // and the right one for gapless album listening). Clamped to [0, 30] on load.
+    float                    crossfade_secs   = 0.0f;
     int                      repeat_mode      = 0;
     bool                     shuffle          = false;
     bool                     toast_enabled    = false;

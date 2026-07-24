@@ -46,6 +46,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The OS media controls now show the real duration while a CD plays, instead of
   duration 0. The in-app progress bar was always right; only the OS card read
   from the wrong clock.
+- The OS media controls now show real track information for a CD that has no
+  MusicBrainz match, instead of keeping the previous track's details on screen.
+  The card shows the same track title the playlist shows for the disc and the
+  CD's own clock. Unmatched CD tracks still never scrobble - a track number is
+  not a song identity.
 - Reaching the end of the playlist now stops playback cleanly. With repeat off,
   the last track used to finish and then hang - the player stayed stuck showing
   the finished track at full duration with the play indicator still up, and the

@@ -5483,6 +5483,7 @@ void UIManager::updateScrobbler() {
 
     std::string artist, track, album;
     bool is_radio = false;
+    bool cd_unmatched = false;   // CD playing, no MusicBrainz match (see below)
     int  pos = 0, dur = 0;
 
     if (audio_.streamMode()) {
@@ -5514,6 +5515,33 @@ void UIManager::updateScrobbler() {
             album  = rel.title;
             pos = (int)audio_.cdPositionSec();
             dur = (int)audio_.cdDurationSec();
+        } else {
+            // No MusicBrainz match: the OS card still gets real track identity -
+            // the same title the playlist rows show for this disc ("CD Track NN",
+            // or whatever the row displays) and the CD clocks - instead of being
+            // skipped by the guard below, which left the card showing the
+            // PREVIOUS track's metadata over a live CD position. artist stays
+            // empty (title-only publish, the podcast shape); cd_unmatched keeps
+            // the Last.fm/ListenBrainz section skipped exactly as the old
+            // empty-fields trick did - a track-number pseudo-title must never
+            // scrobble.
+            cd_unmatched = true;
+            for (std::size_t k2 = 0; k2 < playlist_.size(); ++k2) {
+                const auto& e = playlist_.at(k2);
+                if (isCDTrackPath(e.path) && cdTrackNumber(e.path) == tnum) {
+                    track = e.display_title.empty()
+                                ? e.path.substr(e.path.find(':') + 1)  // "CD Track NN"
+                                : e.display_title;
+                    break;
+                }
+            }
+            if (track.empty()) {   // disc playing but rows absent (edge): synthesize
+                char buf[16];
+                std::snprintf(buf, sizeof buf, "CD Track %02d", tnum);
+                track = buf;
+            }
+            pos = (int)audio_.cdPositionSec();
+            dur = (int)audio_.cdDurationSec();
         }
     } else {
         const auto& t = audio_.currentTrack();
@@ -5532,7 +5560,7 @@ void UIManager::updateScrobbler() {
     // card / Discord still publish with the RSS art - otherwise the whole publish below
     // is skipped and nothing shows. Music/radio keep both-required as the junk filter
     // (empty metadata = ad break / unresolved stream).
-    if (track.empty() || (artist.empty() && !isPlayingPodcast())) {
+    if (track.empty() || (artist.empty() && !isPlayingPodcast() && !cd_unmatched)) {
         static bool warned = false;
         if (!warned) { sclog("skip: empty artist/track (radio=%d) np=\"%s\"",
                              (int)is_radio, audio_.streamMode() ? audio_.streamNowPlaying().c_str() : "(file)"); warned = true; }
@@ -5662,6 +5690,12 @@ void UIManager::updateScrobbler() {
     // scrobble code itself is untouched - it is simply never invoked, like other
     // non-music sources). This is the load-bearing exclusion point, via the one predicate.
     if (isPlayingPodcast())
+        return;
+    // An unmatched CD publishes to the card/Discord above but never scrobbles:
+    // "CD Track NN" is a slot number, not a song identity. Same exclusion the
+    // old empty-fields trick provided, now explicit (the fields carry real
+    // display values for the card these days).
+    if (cd_unmatched)
         return;
 
     const std::string& k  = config_.lastfm_key;

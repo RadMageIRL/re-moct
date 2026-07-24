@@ -798,7 +798,8 @@ private:
     void startEpisodePlay(int episode_index);  // download-if-needed, then play
     void playEpisodeFile(const std::string& local_path, const std::string& id,
                          const std::string& art_url, bool art_is_feed,
-                         const std::string& art_disk);   // play a cached episode (slice 5: + its art)
+                         const std::string& art_disk,
+                         const std::string& chapters_url);   // play a cached episode (slice 5: art; v1.4.0: chapters)
 
     // Podcast episode art (slice 5): the playing episode's cover in the Info pane,
     // mirroring the radio-art path (URL -> CoverArt::bytesByUrl -> cover::render), NOT
@@ -818,6 +819,11 @@ private:
     std::string                 podcast_playing_art_url_;
     bool                        podcast_playing_art_is_feed_ = false;
     std::string                 podcast_playing_art_disk_;
+    // The playing episode's feed chapters URL (v1.4.0), stashed like the art so the
+    // per-tick chapter path and the play-time revalidation both have it without a
+    // lookup. Empty when the episode publishes none. This is what keeps the weekly
+    // revalidation running for the listener who plays but never opens the list.
+    std::string                 podcast_playing_chapters_url_;
     // Chapter-pane origin: when ; loaded chapters from a PODCAST episode's cache
     // file, these carry the playEpisodeFile identity so selecting a chapter can
     // start the episode AS a podcast (art, no-scrobble, played state). Empty
@@ -826,6 +832,7 @@ private:
     std::string                 chapters_ep_art_url_;
     bool                        chapters_ep_art_is_feed_ = false;
     std::string                 chapters_ep_art_disk_;
+    std::string                 chapters_ep_chapters_url_;  // the episode's feed chapters URL (for play-from-chapter)
     // Was the audio actually on disk when ; built this list? Chapters can now be
     // VIEWED for an episode that was never downloaded (they come from the feed),
     // so "no file at Enter time" has two different honest answers and this tells
@@ -854,9 +861,19 @@ private:
     std::string                 chapters_want_ep_id_;      // "" = nothing outstanding
     std::string                 chapters_want_url_;
     std::string                 chapters_want_base_;
+    // Who asked for the pending fetch. A ; browse is an explicit request: on
+    // failure it toasts, on success it opens the pane. A play-time revalidation is
+    // a background nicety like the download-worker priming: on failure it is logged
+    // and dropped in silence, on success it folds into the live list with no pane.
+    // The playing-episode fold is routed by result key regardless of this flag.
+    bool                        chapters_want_is_browse_ = false;
 
     void startChaptersFetch();     // spawn for the current want, if the worker is idle
     void pollPodcastChapters();    // UI thread, per-frame: install a landed fetch
+    // Resolve the playing episode's feed chapters at play time (B): fold a usable
+    // sidecar in immediately, else - respecting the weekly revalidation, which may
+    // delete a stale one - kick a background refetch that folds in when it lands.
+    void resolvePlayingChapters(const std::string& local_path, const std::string& chapters_url);
     // THE playing-item predicate: true iff the current audio is a podcast episode
     // (state-derived, since episodes play as local files). One definition so every
     // consumer decides on purpose instead of inheriting music behaviour.

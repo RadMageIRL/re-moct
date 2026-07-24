@@ -2673,8 +2673,18 @@ void UIManager::drawTitleBar() {
         // ungated refresh would replace the browsed list on the next frame. Re-syncs
         // to the playing track the moment the pane closes; when the pane shows the
         // playing book anyway, the same-path refresh is a no-op.
-        if (right_pane_ != RightPane::Chapters || chapters_for_path_ == track.path)
-            refreshChaptersIfNeeded(track.path);
+        if (right_pane_ != RightPane::Chapters || chapters_for_path_ == track.path) {
+            // A playing episode passes its (pure-string) sidecar path so feed
+            // chapters show without opening the list first. This adds no per-tick
+            // filesystem work: refreshChaptersIfNeeded early-returns on an unchanged
+            // path, so the sidecar is read once per episode transition, exactly like
+            // the embedded-chapter parse already is. Books and plain files take the
+            // one-arg path unchanged (isPlayingPodcast() gates on episode identity).
+            if (isPlayingPodcast())
+                refreshChaptersIfNeeded(track.path, chaptersSidecarPath(track.path));
+            else
+                refreshChaptersIfNeeded(track.path);
+        }
         // The chapter suffix trusts current_chapters_ only when it belongs to the
         // playing track (it may hold a browsed book's list while the pane is open).
         if (chapters_for_path_ == track.path) {
@@ -6689,6 +6699,12 @@ void UIManager::handleInput(int ch) {
                 if (!current_chapters_.empty()) {
                     chapter_cursor_ = std::clamp(chapter_cursor_, 0,
                                        (int)current_chapters_.size()-1);
+                    // Capture the chosen start NOW, by value: playEpisodeFile below
+                    // resolves the episode's feed chapters and may replace
+                    // current_chapters_ (a stale sidecar revalidated), so indexing it
+                    // after the play could read a shorter or empty list. The seek
+                    // target is a time, not a row - hold the time.
+                    double chosen_start = current_chapters_[(size_t)chapter_cursor_].start_sec;
                     // Browsed item (chapters belong to a file that isn't
                     // playing): start playing it at the chosen chapter. An
                     // explicit chapter selection WINS over any stored resume
@@ -6720,7 +6736,8 @@ void UIManager::handleInput(int ch) {
                             playEpisodeFile(chapters_for_path_, chapters_ep_id_,
                                             chapters_ep_art_url_,
                                             chapters_ep_art_is_feed_,
-                                            chapters_ep_art_disk_);
+                                            chapters_ep_art_disk_,
+                                            chapters_ep_chapters_url_);
                             podcast_resume_pending_ = false;   // the choice wins
                         } else {
                             // Plain file or book: full playlist bookkeeping.
@@ -6746,7 +6763,7 @@ void UIManager::handleInput(int ch) {
                             config_.addRecentTrack(chapters_for_path_);
                         }
                     }
-                    audio_.seekTo(current_chapters_[(size_t)chapter_cursor_].start_sec);
+                    audio_.seekTo(chosen_start);
                     redraw_needed_.store(true);
                 }
                 return;
@@ -7795,8 +7812,9 @@ void UIManager::handleInput(int ch) {
                         if (current_chapters_.empty()) chapters_for_path_.clear();
                         refreshChaptersIfNeeded(f, have_side ? chaptersSidecarPath(f)
                                                              : std::string());
-                        chapters_ep_id_         = id;
-                        chapters_ep_downloaded_ = have_file;
+                        chapters_ep_id_          = id;
+                        chapters_ep_downloaded_  = have_file;
+                        chapters_ep_chapters_url_ = ep.chapters_url;
                         resolveEpisodeArt(ep, chapters_ep_art_url_,
                                           chapters_ep_art_is_feed_,
                                           chapters_ep_art_disk_);
@@ -7808,9 +7826,10 @@ void UIManager::handleInput(int ch) {
                             // still the row you asked about. Pressing ; again
                             // meanwhile re-states the status and nothing else - the
                             // fetch in flight is never restarted or aborted.
-                            chapters_want_ep_id_ = id;
-                            chapters_want_url_   = ep.chapters_url;
-                            chapters_want_base_  = f;
+                            chapters_want_ep_id_     = id;
+                            chapters_want_url_       = ep.chapters_url;
+                            chapters_want_base_      = f;
+                            chapters_want_is_browse_ = true;   // explicit request: toast/pane on landing
                             startChaptersFetch();
                             showTrackToast("Loading chapters...", "", "");
                             break;
@@ -9673,7 +9692,8 @@ bool UIManager::isPlayingPodcast() const {
 // updatePodcastProgress one-shot, exactly like an audiobook.
 void UIManager::playEpisodeFile(const std::string& local_path, const std::string& id,
                                 const std::string& art_url, bool art_is_feed,
-                                const std::string& art_disk) {
+                                const std::string& art_disk,
+                                const std::string& chapters_url) {
     audio_.play(local_path);
     podcast_playing_id_     = id;
     podcast_playing_path_   = local_path;
@@ -9685,7 +9705,42 @@ void UIManager::playEpisodeFile(const std::string& local_path, const std::string
     podcast_playing_art_is_feed_ = art_is_feed;
     podcast_playing_art_disk_    = art_disk;
     podcast_art_have_url_.clear();              // force a fetch for the new episode's art
+    // v1.4.0 (B): resolve this episode's feed chapters now, at play time, so the
+    // now-playing suffix and the ,/. jumps work without opening the list first -
+    // and so the weekly revalidation runs on an event that actually happens.
+    podcast_playing_chapters_url_ = chapters_url;
+    resolvePlayingChapters(local_path, chapters_url);
     requestRedraw();
+}
+
+// Resolve the playing episode's feed chapters (B). Called once per play, so its one
+// filesystem check is not a per-tick probe. A usable sidecar (present, same URL,
+// inside the week) is folded straight into the live list; the per-tick chapter path
+// then keeps it there. Otherwise - chaptersSidecarUsable having deleted a stale one
+// as its side effect, which IS the weekly revalidation firing here - a background
+// refetch is kicked and folds in when it lands (pollPodcastChapters). An episode
+// that publishes no chapters URL resolves to nothing, exactly as before.
+void UIManager::resolvePlayingChapters(const std::string& local_path,
+                                       const std::string& chapters_url) {
+    if (local_path.empty()) return;
+    // Force the per-tick memo to re-read this path: the same file may have just been
+    // replayed, or a stale sidecar was deleted a line ago, and the path alone would
+    // otherwise keep answering with the old (or empty) list.
+    if (chapters_for_path_ == local_path) chapters_for_path_.clear();
+    if (!chapters_url.empty() && chaptersSidecarUsable(local_path, chapters_url)) {
+        refreshChaptersIfNeeded(local_path, chaptersSidecarPath(local_path));
+        return;
+    }
+    // Embedded chapters (an .m4a that carries its own) still resolve; a gap that the
+    // feed could fill kicks the refetch.
+    refreshChaptersIfNeeded(local_path);
+    if (current_chapters_.empty() && !chapters_url.empty()) {
+        chapters_want_ep_id_     = podcast_playing_id_;
+        chapters_want_url_       = chapters_url;
+        chapters_want_base_      = local_path;
+        chapters_want_is_browse_ = false;       // background nicety: silent on failure
+        startChaptersFetch();
+    }
 }
 
 bool UIManager::episodeQueued(const std::string& id) const {
@@ -9706,7 +9761,7 @@ void UIManager::startEpisodePlay(int episode_index) {
     std::error_code ec;
     if (fs::exists(file, ec) && fs::file_size(file, ec) > 0) {
         std::string au; bool af; std::string ad; resolveEpisodeArt(ep, au, af, ad);
-        playEpisodeFile(file, id, au, af, ad);  // already downloaded -> instant
+        playEpisodeFile(file, id, au, af, ad, ep.chapters_url);  // already downloaded -> instant
         return;
     }
     // Not downloaded. If a DIFFERENT episode is transferring, let the user decide.
@@ -9735,7 +9790,7 @@ void UIManager::enqueueEpisodeDownload(int episode_index, bool play_when_done, b
     if (fs::exists(dest, ec) && fs::file_size(dest, ec) > 0) {    // already downloaded
         if (play_when_done) {
             std::string au; bool af; std::string ad; resolveEpisodeArt(ep, au, af, ad);
-            playEpisodeFile(dest, id, au, af, ad);
+            playEpisodeFile(dest, id, au, af, ad, ep.chapters_url);
         } else showTrackToast("Already downloaded", "", "");
         return;
     }
@@ -9776,7 +9831,8 @@ void UIManager::startActiveDownload(const PodcastQueueItem& item) {
     std::error_code ec;
     if (fs::exists(item.dest, ec) && fs::file_size(item.dest, ec) > 0) {
         if (item.play_when_done)
-            playEpisodeFile(item.dest, item.id, item.art_url, item.art_is_feed, item.art_disk);
+            playEpisodeFile(item.dest, item.id, item.art_url, item.art_is_feed, item.art_disk,
+                            item.chapters_url);
         pumpPodcastQueue();
         return;
     }
@@ -9895,7 +9951,8 @@ void UIManager::pollPodcastDownload() {
             podcast_dl_status_ = "Downloaded " + sanitizeForDisplay(item.title) + "  [100%]";
             podcast_dl_ticks_ = 0;
             if (item.play_when_done)
-                playEpisodeFile(item.dest, item.id, item.art_url, item.art_is_feed, item.art_disk);
+                playEpisodeFile(item.dest, item.id, item.art_url, item.art_is_feed, item.art_disk,
+                            item.chapters_url);
         } else if (cancelled) {
             // Aborted (quit, or a play-now preempt that already re-queued this item).
             podcast_dl_status_.clear();
@@ -9944,10 +10001,13 @@ void UIManager::startChaptersFetch() {
     });
 }
 
-// UI thread, per-frame: install a landed fetch. The pane opens only if the episode
-// the user asked about is STILL the highlighted one - anything else has already
-// done its job by reaching the cache, and stealing the pane from a row the user
-// has since moved to would be the wrong kind of helpful.
+// UI thread, per-frame: install a landed fetch. A result serves two independent
+// consumers, routed by the episode id it fetched for:
+//   1. the PLAYING episode (B) - fold a fresh document into the live list so the
+//      now-playing suffix and the ,/. jumps update without the list ever opening;
+//   2. the pending ; browse want - open the pane, but only if that same row is
+//      still highlighted.
+// The two can both fire (browsing the very episode that plays) and stay consistent.
 void UIManager::pollPodcastChapters() {
     if (!podcast_chap_done_.exchange(false)) return;
     std::string key, base;
@@ -9957,37 +10017,82 @@ void UIManager::pollPodcastChapters() {
     if (podcast_chap_thread_.joinable()) podcast_chap_thread_.join();
     podcast_chap_active_.store(false);
 
-    if (key == chapters_want_ep_id_) {          // the want-key IS what was last asked for
+    // Consumer 1 - the playing episode. Fold only when the per-tick chapter path
+    // owns the playing chapters (chapters_for_path_ == the playing file): if a
+    // browse pane is showing some OTHER item's list, we must not clobber it - the
+    // per-tick sidecar-aware refresh will pick the new document up when that pane
+    // closes. The download-worker priming never reaches here (it writes the sidecar
+    // directly, off this machinery), so a just-downloaded episode already has it.
+    if (ok && isPlayingPodcast() && key == podcast_playing_id_ &&
+        chapters_for_path_ == podcast_playing_path_) {
+        // THE mid-episode swap, made deliberate. The playhead is the anchor: this
+        // replaces chapter DATA only and never issues a seek, so the audio does not
+        // move one sample. currentChapterIndex() is derived live from positionSec(),
+        // so the suffix re-names, and ,/. re-bound, to the new list on the next frame
+        // and the next press - the listener is re-described where they are, not
+        // relocated. A fetched-but-empty document must not blank a working list under
+        // the listener: fold only a non-empty result; the on-disk sidecar is updated
+        // regardless, so a genuinely emptied document takes hold at the next play.
+        std::vector<Mp4Chapter> prev = current_chapters_;
+        std::string prev_path = chapters_for_path_;
+        chapters_for_path_.clear();          // force the memo to re-read the new sidecar
+        refreshChaptersIfNeeded(podcast_playing_path_,
+                                chaptersSidecarPath(podcast_playing_path_));
+        if (current_chapters_.empty() && !prev.empty()) {
+            current_chapters_  = std::move(prev);      // keep the working list
+            chapters_for_path_ = prev_path;
+        } else if (right_pane_ == RightPane::Chapters) {
+            // Pane open on the playing episode: a changed list can leave the cursor on
+            // a now-wrong or out-of-range row, so re-seat it on the chapter under the
+            // playhead - the rule ; uses to open the pane while playing.
+            chapter_cursor_ = std::max(0, currentChapterIndex());
+        }
+        requestRedraw();
+    }
+
+    // Consumer 2 - the pending want. The want is cleared regardless of who asked, so
+    // the single worker frees up; the VISIBLE response (a toast, or opening the pane)
+    // belongs to an explicit ; browse only. A play-time revalidation is silent: on
+    // success consumer 1 has already folded it, and a failure was logged and dropped
+    // in the worker, the same as the download-worker priming.
+    if (key == chapters_want_ep_id_) {
+        bool was_browse = chapters_want_is_browse_;
         chapters_want_ep_id_.clear();
         chapters_want_url_.clear();
         chapters_want_base_.clear();
-        if (!ok) {
-            // Logged and dropped in the worker; the user gets one honest line, and
-            // a LATER ; retries. One attempt per explicit press: human-rate, so no
-            // storm is possible and no back-off latch is needed.
-            showTrackToast("Couldn't fetch chapters", "", "");
-        } else if (in_podcasts_ && in_podcast_feed_ && dir_cursor_ >= 1 &&
-                   dir_cursor_ - 1 < (int)podcast_episodes_.size() &&
-                   podcastEpisodeId(podcast_episodes_[(size_t)(dir_cursor_ - 1)]) == key) {
-            const PodcastEpisode& ep = podcast_episodes_[(size_t)(dir_cursor_ - 1)];
-            std::error_code ec;
-            chapters_for_path_.clear();     // the sidecar landed after the memo was set
-            refreshChaptersIfNeeded(base, chaptersSidecarPath(base));
-            chapters_ep_id_         = key;
-            chapters_ep_downloaded_ = fs::exists(base, ec) && fs::file_size(base, ec) > 0;
-            resolveEpisodeArt(ep, chapters_ep_art_url_, chapters_ep_art_is_feed_,
-                              chapters_ep_art_disk_);
-            if (!current_chapters_.empty()) {
-                chapter_cursor_ = 0;        // a browsed episode has no playhead to open on
-                right_pane_ = RightPane::Chapters;
-            } else {
-                showTrackToast("No chapters in this track", "", "");   // fetched, but says nothing
+        chapters_want_is_browse_ = false;
+        if (was_browse) {
+            if (!ok) {
+                // One honest line; a LATER ; retries. One attempt per explicit press:
+                // human-rate, so no storm is possible and no back-off latch is needed.
+                showTrackToast("Couldn't fetch chapters", "", "");
+            } else if (in_podcasts_ && in_podcast_feed_ && dir_cursor_ >= 1 &&
+                       dir_cursor_ - 1 < (int)podcast_episodes_.size() &&
+                       podcastEpisodeId(podcast_episodes_[(size_t)(dir_cursor_ - 1)]) == key) {
+                const PodcastEpisode& ep = podcast_episodes_[(size_t)(dir_cursor_ - 1)];
+                std::error_code ec;
+                chapters_for_path_.clear();     // the sidecar landed after the memo was set
+                refreshChaptersIfNeeded(base, chaptersSidecarPath(base));
+                chapters_ep_id_           = key;
+                chapters_ep_downloaded_   = fs::exists(base, ec) && fs::file_size(base, ec) > 0;
+                chapters_ep_chapters_url_ = ep.chapters_url;
+                resolveEpisodeArt(ep, chapters_ep_art_url_, chapters_ep_art_is_feed_,
+                                  chapters_ep_art_disk_);
+                if (!current_chapters_.empty()) {
+                    // Open on the playhead when this browsed row is the playing episode,
+                    // else on chapter 1 (a browsed row has no playhead of its own).
+                    chapter_cursor_ = (chapters_for_path_ == audio_.currentTrack().path)
+                                          ? std::max(0, currentChapterIndex()) : 0;
+                    right_pane_ = RightPane::Chapters;
+                } else {
+                    showTrackToast("No chapters in this track", "", "");  // fetched, but says nothing
+                }
+                requestRedraw();
             }
-            requestRedraw();
+            // Moved to another row: cached silently, no pane, no message.
         }
-        // Moved to another row: cached silently, no pane, no message.
     }
-    startChaptersFetch();   // a ; that arrived mid-flight has been waiting on this join
+    startChaptersFetch();   // a want that arrived mid-flight has been waiting on this join
 }
 
 // Per-tick resume latch (mirrors updateBookProgress): track the playing episode's
@@ -10007,6 +10112,7 @@ void UIManager::updatePodcastProgress() {
             podcast_resume_pending_ = false;
             podcast_playing_art_url_.clear();   // slice 5: drop the episode art
             podcast_playing_art_disk_.clear();
+            podcast_playing_chapters_url_.clear();   // v1.4.0: drop the episode chapters URL
         }
         return;
     }

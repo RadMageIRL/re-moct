@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Podcast episodes now show chapters published by the feed, not only chapters
+  embedded in the audio file. Many shows carry a chapter list alongside each
+  episode; pressing `;` on such an episode shows it - even before the episode is
+  downloaded, fetched on demand over the network with a brief "Loading
+  chapters..." while it lands. A downloaded episode keeps its chapters offline:
+  they are saved beside the audio when it downloads, so an episode pulled at home
+  still has its chapters on a train with no signal. Selecting a chapter needs the
+  episode on disk to play from that point ("Download the episode to play from a
+  chapter"), but viewing the list never does. Chapters that come with the audio
+  file itself still take precedence, and an episode that publishes none says so
+  honestly. A cached chapter list is refreshed if the show moves it or after a
+  week, so a corrected list is picked up without a manual refresh.
 - Queued tracks now crossfade. Jumping to a queued track - and from one queued
   track to the next - used to hard-cut even with crossfade on; only the return
   to the playlist after the queue drained ever faded. Now every queue transition
@@ -42,9 +54,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Selecting a chapter starts playback at that chapter, wherever the list was
   opened from, and an explicit chapter choice wins over a stored resume
   position - picking chapter 1 of a half-finished book starts at chapter 1, not
-  at the old bookmark. A podcast episode that is not downloaded says so
-  ("Download the episode to view chapters") instead of claiming it has no
-  chapters - chapters are read from, and played from, the downloaded file.
+  at the old bookmark. (Podcast episodes now also show chapters published by the
+  feed, described under Added - so an episode you have not downloaded can show
+  its chapters too.)
   and starting the app again restored the mode on screen but not in the audio
   engine, so the engine-side repeat safeguards sat inert until the repeat key
   was pressed once. The restored mode now reaches everything it should.

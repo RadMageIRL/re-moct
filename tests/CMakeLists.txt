@@ -144,6 +144,17 @@ target_compile_definitions(podcast_parse_test PRIVATE
     PODCAST_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/podcasts")
 add_test(NAME podcast_parse_test COMMAND podcast_parse_test)
 
+# podcast-chapters (Podcasts v1.4.0) - parsePodcastChaptersJson (PodcastChapters.h)
+# proven in ISOLATION, the single trust boundary for a feed-published chapters
+# document off the open internet and re-read from a disk sidecar. Header-only, so no
+# source to link; needs lib/ for the vendored json.hpp. The full hostile-input
+# matrix - garbage, wrong shapes, out-of-range values, oversized/control-char
+# titles, disorder, dupes, and volume caps. Pure, device-free, both matrix jobs.
+add_executable(podcast_chapters_test podcast_chapters_test.cpp)
+target_include_directories(podcast_chapters_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/lib)
+add_test(NAME podcast_chapters_test COMMAND podcast_chapters_test)
+
 # podcast-client (Podcasts slice 2) - the fetch-and-parse glue over the core::IHttp
 # seam, proven headless with a FakeHttp (core::setHttp). Asserts the feed-sized
 # request (64 MB cap / 30 s) and the fetched-vs-parsed distinction the honest

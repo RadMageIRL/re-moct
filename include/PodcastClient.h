@@ -25,6 +25,19 @@ public:
     // because the call runs on a worker thread and never freezes the UI.
     static Result fetch(const std::string& url);
 
+    struct ChaptersResult {
+        std::string body;       // the RAW document, unparsed — the caller owns the trust boundary
+        bool fetched = false;   // true if the HTTP GET succeeded with a non-empty body
+    };
+
+    // Fetch an episode's <podcast:chapters> document (v1.4.0). Deliberately NOT
+    // fetch()'s bounds: a chapters document is kilobytes, so it gets a kilobyte-
+    // scale cap and a short timeout rather than the 64 MB / 30 s a whole feed
+    // needs. Returns the bytes verbatim — parsing happens in PodcastChapters.h,
+    // which is the single place a document off the internet is trusted, on the
+    // fetch path and on every later read of the cached copy alike. Never throws.
+    static ChaptersResult fetchChapters(const std::string& url);
+
     // Stream an episode to a local file, reporting progress (slice 3). Runs on a
     // worker thread in the UI. `cancel` is a plain int32 flag the caller writes via
     // std::atomic_ref (0 = run, nonzero = abort) so a mid-download quit aborts fast;

@@ -42,6 +42,9 @@ struct PodcastEpisode {
     std::int64_t duration_sec  = 0;  // <itunes:duration> (sec / MM:SS / HH:MM:SS), 0 if absent/bad
     std::string  description;        // <description> or <itunes:summary>, CDATA/HTML stripped
     std::string  image_url;          // episode <itunes:image href>; "" -> inherit feed art
+    std::string  chapters_url;       // <podcast:chapters url> when it names a JSON document
+    // chapters_url is left EMPTY for an element whose type attribute explicitly names
+    // something other than JSON, so a non-JSON document is never fetched at all.
     // Identity key resolved at use (slice 3): guid ? guid : audio_url ? audio_url
     // : hash(title + pub_date_raw). Not computed here — the parser just fills the inputs.
 };
@@ -283,6 +286,23 @@ inline std::string collapseWs(const std::string& s) {
     return out;
 }
 
+// Lowercase a byte string (ASCII only — media types are ASCII by spec).
+inline std::string asciiLower(std::string s) {
+    for (char& c : s) c = (char)std::tolower((unsigned char)c);
+    return s;
+}
+
+// Is a <podcast:chapters type="…"> document eligible to fetch? An ABSENT type is
+// accepted: it costs one bounded fetch to find out, and a document that turns out
+// not to be JSON simply fails to parse into an honest "no chapters". An explicit
+// type that is not JSON is refused here, so nothing is ever fetched for it.
+// Parameters ("application/json; charset=utf-8") are ignored.
+inline bool chaptersTypeEligible(const std::string& type) {
+    std::string t = collapseWs(type);
+    if (auto sc = t.find(';'); sc != std::string::npos) t = collapseWs(t.substr(0, sc));
+    return t.empty() || asciiLower(t) == "application/json";
+}
+
 // Title/plain-text pipeline: unwrap CDATA, unescape entities, collapse whitespace.
 inline std::string cleanText(const std::string& raw) {
     return collapseWs(unescapeEntities(unwrapCData(raw)));
@@ -471,6 +491,11 @@ inline PodcastFeed parsePodcastFeed(const std::string& xml) {
         ep.description  = cleanRich(firstNonEmpty(elementBody(it, "description"),
                                                   elementBody(it, "itunes:summary")));
         ep.image_url    = firstAttr(it, "itunes:image", "href");
+        // <podcast:chapters url="…" type="application/json"/> — the Podcasting 2.0
+        // chapter document. Both attributes are read off the SAME (first) element,
+        // and the URL is kept only when the type says it is JSON (or says nothing).
+        if (chaptersTypeEligible(firstAttr(it, "podcast:chapters", "type")))
+            ep.chapters_url = unescapeEntities(firstAttr(it, "podcast:chapters", "url"));
 
         feed.episodes.push_back(std::move(ep));
     }

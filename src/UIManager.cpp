@@ -22,6 +22,7 @@
 #include "AudioManager.h"
 #include "PlaylistManager.h"
 #include "Mp4Chapters.h"
+#include "PodcastChapters.h"   // feed-published chapter documents (the sidecar's parser)
 #include "Config.h"
 #include "LrcData.h"
 #include "Toast.h"
@@ -378,6 +379,7 @@ UIManager::~UIManager() {
     std::atomic_ref<std::int32_t>(podcast_dl_cancel_).store(1);          // abort a mid-download fast
     if (podcast_dl_thread_.joinable()) podcast_dl_thread_.join();
     if (podcast_art_thread_.joinable()) podcast_art_thread_.join();      // art fetch is bounded by bytesByUrl's timeout
+    if (podcast_chap_thread_.joinable()) podcast_chap_thread_.join();    // chapters fetch is bounded by its 15s timeout
     flushPodcastProgress();   // persist the resume position if quitting mid-episode
     if (mb_search_win_) { delwin(mb_search_win_); mb_search_win_ = nullptr; }
 #ifdef PDCURSES
@@ -1303,6 +1305,7 @@ void UIManager::run() {
         pollPodcastFetch();  // podcasts: install a finished feed fetch off the worker thread
         pollPodcastIndexSearch(); // podcasts slice 6: install finished byterm search results
         pollPodcastDownload(); // podcasts: refresh download %, play the episode when it lands
+        pollPodcastChapters(); // podcasts: open the chapter pane when a fetched document lands
         // OS media control: per-tick position refresh (cheap; the impl throttles
         // its own signal emission) + clear on the transition to stopped so the OS
         // surface does not keep a dead track. Metadata itself is pushed on change
@@ -2420,7 +2423,107 @@ void UIManager::applyReleaseTitles(const MBRelease& rel) {
 }
 
 
-void UIManager::refreshChaptersIfNeeded(const std::string& path) {
+// ─── Feed-published chapters: the sidecar beside the episode ─────────────────
+// <episode cache file>.chapters.json holds the RAW document and .chapters.src the
+// one URL that produced it. PLAIN STRING APPEND, never fs::path composition: the
+// episode cache path is already pathSafeAscii, and appending keeps it that way
+// instead of routing a title-derived name back through the locale conversion that
+// std::terminate'd the episode list once already (see pathSafeAscii above).
+//
+// The pair may exist WITHOUT the audio - ; on an episode you never downloaded
+// caches its chapters - which is harmless: it is a couple of kilobytes of derived,
+// refetchable data.
+//
+// These are free functions, not members, because the download worker calls them
+// off the UI thread; they touch nothing but their arguments and the filesystem.
+static std::string chaptersSidecarPath(const std::string& cache_file) {
+    return cache_file + ".chapters.json";
+}
+static std::string chaptersSrcPath(const std::string& cache_file) {
+    return cache_file + ".chapters.src";
+}
+
+// Matches PodcastClient::fetchChapters' body cap. A sidecar is only ever written
+// from a capped fetch, so a file over the cap did not come from us - read it no
+// more willingly than we would have accepted it off the wire.
+static constexpr std::uintmax_t kChaptersMaxBytes = 1u * 1024 * 1024;
+
+// How long a cached document is trusted before it is refetched. The .src check
+// below only catches a publisher who MOVES the document; the shows this feature
+// exists for publish at a stable per-episode URL and correct the document in
+// place, so a URL check alone would pin an edited document as stale forever.
+// A week is far longer than a chapter list stays wrong and far shorter than
+// forever, and it costs one KB-scale GET per episode per week, only for episodes
+// whose chapters someone actually opens.
+static constexpr std::chrono::hours kChaptersMaxAge{24 * 7};
+
+// THE point-of-use freshness check, and the only place freshness is evaluated.
+// Deliberately NOT run on feed entry: probing the filesystem per episode there is
+// exactly the load-path regression slice 5 had to revert. Two O(1) tests - the
+// recorded source URL still matches the feed's current one, and the document is
+// inside the revalidation window - and an unusable pair is DELETED so the caller's
+// next step refetches it.
+static bool chaptersSidecarUsable(const std::string& cache_file, const std::string& url) {
+    std::error_code ec;
+    const std::string doc = chaptersSidecarPath(cache_file);
+    const std::string src = chaptersSrcPath(cache_file);
+    if (!fs::exists(doc, ec) || fs::file_size(doc, ec) == 0) return false;
+
+    std::string recorded;
+    { std::ifstream f(src); std::getline(f, recorded); }
+    while (!recorded.empty() && (recorded.back() == '\r' || recorded.back() == '\n'))
+        recorded.pop_back();
+
+    bool usable = (!recorded.empty() && recorded == url);
+    if (usable) {
+        auto mt = fs::last_write_time(doc, ec);
+        if (ec) {
+            usable = false;
+        } else {
+            // A future-dated file (clock skew, a copied tree) would otherwise never
+            // age out, so the window is checked in both directions.
+            const auto age = fs::file_time_type::clock::now() - mt;
+            if (age > kChaptersMaxAge || age < -kChaptersMaxAge) usable = false;
+        }
+    }
+    if (!usable) { fs::remove(doc, ec); fs::remove(src, ec); }
+    return usable;
+}
+
+// Write the pair. Creates the feed directory: a browse-time fetch can be the first
+// thing that ever touches a feed nothing has been downloaded from.
+static void writeChaptersSidecar(const std::string& cache_file, const std::string& url,
+                                 const std::string& body) {
+    std::error_code ec;
+    fs::create_directories(fs::path(cache_file).parent_path(), ec);
+    { std::ofstream f(chaptersSidecarPath(cache_file), std::ios::binary);
+      f.write(body.data(), (std::streamsize)body.size()); }
+    { std::ofstream f(chaptersSrcPath(cache_file)); f << url << "\n"; }
+}
+
+// Read the cached document back, given the sidecar's own path. Returns "" for
+// anything we would not have accepted from the network in the first place; the
+// parser re-validates whatever does come back.
+static std::string readChaptersSidecar(const std::string& doc) {
+    std::error_code ec;
+    const auto sz = fs::file_size(doc, ec);
+    if (ec || sz == 0 || sz > kChaptersMaxBytes) return {};
+    std::ifstream f(doc, std::ios::binary);
+    return std::string((std::istreambuf_iterator<char>(f)),
+                       std::istreambuf_iterator<char>());
+}
+
+// Fetch and cache one episode's chapters. Worker-thread safe (free function, no UI
+// state). Best-effort by contract: every caller treats failure as "no sidecar", and
+// a failure is logged and dropped rather than reported - see the download worker.
+static bool fetchChaptersSidecar(const std::string& cache_file, const std::string& url) {
+    PodcastClient::ChaptersResult cr = PodcastClient::fetchChapters(url);
+    if (!cr.fetched) { Log::write("podcast", "chapters fetch failed: " + url); return false; }
+    writeChaptersSidecar(cache_file, url, cr.body);
+    return true;
+}
+
+void UIManager::refreshChaptersIfNeeded(const std::string& path, const std::string& sidecar) {
     if (path == chapters_for_path_) return;        // already reflects this path
     chapters_for_path_ = path;
     current_chapters_.clear();
@@ -2432,6 +2535,18 @@ void UIManager::refreshChaptersIfNeeded(const std::string& path) {
     std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
     if (ext == ".m4b" || ext == ".m4a" || ext == ".mp4" || ext == ".m4v")
         current_chapters_ = parseMp4Chapters(path);
+    // The file had nothing to say and the caller knows of a cached chapters
+    // document for it: read that instead. Only the episode branch of ; ever
+    // passes one, so this step is unreachable for books and plain files - they
+    // do not so much as stat anything new. An .m4a episode that carries its own
+    // chapters therefore keeps them; the feed document fills in only a gap.
+    // (Podcasting 2.0 suggests the feed document SUPERSEDE embedded chapters.
+    // Not adopted in v1: it would mean changing what a chaptered MP4 shows
+    // today, on no evidence that any show ships both and disagrees.)
+    if (current_chapters_.empty() && !sidecar.empty()) {
+        std::string doc = readChaptersSidecar(sidecar);
+        if (!doc.empty()) current_chapters_ = parsePodcastChaptersJson(doc);
+    }
 }
 
 int UIManager::currentChapterIndex() const {
@@ -6588,8 +6703,18 @@ void UIManager::handleInput(int ch) {
                             // played state) - never a bare file play, and never a
                             // playlist row (episodes are standalone by design).
                             std::error_code ec;
-                            if (!fs::exists(chapters_for_path_, ec)) {   // deleted since ;
-                                showTrackToast("Episode file is gone - download it again", "", "");
+                            if (!fs::exists(chapters_for_path_, ec)) {
+                                // No audio. Two honest answers, and which one
+                                // depends on whether there ever was a file: the
+                                // chapter list may have come from the feed for an
+                                // episode nobody has downloaded. Playing from a
+                                // chapter needs the local file either way -
+                                // episodes play as local files by architecture and
+                                // the live stream path cannot seek.
+                                showTrackToast(chapters_ep_downloaded_
+                                                   ? "Episode file is gone - download it again"
+                                                   : "Download the episode to play from a chapter",
+                                               "", "");
                                 return;
                             }
                             playEpisodeFile(chapters_for_path_, chapters_ep_id_,
@@ -7648,25 +7773,50 @@ void UIManager::handleInput(int ch) {
                 } else if (focus_ == Pane::DirBrowser) {
                     if (in_podcasts_ && in_podcast_feed_ && dir_cursor_ >= 1 &&
                         dir_cursor_ - 1 < (int)podcast_episodes_.size()) {
-                        // Episode row: chapters live in the DOWNLOADED file (the
-                        // reader parses the local container, and episodes play as
-                        // local files by construction - the live stream path can
-                        // neither be parsed nor seeked). Not downloaded -> say
-                        // that, not "no chapters".
+                        // Episode row: chapters come from the downloaded file if it
+                        // has them, and otherwise from the document the feed
+                        // publishes - so VIEWING no longer needs the audio at all.
+                        // (Playing from a chapter still does; that message moved to
+                        // the chapter-select handler, where it is still true.)
                         const PodcastEpisode& ep =
                             podcast_episodes_[(size_t)(dir_cursor_ - 1)];
                         std::error_code ec;
-                        std::string f = episodeCacheFile(podcast_feed_url_, ep);
-                        if (fs::exists(f, ec) && fs::file_size(f, ec) > 0) {
-                            refreshChaptersIfNeeded(f);
-                            chapters_ep_id_ = podcastEpisodeId(ep);
-                            resolveEpisodeArt(ep, chapters_ep_art_url_,
-                                              chapters_ep_art_is_feed_,
-                                              chapters_ep_art_disk_);
-                        } else {
-                            showTrackToast("Download the episode to view chapters", "", "");
+                        std::string f  = episodeCacheFile(podcast_feed_url_, ep);
+                        std::string id = podcastEpisodeId(ep);
+                        bool have_file = fs::exists(f, ec) && fs::file_size(f, ec) > 0;
+                        // Point of use, and the only point: is a cached document
+                        // present, still from this URL, and still inside the
+                        // revalidation window? An unusable one is deleted here.
+                        bool have_side = !ep.chapters_url.empty() &&
+                                         chaptersSidecarUsable(f, ep.chapters_url);
+                        // Holding nothing, re-evaluate from scratch: the file or the
+                        // sidecar may have landed since the last ; on this same row,
+                        // and the path memo alone would keep answering "empty".
+                        if (current_chapters_.empty()) chapters_for_path_.clear();
+                        refreshChaptersIfNeeded(f, have_side ? chaptersSidecarPath(f)
+                                                             : std::string());
+                        chapters_ep_id_         = id;
+                        chapters_ep_downloaded_ = have_file;
+                        resolveEpisodeArt(ep, chapters_ep_art_url_,
+                                          chapters_ep_art_is_feed_,
+                                          chapters_ep_art_disk_);
+                        if (current_chapters_.empty() && !have_side &&
+                            !ep.chapters_url.empty()) {
+                            // Nothing in hand, but the feed publishes chapters for
+                            // this episode: go and get them WITHOUT blocking the
+                            // keypress. The pane opens when they land, if this is
+                            // still the row you asked about. Pressing ; again
+                            // meanwhile re-states the status and nothing else - the
+                            // fetch in flight is never restarted or aborted.
+                            chapters_want_ep_id_ = id;
+                            chapters_want_url_   = ep.chapters_url;
+                            chapters_want_base_  = f;
+                            startChaptersFetch();
+                            showTrackToast("Loading chapters...", "", "");
                             break;
                         }
+                        // Otherwise fall through: open the pane, or say "no chapters"
+                        // honestly - nothing embedded, nothing published.
                     } else {
                         std::string p = browserEntryPath(dir_cursor_);
                         if (!p.empty() && PlaylistManager::isSupportedAudio(p)) {
@@ -9337,6 +9487,7 @@ std::string UIManager::episodeCachePath(const std::string& feed_url, const Podca
     return path;
 }
 
+
 // fs::path from UTF-8 WITHOUT the locale narrow->wide conversion (which throws on
 // bytes the ANSI codepage can't map - the pathSafeAscii comment above). Windows
 // converts explicitly; POSIX paths are raw bytes so the string passes through.
@@ -9602,6 +9753,7 @@ void UIManager::enqueueEpisodeDownload(int episode_index, bool play_when_done, b
     item.url = ep.audio_url; item.dest = dest; item.id = id;
     item.title = ep.title.empty() ? id : ep.title;
     resolveEpisodeArt(ep, item.art_url, item.art_is_feed, item.art_disk);   // slice 5
+    item.chapters_url = ep.chapters_url;    // v1.4.0: primed on completion, like the art
     item.play_when_done = play_when_done;
     if (front) podcast_queue_.push_front(item);
     else       podcast_queue_.push_back(item);
@@ -9640,8 +9792,10 @@ void UIManager::startActiveDownload(const PodcastQueueItem& item) {
     podcast_dl_ticks_ = 0;
     std::string url = item.url, dest = item.dest;
     std::string art_url = item.art_url, art_disk = item.art_disk;
+    std::string chap_url = item.chapters_url;
     bool art_is_feed = item.art_is_feed;
-    podcast_dl_thread_ = std::thread([this, url, dest, art_url, art_disk, art_is_feed]() {
+    podcast_dl_thread_ = std::thread([this, url, dest, art_url, art_disk, art_is_feed,
+                                      chap_url]() {
         core::ProgressFn progress = [this](std::uint64_t recv, std::uint64_t total) {
             podcast_dl_received_.store(recv);
             podcast_dl_total_.store(total);
@@ -9661,6 +9815,17 @@ void UIManager::startActiveDownload(const PodcastQueueItem& item) {
                 }
             }
         }
+        // v1.4.0: while we're online, cache the feed's chapter document beside the
+        // audio, so this episode has its chapters offline - the one you pulled at
+        // home and open on the couch with no wifi must not have lost them to lazy
+        // fetching. Strictly AFTER the audio succeeded and entirely outside the
+        // retry state machine: the episode is already complete (the file IS the
+        // truth), so a 404, a timeout or a garbage body is logged and DROPPED -
+        // `attempts` is never touched, nothing is requeued, no toast. The sidecar
+        // is simply absent, and the next ; on the episode refetches it. A dead
+        // chapters URL can cost the chapters; it can never cost the audio.
+        if (ok && !chap_url.empty() && !chaptersSidecarUsable(dest, chap_url))
+            (void)fetchChaptersSidecar(dest, chap_url);
         podcast_dl_ok_.store(ok);
         podcast_dl_done_.store(true);   // set AFTER ok, so the reader sees a consistent result
     });
@@ -9698,6 +9863,11 @@ void UIManager::deleteEpisodeDownload(int episode_index) {
         return;
     }
     fs::remove(file, ec);
+    // The chapters sidecar goes with the audio: unlike resume position and played
+    // state - which are kept on purpose, so a re-download resumes - it is derived,
+    // refetchable data with nothing of the user's in it.
+    fs::remove(chaptersSidecarPath(file), ec);
+    fs::remove(chaptersSrcPath(file), ec);
     showTrackToast("Deleted download", sanitizeForDisplay(ep.title), "");
     requestRedraw();
 }
@@ -9745,6 +9915,79 @@ void UIManager::pollPodcastDownload() {
         pumpPodcastQueue();     // start the next queued item
         requestRedraw();
     }
+}
+
+// ─── Feed-published chapters: the browse-time fetch ──────────────────────────
+// One worker for whatever ; last asked for. Idempotent under hammering: a fetch
+// already running is never restarted and never cancelled, so pressing ; again on
+// the same episode only re-states the status. A ; on a DIFFERENT episode
+// meanwhile just moves the want - the running fetch still finishes and still
+// caches its document (never wasted), and the newly-wanted one starts when the
+// old one lands.
+void UIManager::startChaptersFetch() {
+    if (podcast_chap_active_.load()) return;                  // single flight
+    if (chapters_want_ep_id_.empty() || chapters_want_url_.empty() ||
+        chapters_want_base_.empty()) return;
+
+    podcast_chap_active_.store(true);
+    podcast_chap_done_.store(false);
+    podcast_chap_ok_.store(false);
+    { std::lock_guard<std::mutex> lk(podcast_chap_mtx_);
+      podcast_chap_key_  = chapters_want_ep_id_;
+      podcast_chap_base_ = chapters_want_base_; }
+    if (podcast_chap_thread_.joinable()) podcast_chap_thread_.join();
+    std::string url = chapters_want_url_, base = chapters_want_base_;
+    podcast_chap_thread_ = std::thread([this, url, base]() {
+        bool ok = fetchChaptersSidecar(base, url);
+        podcast_chap_ok_.store(ok);
+        podcast_chap_done_.store(true);   // set AFTER ok, so the reader sees a consistent result
+    });
+}
+
+// UI thread, per-frame: install a landed fetch. The pane opens only if the episode
+// the user asked about is STILL the highlighted one - anything else has already
+// done its job by reaching the cache, and stealing the pane from a row the user
+// has since moved to would be the wrong kind of helpful.
+void UIManager::pollPodcastChapters() {
+    if (!podcast_chap_done_.exchange(false)) return;
+    std::string key, base;
+    { std::lock_guard<std::mutex> lk(podcast_chap_mtx_);
+      key = podcast_chap_key_; base = podcast_chap_base_; }
+    const bool ok = podcast_chap_ok_.load();
+    if (podcast_chap_thread_.joinable()) podcast_chap_thread_.join();
+    podcast_chap_active_.store(false);
+
+    if (key == chapters_want_ep_id_) {          // the want-key IS what was last asked for
+        chapters_want_ep_id_.clear();
+        chapters_want_url_.clear();
+        chapters_want_base_.clear();
+        if (!ok) {
+            // Logged and dropped in the worker; the user gets one honest line, and
+            // a LATER ; retries. One attempt per explicit press: human-rate, so no
+            // storm is possible and no back-off latch is needed.
+            showTrackToast("Couldn't fetch chapters", "", "");
+        } else if (in_podcasts_ && in_podcast_feed_ && dir_cursor_ >= 1 &&
+                   dir_cursor_ - 1 < (int)podcast_episodes_.size() &&
+                   podcastEpisodeId(podcast_episodes_[(size_t)(dir_cursor_ - 1)]) == key) {
+            const PodcastEpisode& ep = podcast_episodes_[(size_t)(dir_cursor_ - 1)];
+            std::error_code ec;
+            chapters_for_path_.clear();     // the sidecar landed after the memo was set
+            refreshChaptersIfNeeded(base, chaptersSidecarPath(base));
+            chapters_ep_id_         = key;
+            chapters_ep_downloaded_ = fs::exists(base, ec) && fs::file_size(base, ec) > 0;
+            resolveEpisodeArt(ep, chapters_ep_art_url_, chapters_ep_art_is_feed_,
+                              chapters_ep_art_disk_);
+            if (!current_chapters_.empty()) {
+                chapter_cursor_ = 0;        // a browsed episode has no playhead to open on
+                right_pane_ = RightPane::Chapters;
+            } else {
+                showTrackToast("No chapters in this track", "", "");   // fetched, but says nothing
+            }
+            requestRedraw();
+        }
+        // Moved to another row: cached silently, no pane, no message.
+    }
+    startChaptersFetch();   // a ; that arrived mid-flight has been waiting on this join
 }
 
 // Per-tick resume latch (mirrors updateBookProgress): track the playing episode's

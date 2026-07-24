@@ -143,6 +143,37 @@ static void test_episode_image_override() {
     }
 }
 
+// <podcast:chapters url type> extraction into PodcastEpisode::chapters_url, and
+// the type gating that keeps a non-JSON document from ever being fetched.
+static void test_chapters_url_extraction() {
+    const std::string xml = R"(<rss version="2.0" xmlns:podcast="https://podcastindex.org/namespace/1.0">
+  <channel><title>Chap Cast</title>
+    <item><title>json-type</title><enclosure url="http://x/1.mp3"/>
+      <podcast:chapters url="http://x/1.json" type="application/json"/></item>
+    <item><title>no-type</title><enclosure url="http://x/2.mp3"/>
+      <podcast:chapters url="http://x/2.json"/></item>
+    <item><title>xml-type</title><enclosure url="http://x/3.mp3"/>
+      <podcast:chapters url="http://x/3.xml" type="application/xml+psc"/></item>
+    <item><title>none</title><enclosure url="http://x/4.mp3"/></item>
+    <item><title>entity-url</title><enclosure url="http://x/5.mp3"/>
+      <podcast:chapters url="http://x/5.json?a=1&amp;b=2" type="application/json; charset=utf-8"/></item>
+  </channel></rss>)";
+    PodcastFeed f = parsePodcastFeed(xml);
+    CHECK(f.episodes.size() == 5, "episodes=%zu", f.episodes.size());
+    if (f.episodes.size() == 5) {
+        CHECK(f.episodes[0].chapters_url == "http://x/1.json",
+              "explicit json type -> [%s]", f.episodes[0].chapters_url.c_str());
+        CHECK(f.episodes[1].chapters_url == "http://x/2.json",
+              "absent type is eligible -> [%s]", f.episodes[1].chapters_url.c_str());
+        CHECK(f.episodes[2].chapters_url.empty(),
+              "non-json type -> not fetched -> empty, got [%s]", f.episodes[2].chapters_url.c_str());
+        CHECK(f.episodes[3].chapters_url.empty(),
+              "no chapters element -> empty, got [%s]", f.episodes[3].chapters_url.c_str());
+        CHECK(f.episodes[4].chapters_url == "http://x/5.json?a=1&b=2",
+              "entity-unescaped url + json w/ params -> [%s]", f.episodes[4].chapters_url.c_str());
+    }
+}
+
 static void test_malformed_item_skipped() {
     const std::string xml = R"(<rss version="2.0"><channel><title>Malformed Cast</title>
     <item><title>good-1</title><enclosure url="http://x/1.mp3"/></item>
@@ -248,6 +279,7 @@ int main() {
     test_duration_forms();
     test_cdata_html_entities();
     test_episode_image_override();
+    test_chapters_url_extraction();
     test_malformed_item_skipped();
     test_enclosure_attr_order_and_entity_url();
     test_defensive_garbage();

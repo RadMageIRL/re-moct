@@ -22,6 +22,28 @@ PodcastClient::Result PodcastClient::fetch(const std::string& url) {
     return r;
 }
 
+// GET one chapters document. The bounds are the point: the sampled real documents
+// run a couple of kilobytes, so the 64 MB / 30 s a whole feed is allowed would be
+// the wrong shape of trust for a file this small. 1 MB is orders of magnitude of
+// headroom over anything legitimate and still refuses to buffer a hostile server's
+// endless response; 15 s is generous for a KB-scale GET that runs on a worker
+// thread. Same UA as the feed fetch — same publisher, same client.
+PodcastClient::ChaptersResult PodcastClient::fetchChapters(const std::string& url) {
+    ChaptersResult r;
+    if (url.empty()) return r;
+
+    core::HttpRequest req;
+    req.url        = url;
+    req.timeout_ms = 15000;
+    req.max_body   = 1u * 1024 * 1024;
+    req.user_agent = "RE-MOCT/1.4 (podcast client)";
+
+    core::HttpResponse resp = core::http().fetch(req);
+    r.fetched = resp.ok && !resp.body.empty();
+    if (r.fetched) r.body = std::move(resp.body);
+    return r;
+}
+
 bool PodcastClient::download(const std::string& url, const std::string& dest_path,
                              const core::ProgressFn& progress, const std::int32_t* cancel) {
     if (url.empty() || dest_path.empty()) return false;

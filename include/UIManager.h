@@ -627,7 +627,13 @@ private:
     // Chapter table for the currently playing book (empty if none / not a book).
     std::vector<Mp4Chapter> current_chapters_;
     std::string             chapters_for_path_;   // path current_chapters_ reflects
-    void refreshChaptersIfNeeded(const std::string& path);
+    // `sidecar`, when given, is a cached <podcast:chapters> JSON document to fall
+    // back on if the file itself yields nothing. ONLY the ; handler's episode
+    // branch passes one - it alone knows which episode a path belongs to - so
+    // books and plain files reach the identical one-argument behaviour and never
+    // gain so much as an extra filesystem probe.
+    void refreshChaptersIfNeeded(const std::string& path,
+                                 const std::string& sidecar = std::string());
     int  currentChapterIndex() const;             // index into current_chapters_, -1 if none
     void jumpChapter(int dir);                     // -1 prev (position-aware), +1 next; ±5s fallback
     // Audiobook resume (Phase C): latch the active book's live position and
@@ -756,6 +762,7 @@ private:
         std::string art_url;                // slice 5: episode-else-feed art URL
         bool        art_is_feed = false;    // true -> disk-cacheable show art
         std::string art_disk;               // feed-art cache path (when art_is_feed)
+        std::string chapters_url;           // v1.4.0: <podcast:chapters> doc, primed on completion
         bool play_when_done = false;
         int  attempts = 0;
     };
@@ -819,6 +826,37 @@ private:
     std::string                 chapters_ep_art_url_;
     bool                        chapters_ep_art_is_feed_ = false;
     std::string                 chapters_ep_art_disk_;
+    // Was the audio actually on disk when ; built this list? Chapters can now be
+    // VIEWED for an episode that was never downloaded (they come from the feed),
+    // so "no file at Enter time" has two different honest answers and this tells
+    // them apart: never downloaded, or downloaded and deleted since.
+    bool                        chapters_ep_downloaded_ = false;
+
+    // Feed-published chapters (v1.4.0). A <podcast:chapters> JSON document is
+    // cached beside the episode as a two-file sidecar - <cachefile>.chapters.json
+    // (the raw document) and <cachefile>.chapters.src (the URL that produced it) -
+    // written by the download worker so a downloaded episode keeps its chapters
+    // OFFLINE, and fetched lazily on ; for an episode that was never downloaded.
+    // At most one network hit per episode; never a bulk fetch on feed refresh.
+    //
+    // The fetch is a single-flight worker with a want-key, the art/feed idiom:
+    // want_ep_id_ is "what the user last asked for", so hammering ; is idempotent,
+    // a fetch already in flight is never restarted or aborted, and a result that
+    // lands for a row the user has moved off still reaches its cache - it just
+    // does not open the pane.
+    std::thread                 podcast_chap_thread_;
+    std::atomic<bool>           podcast_chap_active_{false};
+    std::atomic<bool>           podcast_chap_done_{false};
+    std::atomic<bool>           podcast_chap_ok_{false};   // set before done_
+    std::mutex                  podcast_chap_mtx_;
+    std::string                 podcast_chap_key_;         // (guarded) episode id being fetched
+    std::string                 podcast_chap_base_;        // (guarded) its episode cache path
+    std::string                 chapters_want_ep_id_;      // "" = nothing outstanding
+    std::string                 chapters_want_url_;
+    std::string                 chapters_want_base_;
+
+    void startChaptersFetch();     // spawn for the current want, if the worker is idle
+    void pollPodcastChapters();    // UI thread, per-frame: install a landed fetch
     // THE playing-item predicate: true iff the current audio is a podcast episode
     // (state-derived, since episodes play as local files). One definition so every
     // consumer decides on purpose instead of inheriting music behaviour.

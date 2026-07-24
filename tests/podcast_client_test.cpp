@@ -169,6 +169,37 @@ int main() {
         CHECK(h.last_dl.url == "SENTINEL");   // fetchToFile never invoked
     }
 
+    // ---- (8) fetchChapters(): kilobyte-scale caps + verbatim body ----
+    {
+        const char* kDoc = R"({"version":"1.1.0","chapters":[{"startTime":0,"title":"Intro"}]})";
+        h.next = core::HttpResponse{}; h.next.ok = true; h.next.status = 200; h.next.body = kDoc;
+        int before = h.calls;
+        PodcastClient::ChaptersResult r = PodcastClient::fetchChapters("http://x/ch.json");
+        CHECK(h.calls == before + 1);
+        CHECK(h.last.url == "http://x/ch.json");
+        CHECK(h.last.max_body == 1u * 1024 * 1024);       // 1 MB, NOT the feed's 64 MB
+        CHECK(h.last.timeout_ms == 15000);                // short, NOT the feed's 30 s
+        CHECK(h.last.user_agent == "RE-MOCT/1.4 (podcast client)");
+        CHECK(r.fetched);
+        CHECK(r.body == kDoc);                            // returned verbatim, unparsed
+    }
+
+    // ---- (9) fetchChapters(): network failure -> not fetched, empty body ----
+    {
+        h.next = core::HttpResponse{}; h.next.ok = false; h.next.body = "";
+        PodcastClient::ChaptersResult r = PodcastClient::fetchChapters("http://x/dead.json");
+        CHECK(!r.fetched);
+        CHECK(r.body.empty());
+    }
+
+    // ---- (10) fetchChapters(): empty URL -> no HTTP call ----
+    {
+        int before = h.calls;
+        PodcastClient::ChaptersResult r = PodcastClient::fetchChapters("");
+        CHECK(h.calls == before);
+        CHECK(!r.fetched);
+    }
+
     core::setHttp(nullptr);   // restore
 
     if (g_fail == 0) std::printf("podcast_client_test: ALL PASS\n");

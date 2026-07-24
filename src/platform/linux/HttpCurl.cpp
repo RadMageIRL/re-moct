@@ -46,6 +46,8 @@
 #include <curl/curl.h>
 
 #include <cmath>
+#include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <mutex>
 #include <string>
@@ -269,6 +271,73 @@ struct CurlHttp final : core::IHttp {
     core::HttpResponse fetch(const core::HttpRequest& req) override {
         ensureGlobalInit();
         return executeRequest(nullptr, req, req.user_agent, req.timeout_ms);
+    }
+
+    // Streaming GET to a file (podcast episodes): body goes straight to disk via the
+    // write callback; XFERINFO gives progress AND polls req.cancel. Mirrors
+    // HttpWinInet::fetchToFile's contract (partial removed on cancel/error).
+    core::HttpResponse fetchToFile(const core::HttpRequest& req, const std::string& dest_path,
+                                   const core::ProgressFn& progress) override {
+        ensureGlobalInit();
+        core::HttpResponse res;
+        if (wasCancelled(req)) { core::finalizeCancelled(res); return res; }
+
+        FILE* f = std::fopen(dest_path.c_str(), "wb");
+        if (!f) return res;
+
+        CURL* h = curl_easy_init();
+        if (!h) { std::fclose(f); return res; }
+
+        struct DlCtx {
+            FILE* f; const core::HttpRequest* req; const core::ProgressFn* progress;
+            std::uint64_t received; bool write_error; bool cap_hit;
+        } ctx{ f, &req, &progress, 0, false, false };
+
+        curl_easy_setopt(h, CURLOPT_URL, req.url.c_str());
+        curl_easy_setopt(h, CURLOPT_USERAGENT,
+                         req.user_agent.empty() ? kDefaultUA : req.user_agent.c_str());
+        curl_easy_setopt(h, CURLOPT_WRITEFUNCTION,
+            +[](char* ptr, size_t sz, size_t nm, void* ud) -> size_t {
+                auto* c = static_cast<DlCtx*>(ud);
+                size_t n = sz * nm;
+                if (std::fwrite(ptr, 1, n, c->f) != n) { c->write_error = true; return 0; }
+                c->received += n;
+                if (c->req->max_body && c->received > c->req->max_body) { c->cap_hit = true; return 0; }
+                return n;
+            });
+        curl_easy_setopt(h, CURLOPT_WRITEDATA, &ctx);
+        curl_easy_setopt(h, CURLOPT_NOPROGRESS, 0L);
+        curl_easy_setopt(h, CURLOPT_XFERINFOFUNCTION,
+            +[](void* ud, curl_off_t dltotal, curl_off_t dlnow, curl_off_t, curl_off_t) -> int {
+                auto* c = static_cast<DlCtx*>(ud);
+                if (core::httpCancelRequested(c->req->cancel)) return 1;   // abort
+                if (*c->progress) (*c->progress)((std::uint64_t)dlnow, (std::uint64_t)dltotal);
+                return 0;
+            });
+        curl_easy_setopt(h, CURLOPT_XFERINFODATA, &ctx);
+        curl_easy_setopt(h, CURLOPT_NOSIGNAL, 1L);
+        curl_easy_setopt(h, CURLOPT_FOLLOWLOCATION, 1L);
+        curl_easy_setopt(h, CURLOPT_MAXREDIRS, 30L);
+        if (req.timeout_ms > 0) {
+            curl_easy_setopt(h, CURLOPT_CONNECTTIMEOUT_MS, (long)req.timeout_ms);
+            curl_easy_setopt(h, CURLOPT_LOW_SPEED_LIMIT, 1L);
+            curl_easy_setopt(h, CURLOPT_LOW_SPEED_TIME, (long)((req.timeout_ms + 999) / 1000));
+        }
+
+        CURLcode rc = curl_easy_perform(h);
+        long status = 0; curl_easy_getinfo(h, CURLINFO_RESPONSE_CODE, &status);
+        res.status = status;
+        curl_easy_cleanup(h);
+        std::fclose(f);
+
+        if (rc == CURLE_ABORTED_BY_CALLBACK) {
+            core::finalizeCancelled(res); std::remove(dest_path.c_str()); return res;
+        }
+        if (ctx.cap_hit) { res.truncated = true; res.ok = false; std::remove(dest_path.c_str()); return res; }
+        if (rc != CURLE_OK || ctx.write_error) { res.ok = false; std::remove(dest_path.c_str()); return res; }
+        res.ok = true;
+        if (progress) progress(ctx.received, ctx.received);   // final 100%
+        return res;
     }
 
     std::unique_ptr<core::IHttpSession>

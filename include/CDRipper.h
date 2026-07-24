@@ -142,6 +142,10 @@ private:
                            size_t             ctdb_total_bytes = 0,
                            ebur128_state**    out_ebur = nullptr);
 
+    // ctdb_status / ctdb_disc_id are DISC-scope (CUETools mode only): one verdict
+    // and one disc ID for the whole rip, written identically into every track's
+    // tags the way album ReplayGain already is. Empty in every other mode, and on
+    // a cancelled or failed rip, in which case no CTDB tag is written at all.
     static void tagFile(const std::string&          path,
                         const MBRelease&             rel,
                         const MBTrack*               mt,
@@ -149,7 +153,9 @@ private:
                         const std::vector<uint8_t>&  art,
                         const ARTrackResult&         ar,
                         const RGResult&              rg,
-                        RipMode                      mode);
+                        RipMode                      mode,
+                        const std::string&           ctdb_status,
+                        const std::string&           ctdb_disc_id);
 
     // AccurateRip
     static uint32_t computeCDDB(const std::vector<CDTrack>& tracks,

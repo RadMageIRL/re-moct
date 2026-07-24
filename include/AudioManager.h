@@ -33,8 +33,9 @@ public:
 
     static constexpr int VIZ_BUF_SIZE = 2048;
 
-    // Crossfade duration in seconds (0 = gapless/instant, default 2s)
-    float crossfade_secs = 2.0f;
+    // Crossfade duration in seconds (0 = gapless/instant - the default; the
+    // product sets this from the "crossfade" config key at startup)
+    float crossfade_secs = 0.0f;
 
     AudioManager();
     ~AudioManager();
@@ -58,6 +59,12 @@ public:
     // advancing to its end). UI reads this to let the progress head complete instead
     // of snapping to the incoming track's 0% mid-overlap. Read-only; no side effects.
     bool isCrossfading() const { return crossfading_.load(std::memory_order_acquire); }
+
+    // True while a next track is armed (preloadNext published, not yet consumed
+    // by a swap). The UI-thread arm poll (NextArm.h) keys off this; it is the
+    // ONLY armed-state read the UI gets - next_path_ is audio-thread-mutated, so
+    // no string accessor exists on purpose.
+    bool hasNextArmed() const { return next_decoder_initialised_.load(std::memory_order_acquire); }
 
     // Volume
     void  setVolume(float v);
@@ -101,7 +108,14 @@ public:
     void setTrackEndCallback(TrackEndCallback cb)    { on_track_end_    = std::move(cb); }
     void setPreloadNextCallback(TrackEndCallback cb) { on_preload_next_ = std::move(cb); }
     void signalTrackEnd() { track_ended_flag_.store(true); }
-    void clearTrackEnd()  { track_ended_flag_.store(false); }
+    void clearTrackEnd()  { track_ended_flag_.store(false); track_end_advanced_.store(false); }
+    // One-shot: true when the track_end being handled was a gapless-splice
+    // ADVANCE (the audio thread already swapped the armed track in; it is
+    // playing). The track-end callback then only ACCOUNTS - pops the consumed
+    // queue head or advances the index - and never restarts the track from
+    // zero, which was an audible double-start. False = the track ended into
+    // silence and the callback must actually start whatever plays next.
+    bool takeTrackEndAdvanced() { return track_end_advanced_.exchange(false); }
     bool pollPreloadNext() { return preload_next_flag_.exchange(false); }
 
     // ── CD Audio mode ────────────────────────────────────────────────────────
@@ -217,9 +231,14 @@ private:
 
     void initCrossfade();    // swap decoders, start fade
     void teardownNext();     // discard preloaded decoder
+    // Install a swap the audio thread has already performed. MAIN THREAD ONLY,
+    // and acquires no lock: its two callers (pollEvents, teardownNext) are both
+    // UI-thread, and teardownNext runs with state_mutex_ already held.
+    void installPendingSwap();
 
     std::atomic<PlaybackState> state_ { PlaybackState::Stopped };
     std::atomic<bool>          track_ended_flag_ { false };
+    std::atomic<bool>          track_end_advanced_ { false };  // splice-advance marker, see takeTrackEndAdvanced
     std::atomic<bool>          preload_next_flag_{ false }; // crossfade done — preload only
     std::atomic<bool>          bpm_needed_flag_  { false };
     std::atomic<bool>          seeking_ { false };

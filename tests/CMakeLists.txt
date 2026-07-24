@@ -42,6 +42,19 @@ else()
     set(PLUGINLOADER_LIBS dl)
 endif()
 
+# secret-at-rest backend (DPAPI on Windows / machine-salt obfuscation + MD5 on
+# Linux). Config.cpp now calls secret::protect/unprotect, so EVERY test that links
+# Config.cpp must also link this backend (the "new dep in a shared TU" rule). The
+# Linux impl needs lib/ on the include path for md5.h.
+if(WIN32)
+    set(SECRET_IMPL ${CMAKE_SOURCE_DIR}/src/platform/win/SecretStoreWin.cpp)
+    set(SECRET_LIBS crypt32)
+else()
+    set(SECRET_IMPL ${CMAKE_SOURCE_DIR}/src/platform/linux/SecretStorePosix.cpp
+                    ${CMAKE_SOURCE_DIR}/lib/md5.c)
+    set(SECRET_LIBS "")
+endif()
+
 add_executable(iheart_sm_test
     iheart_sm_test.cpp
     ${CMAKE_SOURCE_DIR}/plugins/stream/IHeartNowPlayingSM.cpp   # moved in slice c
@@ -110,6 +123,100 @@ add_executable(md5_test
 )
 target_include_directories(md5_test PRIVATE ${CMAKE_SOURCE_DIR}/lib)
 add_test(NAME md5_test COMMAND md5_test)
+
+# secret-at-rest: base64 codec (round-trip + defensive decode) + secret protect/
+# unprotect through the REAL platform backend - DPAPI on Windows (needs crypt32),
+# machine-salt obfuscation + MD5 on Linux. Same test file, both matrix jobs.
+add_executable(secret_store_test secret_store_test.cpp ${SECRET_IMPL})
+target_include_directories(secret_store_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/lib)
+target_link_libraries(secret_store_test PRIVATE ${SECRET_LIBS})
+add_test(NAME secret_store_test COMMAND secret_store_test)
+
+# podcast-parser (Podcasts slice 1) - include/PodcastFeed.h proven in ISOLATION
+# before any [Podcasts] UI/HTTP wiring: the one genuinely-new, genuinely-messy
+# routine (RSS/Atom XML-in-the-wild) validated standalone. Header-only, so no
+# source to link. Inline rule cases + three real feed fixtures (ART19 + acast)
+# found via PODCAST_FIXTURE_DIR. Pure, both matrix jobs.
+add_executable(podcast_parse_test podcast_parse_test.cpp)
+target_include_directories(podcast_parse_test PRIVATE ${CMAKE_SOURCE_DIR}/include)
+target_compile_definitions(podcast_parse_test PRIVATE
+    PODCAST_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/podcasts")
+add_test(NAME podcast_parse_test COMMAND podcast_parse_test)
+
+# podcast-chapters (Podcasts v1.4.0) - parsePodcastChaptersJson (PodcastChapters.h)
+# proven in ISOLATION, the single trust boundary for a feed-published chapters
+# document off the open internet and re-read from a disk sidecar. Header-only, so no
+# source to link; needs lib/ for the vendored json.hpp. The full hostile-input
+# matrix - garbage, wrong shapes, out-of-range values, oversized/control-char
+# titles, disorder, dupes, and volume caps. Pure, device-free, both matrix jobs.
+add_executable(podcast_chapters_test podcast_chapters_test.cpp)
+target_include_directories(podcast_chapters_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/lib)
+add_test(NAME podcast_chapters_test COMMAND podcast_chapters_test)
+
+# podcast-client (Podcasts slice 2) - the fetch-and-parse glue over the core::IHttp
+# seam, proven headless with a FakeHttp (core::setHttp). Asserts the feed-sized
+# request (64 MB cap / 30 s) and the fetched-vs-parsed distinction the honest
+# toasts use. Links the real HTTP impl only to define http()/setHttp() (the fake
+# overrides at runtime), exactly like scrobble_request_test. Both matrix jobs.
+add_executable(podcast_client_test
+    podcast_client_test.cpp
+    ${CMAKE_SOURCE_DIR}/src/PodcastClient.cpp
+    ${HTTP_IMPL}
+)
+target_include_directories(podcast_client_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/lib)
+target_link_libraries(podcast_client_test PRIVATE ${HTTP_LIBS})
+add_test(NAME podcast_client_test COMMAND podcast_client_test)
+
+# podcast-index (Podcasts slice 6) - the byterm search client's PURE pieces:
+# authToken (reused MBLookup SHA-1 -> lowercase hex) and parse (feeds[] extraction +
+# defensive floor). No live network here; links the real HTTP impl only so http() is
+# defined (search() is not called), same as podcast_client_test. Both matrix jobs.
+add_executable(podcastindex_parse_test
+    podcastindex_parse_test.cpp
+    ${CMAKE_SOURCE_DIR}/src/PodcastIndex.cpp
+    ${CMAKE_SOURCE_DIR}/src/MBLookup.cpp
+    ${HTTP_IMPL}
+)
+target_include_directories(podcastindex_parse_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/lib)
+target_compile_definitions(podcastindex_parse_test PRIVATE
+    PODCASTINDEX_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/podcastindex")
+target_link_libraries(podcastindex_parse_test PRIVATE ${HTTP_LIBS})
+add_test(NAME podcastindex_parse_test COMMAND podcastindex_parse_test)
+
+# podcast-state (Podcasts slice 3) - the episode identity resolver (PodcastFeed.h)
+# + the DigiConfig podcast_progress round-trip (resume pos + played flag). Links
+# Config.cpp (+ the secret backend it now depends on), redirects the config dir to a
+# temp. Pure, both matrix jobs.
+add_executable(podcast_state_test
+    podcast_state_test.cpp
+    ${CMAKE_SOURCE_DIR}/src/Config.cpp
+    ${SECRET_IMPL}   # Config.cpp -> secret::protect/unprotect
+)
+target_include_directories(podcast_state_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/lib)
+target_link_libraries(podcast_state_test PRIVATE ${SECRET_LIBS})
+add_test(NAME podcast_state_test COMMAND podcast_state_test)
+
+# Queue-aware preload (XF C3) - resolveNextPath (NextArm.h) precedence table
+# against the REAL PlaylistManager: repeat-one beats all, queue head beats
+# peekNext, FIFO head-only, CD/stream rejected, shuffle + repeat-all wrap.
+# Device-free (only the resolver is instantiated; reconcileNextArm never called
+# here so no AudioManager linkage) - both matrix jobs. The reconcile/arming half
+# is xfade_handoff_test's P4 block (needs a device). NextArm.h pulls in
+# AudioManager.h for the reconcile decl, hence the lib/ + taglib include dirs.
+add_executable(next_resolver_test
+    next_resolver_test.cpp
+    ${CMAKE_SOURCE_DIR}/src/PlaylistManager.cpp
+)
+target_include_directories(next_resolver_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/lib
+    ${TAGLIB_INCLUDE_DIRS} ${FDKAAC_INCLUDE} ${OPUS_INCLUDE} ${WAVPACK_INCLUDE})
+target_link_libraries(next_resolver_test PRIVATE ${TAGLIB_LIBRARIES})
+add_test(NAME next_resolver_test COMMAND next_resolver_test)
 
 # Viz FFT (Slice C) - include/VizFFT.h proven in ISOLATION before it touched
 # computeVizBins(): DC / bin-centred sines / 100 Hz-20 kHz sweep alias check
@@ -321,6 +428,9 @@ if(WIN32)
     add_executable(xfade_handoff_test
         xfade_handoff_test.cpp
         ${CMAKE_SOURCE_DIR}/src/AudioManager.cpp
+        # P3 product-path block: the real PlaylistManager drives the repeat/queue
+        # decisions exactly as main.cpp's callbacks do (TagLib already linked).
+        ${CMAKE_SOURCE_DIR}/src/PlaylistManager.cpp
         # stream-record R1: AudioManager owns the capture engine (the tap's
         # teardown ordering lives inside AudioManager), so this target carries
         # the recorder + its two encoders. Inert here — nothing arms it.
@@ -514,8 +624,11 @@ set_tests_properties(rip_encoder_seam_test PROPERTIES TIMEOUT 60)
 add_executable(encoder_quality_test
     encoder_quality_test.cpp
     ${CMAKE_SOURCE_DIR}/src/Config.cpp
+    ${SECRET_IMPL}   # Config.cpp -> secret::protect/unprotect
 )
-target_include_directories(encoder_quality_test PRIVATE ${CMAKE_SOURCE_DIR}/include)
+target_include_directories(encoder_quality_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/lib)
+target_link_libraries(encoder_quality_test PRIVATE ${SECRET_LIBS})
 add_test(NAME encoder_quality_test COMMAND encoder_quality_test)
 set_tests_properties(encoder_quality_test PROPERTIES TIMEOUT 30)
 

@@ -680,7 +680,9 @@ void CDRipper::tagFile(const std::string&         path,
                        const std::vector<uint8_t>& art,
                        const ARTrackResult&        ar,
                        const RGResult&             rg,
-                       RipMode                     mode) {
+                       RipMode                     mode,
+                       const std::string&          ctdb_status,
+                       const std::string&          ctdb_disc_id) {
     try {
 #ifdef _WIN32
         auto wp = utf8_to_wide(path);        // TagLib::FileName is wide on Windows
@@ -751,6 +753,10 @@ void CDRipper::tagFile(const std::string&         path,
                 addUserTxt("ACCURATERIPCRC",   std::string(ar_crc_str));
                 addUserTxt("ACCURATERIPCOUNT", std::string(ar_conf_str));
             }
+            if (!ctdb_status.empty()) {
+                addUserTxt("CTDBDISCSTATUS", ctdb_status);
+                addUserTxt("CTDBDISCID",     ctdb_disc_id);
+            }
             if (rg.valid) {
                 addUserTxt("REPLAYGAIN_TRACK_GAIN", rg_str(rg.track_gain));
                 addUserTxt("REPLAYGAIN_TRACK_PEAK", rg_peak_str(rg.track_peak));
@@ -780,6 +786,10 @@ void CDRipper::tagFile(const std::string&         path,
                 tag->addField("ACCURATERIP",    TagLib::String(ar_str,       TagLib::String::UTF8),true);
                 tag->addField("ACCURATERIPCRC", TagLib::String(ar_crc_str,   TagLib::String::UTF8),true);
                 tag->addField("ACCURATERIPCOUNT",TagLib::String(ar_conf_str, TagLib::String::UTF8),true);
+            }
+            if (!ctdb_status.empty()) {
+                tag->addField("CTDBDISCSTATUS",TagLib::String(ctdb_status,  TagLib::String::UTF8),true);
+                tag->addField("CTDBDISCID",    TagLib::String(ctdb_disc_id, TagLib::String::UTF8),true);
             }
             if (rg.valid) {
                 tag->addField("REPLAYGAIN_TRACK_GAIN",TagLib::String(rg_str(rg.track_gain),TagLib::String::UTF8),true);
@@ -819,6 +829,10 @@ void CDRipper::tagFile(const std::string&         path,
                 tag->addField("ACCURATERIPCRC", TagLib::String(ar_crc_str,   TagLib::String::UTF8),true);
                 tag->addField("ACCURATERIPCOUNT",TagLib::String(ar_conf_str, TagLib::String::UTF8),true);
             }
+            if (!ctdb_status.empty()) {
+                tag->addField("CTDBDISCSTATUS",TagLib::String(ctdb_status,  TagLib::String::UTF8),true);
+                tag->addField("CTDBDISCID",    TagLib::String(ctdb_disc_id, TagLib::String::UTF8),true);
+            }
             if (rg.valid) {
                 tag->addField("R128_TRACK_GAIN",
                     TagLib::String(std::to_string(r128FromDb(rg.track_gain)),TagLib::String::UTF8),true);
@@ -854,6 +868,10 @@ void CDRipper::tagFile(const std::string&         path,
                 tag->addValue("ACCURATERIP",     TagLib::String(ar_str,      TagLib::String::UTF8), true);
                 tag->addValue("ACCURATERIPCRC",  TagLib::String(ar_crc_str,  TagLib::String::UTF8), true);
                 tag->addValue("ACCURATERIPCOUNT",TagLib::String(ar_conf_str, TagLib::String::UTF8), true);
+            }
+            if (!ctdb_status.empty()) {
+                tag->addValue("CTDBDISCSTATUS",TagLib::String(ctdb_status,  TagLib::String::UTF8), true);
+                tag->addValue("CTDBDISCID",    TagLib::String(ctdb_disc_id, TagLib::String::UTF8), true);
             }
             if (rg.valid) {
                 tag->addValue("REPLAYGAIN_TRACK_GAIN",TagLib::String(rg_str(rg.track_gain),TagLib::String::UTF8),true);
@@ -893,6 +911,10 @@ void CDRipper::tagFile(const std::string&         path,
                 setFree("ACCURATERIP",      ar_str);
                 setFree("ACCURATERIPCRC",   std::string(ar_crc_str));
                 setFree("ACCURATERIPCOUNT", std::string(ar_conf_str));
+            }
+            if (!ctdb_status.empty()) {
+                setFree("CTDBDISCSTATUS", ctdb_status);
+                setFree("CTDBDISCID",     ctdb_disc_id);
             }
             if (rg.valid) {
                 setFree("REPLAYGAIN_TRACK_GAIN", rg_str(rg.track_gain));
@@ -2031,6 +2053,14 @@ void CDRipper::worker(std::string          drive_letter,
     }
 
     // ── CTDB finalization (CUETools mode) ────────────────────────────────
+    // Both of these outlive the block so the tagging pass below can stamp them
+    // into the files. They stay EMPTY in every other mode, and on a cancelled or
+    // failed rip, which is the honest outcome: no verdict was reached, so no
+    // verdict is recorded. The disc ID rides along with the verdict because a
+    // verdict on its own cannot be re-checked later - the ID is what identifies
+    // this disc to the database.
+    std::string ctdb_status;
+    std::string ctdb_disc_id;
     if (mode == RipMode::CUETools && !cancel_.load() && !any_error) {
         // The running CRC32 already excludes BOTH the first and last 10 sectors:
         // start-trim is gated inline, and the disc total (ctdb_total_bytes) was
@@ -2038,6 +2068,7 @@ void CDRipper::worker(std::string          drive_letter,
         // were fed (CRC32 can't be un-fed after the fact). Finalize = XOR ones.
         uint32_t ctdb_final = ctdb_state.ctdb_crc ^ 0xFFFFFFFFu;
         char ctdb_id[9]; snprintf(ctdb_id, sizeof(ctdb_id), "%08x", ctdb_final);
+        ctdb_disc_id = ctdb_id;
 
         {
             FILE* lf = port::fopenUtf8(log_path, "a");
@@ -2046,6 +2077,7 @@ void CDRipper::worker(std::string          drive_letter,
                 fprintf(lf, "Disc audio bytes processed : %zu\n", ctdb_state.ctdb_bytes);
                 fprintf(lf, "CTDB trim (start+end)      : %zu bytes each (10 sectors)\n", (size_t)(10*SECTOR_BYTES));
                 fprintf(lf, "CTDB ID (start+end trimmed): %s\n", ctdb_id);
+                fprintf(lf, "Scope   : one verdict for the whole disc, not per track\n");
                 fclose(lf);
             }
         }
@@ -2056,12 +2088,14 @@ void CDRipper::worker(std::string          drive_letter,
             cb(p);
         }
 
-        std::string ctdb_status;
         fetchCTDBData(ctdb_id, log_path, total, ctdb_status);
 
         if (cb) {
             RipProgress p; p.state = RipState::Ripping;
-            p.status_msg = "CUETools: " + ctdb_status;
+            // "whole disc" is load-bearing: AccurateRip reports per track with a
+            // confidence count, so a bare "CUETools: Correct" beside that reads as
+            // though every track was verified individually. One disc, one verdict.
+            p.status_msg = "CUETools (whole disc): " + ctdb_status;
             cb(p); port::sleepMs(800);
         }
     }
@@ -2124,7 +2158,8 @@ void CDRipper::worker(std::string          drive_letter,
             // unchanged (the guard is false for FLAC/MP3).
             if (const RipFormatRow* r = ripFormatRow(o.fmt); r && !r->taggable)
                 continue;
-            tagFile(o.path, rel, mt, tnum, art, ar_results[i], rg_results[i], mode);
+            tagFile(o.path, rel, mt, tnum, art, ar_results[i], rg_results[i], mode,
+                    ctdb_status, ctdb_disc_id);
         }
     }
 

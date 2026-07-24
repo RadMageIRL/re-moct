@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <thread>
 #include <atomic>
+#include <functional>
 
 struct PlaylistEntry {
     std::string path;
@@ -65,10 +66,16 @@ public:
     std::optional<std::string> peekNext() const;  // look ahead without advancing
     bool selectAt(std::size_t index);
 
-    // Repeat
+    // Repeat. The playlist is the ONE authority on repeat mode; every mutation
+    // fires on_repeat_change_ so derived state (AudioManager's repeat_one_
+    // mirror, the clear-on-entering-One) syncs BY CONSTRUCTION. Before this,
+    // two call sites synced manually and the startup restore forgot - so a
+    // relaunch with repeat-one persisted left the audio-side flag false and
+    // every guard keyed on it inert until the first r press.
     RepeatMode  repeatMode()  const { return repeat_; }
-    void        setRepeat(RepeatMode m) { repeat_ = m; }
-    void        cycleRepeat() { repeat_ = static_cast<RepeatMode>((int(repeat_)+1) % 3); }
+    void        setRepeat(RepeatMode m) { repeat_ = m; fireRepeatChange(); }
+    void        cycleRepeat() { repeat_ = static_cast<RepeatMode>((int(repeat_)+1) % 3); fireRepeatChange(); }
+    void        setRepeatChanged(std::function<void(RepeatMode)> cb) { on_repeat_change_ = std::move(cb); }
     const char* repeatLabel() const {
         switch (repeat_) {
             case RepeatMode::Off: return "  ";
@@ -161,6 +168,8 @@ public:
     bool isLoading()    const { return loader_running_.load(); }
 
 private:
+    void fireRepeatChange() { if (on_repeat_change_) on_repeat_change_(repeat_); }
+    std::function<void(RepeatMode)> on_repeat_change_;   // see setRepeatChanged
     std::vector<PlaylistEntry> entries_;
     std::size_t current_ = 0;
     RepeatMode  repeat_  = RepeatMode::Off;

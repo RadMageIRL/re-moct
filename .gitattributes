@@ -1,1 +1,8 @@
 *.h linguist-language=cpp
+
+# Shell scripts are checked out with LF endings on every platform. A CRLF here is
+# not cosmetic: the carriage return becomes part of the interpreter path, so
+# `#!/usr/bin/env bash` fails as "bad interpreter" and the script will not run at
+# all on Linux. install.sh is the supported way to build and install from source,
+# so it has to survive being committed from any machine, including this one.
+*.sh text eol=lf

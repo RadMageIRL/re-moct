@@ -14,6 +14,11 @@
 #include "MBLookup.h"
 #include "CDRipper.h"
 #include "RadioBrowser.h"
+#include "PodcastFeed.h"    // podcasts slice 2: PodcastEpisode/PodcastFeed for the [Podcasts] section
+#include "PodcastClient.h"  // podcasts slice 2: the async feed fetch result type
+#include "PodcastIndex.h"   // podcasts slice 6: Podcast Index byterm search result types
+#include <cstdint>          // podcasts slice 3: uint64_t/int32_t download-progress + cancel state
+#include <deque>            // podcasts slice 4: the download queue
 #include "LastFm.h"
 #include "ListenBrainz.h"
 #include "DiscordRP.h"
@@ -38,9 +43,10 @@ struct DigiConfig;
 
 enum class Pane      { DirBrowser, Playlist };
 enum class RightPane { Playlist, Visualizer, Help, TrackInfo, Bookmarks, Lyrics, About, Devices, EQ, Queue, Chapters, SearchResults };
+enum class SearchSource { Playlist, Browser };   // which list \-search targets (from focus_)
 
 // Modal overlays drawn on top of the normal layout
-enum class UIOverlay { None, RipConfirm, MBSearch, RecPanel, ConvertScope, ConvertConfirm, PlaylistFormat };
+enum class UIOverlay { None, RipConfirm, MBSearch, RecPanel, ConvertScope, ConvertConfirm, PlaylistFormat, PodcastPlayConflict, PodcastIndexCreds };
 
 class UIManager {
 public:
@@ -57,6 +63,10 @@ public:
 
     void run();
     void requestRedraw() { redraw_needed_.store(true); }
+    // Podcast episode finished (slice 3): if the ended track is the playing episode,
+    // mark it played and stop, returning true so the auto-advance callback in main
+    // does NOT advance into the music queue. Public: called from that callback.
+    bool onEpisodeTrackEnd();
     // wingui only: repaint live during Windows' modal resize-drag loop (the app's
     // getch() loop is blocked there, so without this the window is blank mid-drag).
     // Registered as PDCurses' window-resized callback; a no-op elsewhere.
@@ -146,7 +156,13 @@ private:
     void drawQueue();
     void drawFavs();
     bool saveTagEdits();   // true only if the file was actually written; UI updates gated on it
-    void maybePreloadNext();
+    // Queue-aware preload (XF C3): per-tick convergence of the armed next
+    // decoder onto resolveNextPath (NextArm.h). Replaces the old per-call-site
+    // maybePreloadNext arming. Runs right after audio_.pollEvents() in run() -
+    // pollEvents fires the callbacks that advance the playlist index, so the
+    // resolver must see the post-advance state. Guards keep arming scoped to
+    // active LOCAL FILE playback (never CD/stream/podcast/stopped).
+    void reconcileNextArm();
     void drawRipConfirm();
     void drawMBSearch();
     void drawRecPanel();   // stream-record R2: the [Rec] panel (^E)
@@ -234,6 +250,11 @@ private:
     int pl_scroll_ = 0;
     int pl_cursor_ = 0;
     int last_playlist_current_for_sync_ = 0;  // for move-up/down cursor fix
+    // Queue-aware preload (XF C3), UI-thread-only mirrors for NextArm.h's
+    // reconcile: the last path handed to preloadNext, and the failure latch.
+    // Never read back from AudioManager - next_path_ is audio-thread-mutated.
+    std::string armed_next_;
+    std::string failed_next_;
     // Last nowPlayingRow() seen by the run-loop follow-sync (-1 = none). The
     // F3 cursor snap triggers on a CHANGE in this, not in playlist_.current():
     // starting a stream never moves current(), so song->radio / CD->radio were
@@ -260,6 +281,9 @@ private:
     // cursor just lets the next draw reveal it. Idempotent. See lessons.md - do NOT
     // reintroduce per-handler "if cursor < scroll then nudge" math.
     void ensurePlaylistCursorVisible();
+    void ensureDirCursorVisible();   // browser twin: clamp dir_scroll_ to keep dir_cursor_ shown
+    std::string browserSectionLabel() const;   // display-only: names the current browser list
+                                               // (dir leaf / feed title / section) for messages
 
     // Screen dims
     int screen_rows_ = 0;
@@ -285,7 +309,7 @@ private:
     void computeVizBins();
 
     // Input bar state (goto dir / save M3U / load M3U)
-    enum class InputMode { Goto, SaveM3U, LoadM3U, StreamURL, StreamName, RadioSearch, LastfmKey, LastfmSecret, ListenBrainzToken, PlaylistSearch, RecDir, RecOffset };
+    enum class InputMode { Goto, SaveM3U, LoadM3U, StreamURL, StreamName, RadioSearch, LastfmKey, LastfmSecret, ListenBrainzToken, PlaylistSearch, RecDir, RecOffset, PodcastAddUrl, PodcastIndexSearch, PodcastIndexKey, PodcastIndexSecret };
     bool        goto_active_  = false;
     InputMode   input_mode_   = InputMode::Goto;
     std::string goto_input_;
@@ -415,17 +439,27 @@ private:
     int         cd_poll_ticks_   = 0;
     int         cd_fail_count_   = 0;
 
-    // Playlist search (\): pick-to-jump, deliberately NOT a filter. The results
-    // overlay lists matches; picking one moves pl_cursor_ to the track's REAL
-    // playlist index and closes - the list is never narrowed or reordered, so
-    // there is no display-index/real-index duality (the proxy-vs-direct bug
-    // class the three cursor bugs came from). Matching is a case-insensitive
-    // substring over display_title - exactly the text each row shows.
-    std::vector<std::size_t> search_results_;   // real playlist indices
+    // Focus-aware search (\): pick-to-jump, deliberately NOT a filter. The results
+    // overlay lists matches; picking one moves the ACTIVE pane's cursor to the row's
+    // REAL index and closes - the list is never narrowed or reordered, so there is
+    // no display-index/real-index duality (the proxy-vs-direct bug class the three
+    // cursor bugs came from). Matching is a case-insensitive substring over the row's
+    // display text. search_source_ (set from focus_ at \-time) selects the source:
+    //   Playlist -> playlist_ / pl_cursor_ / jumpToPlaylistIndex
+    //   Browser  -> dir_display_ / dir_cursor_ / jumpToBrowserIndex (all sub-modes)
+    // search_labels_ stores each match's display string as it was at search time; the
+    // pick UI compares it to the live row on draw and on Enter (validate-on-use), so a
+    // list rebuilt underneath the overlay (dir poll, async feed load, anything) closes
+    // it rather than ever jumping to a stale row. Immune to which/how-many rebuild
+    // sites exist - no invalidate-on-change wiring needed.
+    std::vector<std::size_t> search_results_;   // indices into the active source
+    std::vector<std::string> search_labels_;    // matched display text, parallel to results
+    SearchSource search_source_ = SearchSource::Playlist;
     int         search_cursor_ = 0;             // cursor within search_results_
     std::string search_query_;                  // shown in the results header
     void drawSearchResults();
     void jumpToPlaylistIndex(std::size_t idx);
+    void jumpToBrowserIndex(std::size_t idx);   // browser twin: keeps focus on DirBrowser
 
     // Slice 3: lazily reopen the CD handle for an action (play / rip / MB) on a
     // stopped-but-loaded disc — stop() closes the handle (probe B2: holding it
@@ -583,10 +617,23 @@ private:
     bool in_radio_       = false;
     bool in_radio_search_ = false;       // showing radio-browser results in [Radio]
     bool in_books_       = false;        // showing the [Books] audiobook list
+    // [Podcasts] two-level state, mirroring [Radio] + its in_radio_search_ sub-mode:
+    //   in_podcasts_ && !in_podcast_feed_  -> level 1, subscribed feed list
+    //   in_podcasts_ &&  in_podcast_feed_  -> level 2, one feed's episode list
+    bool in_podcasts_    = false;
+    bool in_podcast_feed_ = false;
+    bool in_podcastindex_search_ = false;  // slice 6: showing Podcast Index results at level 1
+    std::string podcast_feed_url_;       // the feed whose episodes are shown at level 2
     // Chapter table for the currently playing book (empty if none / not a book).
     std::vector<Mp4Chapter> current_chapters_;
     std::string             chapters_for_path_;   // path current_chapters_ reflects
-    void refreshChaptersIfNeeded(const std::string& path);
+    // `sidecar`, when given, is a cached <podcast:chapters> JSON document to fall
+    // back on if the file itself yields nothing. ONLY the ; handler's episode
+    // branch passes one - it alone knows which episode a path belongs to - so
+    // books and plain files reach the identical one-argument behaviour and never
+    // gain so much as an extra filesystem probe.
+    void refreshChaptersIfNeeded(const std::string& path,
+                                 const std::string& sidecar = std::string());
     int  currentChapterIndex() const;             // index into current_chapters_, -1 if none
     void jumpChapter(int dir);                     // -1 prev (position-aware), +1 next; ±5s fallback
     // Audiobook resume (Phase C): latch the active book's live position and
@@ -654,6 +701,199 @@ private:
     bool        scrob_done_  = false;    // already scrobbled this track
     void        updateScrobbler();       // called each tick; fires now-playing + scrobble
     std::vector<RadioStation> radio_results_;
+    // [Podcasts] level-2 backing store: the episodes of the entered feed. The
+    // visible rows in dir_display_ are pre-formatted from these (title, date,
+    // duration), mirroring how radio_results_ backs the radio search list.
+    std::vector<PodcastEpisode> podcast_episodes_;
+
+    // Podcast feed fetch worker - mirrors the info_art / radio_art async idiom so
+    // subscribing to or entering a feed never freezes the TUI (feeds run large,
+    // up to ~22 MB). Single in-flight; a finished fetch is installed per-frame by
+    // pollPodcastFetch(). podcast_fetch_want_url_ is the staleness guard: a result
+    // for a feed the user has since navigated away from is discarded.
+    enum class PodcastFetchPurpose { Subscribe, Enter };
+    std::thread           podcast_fetch_thread_;
+    std::atomic<bool>     podcast_fetch_active_{false};  // worker in flight
+    std::atomic<bool>     podcast_fetch_done_{false};    // result ready for pickup
+    std::mutex            podcast_fetch_mtx_;
+    std::string           podcast_fetch_want_url_;       // feed URL the worker fetches (guarded)
+    PodcastFetchPurpose   podcast_fetch_purpose_ = PodcastFetchPurpose::Enter;  // (guarded)
+    PodcastClient::Result podcast_fetch_result_;         // worker output (guarded)
+    // Guard token for the feed-loading status pin: holds the exact "Loading ..." text
+    // shown at fetch start. The tick loop keeps status_msg_ alive while a fetch is in
+    // flight ONLY when status_msg_ still equals this - so an unrelated status set mid-
+    // fetch expires on its own instead of inheriting the pin. Cleared on pickup.
+    std::string           podcast_fetch_pin_;
+    void startPodcastFetch(const std::string& url, PodcastFetchPurpose purpose);
+    void pollPodcastFetch();        // UI thread, per-frame: install a finished fetch
+    void enterPodcastSection();     // enter [Podcasts]: build the level-1 feed list
+    void showPodcastFeedList();     // (re)populate dir_entries_/dir_display_ at level 1
+
+    // Podcast Index search (slice 6) - find NEW feeds by term, mirroring the radio
+    // results sub-mode (in_podcastindex_search_ + pi_results_ rendered through the
+    // shared dir_entries_/dir_display_). Search runs on a worker thread (the podcast-
+    // fetch async idiom, NOT radio's blocking call) so a slow/dead endpoint or a
+    // disconnected network never hangs the UI. Single in-flight; installed per-frame.
+    std::vector<PodcastIndexResult> pi_results_;
+    std::thread              pi_search_thread_;
+    std::atomic<bool>        pi_search_active_{false};
+    std::atomic<bool>        pi_search_done_{false};
+    std::mutex               pi_search_mtx_;
+    std::string              pi_search_term_;              // shown in the results header (guarded)
+    PodcastIndexSearchResult pi_search_result_;            // worker output (guarded)
+    void startPodcastIndexSearch(const std::string& term); // kick the async byterm search
+    void pollPodcastIndexSearch();  // UI thread, per-frame: install finished results
+    void showPodcastIndexResults(); // populate dir_entries_/dir_display_ with pi_results_
+    void drawPodcastIndexCreds();   // the [S]ignup / [E]nter / [Esc] first-use credentials modal
+    void openUrlInBrowser(const std::string& url);  // shared launcher (ShellExecute / xdg-open)
+
+    // Episode download-then-play (slice 3) + managed download queue (slice 4).
+    // Episodes must be LOCAL files to seek / resume / finish / show chapters
+    // (StreamSource is live-only), so an episode is downloaded to a cache file then
+    // played via the normal LocalFileSource path. Streaming-to-disk with rip-style %
+    // progress; ONE transfer at a time; cancellable so a mid-download quit aborts fast.
+    //
+    // Slice 4: a FIFO queue (max 5) drives that single worker one item at a time.
+    // Both "download for later" and "play needs a download" feed the queue; a play
+    // request jumps to the front. play_when_done makes the item auto-play when it
+    // finishes; attempts drives retry-3-then-skip.
+    struct PodcastQueueItem {
+        std::string url, dest, id, title;
+        std::string art_url;                // slice 5: episode-else-feed art URL
+        bool        art_is_feed = false;    // true -> disk-cacheable show art
+        std::string art_disk;               // feed-art cache path (when art_is_feed)
+        std::string chapters_url;           // v1.4.0: <podcast:chapters> doc, primed on completion
+        bool play_when_done = false;
+        int  attempts = 0;
+    };
+    std::deque<PodcastQueueItem> podcast_queue_;            // pending downloads (FIFO, front = next)
+    static constexpr int         PODCAST_QUEUE_MAX = 5;
+    PodcastQueueItem             podcast_dl_item_;          // the ACTIVE download (UI-thread only)
+    std::thread                  podcast_dl_thread_;
+    std::atomic<bool>            podcast_dl_active_{false};   // worker in flight
+    std::atomic<bool>            podcast_dl_done_{false};     // finished, ready for pickup
+    std::atomic<bool>            podcast_dl_ok_{false};       // worker result (set before done)
+    std::atomic<std::uint64_t>   podcast_dl_received_{0};     // bytes so far (progress)
+    std::atomic<std::uint64_t>   podcast_dl_total_{0};        // total bytes (0 = unknown)
+    std::int32_t                 podcast_dl_cancel_ = 0;      // int32 cancel flag (atomic_ref)
+    std::string                  podcast_dl_status_;          // rip-style cmdline line
+    int                          podcast_dl_ticks_ = 0;       // linger counter (~5s after done)
+    int                          podcast_conflict_index_ = -1;// episode pending the play-conflict popup
+
+    void enqueueEpisodeDownload(int episode_index, bool play_when_done, bool front);
+    void pumpPodcastQueue();                    // start the next queued item if idle
+    void startActiveDownload(const PodcastQueueItem& item);  // spawn the worker for one item
+    void deleteEpisodeDownload(int episode_index);           // remove the cached file (state kept)
+    bool episodeQueued(const std::string& id) const;         // in the pending queue?
+    std::string episodeCacheFile(const std::string& feed_url, const PodcastEpisode& ep) const;  // pure, no mkdir
+    void drawPodcastPlayConflict();             // the [W]ait / [P]lay-now / [Esc] popup
+
+    // The podcast episode currently playing (resume latch + played-on-finish).
+    std::string  podcast_playing_id_;          // episode id of the playing local file
+    std::string  podcast_playing_path_;        // its local cache path
+    double       podcast_playing_pos_    = 0.0;// latched position (persisted on transition)
+    double       podcast_playing_dur_    = 0.0;// duration (for the finished threshold)
+    bool         podcast_resume_pending_ = false;  // one-shot silent seek to the saved pos
+
+    void startEpisodePlay(int episode_index);  // download-if-needed, then play
+    void playEpisodeFile(const std::string& local_path, const std::string& id,
+                         const std::string& art_url, bool art_is_feed,
+                         const std::string& art_disk,
+                         const std::string& chapters_url);   // play a cached episode (slice 5: art; v1.4.0: chapters)
+
+    // Podcast episode art (slice 5): the playing episode's cover in the Info pane,
+    // mirroring the radio-art path (URL -> CoverArt::bytesByUrl -> cover::render), NOT
+    // info_art_ (which decodes a local file's embedded art). Single in-flight async
+    // worker; feed show-art is disk-cached for offline, episode-level art is on-demand.
+    std::thread                 podcast_art_thread_;
+    std::atomic<bool>           podcast_art_active_{false};
+    std::atomic<bool>           podcast_art_done_{false};
+    std::mutex                  podcast_art_mtx_;
+    std::string                 podcast_art_want_url_;    // (guarded) URL the worker fetched for
+    std::vector<std::uint8_t>   podcast_art_result_;      // (guarded) fetched bytes
+    std::string                 podcast_art_have_url_;    // URL whose bytes are in podcast_art_bytes_
+    std::vector<std::uint8_t>   podcast_art_bytes_;       // resolved bytes (UI thread)
+    cover::Rendered             podcast_art_;             // rendered grid (drawn like radio_art_)
+    std::string                 podcast_art_render_key_;  // "<url>|<box>" of podcast_art_
+    // The playing episode's resolved art (set by playEpisodeFile).
+    std::string                 podcast_playing_art_url_;
+    bool                        podcast_playing_art_is_feed_ = false;
+    std::string                 podcast_playing_art_disk_;
+    // The playing episode's feed chapters URL (v1.4.0), stashed like the art so the
+    // per-tick chapter path and the play-time revalidation both have it without a
+    // lookup. Empty when the episode publishes none. This is what keeps the weekly
+    // revalidation running for the listener who plays but never opens the list.
+    std::string                 podcast_playing_chapters_url_;
+    // Chapter-pane origin: when ; loaded chapters from a PODCAST episode's cache
+    // file, these carry the playEpisodeFile identity so selecting a chapter can
+    // start the episode AS a podcast (art, no-scrobble, played state). Empty
+    // id = the chapter list belongs to a plain file or book.
+    std::string                 chapters_ep_id_;
+    std::string                 chapters_ep_art_url_;
+    bool                        chapters_ep_art_is_feed_ = false;
+    std::string                 chapters_ep_art_disk_;
+    std::string                 chapters_ep_chapters_url_;  // the episode's feed chapters URL (for play-from-chapter)
+    // Was the audio actually on disk when ; built this list? Chapters can now be
+    // VIEWED for an episode that was never downloaded (they come from the feed),
+    // so "no file at Enter time" has two different honest answers and this tells
+    // them apart: never downloaded, or downloaded and deleted since.
+    bool                        chapters_ep_downloaded_ = false;
+
+    // Feed-published chapters (v1.4.0). A <podcast:chapters> JSON document is
+    // cached beside the episode as a two-file sidecar - <cachefile>.chapters.json
+    // (the raw document) and <cachefile>.chapters.src (the URL that produced it) -
+    // written by the download worker so a downloaded episode keeps its chapters
+    // OFFLINE, and fetched lazily on ; for an episode that was never downloaded.
+    // At most one network hit per episode; never a bulk fetch on feed refresh.
+    //
+    // The fetch is a single-flight worker with a want-key, the art/feed idiom:
+    // want_ep_id_ is "what the user last asked for", so hammering ; is idempotent,
+    // a fetch already in flight is never restarted or aborted, and a result that
+    // lands for a row the user has moved off still reaches its cache - it just
+    // does not open the pane.
+    std::thread                 podcast_chap_thread_;
+    std::atomic<bool>           podcast_chap_active_{false};
+    std::atomic<bool>           podcast_chap_done_{false};
+    std::atomic<bool>           podcast_chap_ok_{false};   // set before done_
+    std::mutex                  podcast_chap_mtx_;
+    std::string                 podcast_chap_key_;         // (guarded) episode id being fetched
+    std::string                 podcast_chap_base_;        // (guarded) its episode cache path
+    std::string                 chapters_want_ep_id_;      // "" = nothing outstanding
+    std::string                 chapters_want_url_;
+    std::string                 chapters_want_base_;
+    // Who asked for the pending fetch. A ; browse is an explicit request: on
+    // failure it toasts, on success it opens the pane. A play-time revalidation is
+    // a background nicety like the download-worker priming: on failure it is logged
+    // and dropped in silence, on success it folds into the live list with no pane.
+    // The playing-episode fold is routed by result key regardless of this flag.
+    bool                        chapters_want_is_browse_ = false;
+
+    void startChaptersFetch();     // spawn for the current want, if the worker is idle
+    void pollPodcastChapters();    // UI thread, per-frame: install a landed fetch
+    // Resolve the playing episode's feed chapters at play time (B): fold a usable
+    // sidecar in immediately, else - respecting the weekly revalidation, which may
+    // delete a stale one - kick a background refetch that folds in when it lands.
+    void resolvePlayingChapters(const std::string& local_path, const std::string& chapters_url);
+    // THE playing-item predicate: true iff the current audio is a podcast episode
+    // (state-derived, since episodes play as local files). One definition so every
+    // consumer decides on purpose instead of inheriting music behaviour.
+    bool isPlayingPodcast() const;
+    void startPodcastArtFetch(const std::string& url, bool is_feed, const std::string& disk);
+    // Resolve the playing episode's RSS-art BYTES independent of the Info pane (picks up
+    // a finished fetch, kicks one if needed). Factored from refreshPodcastArt so the OS
+    // media card can show the art with the Info pane closed, mirroring radio_bytes_.
+    void resolvePodcastArtBytes(const std::string& url, bool is_feed, const std::string& disk);
+    void refreshPodcastArt(const std::string& url, bool is_feed, const std::string& disk,
+                           int box_cols, int box_rows);   // UI thread, per-frame
+    void resolveEpisodeArt(const PodcastEpisode& ep, std::string& url,
+                           bool& is_feed, std::string& disk) const;
+    std::string feedArtDiskPath(const std::string& feed_url, const std::string& art_url) const;
+    void pollPodcastDownload();                // UI thread, per-frame: finish -> play + linger
+    void updatePodcastProgress();              // per-tick resume latch (mirrors updateBookProgress)
+    void flushPodcastProgress();               // persist resume pos on transition / quit
+    std::string episodeCachePath(const std::string& feed_url, const PodcastEpisode& ep);
+    void migrateEpisodeCacheNames();           // feed entry: legacy Unicode cache names -> ASCII
+
     int  fav_cursor_     = 0;
 
     void        refreshDir();

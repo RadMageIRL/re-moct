@@ -1,6 +1,7 @@
 #include "Config.h"
 #include "StringUtils.h"
 #include "AwesomeThemes.h"   // kNumAwesomeThemes for clamping awesome_theme on load
+#include "SecretStore.h"     // secret-at-rest: protect()/unprotect() the sensitive fields
 
 #include <fstream>
 #include <algorithm>
@@ -114,6 +115,74 @@ std::string DigiConfig::radioStationName(const std::string& url) const {
     return it != radio_station_names.end() ? it->second : std::string();
 }
 
+void DigiConfig::addPodcastFeed(const std::string& url, const std::string& title,
+                                const std::string& art) {
+    if (url.empty()) return;
+    std::string keep_title = title, keep_art = art;
+    if (keep_title.empty()) {                     // preserve cached title on a nameless re-add
+        auto it = podcast_feed_titles.find(url);
+        if (it != podcast_feed_titles.end()) keep_title = it->second;
+    }
+    if (keep_art.empty()) {                        // preserve cached art likewise
+        auto it = podcast_feed_art.find(url);
+        if (it != podcast_feed_art.end()) keep_art = it->second;
+    }
+    removePodcastFeed(url);                         // dedup
+    podcast_feeds.insert(podcast_feeds.begin(), url);   // most-recent-first
+    if (!keep_title.empty()) podcast_feed_titles[url] = keep_title;
+    if (!keep_art.empty())   podcast_feed_art[url]    = keep_art;
+    if ((int)podcast_feeds.size() > PODCAST_MAX) {
+        for (size_t i = (size_t)PODCAST_MAX; i < podcast_feeds.size(); ++i) {
+            podcast_feed_titles.erase(podcast_feeds[i]);   // prune dropped side-map entries
+            podcast_feed_art.erase(podcast_feeds[i]);
+        }
+        podcast_feeds.resize((size_t)PODCAST_MAX);         // FIFO-evict the tail
+    }
+}
+
+void DigiConfig::removePodcastFeed(const std::string& url) {
+    podcast_feeds.erase(
+        std::remove(podcast_feeds.begin(), podcast_feeds.end(), url),
+        podcast_feeds.end());
+    podcast_feed_titles.erase(url);
+    podcast_feed_art.erase(url);
+}
+
+bool DigiConfig::isPodcastFeed(const std::string& url) const {
+    return std::find(podcast_feeds.begin(), podcast_feeds.end(), url) != podcast_feeds.end();
+}
+
+std::string DigiConfig::podcastFeedTitle(const std::string& url) const {
+    auto it = podcast_feed_titles.find(url);
+    return it != podcast_feed_titles.end() ? it->second : std::string();
+}
+
+std::string DigiConfig::podcastFeedArt(const std::string& url) const {
+    auto it = podcast_feed_art.find(url);
+    return it != podcast_feed_art.end() ? it->second : std::string();
+}
+
+double DigiConfig::podcastEpisodePos(const std::string& id) const {
+    auto it = podcast_progress.find(id);
+    return it != podcast_progress.end() ? it->second.pos : 0.0;
+}
+
+bool DigiConfig::podcastEpisodePlayed(const std::string& id) const {
+    auto it = podcast_progress.find(id);
+    return it != podcast_progress.end() ? it->second.played : false;
+}
+
+void DigiConfig::setPodcastEpisodePos(const std::string& id, double sec) {
+    if (id.empty()) return;
+    if (sec < 0) sec = 0;
+    podcast_progress[id].pos = sec;
+}
+
+void DigiConfig::setPodcastEpisodePlayed(const std::string& id, bool played) {
+    if (id.empty()) return;
+    podcast_progress[id].played = played;
+}
+
 void DigiConfig::addAudiobook(const std::string& path) {
     if (path.empty() || isCDTrackPath(path)) return;
     double keep = bookPos(path);                 // preserve resume across re-add
@@ -164,6 +233,10 @@ void DigiConfig::load() {
     fav_tracks.clear();
     radio_stations.clear();
     radio_station_names.clear();
+    podcast_feeds.clear();
+    podcast_feed_titles.clear();
+    podcast_feed_art.clear();
+    podcast_progress.clear();
     recent_tracks.clear();
     track_stats.clear();
     audiobooks.clear();
@@ -181,6 +254,7 @@ void DigiConfig::load() {
         if      (key == "last_dir")         last_dir          = val;
         else if (key == "playlist_current") try { playlist_current = (std::size_t)std::stoul(val); } catch (...) {}
         else if (key == "volume")           try { volume          = std::stof(val); } catch (...) {}
+        else if (key == "crossfade")        try { crossfade_secs  = std::stof(val); } catch (...) {}
         else if (key == "repeat_mode")      try { repeat_mode      = std::stoi(val); } catch (...) {}
         else if (key == "shuffle")          shuffle           = (val == "1");
         else if (key == "toast_enabled")    toast_enabled     = (val == "1");
@@ -245,13 +319,20 @@ void DigiConfig::load() {
         else if (key == "wingui_font")        wingui_font        = val;
         else if (key == "wingui_cols")        try { wingui_cols = std::stoi(val); } catch (...) {}
         else if (key == "wingui_rows")        try { wingui_rows = std::stoi(val); } catch (...) {}
+        // secret-at-rest: the four sensitive fields are stored protected (DPAPI on
+        // Windows, machine-salt obfuscation on Linux) with a self-describing prefix.
+        // unprotect() passes legacy plaintext through unchanged and yields "" (empty
+        // -> re-auth) on a foreign/corrupt value. lastfm-key and the *-user fields
+        // stay plaintext (low value, keeps the conf debuggable).
         else if (key == "lastfm-key")       lastfm_key        = val;
-        else if (key == "lastfm-secret")    lastfm_secret     = val;
-        else if (key == "lastfm-session")   lastfm_session    = val;
+        else if (key == "lastfm-secret")    lastfm_secret     = secret::unprotect(val).value_or("");
+        else if (key == "lastfm-session")   lastfm_session    = secret::unprotect(val).value_or("");
         else if (key == "lastfm-user")      lastfm_user       = val;
-        else if (key == "lastfm-pending")   lastfm_pending    = val;
-        else if (key == "lb-token")          listenbrainz_token = val;
+        else if (key == "lastfm-pending")   lastfm_pending    = secret::unprotect(val).value_or("");
+        else if (key == "lb-token")          listenbrainz_token = secret::unprotect(val).value_or("");
         else if (key == "lb-user")           listenbrainz_user  = val;
+        else if (key == "podcastindex-key")    podcastindex_key    = val;
+        else if (key == "podcastindex-secret") podcastindex_secret = secret::unprotect(val).value_or("");
         else if (key.substr(0,3) == "eq_" && key.size() == 4) {
             int b = key[3] - '0';
             if (b >= 0 && b <= 9) try { eq_gains[b] = std::stof(val); } catch (...) {}
@@ -275,6 +356,50 @@ void DigiConfig::load() {
                 if (!surl.empty()) {
                     radio_stations.push_back(surl);
                     if (!sname.empty()) radio_station_names[surl] = sname;
+                }
+            }
+        }
+        else if (key == "podcast") {
+            if (!val.empty()) {
+                // "podcast=<url>\t<title>\t<art>". Missing trailing fields (older
+                // or title-less lines) parse with tab==npos => stay empty.
+                std::string purl = val, ptitle, part;
+                auto t1 = val.find('\t');
+                if (t1 != std::string::npos) {
+                    purl = val.substr(0, t1);
+                    std::string rest = val.substr(t1 + 1);
+                    auto t2 = rest.find('\t');
+                    if (t2 != std::string::npos) {
+                        ptitle = rest.substr(0, t2);
+                        part   = rest.substr(t2 + 1);
+                    } else {
+                        ptitle = rest;
+                    }
+                }
+                if (!purl.empty()) {
+                    podcast_feeds.push_back(purl);
+                    if (!ptitle.empty()) podcast_feed_titles[purl] = ptitle;
+                    if (!part.empty())   podcast_feed_art[purl]    = part;
+                }
+            }
+        }
+        else if (key == "pod_ep") {
+            // "pod_ep=<id>\t<seconds>\t<played 0/1>". Older/shorter lines (missing
+            // trailing fields) parse with those fields defaulted.
+            if (!val.empty()) {
+                std::string id = val; double pos = 0.0; bool played = false;
+                auto t1 = val.find('\t');
+                if (t1 != std::string::npos) {
+                    id = val.substr(0, t1);
+                    std::string rest = val.substr(t1 + 1);
+                    auto t2 = rest.find('\t');
+                    std::string ps = (t2 == std::string::npos) ? rest : rest.substr(0, t2);
+                    try { pos = std::stod(ps); } catch (...) { pos = 0.0; }
+                    if (t2 != std::string::npos) played = (rest.substr(t2 + 1) == "1");
+                }
+                if (!id.empty()) {
+                    podcast_progress[id].pos    = pos;
+                    podcast_progress[id].played = played;
                 }
             }
         }
@@ -313,6 +438,9 @@ void DigiConfig::load() {
     }
 
     volume      = std::max(0.0f, std::min(2.0f, volume));
+    // 0 = off; a fade longer than 30s is a config typo, not a wish. (NaN from a
+    // malformed value falls to 0 here: both comparisons are false against NaN.)
+    crossfade_secs = std::max(0.0f, std::min(30.0f, crossfade_secs));
     repeat_mode = std::max(0, std::min(2, repeat_mode));
     if (awesome_theme < 0 || awesome_theme >= kNumAwesomeThemes) awesome_theme = 0;
     if (playlist_current >= playlist_paths.size() && !playlist_paths.empty())
@@ -344,6 +472,7 @@ void DigiConfig::save() const {
         f << "last_dir="         << nl(last_dir)     << "\n";
         f << "playlist_current=" << playlist_current << "\n";
         f << "volume="           << volume           << "\n";
+        f << "crossfade="        << crossfade_secs   << "\n";
         f << "repeat_mode="      << repeat_mode      << "\n";
         f << "shuffle="          << (shuffle ? "1" : "0") << "\n";
         f << "toast_enabled="    << (toast_enabled ? "1" : "0") << "\n";
@@ -389,13 +518,17 @@ void DigiConfig::save() const {
         f << "wingui_font="       << wingui_font << "\n";
         if (wingui_cols > 0)      f << "wingui_cols="    << wingui_cols << "\n";
         if (wingui_rows > 0)      f << "wingui_rows="    << wingui_rows << "\n";
+        // secret-at-rest: protect() the four sensitive fields (output is clean
+        // base64, so nl() would be a no-op and is dropped); key + *-user stay plain.
         if (!lastfm_key.empty())     f << "lastfm-key="     << nl(lastfm_key)     << "\n";
-        if (!lastfm_secret.empty())  f << "lastfm-secret="  << nl(lastfm_secret)  << "\n";
-        if (!lastfm_session.empty()) f << "lastfm-session=" << nl(lastfm_session) << "\n";
+        if (!lastfm_secret.empty())  f << "lastfm-secret="  << secret::protect(lastfm_secret)  << "\n";
+        if (!lastfm_session.empty()) f << "lastfm-session=" << secret::protect(lastfm_session) << "\n";
         if (!lastfm_user.empty())    f << "lastfm-user="    << nl(lastfm_user)    << "\n";
-        if (!lastfm_pending.empty()) f << "lastfm-pending=" << nl(lastfm_pending) << "\n";
-        if (!listenbrainz_token.empty()) f << "lb-token=" << nl(listenbrainz_token) << "\n";
+        if (!lastfm_pending.empty()) f << "lastfm-pending=" << secret::protect(lastfm_pending) << "\n";
+        if (!listenbrainz_token.empty()) f << "lb-token=" << secret::protect(listenbrainz_token) << "\n";
         if (!listenbrainz_user.empty())  f << "lb-user="  << nl(listenbrainz_user)  << "\n";
+        if (!podcastindex_key.empty())    f << "podcastindex-key="    << nl(podcastindex_key) << "\n";
+        if (!podcastindex_secret.empty()) f << "podcastindex-secret=" << secret::protect(podcastindex_secret) << "\n";
         for (int b = 0; b < 10; ++b)
             f << "eq_" << b << "=" << eq_gains[b] << "\n";
         for (const auto& p : playlist_paths)  f << "track="    << nl(p) << "\n";
@@ -414,6 +547,30 @@ void DigiConfig::save() const {
             } else {
                 f << "station="  << url << "\n";
             }
+        }
+        for (const auto& pf : podcast_feeds) {
+            std::string url = nl(pf);
+            // Fold tabs (and CR/LF via nl) in title/art so the tab-delimited
+            // "podcast=<url>\t<title>\t<art>" line never mis-splits on reload.
+            auto fold = [](std::string s) {
+                for (char& c : s) if (c == '\t') c = ' ';
+                return s;
+            };
+            std::string title, art;
+            auto ti = podcast_feed_titles.find(pf);
+            if (ti != podcast_feed_titles.end()) title = fold(nl(ti->second));
+            auto ai = podcast_feed_art.find(pf);
+            if (ai != podcast_feed_art.end())    art   = fold(nl(ai->second));
+            if (!art.empty())        f << "podcast=" << url << "\t" << title << "\t" << art << "\n";
+            else if (!title.empty()) f << "podcast=" << url << "\t" << title << "\n";
+            else                     f << "podcast=" << url << "\n";
+        }
+        for (const auto& kv : podcast_progress) {
+            // Skip pure-default entries (never played, no resume) to keep the file lean.
+            if (kv.second.pos <= 0.0 && !kv.second.played) continue;
+            std::string id = nl(kv.first);
+            for (char& c : id) if (c == '\t') c = ' ';   // fold tabs so the split is unambiguous
+            f << "pod_ep=" << id << "\t" << kv.second.pos << "\t" << (kv.second.played ? 1 : 0) << "\n";
         }
         for (const auto& r : recent_tracks)
             if (!isCDTrackPath(r))

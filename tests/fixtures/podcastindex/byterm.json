@@ -1,0 +1,30 @@
+{
+  "status": "true",
+  "feeds": [
+    {
+      "id": 75075,
+      "title": "Batman University",
+      "url": "https://feeds.example.com/batman.xml",
+      "author": "Steve Webb",
+      "image": "https://img.example.com/batman-small.png",
+      "artwork": "https://img.example.com/batman.png"
+    },
+    {
+      "id": 90210,
+      "title": "  Café del Podcast  ",
+      "url": "https://feeds.example.com/cafe.xml",
+      "author": "María González",
+      "image": "https://img.example.com/cafe.png"
+    },
+    {
+      "id": 11111,
+      "title": "No Feed URL Show",
+      "url": "",
+      "author": "Nobody",
+      "artwork": "https://img.example.com/none.png"
+    }
+  ],
+  "count": 3,
+  "query": "batman",
+  "description": "Found matching feeds."
+}

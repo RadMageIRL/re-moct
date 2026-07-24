@@ -5,6 +5,222 @@ All notable changes to RE-MOCT are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.0] - 2026-07-24
+
+### Added
+
+- Podcast episodes now show chapters published by the feed, not only chapters
+  embedded in the audio file. Many shows carry a chapter list alongside each
+  episode; pressing `;` on such an episode shows it - even before the episode is
+  downloaded, fetched on demand over the network with a brief "Loading
+  chapters..." while it lands. A downloaded episode keeps its chapters offline:
+  they are saved beside the audio when it downloads, so an episode pulled at home
+  still has its chapters on a train with no signal. Selecting a chapter needs the
+  episode on disk to play from that point ("Download the episode to play from a
+  chapter"), but viewing the list never does. Chapters that come with the audio
+  file itself still take precedence, and an episode that publishes none says so
+  honestly. A cached chapter list is refreshed if the show moves it or after a
+  week, so a corrected list is picked up without a manual refresh.
+- Queued tracks now crossfade. Jumping to a queued track - and from one queued
+  track to the next - used to hard-cut even with crossfade on; only the return
+  to the playlist after the queue drained ever faded. Now every queue transition
+  fades like a normal track change, using the same crossfade length. The queue
+  still behaves as before otherwise: queued tracks play first, then playback
+  returns to the playlist. Queueing a track during an already-running fade still
+  cuts (that fade is already sounding), and removing a queued track before it
+  starts means the fade goes to whatever is actually next.
+- `remoct --version` and `remoct --help` (also `-V` and `-h`). Until now every
+  argument was treated as a file or folder to play, so asking the program what
+  version it was launched it instead. Both flags now print and exit without
+  opening an audio device or taking over the terminal, which is what a packaged
+  install expects when it checks itself after installing. The help lists the
+  usage and points at `?` for the key bindings.
+- An `install.sh` for building and installing from source on Linux. It builds a
+  release, installs the player and its streaming plugin to a prefix (default
+  /usr/local, `--prefix` for anything else), and asks for elevation only when
+  the destination actually needs it. `--no-build` installs an existing build,
+  `--link` points the installed command at your build tree for development, and
+  `--uninstall` removes exactly what was installed.
+
+### Changed
+
+- CUETools rip mode now records its verdict in the files it produces, and says
+  plainly that the verdict covers the whole disc. Ripping with [C] computes a
+  CRC32 across the disc and checks it against the CUETools database; that result
+  used to appear on screen and then be gone. Every track from the rip now
+  carries the verdict and the disc ID it was checked under, so a rip can be
+  re-checked later without reading the disc again. The verdict is one result for
+  the whole disc, unlike AccurateRip which reports each track separately with a
+  confidence count, and the wording on screen and in the rip log now says so.
+  The [C] menu entry no longer claims no network is required, because the
+  database check is an online lookup; only [Y] and [B] work entirely offline.
+- Crossfade is now configurable - and off by default. A new `crossfade` key in
+  remoct.conf sets the fade length in seconds; 0 (or absent) means no fade, the
+  MPD convention. Until now every transition faded over a fixed two seconds with
+  no way to change or disable it, which damaged gapless album transitions. Album
+  listeners get clean gapless boundaries out of the box; set `crossfade=2` to
+  keep the old behaviour. Values are clamped to 0-30 and a malformed value falls
+  back to off.
+- Next and previous now navigate under repeat-one, and behave the same as each
+  other. Pressing n used to replay the repeating track while p skipped backward -
+  an inconsistency, not a design. Both now move through the playlist normally
+  with repeat-one staying on, and whatever ends up playing becomes the track
+  that repeats.
+
+### Fixed
+
+- The chapter list (`;`) now works from the file browser - `[Books]`, plain
+  directories, and downloaded podcast episodes - not only from the playlist. It
+  used to answer "no chapters" for a book browsed in `[Books]` without ever
+  looking at the file; the same book showed its chapters fine from the playlist.
+  Selecting a chapter starts playback at that chapter, wherever the list was
+  opened from, and an explicit chapter choice wins over a stored resume
+  position - picking chapter 1 of a half-finished book starts at chapter 1, not
+  at the old bookmark. (Podcast episodes now also show chapters published by the
+  feed, described under Added - so an episode you have not downloaded can show
+  its chapters too.)
+  and starting the app again restored the mode on screen but not in the audio
+  engine, so the engine-side repeat safeguards sat inert until the repeat key
+  was pressed once. The restored mode now reaches everything it should.
+- A queued track no longer stutters its first moment when it starts at a
+  tape-speed track end. With playback speed set off normal, the end-of-track
+  handoff started the queued track and then immediately restarted it from zero,
+  doubling the first fraction of a second - audible on a quiet intro.
+- The OS media controls now show the real duration while a CD plays, instead of
+  duration 0. The in-app progress bar was always right; only the OS card read
+  from the wrong clock.
+- The OS media controls now show real track information for a CD that has no
+  MusicBrainz match, instead of keeping the previous track's details on screen.
+  The card shows the same track title the playlist shows for the disc and the
+  CD's own clock. Unmatched CD tracks still never scrobble - a track number is
+  not a song identity.
+- Reaching the end of the playlist now stops playback cleanly. With repeat off,
+  the last track used to finish and then hang - the player stayed stuck showing
+  the finished track at full duration with the play indicator still up, and the
+  only way out was stopping it by hand. Playback now goes to stopped at the end,
+  the same as pressing next past the last track always did.
+- Repeat-one no longer bleeds the next track. With crossfade on, a track set to
+  repeat could be heard mixing with the following track for the whole crossfade
+  before looping back to itself, and it recurred on every loop. Repeat-one now
+  loops cleanly and silently, whatever else is queued up behind it.
+- Queued tracks now play while repeat-one is on. Queueing a track with repeat-one
+  active could leave it stuck in the queue indefinitely, because the repeating
+  track never signalled that it had ended. The queue drains normally again.
+- Windows: the OS media controls (lock screen and the volume/media flyout) now show
+  "RE-MOCT" as the app instead of "Unknown app". On launch RE-MOCT ensures a
+  Start-menu shortcut to itself exists carrying its application id (the silent,
+  no-installer way Windows resolves an app name); it heals the shortcut if the exe
+  moved. Cosmetic only and best-effort - it never blocks or affects startup, and
+  Linux is unaffected.
+- Podcast episode rows: the new/downloaded/in-progress/played state marker and the
+  resume time now stay pinned while a long title scrolls, instead of marqueeing off
+  with the text. The state is readable at every scroll position.
+- A playing podcast episode now shows the show's cover art on the OS media controls
+  (Windows and Linux) and in Discord Rich Presence, instead of the audio file's
+  embedded picture or a mistaken album lookup. An `.m4b` episode no longer resumes
+  twice (the audiobook and podcast resume no longer both fire on it).
+
+### Changed
+
+- Podcasts: add a feed with `a` (was `/`).
+- Durations display as `H:MM:SS` (or `M:SS` under an hour) instead of raw seconds -
+  the Track Info pane now shows `3:12`, not `192s`, and reads sensibly for long
+  podcast episodes and multi-hour audiobooks. Display only; saved positions and
+  playlist/cue files are unchanged.
+- Searching a list with `\` and finding nothing now reports it in the status line
+  (naming the query and which list was searched, e.g. `No match for "…" in browser:
+  Music`) instead of a pop-up toast - so a focus-aware miss reads clearly and a
+  wrong-pane search is obvious.
+- Entering a podcast feed shows a "Loading …" working state in the status line, in
+  the same voice as download progress, instead of a toast; it stays up for the whole
+  fetch of a large feed.
+- Finished-operation status messages - a completed rip, ReplayGain scan, or convert -
+  now linger about 5 seconds, matching a finished podcast download.
+
+### Added
+
+- Mark a podcast episode played or unplayed by hand: `y` on an episode toggles its
+  state, and the row marker updates. It is a status change only - your resume
+  position and the downloaded file are left exactly as they were.
+- Find and subscribe to new podcasts by search, not only by pasting a feed URL.
+  Press `/` in the `[Podcasts]` section to search the Podcast Index directory;
+  matches appear in the same list as your feeds and Enter subscribes, returning to
+  your feed list with the show added. It uses your own free Podcast Index API key:
+  the first time you press `/`, RE-MOCT offers to open the signup page or let you
+  enter a key and secret (shown on screen so a launcher that cannot open a browser
+  is not a dead end), and the secret is protected at rest like the Last.fm one.
+  Every failure degrades to a status-line message: no key, a wrong key or a drifted
+  system clock, a network drop, or zero results never blocks pasting a URL, and a
+  search never freezes the interface. Already-subscribed shows are named, not
+  duplicated.
+- The `\` search-results list now takes PgUp/PgDn/Home/End for fast movement
+  through large result sets.
+- `\` now searches the list in the focused pane, not always the playlist. In the
+  file browser it searches the current view - and because every browser section
+  (`[Podcasts]` feeds and episodes, `[Radio]`, `[Books]`, `[FAVs]`, `[Recent]`,
+  `[Drives]`, and plain directories) shares one list, they all gain search at
+  once; the file browser had none before. Matching is case-insensitive over the
+  text shown on the row; a single hit jumps straight to it, several open the same
+  pick-list as playlist search, and Enter lands on the row with the browser still
+  focused. Playlist search is unchanged. If the list is rebuilt while a result
+  overlay is open, the overlay closes rather than jump to a since-moved row.
+
+### Added (podcasts)
+
+- A new `[Podcasts]` section in the browser sidebar, alongside `[Radio]` and
+  `[Books]`. Press `/` inside it to paste a podcast feed URL; RE-MOCT fetches and
+  parses the feed and, if it is a valid podcast, subscribes to it and shows the
+  show by title. Subscriptions are saved and persist across restarts.
+- Open a subscribed feed with Enter to see its episodes - title, date, and length
+  per row - newest first, with the usual PgUp/PgDn/Home/End paging. `[Back]`
+  returns to the feed list. Remove a feed with `d` or `Del`, like a radio station.
+- Feeds are fetched in the background, so subscribing to or opening even a very
+  large show never freezes the interface. A feed that cannot be fetched or is not
+  a real podcast reports the problem and changes nothing.
+- Play an episode by selecting it: RE-MOCT downloads it (with an on-screen
+  percentage, like a CD rip) and then plays it, so you get full seeking, the real
+  duration, and embedded chapters. The transport controls (pause, seek, volume)
+  work as they do for any track.
+- Episodes remember where you left off. Come back to a half-finished episode and
+  it resumes at your position; two episodes in progress keep their own positions.
+  The list marks each episode new, in-progress (with the resume time), or played,
+  and an episode that reaches the end is marked played and stops (it does not
+  auto-play the next one). Positions and states are saved across restarts.
+- Queue episodes for offline listening: Shift+D on an episode downloads it for
+  later (without playing). The queue holds up to 5 and downloads them one at a
+  time, in order, each row showing its percentage while it works and "queued"
+  while it waits; a download that fails is retried up to three times, then skipped
+  so one bad episode never stalls the rest. Downloaded episodes are marked so, and
+  play instantly and fully offline.
+- Delete a downloaded episode with d or Del to free space - your resume position
+  and played state are kept, so re-downloading picks up where you left off.
+- If you press play on an episode while a different one is still downloading,
+  RE-MOCT asks whether to wait (queue it to play next) or play now (interrupt the
+  download, which restarts later).
+- A playing episode shows its cover in the art pane - the episode's own image if
+  it has one, otherwise the show's poster - as truecolor half-blocks, just like
+  album art for music. The show art is cached to disk, so a downloaded episode
+  still shows its poster offline. A show with no art simply leaves the pane empty.
+- In `[Podcasts]`, the info pane follows the highlighted row - playing or not. It
+  shows the highlighted show's poster (feed list) or the highlighted episode's
+  cover and title (episode list), never whatever music track the playlist last
+  pointed at. A playing episode's own cover shows when you browse away from the
+  podcast pane, so the pane still follows now-playing elsewhere.
+
+### Security
+
+- The sensitive Last.fm and ListenBrainz credentials in `remoct.conf` (the shared
+  secret, the session key, the in-flight auth token, and the ListenBrainz token)
+  are no longer stored as plaintext. On Windows they are encrypted with DPAPI, tied
+  to your Windows user account; on Linux they are obfuscated with a machine-derived
+  key. The API key and usernames stay plaintext, so the file is still easy to read
+  and diff. This protects against casual disclosure - synced folders, backups,
+  pasted logs, screen shares - not against software running as your own user.
+- Because the protection is bound to the machine and user, the four protected
+  fields no longer carry over if you copy `remoct.conf` to another machine or user
+  account; you re-authenticate there. An existing plaintext config keeps working
+  and upgrades to the protected form on the next save.
+
 ## [1.3.1] - 2026-07-20
 
 ### Changed (iHeart re-pin - F6)

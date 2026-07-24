@@ -126,7 +126,37 @@ void AudioManager::clearNext() {
     teardownNext();
 }
 
+// Install a swap the audio thread has already performed, on the main thread.
+//
+// If track_swap_flag_ is set then the swap ALREADY HAPPENED — file_src_ is the new
+// track and it is audible. The only question is whether the UI's identity follows.
+// Draining is therefore always correct: refusing to install can only desynchronize
+// current_track_ from what is playing.
+//
+// Called from pollEvents() (the normal tick) and from the top of teardownNext(),
+// because next_track_info_ is a SINGLE SLOT serving two roles — the payload of a
+// swap awaiting install, and the info of a newly armed preload. preloadNext()
+// overwrites it, so any teardown must drain the pending payload BEFORE the clobber.
+// (Simply cancelling the install instead was measured: it strands the previous
+// track's title against the new track's audio. Cancelling later, after the slot is
+// overwritten, installs a track that was armed but never played. Drain-first is the
+// only ordering that installs the track that actually swapped in.)
+//
+// Takes no lock and must not: pollEvents() holds none, teardownNext()'s callers all
+// hold state_mutex_, and both entry points are the UI thread, so they cannot race.
+void AudioManager::installPendingSwap() {
+    if (track_swap_flag_.exchange(false)) {
+        current_track_ = next_track_info_;
+        // Reap the source the audio thread retired at the swap (slice B): the
+        // seq_cst exchange above synchronizes-with the flag store that followed
+        // the swap, so retired_src_ is fully written and quiescent here — the
+        // free happens on the main thread, never in the audio callback.
+        retired_src_.reset();
+    }
+}
+
 void AudioManager::teardownNext() {
+    installPendingSwap();   // drain before next_track_info_ can be clobbered
     if (next_decoder_initialised_.load(std::memory_order_acquire)) {
         // Clear the published flag FIRST so the audio thread starts no new
         // crossfade or gapless read of next_decoder_ (every such read is gated on
@@ -144,16 +174,18 @@ void AudioManager::teardownNext() {
             device_initialised_ && ma_device_is_started(&device_)) {
             ma_device_stop(&device_);
             crossfading_.store(false);
-            next_src_.reset();
+            next_src_.reset();          // free inside the quiesced window
             ma_device_start(&device_);
-        } else {
-            next_src_.reset();
         }
     }
+    // Unconditional: initCrossfade's repeat-one branch un-publishes the armed
+    // decoder from the audio thread without freeing it (it cannot free there), so
+    // next_src_ can still be owned while the flag reads false. Freeing here is the
+    // main-thread counterpart to that. No-op when the branch above already freed
+    // it, and safe when the flag is false - both audio-thread read sites (the
+    // crossfade mix and the gapless splice) are gated on that flag.
+    next_src_.reset();
     next_path_.clear();
-    // Cancel any pending deferred swap: the preload it referred to is gone, so
-    // pollEvents must not install a now-stale next_track_info_ over current_track_.
-    track_swap_flag_.store(false);
 }
 
 // ─── play ────────────────────────────────────────────────────────────────────
@@ -187,7 +219,7 @@ bool AudioManager::play(const std::string& path) {
     }
     teardown();
     teardownNext();
-    track_ended_flag_.store(false);
+    track_ended_flag_.store(false); track_end_advanced_.store(false);
 
     // Open the file as a source object (slice B). LocalFileSource::open =
     // open_decoder + zero-format guard + prime_decoder + populate_track_info,
@@ -204,7 +236,7 @@ bool AudioManager::play(const std::string& path) {
     ma_device_set_master_volume(&device_, volume_.load());
     ma_device_start(&device_);
     state_.store(PlaybackState::Playing);
-    track_ended_flag_.store(false);
+    track_ended_flag_.store(false); track_end_advanced_.store(false);
 
     // Seed duration from TagLib (already available in current_track_)
     // This avoids calling ma_decoder_get_length_in_pcm_frames from UI thread
@@ -358,6 +390,13 @@ void AudioManager::initCrossfade() {
     if (repeat_one_.load()) {
         // Seek current decoder back to start instead (raw, unprimed — baseline)
         if (file_src_) file_src_->seekToFrame(0);
+        // Un-publish the armed decoder so a later pass cannot read it. Flag ONLY:
+        // no reset() (that would free heap on the audio thread) and no retiring
+        // into retired_src_ (which is reaped solely under track_swap_flag_, a flag
+        // this branch never sets - so it would never be reaped, and a second pass
+        // through here would free the previous one from the callback). teardownNext
+        // frees next_src_ unconditionally on the main thread instead.
+        next_decoder_initialised_.store(false, std::memory_order_release);
         return;
     }
 
@@ -427,7 +466,7 @@ void AudioManager::stop() {
             ma_device_uninit(&device_);
             device_initialised_ = false;
         }
-        track_ended_flag_.store(false);  // don't advance playlist on manual stop
+        track_ended_flag_.store(false); track_end_advanced_.store(false);  // don't advance playlist on manual stop
         return;
     }
     if (stream_mode_.load()) {
@@ -442,12 +481,12 @@ void AudioManager::stop() {
             ma_device_uninit(&device_);
             device_initialised_ = false;
         }
-        track_ended_flag_.store(false);
+        track_ended_flag_.store(false); track_end_advanced_.store(false);
         return;
     }
     teardown();
     teardownNext();
-    track_ended_flag_.store(false);  // don't advance playlist on manual stop
+    track_ended_flag_.store(false); track_end_advanced_.store(false);  // don't advance playlist on manual stop
     current_track_ = {};
 }
 
@@ -549,14 +588,7 @@ void AudioManager::pollEvents() {
     // overwrites next_track_info_). next_track_info_ is stable here: the audio
     // thread finished reading it before setting the flag, and next_decoder_
     // initialised_ is false post-swap so no preload can overwrite it until below.
-    if (track_swap_flag_.exchange(false)) {
-        current_track_ = next_track_info_;
-        // Reap the source the audio thread retired at the swap (slice B): the
-        // seq_cst exchange above synchronizes-with the flag store that followed
-        // the swap, so retired_src_ is fully written and quiescent here — the
-        // free happens on the main thread, never in the audio callback.
-        retired_src_.reset();
-    }
+    installPendingSwap();
     if (bpm_needed_flag_.exchange(false))
         startBpmDetection(current_track_.path,
                           file_src_ ? (int)file_src_->sampleRate() : 44100);
@@ -788,8 +820,12 @@ void AudioManager::onDataCallback(void* output, ma_uint32 frame_count) {
     // consume from the decoder, and tape-speed near a track boundary is an edge
     // not worth the extra accounting. A crossfade already in flight finishes via
     // the normal (non-varispeed) read path below.
+    // Suppressed under repeat-one for the same reason the swap is declined below:
+    // the loop must not sound the armed track at all. Deciding this only at
+    // initCrossfade() was too late - by then the fade had already run to full gain,
+    // so the next track was audible for the whole crossfade before being declined.
     if (crossfade_secs > 0.0f && next_decoder_initialised_.load() && !crossfading_.load()
-        && speed_.load() == 1.0f) {
+        && !repeat_one_.load() && speed_.load() == 1.0f) {
         double pos = positionSec();
         double dur = durationSec();
         if (dur > 0.0 && (dur - pos) <= (double)crossfade_secs) {
@@ -858,8 +894,12 @@ void AudioManager::onDataCallback(void* output, ma_uint32 frame_count) {
             preload_next_flag_.store(true);
         }
     } else if (track_done) {
-        // Gapless: if next is preloaded, switch immediately with no gap
-        if (next_decoder_initialised_.load()) {
+        // Gapless: if next is preloaded, switch immediately with no gap.
+        // Repeat-one is excluded so the tail-fill below cannot sound the armed
+        // track either; it falls to the silence-fill else, which sets
+        // track_ended_flag_ and lets the normal repeat-one replay (and the queue
+        // drain that shares that callback) run.
+        if (next_decoder_initialised_.load() && !repeat_one_.load()) {
             // Fill remainder from next decoder
             ma_uint32 remaining = frame_count - (ma_uint32)frames_read_a;
             if (remaining > 0) {
@@ -870,12 +910,14 @@ void AudioManager::onDataCallback(void* output, ma_uint32 frame_count) {
                         (remaining - fr) * ch * sizeof(float));
             }
             initCrossfade();
+            track_end_advanced_.store(true);   // swap done - callback accounts, must NOT restart
             track_ended_flag_.store(true);
         } else {
             // No next track preloaded — silence remainder
             if (frames_read_a < frame_count)
                 std::memset(out + frames_read_a * ch, 0,
                     (frame_count - (ma_uint32)frames_read_a) * ch * sizeof(float));
+            track_end_advanced_.store(false);  // ended into silence - callback starts the next
             track_ended_flag_.store(true);
         }
     }
@@ -1182,7 +1224,7 @@ bool AudioManager::openCD(const std::string& drive_letter) {
     // teardown handles already-stopped device safely
     teardown();
     teardownNext();
-    track_ended_flag_.store(false);
+    track_ended_flag_.store(false); track_end_advanced_.store(false);
     // Entering CD mode means no file is the current track. Clear it so a stale
     // file identity can't leak into the UI while a CD plays - nowPlayingRow()
     // would resolve the old file's playlist row and the F3 follow-sync would
@@ -1274,7 +1316,7 @@ void AudioManager::startStreamConnectLocked(const std::string& url) {
     stream_mode_.store(false);
     teardown();        // stops + uninits device_ and file decoder_
     teardownNext();
-    track_ended_flag_.store(false);
+    track_ended_flag_.store(false); track_end_advanced_.store(false);
     state_.store(PlaybackState::Stopped);
     // Starting a stream means no file is the current track. Clear it so a stale
     // file identity (e.g. a just-drained override-queue song) can't drive the

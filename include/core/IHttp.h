@@ -12,6 +12,7 @@
 #pragma once
 #include <atomic>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
 #include <vector>
@@ -142,6 +143,12 @@ struct IHttpSession {
     virtual HttpResponse fetch(const HttpRequest& req) = 0;
 };
 
+// Progress callback for a streaming download: (received_bytes, total_bytes). total is
+// 0 when the origin sends no Content-Length. Invoked periodically on the fetching
+// thread — keep it cheap and non-blocking (the podcast download UI just stores into
+// atomics the draw loop reads).
+using ProgressFn = std::function<void(std::uint64_t received, std::uint64_t total)>;
+
 struct IHttp {
     virtual ~IHttp() = default;
     virtual HttpResponse fetch(const HttpRequest& req) = 0;
@@ -152,6 +159,16 @@ struct IHttp {
     // (WinInetHttp holds an InternetOpen handle per session for connection reuse).
     // The returned session must not outlive the IHttp that created it.
     virtual std::unique_ptr<IHttpSession> openSession(const HttpSessionConfig& cfg);
+
+    // Stream a GET straight to a file on disk, reporting progress — the body never
+    // lands in memory, so this suits large files (podcast episodes) that fetch()'s
+    // in-memory buffer would balloon. Honors req.cancel (per-chunk) and req.timeout_ms.
+    // On success writes dest_path and returns ok=true (empty body, status set); on
+    // cancel/error returns ok=false and removes any partial file. The default below
+    // returns ok=false (unsupported) so fakes and other impls need no change — only the
+    // WinINet and libcurl transports override it. (Slice 4 reuses this for the queue.)
+    virtual HttpResponse fetchToFile(const HttpRequest& req, const std::string& dest_path,
+                                     const ProgressFn& progress);
 };
 
 inline std::unique_ptr<IHttpSession> IHttp::openSession(const HttpSessionConfig& cfg) {
@@ -167,6 +184,13 @@ inline std::unique_ptr<IHttpSession> IHttp::openSession(const HttpSessionConfig&
         }
     };
     return std::make_unique<Forwarder>(this, cfg);
+}
+
+// Default: streaming-to-file unsupported (ok=false). The WinINet/libcurl transports
+// override this; fakes and the plugin host-service shim keep compiling untouched.
+inline HttpResponse IHttp::fetchToFile(const HttpRequest&, const std::string&,
+                                       const ProgressFn&) {
+    return HttpResponse{};
 }
 
 // TRANSITIONAL process-wide accessor. This global is a migration seam ONLY — the

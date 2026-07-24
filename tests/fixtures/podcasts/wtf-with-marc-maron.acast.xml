@@ -1,0 +1,307 @@
+<?xml version="1.0" encoding="utf-8"?>
+<?xml-stylesheet type="text/xsl" href="/global/feed/rss.xslt" ?>
+<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom" xmlns:googleplay="http://www.google.com/schemas/play-podcasts/1.0" xmlns:itunes="http://www.itunes.com/dtds/podcast-1.0.dtd" xmlns:media="http://search.yahoo.com/mrss/" xmlns:podaccess="https://access.acast.com/schema/1.0/" xmlns:acast="https://schema.acast.com/1.0/">
+    <channel>
+		<ttl>60</ttl>
+		<generator>acast.com</generator>
+		<title>WTF with Marc Maron Podcast</title>
+		<link>http://wtfpod.com/</link>
+		<atom:link href="https://feeds.acast.com/public/shows/62a222737c02140013aa4c03" rel="self" type="application/rss+xml"/>
+		<language>en</language>
+		<copyright>2022 Marc Maron</copyright>
+		<itunes:keywords/>
+		<itunes:author>Marc Maron</itunes:author>
+		<itunes:subtitle/>
+		<itunes:summary><![CDATA[Marc Maron welcomes comedians, actors, directors, writers, authors, musicians and folks from all walks of life to his home for amazingly revealing conversations. Marc's probing, comprehensive interview style allows guests to express themselves in ways listeners have never heard.<hr><p style='color:grey; font-size:0.75em;'> Hosted on Acast. See <a style='color:grey;' target='_blank' rel='noopener noreferrer' href='https://acast.com/privacy'>acast.com/privacy</a> for more information.</p>]]></itunes:summary>
+		<description><![CDATA[Marc Maron welcomes comedians, actors, directors, writers, authors, musicians and folks from all walks of life to his home for amazingly revealing conversations. Marc's probing, comprehensive interview style allows guests to express themselves in ways listeners have never heard.<hr><p style='color:grey; font-size:0.75em;'> Hosted on Acast. See <a style='color:grey;' target='_blank' rel='noopener noreferrer' href='https://acast.com/privacy'>acast.com/privacy</a> for more information.</p>]]></description>
+		<itunes:explicit>true</itunes:explicit>
+		<itunes:owner>
+			<itunes:name>Marc Maron</itunes:name>
+			<itunes:email>wtfpod@gmail.com</itunes:email>
+		</itunes:owner>
+		<acast:showId>62a222737c02140013aa4c03</acast:showId>
+		<acast:showUrl>wtf-with-marc-maron-podcast</acast:showUrl>
+		<acast:signature key="EXAMPLE" algorithm="aes-256-cbc"><![CDATA[wbG1Z7+6h9QOi+CR1Dv0uQ==]]></acast:signature>
+		<acast:settings><![CDATA[FYjHyZbXWHZ7gmX8Pp1rmStkiTEE0CNxIPxmLPEYNwOPYEjva3g6uTTuD+shB98DS1KN7Y3bqCk4swQqyJ2+uHuN12fgD8ScXFu6+bGuKPPc8uZBzUsd7O1Ax84OE6q1HY9B7ROclAchC89egww2Sw==]]></acast:settings>
+        <acast:network id="62a77c370bbdf30013966ddc" slug="wtf-with-marc-maron-podcast"><![CDATA[WTF with Marc Maron Podcast]]></acast:network>
+		<acast:importedFeed>https://www.omnycontent.com/d/playlist/aaea4e69-af51-495e-afc9-a9760146922b/8a755b22-8f72-4d44-8ff9-ab79013fda25/6b8a5068-9bea-439f-bd4d-ab79013fda2b/podcast.rss</acast:importedFeed>
+		<itunes:type>episodic</itunes:type>
+			<itunes:image href="https://assets.pippa.io/shows/62a222737c02140013aa4c03/1656679440477-8e0e5db81e3f07c927b0032af2591499.jpeg"/>
+			<image>
+				<url>https://assets.pippa.io/shows/62a222737c02140013aa4c03/1656679440477-8e0e5db81e3f07c927b0032af2591499.jpeg</url>
+				<link>http://wtfpod.com/</link>
+				<title>WTF with Marc Maron Podcast</title>
+			</image>
+			<itunes:new-feed-url>https://feeds.acast.com/public/shows/62a222737c02140013aa4c03</itunes:new-feed-url>
+		<item>
+			<title>Episode 1686 - Barack Obama</title>
+			<itunes:title>Episode 1686 - Barack Obama</itunes:title>
+			<pubDate>Mon, 13 Oct 2025 07:00:00 GMT</pubDate>
+			<itunes:duration>1:07:23</itunes:duration>
+			<enclosure url="https://sphinx.acast.com/p/open/s/62a222737c02140013aa4c03/e/68ec7ddcd798804c9e46a4a5/media.mp3" length="64709992" type="audio/mpeg"/>
+			<guid isPermaLink="false">68ec7ddcd798804c9e46a4a5</guid>
+			<itunes:explicit>true</itunes:explicit>
+			<link>https://shows.acast.com/wtf-with-marc-maron-podcast/episodes/episode-1686-barack-obama</link>
+			<acast:episodeId>68ec7ddcd798804c9e46a4a5</acast:episodeId>
+			<acast:showId>62a222737c02140013aa4c03</acast:showId>
+			<acast:episodeUrl>episode-1686-barack-obama</acast:episodeUrl>
+			<acast:settings><![CDATA[FYjHyZbXWHZ7gmX8Pp1rmQI5cfyaoZT5d8ESYLTxQI9CwocEux13Tq+Fyl0+L6D9ws7MFltPv2DdzTl+G+/MDDLAb6/Zsb7sAO+JTs0FAVpoxrCCPvRp4oW5jWF5G+gDWBiXBypbCMZ+xB7rrQmqi826oe2ovt7XtUbS6iZ/rYbaYMqFYhl7kkDyALcdXel/L6zzCGxv8qlRfIlIef0eeFY9wT4A5v10X465a9c0mmMOMC7x52uW6UrzmsW6f5hR2r82v+CsSu4uoefmLXVnlqifqVkOf1v9JNkxRH8A6NaiBFocZUakFLxRUGVOUMI6XN1WrUqF11Oy+eVErICWnv+RFhGMzXfxI0rD5jHTTno=]]></acast:settings>
+			<itunes:episodeType>full</itunes:episodeType>
+			<itunes:image href="https://assets.pippa.io/shows/62a222737c02140013aa4c03/1656679440477-8e0e5db81e3f07c927b0032af2591499.jpeg"/>
+			<description><![CDATA[For the final episode of WTF, Marc travels to Washington, DC for another conversation with the most significant guest in the show’s history. Former President Barack Obama welcomes Marc into his office to speak about the legacy of the podcast, the need for human connection, and the reason for optimism in the face of challenging times. Also, President Obama grants Marc’s specific request to help bring some closure to the past sixteen years of WTF.<hr><p style='color:grey; font-size:0.75em;'> Hosted on Acast. See <a style='color:grey;' target='_blank' rel='noopener noreferrer' href='https://acast.com/privacy'>acast.com/privacy</a> for more information.</p>]]></description>
+			<itunes:summary><![CDATA[For the final episode of WTF, Marc travels to Washington, DC for another conversation with the most significant guest in the show’s history. Former President Barack Obama welcomes Marc into his office to speak about the legacy of the podcast, the need for human connection, and the reason for optimism in the face of challenging times. Also, President Obama grants Marc’s specific request to help bring some closure to the past sixteen years of WTF.<hr><p style='color:grey; font-size:0.75em;'> Hosted on Acast. See <a style='color:grey;' target='_blank' rel='noopener noreferrer' href='https://acast.com/privacy'>acast.com/privacy</a> for more information.</p>]]></itunes:summary>
+		</item>
+		<item>
+			<title>Episode 1685 - Marc Maron</title>
+			<itunes:title>Episode 1685 - Marc Maron</itunes:title>
+			<pubDate>Thu, 09 Oct 2025 07:00:00 GMT</pubDate>
+			<itunes:duration>37:40</itunes:duration>
+			<enclosure url="https://sphinx.acast.com/p/open/s/62a222737c02140013aa4c03/e/68e4923d5f95c3d419e2692b/media.mp3" length="36182418" type="audio/mpeg"/>
+			<guid isPermaLink="false">68e4923d5f95c3d419e2692b</guid>
+			<itunes:explicit>true</itunes:explicit>
+			<link>https://shows.acast.com/wtf-with-marc-maron-podcast/episodes/episode-1685-marc-maron</link>
+			<acast:episodeId>68e4923d5f95c3d419e2692b</acast:episodeId>
+			<acast:showId>62a222737c02140013aa4c03</acast:showId>
+			<acast:episodeUrl>episode-1685-marc-maron</acast:episodeUrl>
+			<acast:settings><![CDATA[FYjHyZbXWHZ7gmX8Pp1rmQI5cfyaoZT5d8ESYLTxQI9CwocEux13Tq+Fyl0+L6D9ws7MFltPv2DdzTl+G+/MDDLAb6/Zsb7sAO+JTs0FAVpoxrCCPvRp4oW5jWF5G+gDJNqZHl/nkHdS2VvbBXEm6atKL4L+ML4vkDN8WPBB4H9Ly0UZSnDCESHLb4BtV8KU16OPFZahbgtoQYtmBm9lTTSL/UnwuJ5+pP8EcGZEQBcXzHGwj9jKiIY6PT68C3A/2dVqeCyA3l5ITUzd2FQbWgPNcB/6C+IbvX4MO30aDA+0JjdqP+WztP2y3gira3yLxV1o7Qzk3cdbnoVshDb2ZqbjGzVIGLNLF525fx8ATLw=]]></acast:settings>
+			<itunes:episodeType>full</itunes:episodeType>
+			<itunes:image href="https://assets.pippa.io/shows/62a222737c02140013aa4c03/1656679440477-8e0e5db81e3f07c927b0032af2591499.jpeg"/>
+			<description><![CDATA[Only one episode of WTF remains after this one and it will not be recorded in the garage. So with this being the final WTF episode taking place in Marc’s sacred space, it’s only appropriate that he close things out himself, directly addressing everyone who’s been on this ride with him for the past sixteen years. This show started with Marc on a microphone, first in a radio studio, then at the Cat Ranch in Highland Park, as well as many remote locations all over the world, before winding up in this garage where Marc turns that microphone on one last time.&nbsp;<hr><p style='color:grey; font-size:0.75em;'> Hosted on Acast. See <a style='color:grey;' target='_blank' rel='noopener noreferrer' href='https://acast.com/privacy'>acast.com/privacy</a> for more information.</p>]]></description>
+			<itunes:summary><![CDATA[Only one episode of WTF remains after this one and it will not be recorded in the garage. So with this being the final WTF episode taking place in Marc’s sacred space, it’s only appropriate that he close things out himself, directly addressing everyone who’s been on this ride with him for the past sixteen years. This show started with Marc on a microphone, first in a radio studio, then at the Cat Ranch in Highland Park, as well as many remote locations all over the world, before winding up in this garage where Marc turns that microphone on one last time.&nbsp;<hr><p style='color:grey; font-size:0.75em;'> Hosted on Acast. See <a style='color:grey;' target='_blank' rel='noopener noreferrer' href='https://acast.com/privacy'>acast.com/privacy</a> for more information.</p>]]></itunes:summary>
+		</item>
+		<item>
+			<title>Episode 1684 - Matt Groening</title>
+			<itunes:title>Episode 1684 - Matt Groening</itunes:title>
+			<pubDate>Mon, 06 Oct 2025 07:00:00 GMT</pubDate>
+			<itunes:duration>1:16:09</itunes:duration>
+			<enclosure url="https://sphinx.acast.com/p/open/s/62a222737c02140013aa4c03/e/68e35ef78ade82e20e496568/media.mp3" length="73126624" type="audio/mpeg"/>
+			<guid isPermaLink="false">68e35ef78ade82e20e496568</guid>
+			<itunes:explicit>true</itunes:explicit>
+			<link>https://shows.acast.com/wtf-with-marc-maron-podcast/episodes/episode-1684-matt-groening</link>
+			<acast:episodeId>68e35ef78ade82e20e496568</acast:episodeId>
+			<acast:showId>62a222737c02140013aa4c03</acast:showId>
+			<acast:episodeUrl>episode-1684-matt-groening</acast:episodeUrl>
+			<acast:settings><![CDATA[FYjHyZbXWHZ7gmX8Pp1rmRbkUlg2iR8fDtnl1O71B2N8B7jZZH+7YdsHlGFxMJ/JB5ewwSWwnDfITsERRlXnRPdjbJm7d4qQ2rUK1Oh2E65gYDhVAjVZ14DHwOhC8Pz9G7zHGXDVdagk9g4395oUNlKVR9Eag0/RvbywkU0xNLrtZX2bV3nWb4BkRzaXP+84xdXMke9xG+Z6YcrNS8gCsR9UZ8UmmjX+eOR+DftrT5eECZqxQbjwm8i/XpNzafxBo/NjE0OIGCz8mjY79ozgqgf+99jD8CydhkofOEQu8Ks2Q50g+5NOzV03bdkd5qj/294qvjfrQaQFFRGNViHWG+0T0LhXbqg142G63daYRH6csSG8IbeECoGL4ubfeVT4tjK/6xk6h4ZUNwo/If+BNw==]]></acast:settings>
+			<itunes:episodeType>full</itunes:episodeType>
+			<itunes:image href="https://assets.pippa.io/shows/62a222737c02140013aa4c03/1656679440477-8e0e5db81e3f07c927b0032af2591499.jpeg"/>
+			<description><![CDATA[Matt Groening discovered the things that helped shape his artistic sensibility when he was 12 years old: psychedelia, the Grateful Dead, Catch-22, and of course cartooning. Matt explains to Marc how the road to creating The Simpsons started in Portland, Oregon and had stops in New York City, Los Angeles, the Licorice Pizza record store, the LA Reader and the office of James L. Brooks. They also talk about The Simpsons becoming a breeding ground for comedy writing talent and Matt reveals, for the first time, who was the real inspiration for Homer Simpson.<hr><p style='color:grey; font-size:0.75em;'> Hosted on Acast. See <a style='color:grey;' target='_blank' rel='noopener noreferrer' href='https://acast.com/privacy'>acast.com/privacy</a> for more information.</p>]]></description>
+			<itunes:summary><![CDATA[Matt Groening discovered the things that helped shape his artistic sensibility when he was 12 years old: psychedelia, the Grateful Dead, Catch-22, and of course cartooning. Matt explains to Marc how the road to creating The Simpsons started in Portland, Oregon and had stops in New York City, Los Angeles, the Licorice Pizza record store, the LA Reader and the office of James L. Brooks. They also talk about The Simpsons becoming a breeding ground for comedy writing talent and Matt reveals, for the first time, who was the real inspiration for Homer Simpson.<hr><p style='color:grey; font-size:0.75em;'> Hosted on Acast. See <a style='color:grey;' target='_blank' rel='noopener noreferrer' href='https://acast.com/privacy'>acast.com/privacy</a> for more information.</p>]]></itunes:summary>
+		</item>
+		<item>
+			<title>Episode 1683 - Mark Flanagan</title>
+			<itunes:title>Episode 1683 - Mark Flanagan</itunes:title>
+			<pubDate>Thu, 02 Oct 2025 07:00:00 GMT</pubDate>
+			<itunes:duration>1:18:10</itunes:duration>
+			<enclosure url="https://sphinx.acast.com/p/open/s/62a222737c02140013aa4c03/e/68de098f597bc7d53f45679f/media.mp3" length="75055088" type="audio/mpeg"/>
+			<guid isPermaLink="false">68de098f597bc7d53f45679f</guid>
+			<itunes:explicit>true</itunes:explicit>
+			<link>https://shows.acast.com/wtf-with-marc-maron-podcast/episodes/episode-1683-mark-flanagan</link>
+			<acast:episodeId>68de098f597bc7d53f45679f</acast:episodeId>
+			<acast:showId>62a222737c02140013aa4c03</acast:showId>
+			<acast:episodeUrl>episode-1683-mark-flanagan</acast:episodeUrl>
+			<acast:settings><![CDATA[FYjHyZbXWHZ7gmX8Pp1rmRbkUlg2iR8fDtnl1O71B2N8B7jZZH+7YdsHlGFxMJ/JB5ewwSWwnDfITsERRlXnRPdjbJm7d4qQ2rUK1Oh2E65gYDhVAjVZ14DHwOhC8Pz9ss6GkrpBdX2Hb76wa1/7tShBC8kYyUSSSzhzKUi+YKuUDnVVvazlkjBfx6ECmpwozGzZtLtMmTHO1nOpcM8ptzvUHkjg+Kpphm8a02nxJ1H7plTEJw+UUj+w6+p0sMYKbf6rFLUm+gpJ5tPcUkNiRLRK5gdaL+H/nbFiHyyzOIcoVXbD72SgWY3i9DDsa6xEZfl6EB22NP7hXhdPAYmeNW7LQKHSDeGI42JGQtAdiIdS3AZe0XHsQpSi2EPhQmp9w4+CqOPaXkYE1uqAQKUkUg==]]></acast:settings>
+			<itunes:episodeType>full</itunes:episodeType>
+			<itunes:image href="https://assets.pippa.io/shows/62a222737c02140013aa4c03/1656679440477-8e0e5db81e3f07c927b0032af2591499.jpeg"/>
+			<description><![CDATA[Despite having close relationships with innumerable people in the entertainment industry, Mark Flanagan is aware that a lot of people don’t know much about him, even his first name. They just know him as Flanagan, owner and programmer of the LA nightclub Largo. Flanny talks with Marc about his family’s escape from Northern Ireland during The Troubles and his obsession with music that brought him to Largo in the early ‘90s, eventually owning the club where he could showcase the people he most admired in music and comedy.<hr><p style='color:grey; font-size:0.75em;'> Hosted on Acast. See <a style='color:grey;' target='_blank' rel='noopener noreferrer' href='https://acast.com/privacy'>acast.com/privacy</a> for more information.</p>]]></description>
+			<itunes:summary><![CDATA[Despite having close relationships with innumerable people in the entertainment industry, Mark Flanagan is aware that a lot of people don’t know much about him, even his first name. They just know him as Flanagan, owner and programmer of the LA nightclub Largo. Flanny talks with Marc about his family’s escape from Northern Ireland during The Troubles and his obsession with music that brought him to Largo in the early ‘90s, eventually owning the club where he could showcase the people he most admired in music and comedy.<hr><p style='color:grey; font-size:0.75em;'> Hosted on Acast. See <a style='color:grey;' target='_blank' rel='noopener noreferrer' href='https://acast.com/privacy'>acast.com/privacy</a> for more information.</p>]]></itunes:summary>
+		</item>
+		<item>
+			<title>Episode 1682 - Judd Apatow’s Favorite WTF Moments</title>
+			<itunes:title>Episode 1682 - Judd Apatow’s Favorite WTF Moments</itunes:title>
+			<pubDate>Mon, 29 Sep 2025 07:00:00 GMT</pubDate>
+			<itunes:duration>2:07:01</itunes:duration>
+			<enclosure url="https://sphinx.acast.com/p/open/s/62a222737c02140013aa4c03/e/68da1a2a730cf5a7474d9874/media.mp3" length="121949859" type="audio/mpeg"/>
+			<guid isPermaLink="false">68da1a2a730cf5a7474d9874</guid>
+			<itunes:explicit>true</itunes:explicit>
+			<link>https://shows.acast.com/wtf-with-marc-maron-podcast/episodes/episode-1682-judd-apatows-favorite-wtf-moments</link>
+			<acast:episodeId>68da1a2a730cf5a7474d9874</acast:episodeId>
+			<acast:showId>62a222737c02140013aa4c03</acast:showId>
+			<acast:episodeUrl>episode-1682-judd-apatows-favorite-wtf-moments</acast:episodeUrl>
+			<acast:settings><![CDATA[FYjHyZbXWHZ7gmX8Pp1rmRbkUlg2iR8fDtnl1O71B2N8B7jZZH+7YdsHlGFxMJ/JB5ewwSWwnDfITsERRlXnRPdjbJm7d4qQ2rUK1Oh2E65gYDhVAjVZ14DHwOhC8Pz9XnShK0yCFvCmSSSmYFeQnLuxMhc4pcBCqpAqaDYZYW0fdf9MpD9SBI66naSxUQfleg4OVAfG5NSeoajdNAHFTTJxCkvo/d6Bq9Fr9Rkx3FBWoqLHzCok5wazE0k7kPkLoFzLyL9q8BKyx9WMVVQjMdDJSpoE9CwYp1wilTLLOwvx5rCvhGMymvLWpXhjzIciDvcBtiAhE0ruMi3HI7Hf/6QcGhn1+OCd8OMuY8+30GnUL3yYMZdkYCk2T9cTIODf0bnh5WGIXrdlSzzf/xbUTg==]]></acast:settings>
+			<itunes:episodeType>full</itunes:episodeType>
+			<itunes:image href="https://assets.pippa.io/shows/62a222737c02140013aa4c03/1656679440477-8e0e5db81e3f07c927b0032af2591499.jpeg"/>
+			<description><![CDATA[Judd Apatow was an early fan of WTF and a perennial supporter of the show throughout its run. So when he asked Marc if he could be a guest one more time for an episode where he plays his favorite moments, of course the answer was yes. And because Marc’s general practice is to never listen to the episodes, he is hearing most of these clips for the first time and reacting to them accordingly. It’s a unique look at the history of the show, curated by a self-described “comedy nerd” and longtime WTFer.<hr><p style='color:grey; font-size:0.75em;'> Hosted on Acast. See <a style='color:grey;' target='_blank' rel='noopener noreferrer' href='https://acast.com/privacy'>acast.com/privacy</a> for more information.</p>]]></description>
+			<itunes:summary><![CDATA[Judd Apatow was an early fan of WTF and a perennial supporter of the show throughout its run. So when he asked Marc if he could be a guest one more time for an episode where he plays his favorite moments, of course the answer was yes. And because Marc’s general practice is to never listen to the episodes, he is hearing most of these clips for the first time and reacting to them accordingly. It’s a unique look at the history of the show, curated by a self-described “comedy nerd” and longtime WTFer.<hr><p style='color:grey; font-size:0.75em;'> Hosted on Acast. See <a style='color:grey;' target='_blank' rel='noopener noreferrer' href='https://acast.com/privacy'>acast.com/privacy</a> for more information.</p>]]></itunes:summary>
+		</item>
+		<item>
+			<title>Episode 1681 - Jimmy Pardo</title>
+			<itunes:title>Episode 1681 - Jimmy Pardo</itunes:title>
+			<pubDate>Thu, 25 Sep 2025 07:00:00 GMT</pubDate>
+			<itunes:duration>1:23:27</itunes:duration>
+			<enclosure url="https://sphinx.acast.com/p/open/s/62a222737c02140013aa4c03/e/68d4e41e5f6bcc11290c44b5/media.mp3" length="80135502" type="audio/mpeg"/>
+			<guid isPermaLink="false">68d4e41e5f6bcc11290c44b5</guid>
+			<itunes:explicit>true</itunes:explicit>
+			<link>https://shows.acast.com/wtf-with-marc-maron-podcast/episodes/episode-1681-jimmy-pardo</link>
+			<acast:episodeId>68d4e41e5f6bcc11290c44b5</acast:episodeId>
+			<acast:showId>62a222737c02140013aa4c03</acast:showId>
+			<acast:episodeUrl>episode-1681-jimmy-pardo</acast:episodeUrl>
+			<acast:settings><![CDATA[FYjHyZbXWHZ7gmX8Pp1rmRbkUlg2iR8fDtnl1O71B2N8B7jZZH+7YdsHlGFxMJ/JB5ewwSWwnDfITsERRlXnRPdjbJm7d4qQ2rUK1Oh2E65gYDhVAjVZ14DHwOhC8Pz9aRYeCvWucWw+P98t/OEIi23ksBKCbCfGO5wwMZrZOKpFun+zb0QN1AvazvIXnFcXw3lVKdRRVu94sAqHnVHAN57oyJpZYfGmLRNfhOD550l1aPAUGbNYjXVt1WKFS/3ZfWUjY3ooGnoh+5+XzR0EkiJ/QeiGB7/3EUi0q5XFbRo50XrZynXGqlEXCcb85LfDlASOt+AdAVE6NuxhTNxrG/LfyBSdEYDprjJWdsU6NRZ2u77Dx2dEkRUzg5uE2De4usEjOOoRBL2KLBpKvYnJng==]]></acast:settings>
+			<itunes:episodeType>full</itunes:episodeType>
+			<itunes:image href="https://assets.pippa.io/shows/62a222737c02140013aa4c03/1656679440477-8e0e5db81e3f07c927b0032af2591499.jpeg"/>
+			<description><![CDATA[When WTF started in 2009, Never Not Funny was already there. Jimmy Pardo has been in the podcast game for almost 20 years and was a direct inspiration for Marc back when he wanted to start one of his own. Jimmy and Marc talk about being there in the early days of the medium, how they each learned how to make podcasting work as a business, why Jimmy held onto some bitterness through the years, and how they’ve each come to let go of the things that used to bother them.<hr><p style='color:grey; font-size:0.75em;'> Hosted on Acast. See <a style='color:grey;' target='_blank' rel='noopener noreferrer' href='https://acast.com/privacy'>acast.com/privacy</a> for more information.</p>]]></description>
+			<itunes:summary><![CDATA[When WTF started in 2009, Never Not Funny was already there. Jimmy Pardo has been in the podcast game for almost 20 years and was a direct inspiration for Marc back when he wanted to start one of his own. Jimmy and Marc talk about being there in the early days of the medium, how they each learned how to make podcasting work as a business, why Jimmy held onto some bitterness through the years, and how they’ve each come to let go of the things that used to bother them.<hr><p style='color:grey; font-size:0.75em;'> Hosted on Acast. See <a style='color:grey;' target='_blank' rel='noopener noreferrer' href='https://acast.com/privacy'>acast.com/privacy</a> for more information.</p>]]></itunes:summary>
+		</item>
+		<item>
+			<title>Episode 1680 - Christopher Guest</title>
+			<itunes:title>Episode 1680 - Christopher Guest</itunes:title>
+			<pubDate>Mon, 22 Sep 2025 07:00:00 GMT</pubDate>
+			<itunes:duration>1:34:04</itunes:duration>
+			<enclosure url="https://sphinx.acast.com/p/open/s/62a222737c02140013aa4c03/e/68d0f151f5e00f6ca449d768/media.mp3" length="90316583" type="audio/mpeg"/>
+			<guid isPermaLink="false">68d0f151f5e00f6ca449d768</guid>
+			<itunes:explicit>true</itunes:explicit>
+			<link>https://shows.acast.com/wtf-with-marc-maron-podcast/episodes/episode-1680-christopher-guest</link>
+			<acast:episodeId>68d0f151f5e00f6ca449d768</acast:episodeId>
+			<acast:showId>62a222737c02140013aa4c03</acast:showId>
+			<acast:episodeUrl>episode-1680-christopher-guest</acast:episodeUrl>
+			<acast:settings><![CDATA[FYjHyZbXWHZ7gmX8Pp1rmRbkUlg2iR8fDtnl1O71B2N8B7jZZH+7YdsHlGFxMJ/JB5ewwSWwnDfITsERRlXnRPdjbJm7d4qQ2rUK1Oh2E65gYDhVAjVZ14DHwOhC8Pz9GLy/NAfAjWVP3t5wUKEGQRsfML/uhD9sJxOQIFVpY1JqT5V7RvXqfEa8kRhffmdEOVwYafDo6cN62m4cyOgLIMv8P87o4Qyk1SrSI2ply5kZkOnpKVPI2jd5s1twSfcaLqPL4tIMn9ODPuZsyYgfzNDXS8dMz0nRA3GUa2W0AKgGh4SSX3DPlteZ0gp+AtvU+r7mFtT11TZ1e5XBP6F2xg51OkNP/d8YHwrZzcVr5WfGN3xoLiGq/wFuR/a7gUfjTuKx2u1Xsvyivi7Y19VV/Q==]]></acast:settings>
+			<itunes:episodeType>full</itunes:episodeType>
+			<itunes:image href="https://assets.pippa.io/shows/62a222737c02140013aa4c03/1656679440477-8e0e5db81e3f07c927b0032af2591499.jpeg"/>
+			<description><![CDATA[Whether Christopher Guest is creating characters, writing scripted comedy or doing long form improv, it’s all music to him. Christopher talks with Marc about his musical background, jazz clubs, the British comedy revue Beyond the Fringe, the National Lampoon, Lily Tomlin and other building blocks that paved the way for his work on This is Spinal Tap, Waiting for Guffman, Best in Show, A Mighty Wind and more. They also talk about Christopher’s longtime collaborations with Michael McKean and Eugene Levy, as well as his daily routine involving guitars, newspapers and fly fishing.<hr><p style='color:grey; font-size:0.75em;'> Hosted on Acast. See <a style='color:grey;' target='_blank' rel='noopener noreferrer' href='https://acast.com/privacy'>acast.com/privacy</a> for more information.</p>]]></description>
+			<itunes:summary><![CDATA[Whether Christopher Guest is creating characters, writing scripted comedy or doing long form improv, it’s all music to him. Christopher talks with Marc about his musical background, jazz clubs, the British comedy revue Beyond the Fringe, the National Lampoon, Lily Tomlin and other building blocks that paved the way for his work on This is Spinal Tap, Waiting for Guffman, Best in Show, A Mighty Wind and more. They also talk about Christopher’s longtime collaborations with Michael McKean and Eugene Levy, as well as his daily routine involving guitars, newspapers and fly fishing.<hr><p style='color:grey; font-size:0.75em;'> Hosted on Acast. See <a style='color:grey;' target='_blank' rel='noopener noreferrer' href='https://acast.com/privacy'>acast.com/privacy</a> for more information.</p>]]></itunes:summary>
+		</item>
+		<item>
+			<title>Episode 1679 - Tracy Letts</title>
+			<itunes:title>Episode 1679 - Tracy Letts</itunes:title>
+			<pubDate>Thu, 18 Sep 2025 07:35:00 GMT</pubDate>
+			<itunes:duration>1:29:05</itunes:duration>
+			<enclosure url="https://sphinx.acast.com/p/open/s/62a222737c02140013aa4c03/e/68cbb4bfbe64469a4987737f/media.mp3" length="85533863" type="audio/mpeg"/>
+			<guid isPermaLink="false">68cbb4bfbe64469a4987737f</guid>
+			<itunes:explicit>true</itunes:explicit>
+			<link>https://shows.acast.com/wtf-with-marc-maron-podcast/episodes/episode-1679-tracy-letts</link>
+			<acast:episodeId>68cbb4bfbe64469a4987737f</acast:episodeId>
+			<acast:showId>62a222737c02140013aa4c03</acast:showId>
+			<acast:episodeUrl>episode-1679-tracy-letts</acast:episodeUrl>
+			<acast:settings><![CDATA[FYjHyZbXWHZ7gmX8Pp1rmRbkUlg2iR8fDtnl1O71B2N8B7jZZH+7YdsHlGFxMJ/JB5ewwSWwnDfITsERRlXnRPdjbJm7d4qQ2rUK1Oh2E65gYDhVAjVZ14DHwOhC8Pz9dUuMHgpkiwRsK2sfvZuGFndbDmSfJOFw/XjdwBriQbK5oXqpWYhFwrHHR6m9Q+M1fSNYhwgS4zgBsLNm1hQrnoax5lzaOkeXZ8DHuwLwkoqNUzhTtIzMWvB8VscwrghBa+YcN+CYDssCjyrDmgt0wvdlo9tBuJK09qpu4BYDiFSm5tPlmdgkzi6Ud7+6iIvhX4fk7yhiLBgkove9ekD5/gWE8p/CoBE5gpk8igVX9LlsD1LYzEp9PX6hy9tWtuu0VFAHusGIwHxOUVhWSxGIog==]]></acast:settings>
+			<itunes:episodeType>full</itunes:episodeType>
+			<itunes:image href="https://assets.pippa.io/shows/62a222737c02140013aa4c03/1656679440477-8e0e5db81e3f07c927b0032af2591499.jpeg"/>
+			<description><![CDATA[Tracy Letts and Marc have remained friends since meeting each other when Tracy was first on the show in 2018. Now, with Marc wrapping up the podcast, Tracy returns to the garage for a talk about the importance of art, self-expression, and taking inspiration where you can get it. Tracy also investigates Marc’s reasoning for ending the show and he recounts his experience being back home in Oklahoma while making Sterlin Harjo’s new show, The Lowdown.<hr><p style='color:grey; font-size:0.75em;'> Hosted on Acast. See <a style='color:grey;' target='_blank' rel='noopener noreferrer' href='https://acast.com/privacy'>acast.com/privacy</a> for more information.</p>]]></description>
+			<itunes:summary><![CDATA[Tracy Letts and Marc have remained friends since meeting each other when Tracy was first on the show in 2018. Now, with Marc wrapping up the podcast, Tracy returns to the garage for a talk about the importance of art, self-expression, and taking inspiration where you can get it. Tracy also investigates Marc’s reasoning for ending the show and he recounts his experience being back home in Oklahoma while making Sterlin Harjo’s new show, The Lowdown.<hr><p style='color:grey; font-size:0.75em;'> Hosted on Acast. See <a style='color:grey;' target='_blank' rel='noopener noreferrer' href='https://acast.com/privacy'>acast.com/privacy</a> for more information.</p>]]></itunes:summary>
+		</item>
+		<item>
+			<title>Episode 1678 - Jamie Lee Curtis</title>
+			<itunes:title>Episode 1678 - Jamie Lee Curtis</itunes:title>
+			<pubDate>Mon, 15 Sep 2025 07:00:00 GMT</pubDate>
+			<itunes:duration>1:47:33</itunes:duration>
+			<enclosure url="https://sphinx.acast.com/p/open/s/62a222737c02140013aa4c03/e/68c7b49a5819338468af2e52/media.mp3" length="103271779" type="audio/mpeg"/>
+			<guid isPermaLink="false">68c7b49a5819338468af2e52</guid>
+			<itunes:explicit>true</itunes:explicit>
+			<link>https://shows.acast.com/wtf-with-marc-maron-podcast/episodes/episode-1678-jamie-lee-curtis</link>
+			<acast:episodeId>68c7b49a5819338468af2e52</acast:episodeId>
+			<acast:showId>62a222737c02140013aa4c03</acast:showId>
+			<acast:episodeUrl>episode-1678-jamie-lee-curtis</acast:episodeUrl>
+			<acast:settings><![CDATA[FYjHyZbXWHZ7gmX8Pp1rmRbkUlg2iR8fDtnl1O71B2N8B7jZZH+7YdsHlGFxMJ/JB5ewwSWwnDfITsERRlXnRPdjbJm7d4qQ2rUK1Oh2E65gYDhVAjVZ14DHwOhC8Pz9JSiXesOf/1FAUJCN6hkuN/Otli/V4oL2tnwvcHkFFGrPNzYCKUZgi+KNZirvtkRWu8XsuCu3ZEc5qf2mQ8YcYWD+HaeVh6h9HQNEh5H1hvDfzCP0qnqDPyJouw0DbF03HJCqFJTREisfn+Z/Dnraoyo349z+6qYaUlrg2hYWFZqLJC+H089ge+GRLQPqA3EHcoV7eW1PNkoXsBfqyjrD2m5x0Qx7JzeqERuDrVyfVkJkUbHGeqTDXiuUI8v8X/XRNep/pvEcEPGwV77jU15KnQ==]]></acast:settings>
+			<itunes:episodeType>full</itunes:episodeType>
+			<itunes:image href="https://assets.pippa.io/shows/62a222737c02140013aa4c03/1656679440477-8e0e5db81e3f07c927b0032af2591499.jpeg"/>
+			<description><![CDATA[Jamie Lee Curtis has a career in show business spanning nearly 50 years, but she’s currently having the most creatively fulfilling time of her life. Not only is she just a few years removed from winning an Oscar for Everything Everywhere All At Once and then an Emmy for The Bear, she’s also putting her energy into production and development, whether it’s Freakier Friday or the upcoming Patricia Cornwell crime drama Scarpetta or the new film The Lost Bus. Jamie Lee and Marc talk about her very hazy memories of youth, her sobriety, her dislike of rehearsals, and the reason she never reads the comments.<hr><p style='color:grey; font-size:0.75em;'> Hosted on Acast. See <a style='color:grey;' target='_blank' rel='noopener noreferrer' href='https://acast.com/privacy'>acast.com/privacy</a> for more information.</p>]]></description>
+			<itunes:summary><![CDATA[Jamie Lee Curtis has a career in show business spanning nearly 50 years, but she’s currently having the most creatively fulfilling time of her life. Not only is she just a few years removed from winning an Oscar for Everything Everywhere All At Once and then an Emmy for The Bear, she’s also putting her energy into production and development, whether it’s Freakier Friday or the upcoming Patricia Cornwell crime drama Scarpetta or the new film The Lost Bus. Jamie Lee and Marc talk about her very hazy memories of youth, her sobriety, her dislike of rehearsals, and the reason she never reads the comments.<hr><p style='color:grey; font-size:0.75em;'> Hosted on Acast. See <a style='color:grey;' target='_blank' rel='noopener noreferrer' href='https://acast.com/privacy'>acast.com/privacy</a> for more information.</p>]]></itunes:summary>
+		</item>
+		<item>
+			<title>Episode 1677 - Tom Scharpling</title>
+			<itunes:title>Episode 1677 - Tom Scharpling</itunes:title>
+			<pubDate>Thu, 11 Sep 2025 07:00:00 GMT</pubDate>
+			<itunes:duration>1:44:14</itunes:duration>
+			<enclosure url="https://sphinx.acast.com/p/open/s/62a222737c02140013aa4c03/e/68c270c0aca3521c763def5f/media.mp3" length="100085947" type="audio/mpeg"/>
+			<guid isPermaLink="false">68c270c0aca3521c763def5f</guid>
+			<itunes:explicit>true</itunes:explicit>
+			<link>https://shows.acast.com/wtf-with-marc-maron-podcast/episodes/episode-1677-tom-scharpling</link>
+			<acast:episodeId>68c270c0aca3521c763def5f</acast:episodeId>
+			<acast:showId>62a222737c02140013aa4c03</acast:showId>
+			<acast:episodeUrl>episode-1677-tom-scharpling</acast:episodeUrl>
+			<acast:settings><![CDATA[FYjHyZbXWHZ7gmX8Pp1rmRbkUlg2iR8fDtnl1O71B2N8B7jZZH+7YdsHlGFxMJ/JB5ewwSWwnDfITsERRlXnRPdjbJm7d4qQ2rUK1Oh2E65gYDhVAjVZ14DHwOhC8Pz9yFnp6Ulmfynn3mZLivG29p/mFJDg7HJE034NhTTxcyRRkmAd2dubaK77NNLhIF7QFW1PAtnEkGu0QSxTccj5B39J2vd+q7Og7nmgzf167q2BWesQf/hgS4TbT39dcweucP75H2Klwk11TLLoljz1ooPdpcKiq75Se79QxtaZ8m76vWrynBE7ZXLkXf5ghXMoo5QbAYFs9ga3QyE4wIlQPfJZ5hrNODB7A5kLl+y1RfpheoZ+0zn2Q5LbHknXMmIgjcjtfcngsuVFjtQIAgHkag==]]></acast:settings>
+			<itunes:episodeType>full</itunes:episodeType>
+			<itunes:image href="https://assets.pippa.io/shows/62a222737c02140013aa4c03/1656679440477-8e0e5db81e3f07c927b0032af2591499.jpeg"/>
+			<description><![CDATA[Tom Scharpling is celebrating the 25th year of his beloved comedy playground, The Best Show, which was one of the foundational inspirations for WTF back when it launched in 2009. Since then, Tom became a fan of WTF, a frequent guest, and a personal friend of Marc’s. Tom and Marc meet up for one final garage chat, reflecting on their respective achievements and looking toward the future of podcasting, as well as their places in it.&nbsp;<hr><p style='color:grey; font-size:0.75em;'> Hosted on Acast. See <a style='color:grey;' target='_blank' rel='noopener noreferrer' href='https://acast.com/privacy'>acast.com/privacy</a> for more information.</p>]]></description>
+			<itunes:summary><![CDATA[Tom Scharpling is celebrating the 25th year of his beloved comedy playground, The Best Show, which was one of the foundational inspirations for WTF back when it launched in 2009. Since then, Tom became a fan of WTF, a frequent guest, and a personal friend of Marc’s. Tom and Marc meet up for one final garage chat, reflecting on their respective achievements and looking toward the future of podcasting, as well as their places in it.&nbsp;<hr><p style='color:grey; font-size:0.75em;'> Hosted on Acast. See <a style='color:grey;' target='_blank' rel='noopener noreferrer' href='https://acast.com/privacy'>acast.com/privacy</a> for more information.</p>]]></itunes:summary>
+		</item>
+		<item>
+			<title>Episode 1676 - Mark Hamill</title>
+			<itunes:title>Episode 1676 - Mark Hamill</itunes:title>
+			<pubDate>Mon, 08 Sep 2025 07:00:00 GMT</pubDate>
+			<itunes:duration>1:36:03</itunes:duration>
+			<enclosure url="https://sphinx.acast.com/p/open/s/62a222737c02140013aa4c03/e/68be69ddb177a2f4849a3ebd/media.mp3" length="92228810" type="audio/mpeg"/>
+			<guid isPermaLink="false">68be69ddb177a2f4849a3ebd</guid>
+			<itunes:explicit>true</itunes:explicit>
+			<link>https://shows.acast.com/wtf-with-marc-maron-podcast/episodes/episode-1676-mark-hamill</link>
+			<acast:episodeId>68be69ddb177a2f4849a3ebd</acast:episodeId>
+			<acast:showId>62a222737c02140013aa4c03</acast:showId>
+			<acast:episodeUrl>episode-1676-mark-hamill</acast:episodeUrl>
+			<acast:settings><![CDATA[FYjHyZbXWHZ7gmX8Pp1rmRbkUlg2iR8fDtnl1O71B2N8B7jZZH+7YdsHlGFxMJ/JB5ewwSWwnDfITsERRlXnRPdjbJm7d4qQ2rUK1Oh2E65gYDhVAjVZ14DHwOhC8Pz9wvTFzO7/Ir/JpCTMzZtPfCfiu8tltHEofGjNl+Nsb7EIbtJrTP5R+mgezNuIWnpouAnw/6H+dlIn5bN+EAeMnf7hExWzV8LE/yMbS//yOVGkeyawexeZwxKaFTAxjqfbUsIYatpvl1l/sBfnMQjEsL6Huj2SuauZZ/ZpIKl+uiHlVpCpJXAvAWhi7XXJSWsnpHGYh73ctdop/kEA0DQf0/DshYfnrcEx0Zzvhzr4CWpHLMywvoHd1MgChDNz3T3rG3L1JcKeGXurxFP8/aJppQ==]]></acast:settings>
+			<itunes:episodeType>full</itunes:episodeType>
+			<itunes:image href="https://assets.pippa.io/shows/62a222737c02140013aa4c03/1656679440477-8e0e5db81e3f07c927b0032af2591499.jpeg"/>
+			<description><![CDATA[Mark Hamill gets that you probably know more about Star Wars than he does and he’s ok with that. In fact, he’s so ok with where he’s at in his career, he’s really not worried about what comes next. Mark talks with Marc about his early days on soap operas, the faith he had in Star Wars being a big hit while they were making it, the casting troubles he came up against in Hollywood that made him seek work on Broadway, and the voiceover acting that changed his career. They also talk about his connection to Late Night with David Letterman and his recent work in two Stephen King adaptations, The Life of Chuck and The Long Walk.<hr><p style='color:grey; font-size:0.75em;'> Hosted on Acast. See <a style='color:grey;' target='_blank' rel='noopener noreferrer' href='https://acast.com/privacy'>acast.com/privacy</a> for more information.</p>]]></description>
+			<itunes:summary><![CDATA[Mark Hamill gets that you probably know more about Star Wars than he does and he’s ok with that. In fact, he’s so ok with where he’s at in his career, he’s really not worried about what comes next. Mark talks with Marc about his early days on soap operas, the faith he had in Star Wars being a big hit while they were making it, the casting troubles he came up against in Hollywood that made him seek work on Broadway, and the voiceover acting that changed his career. They also talk about his connection to Late Night with David Letterman and his recent work in two Stephen King adaptations, The Life of Chuck and The Long Walk.<hr><p style='color:grey; font-size:0.75em;'> Hosted on Acast. See <a style='color:grey;' target='_blank' rel='noopener noreferrer' href='https://acast.com/privacy'>acast.com/privacy</a> for more information.</p>]]></itunes:summary>
+		</item>
+		<item>
+			<title>Episode 1675 - Spike Lee</title>
+			<itunes:title>Episode 1675 - Spike Lee</itunes:title>
+			<pubDate>Thu, 04 Sep 2025 07:00:00 GMT</pubDate>
+			<itunes:duration>1:24:59</itunes:duration>
+			<enclosure url="https://sphinx.acast.com/p/open/s/62a222737c02140013aa4c03/e/68b936e3a742b7c8466f069c/media.mp3" length="81603297" type="audio/mpeg"/>
+			<guid isPermaLink="false">68b936e3a742b7c8466f069c</guid>
+			<itunes:explicit>true</itunes:explicit>
+			<link>https://shows.acast.com/wtf-with-marc-maron-podcast/episodes/episode-1675-spike-lee</link>
+			<acast:episodeId>68b936e3a742b7c8466f069c</acast:episodeId>
+			<acast:showId>62a222737c02140013aa4c03</acast:showId>
+			<acast:episodeUrl>episode-1675-spike-lee</acast:episodeUrl>
+			<acast:settings><![CDATA[FYjHyZbXWHZ7gmX8Pp1rmRbkUlg2iR8fDtnl1O71B2N8B7jZZH+7YdsHlGFxMJ/JB5ewwSWwnDfITsERRlXnRPdjbJm7d4qQ2rUK1Oh2E65gYDhVAjVZ14DHwOhC8Pz9nfiuLFfWlK+hqLYgAdJwi1WLu6fcnx7G+c4d9s+p3kXw7rdwZB/8xm4x0mKOz9wqS0ZkAQt4ICS/IX9pK+uJ/RxbK/4vSs9zs20SD64APjpTiagdo41rkuxGZ04w3M0SiQCVJ/jcduhgA65ZYuf7gtpGDz90x2XyaNAPxmzylR3ra+IJmk0NCJtxkWjmdWiOHxaz520vVJASmioMv536WFB4e53Mr8mIvLv0R5diQXKUjkTyayyPGu0ZsdqLK11sdatNrS45CsVNduV78BTb2A==]]></acast:settings>
+			<itunes:episodeType>full</itunes:episodeType>
+			<itunes:image href="https://assets.pippa.io/shows/62a222737c02140013aa4c03/1656679440477-8e0e5db81e3f07c927b0032af2591499.jpeg"/>
+			<description><![CDATA[Some of Spike Lee’s most indelible hallmarks, including a story set in New York City, a morality struggle, and a lead performance by Denzel Washington, are on display in his new film Highest 2 Lowest. Spike and Marc talk about this latest undertaking, as well as Spike’s affinity for being a teacher, his documentary work, Marc’s love of Bamboozled, the ever-evolving nature of New York, and of course Spike’s famous double dolly shots.<hr><p style='color:grey; font-size:0.75em;'> Hosted on Acast. See <a style='color:grey;' target='_blank' rel='noopener noreferrer' href='https://acast.com/privacy'>acast.com/privacy</a> for more information.</p>]]></description>
+			<itunes:summary><![CDATA[Some of Spike Lee’s most indelible hallmarks, including a story set in New York City, a morality struggle, and a lead performance by Denzel Washington, are on display in his new film Highest 2 Lowest. Spike and Marc talk about this latest undertaking, as well as Spike’s affinity for being a teacher, his documentary work, Marc’s love of Bamboozled, the ever-evolving nature of New York, and of course Spike’s famous double dolly shots.<hr><p style='color:grey; font-size:0.75em;'> Hosted on Acast. See <a style='color:grey;' target='_blank' rel='noopener noreferrer' href='https://acast.com/privacy'>acast.com/privacy</a> for more information.</p>]]></itunes:summary>
+		</item>
+		<item>
+			<title>Episode 1674 - Tim Heidecker</title>
+			<itunes:title>Episode 1674 - Tim Heidecker</itunes:title>
+			<pubDate>Mon, 01 Sep 2025 07:00:00 GMT</pubDate>
+			<itunes:duration>1:18:48</itunes:duration>
+			<enclosure url="https://sphinx.acast.com/p/open/s/62a222737c02140013aa4c03/e/68b53d4f7c69e13c1804948b/media.mp3" length="75669616" type="audio/mpeg"/>
+			<guid isPermaLink="false">68b53d4f7c69e13c1804948b</guid>
+			<itunes:explicit>true</itunes:explicit>
+			<link>https://shows.acast.com/wtf-with-marc-maron-podcast/episodes/episode-1674-tim-heidecker</link>
+			<acast:episodeId>68b53d4f7c69e13c1804948b</acast:episodeId>
+			<acast:showId>62a222737c02140013aa4c03</acast:showId>
+			<acast:episodeUrl>episode-1674-tim-heidecker</acast:episodeUrl>
+			<acast:settings><![CDATA[FYjHyZbXWHZ7gmX8Pp1rmRbkUlg2iR8fDtnl1O71B2N8B7jZZH+7YdsHlGFxMJ/JB5ewwSWwnDfITsERRlXnRPdjbJm7d4qQ2rUK1Oh2E65gYDhVAjVZ14DHwOhC8Pz9RbUc4b/t3X900SCu8EFF2E31CgWCcsEiZITWGS84pyqt+VkQpzcZS+cH8ygPc2qz253V5sJm5ESjUPMTaBxcCFSLNRy32kIkkCUzq4qn+lB/Djtd1ckEQqjPnMNDmBgte6pRDBBJnH1nZNClMHA5DCs6zr1mHEoi+B//+jrV4v2V3XpBfbrKgYZ4iKTj9BBfQ3U5odqcUClSL/6UfpymEFXF/4YAwyqaclaF6pnqL++JJRHZvKq/y22KtisQapKs+rT2VTdkyW93DPyELb96jw==]]></acast:settings>
+			<itunes:episodeType>full</itunes:episodeType>
+			<itunes:image href="https://assets.pippa.io/shows/62a222737c02140013aa4c03/1656679440477-8e0e5db81e3f07c927b0032af2591499.jpeg"/>
+			<description><![CDATA[Despite his two previous appearances on WTF, Tim Heidecker was not someone Marc felt truly comfortable around. In fact, Marc was intimidated by Tim. But as they’ve gotten older and connected over common interests, both Tim and Marc can now fully enjoy each other’s company. Meeting in the garage one more time, they talk about their shared pursuit of playing more live music on stage, their insecurities that crop up when making movies, and their lamentations about the regression of comedy and why they are compelled to take swings at the culprits of this reactionary culture.&nbsp;<hr><p style='color:grey; font-size:0.75em;'> Hosted on Acast. See <a style='color:grey;' target='_blank' rel='noopener noreferrer' href='https://acast.com/privacy'>acast.com/privacy</a> for more information.</p>]]></description>
+			<itunes:summary><![CDATA[Despite his two previous appearances on WTF, Tim Heidecker was not someone Marc felt truly comfortable around. In fact, Marc was intimidated by Tim. But as they’ve gotten older and connected over common interests, both Tim and Marc can now fully enjoy each other’s company. Meeting in the garage one more time, they talk about their shared pursuit of playing more live music on stage, their insecurities that crop up when making movies, and their lamentations about the regression of comedy and why they are compelled to take swings at the culprits of this reactionary culture.&nbsp;<hr><p style='color:grey; font-size:0.75em;'> Hosted on Acast. See <a style='color:grey;' target='_blank' rel='noopener noreferrer' href='https://acast.com/privacy'>acast.com/privacy</a> for more information.</p>]]></itunes:summary>
+		</item>
+		<item>
+			<title>Episode 1673 - Regina King</title>
+			<itunes:title>Episode 1673 - Regina King</itunes:title>
+			<pubDate>Thu, 28 Aug 2025 07:30:00 GMT</pubDate>
+			<itunes:duration>1:40:10</itunes:duration>
+			<enclosure url="https://sphinx.acast.com/p/open/s/62a222737c02140013aa4c03/e/68b00381982c36846e7b9248/media.mp3" length="96182550" type="audio/mpeg"/>
+			<guid isPermaLink="false">68b00381982c36846e7b9248</guid>
+			<itunes:explicit>true</itunes:explicit>
+			<link>https://shows.acast.com/wtf-with-marc-maron-podcast/episodes/episode-1673-regina-king</link>
+			<acast:episodeId>68b00381982c36846e7b9248</acast:episodeId>
+			<acast:showId>62a222737c02140013aa4c03</acast:showId>
+			<acast:episodeUrl>episode-1673-regina-king</acast:episodeUrl>
+			<acast:settings><![CDATA[FYjHyZbXWHZ7gmX8Pp1rmRbkUlg2iR8fDtnl1O71B2N8B7jZZH+7YdsHlGFxMJ/JB5ewwSWwnDfITsERRlXnRPdjbJm7d4qQ2rUK1Oh2E65gYDhVAjVZ14DHwOhC8Pz9FwkxM4t8x5ffmvUT0r7L7O/kxwogXwBraU09Ve2x57o+q+xp8F8n9AZzZB+r9XeO0BKPOPmGrUT4ZAjucdP8zvzDc7meUMsEQMU3N0iVk6rQ/7AITlI/MA4x0Wxo0yz/4QPdKye+B111yq/fb2oUPZq4C9GAeS8bmVfReGFg0NuaL2LR/y8CkXMuAAZFsSHi2gUoHC8sMxP8uIGJbFz+ffoVTFNCWdxEhYB2xA2mq2nH8DVa2Z2OWgEsSZtRQXA0Ye4tXTLzm+YVp7Kf7zlsvA==]]></acast:settings>
+			<itunes:episodeType>full</itunes:episodeType>
+			<itunes:image href="https://assets.pippa.io/shows/62a222737c02140013aa4c03/1656679440477-8e0e5db81e3f07c927b0032af2591499.jpeg"/>
+			<description><![CDATA[Regina King’s depth and range as an actor won her dozens of awards and allows her to choose projects best suited for her. Regina and Marc talk about her early sitcom days on 227, her breakthrough performances in films like Boyz n the Hood and Jerry Maguire, her acclaimed turns in If Beale Street Could Talk and Shirley, her work as a director, and her latest role in Darren Aronofsky’s Caught Stealing. Regina also explains why she launched a brand of wine to honor her son.<hr><p style='color:grey; font-size:0.75em;'> Hosted on Acast. See <a style='color:grey;' target='_blank' rel='noopener noreferrer' href='https://acast.com/privacy'>acast.com/privacy</a> for more information.</p>]]></description>
+			<itunes:summary><![CDATA[Regina King’s depth and range as an actor won her dozens of awards and allows her to choose projects best suited for her. Regina and Marc talk about her early sitcom days on 227, her breakthrough performances in films like Boyz n the Hood and Jerry Maguire, her acclaimed turns in If Beale Street Could Talk and Shirley, her work as a director, and her latest role in Darren Aronofsky’s Caught Stealing. Regina also explains why she launched a brand of wine to honor her son.<hr><p style='color:grey; font-size:0.75em;'> Hosted on Acast. See <a style='color:grey;' target='_blank' rel='noopener noreferrer' href='https://acast.com/privacy'>acast.com/privacy</a> for more information.</p>]]></itunes:summary>
+		</item>
+		<item>
+			<title>Episode 1672 - Jeremy Allen White</title>
+			<itunes:title>Episode 1672 - Jeremy Allen White</itunes:title>
+			<pubDate>Mon, 25 Aug 2025 07:30:00 GMT</pubDate>
+			<itunes:duration>1:26:15</itunes:duration>
+			<enclosure url="https://sphinx.acast.com/p/open/s/62a222737c02140013aa4c03/e/68ac0f0a73bf5b6298de3d57/media.mp3" length="82815951" type="audio/mpeg"/>
+			<guid isPermaLink="false">68ac0f0a73bf5b6298de3d57</guid>
+			<itunes:explicit>true</itunes:explicit>
+			<link>https://shows.acast.com/wtf-with-marc-maron-podcast/episodes/episode-1672-jeremy-allen-white</link>
+			<acast:episodeId>68ac0f0a73bf5b6298de3d57</acast:episodeId>
+			<acast:showId>62a222737c02140013aa4c03</acast:showId>
+			<acast:episodeUrl>episode-1672-jeremy-allen-white</acast:episodeUrl>
+			<acast:settings><![CDATA[FYjHyZbXWHZ7gmX8Pp1rmRbkUlg2iR8fDtnl1O71B2N8B7jZZH+7YdsHlGFxMJ/JB5ewwSWwnDfITsERRlXnRPdjbJm7d4qQ2rUK1Oh2E65gYDhVAjVZ14DHwOhC8Pz9BX5hD3JLxNOBx5/nLFjQpVVjZCMEV1MNiILUT+HJJIAT674WrEO3pKYiN438QBqoKnTA57baBqeCkLF8p+mE+6KQXG5ST31XOfRQ6vnmxKXfE6KeXZluFEM234GA4zGMpDYEUgMOATqoOQzYEe4T8FCm8n7J+j3BPD1/PacnmY7PnDCiaLmPcOU5pORmMAudpdAibonvNfXac/SaPFyEYFo+0UHsQE3PtFJijlfIKqOID7hEP24OT+xuqIr7R6QQUQ33Qk6C17cD2ibTDV+JsQ==]]></acast:settings>
+			<itunes:episodeType>full</itunes:episodeType>
+			<itunes:image href="https://assets.pippa.io/shows/62a222737c02140013aa4c03/1656679440477-8e0e5db81e3f07c927b0032af2591499.jpeg"/>
+			<description><![CDATA[<p>Jeremy Allen White played such a believable Bruce Springsteen in the movie Deliver Me From Nowhere that Marc, who was also in the film, can recall times on the set when Bruce couldn’t tell the difference between recordings of himself and recordings of Jeremy. But for Jeremy, that’s all part of the process of finding his focus, something he’s tried to do since he was a kid taking dance classes and playing sports. Jeremy and Marc also talk about Shameless, The Bear, The Iron Claw, panic attacks, and getting your life under control.</p><br><p><a href="https://forms.gle/uHPLyfWxpT88WHFg9" rel="noopener noreferrer" target="_blank">Click here</a> to submit a question for an upcoming Ask Marc Anything episode.</p><hr><p style='color:grey; font-size:0.75em;'> Hosted on Acast. See <a style='color:grey;' target='_blank' rel='noopener noreferrer' href='https://acast.com/privacy'>acast.com/privacy</a> for more information.</p>]]></description>
+			<itunes:summary><![CDATA[<p>Jeremy Allen White played such a believable Bruce Springsteen in the movie Deliver Me From Nowhere that Marc, who was also in the film, can recall times on the set when Bruce couldn’t tell the difference between recordings of himself and recordings of Jeremy. But for Jeremy, that’s all part of the process of finding his focus, something he’s tried to do since he was a kid taking dance classes and playing sports. Jeremy and Marc also talk about Shameless, The Bear, The Iron Claw, panic attacks, and getting your life under control.</p><br><p><a href="https://forms.gle/uHPLyfWxpT88WHFg9" rel="noopener noreferrer" target="_blank">Click here</a> to submit a question for an upcoming Ask Marc Anything episode.</p><hr><p style='color:grey; font-size:0.75em;'> Hosted on Acast. See <a style='color:grey;' target='_blank' rel='noopener noreferrer' href='https://acast.com/privacy'>acast.com/privacy</a> for more information.</p>]]></itunes:summary>
+		</item>
+  </channel>
+</rss>

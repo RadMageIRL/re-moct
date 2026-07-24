@@ -23,7 +23,14 @@ struct DigiConfig {
     std::string              lastfm_pending;   // in-flight auth token (survives restart)
     std::string              listenbrainz_token; // user token (listenbrainz.org/settings)
     std::string              listenbrainz_user;  // username (from validate-token)
+    // Podcast Index search (slice 6) - user-supplied free credentials. Key stays
+    // plaintext (not sensitive); secret goes through secret::protect like lastfm_secret.
+    std::string              podcastindex_key;    // API key (user-provided)
+    std::string              podcastindex_secret; // API secret (user-provided)
     float                    volume           = 1.0f;
+    // Crossfade duration in seconds; 0 = off (the default - the MPD convention,
+    // and the right one for gapless album listening). Clamped to [0, 30] on load.
+    float                    crossfade_secs   = 0.0f;
     int                      repeat_mode      = 0;
     bool                     shuffle          = false;
     bool                     toast_enabled    = false;
@@ -144,6 +151,36 @@ struct DigiConfig {
     void removeRadioStation(const std::string& url);
     bool isRadioStation(const std::string& url) const;
     std::string radioStationName(const std::string& url) const;   // "" if none
+
+    // Subscribed podcast feeds (feed URLs, most-recent-first), max 50, FIFO on
+    // overflow. Mirrors the radio storage shape. The side maps cache the show
+    // title and feed-art URL so the [Podcasts] list renders without re-fetching;
+    // both are refreshed on each successful feed fetch. Persisted plaintext as
+    // "podcast=<url>\t<title>\t<art>" (podcast feeds are non-sensitive, same
+    // category as radio/books; NOT routed through secret::protect).
+    std::vector<std::string> podcast_feeds;
+    std::unordered_map<std::string, std::string> podcast_feed_titles;
+    std::unordered_map<std::string, std::string> podcast_feed_art;
+    static constexpr int     PODCAST_MAX = 50;
+    void addPodcastFeed(const std::string& url, const std::string& title = "",
+                        const std::string& art = "");
+    void removePodcastFeed(const std::string& url);
+    bool isPodcastFeed(const std::string& url) const;
+    std::string podcastFeedTitle(const std::string& url) const;   // "" if none
+    std::string podcastFeedArt(const std::string& url) const;     // "" if none
+
+    // Per-episode resume + played state (slice 3). Mirrors/extends audiobook_pos:
+    // keyed by episode identity (guid/url/hash), value = resume seconds + a played
+    // flag (audiobooks encode "finished" as pos 0; podcasts want an explicit flag so
+    // "played" and "in-progress" are distinct states). Plaintext, non-sensitive,
+    // stored one line each as "pod_ep=<id>\t<seconds>\t<played 0/1>". Uncapped (an
+    // entry is tiny; slice 4+ may prune). "New" = the absence of a record.
+    struct PodcastEpState { double pos = 0.0; bool played = false; };
+    std::unordered_map<std::string, PodcastEpState> podcast_progress;
+    double podcastEpisodePos(const std::string& id) const;      // 0 if none
+    bool   podcastEpisodePlayed(const std::string& id) const;   // false if none
+    void   setPodcastEpisodePos(const std::string& id, double sec);
+    void   setPodcastEpisodePlayed(const std::string& id, bool played);
 
     // Audiobooks: curated book paths (most-recent-first) + per-book resume
     // position in seconds. Mirrors the radio storage shape (list + side map).

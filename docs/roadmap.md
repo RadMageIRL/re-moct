@@ -943,6 +943,67 @@ carve the ABI first.
   - Open: real negative-offset **hardware** validation remains a HydrogenAudio
     cross-check item - the synthetic suite proves the logic, not on-drive behavior.
 
+## Rip hardening (1.5.0)
+
+**Release boundary (decided 2026-07-24): 1.4.0 ships as it stands. HTOA and CTDB
+repair are 1.5.0.** Nothing new folds into 1.4.0 - the Version.h bump and the
+CHANGELOG date finalize happen at the release ceremony, not before it.
+
+### Hidden / non-track audio: three cases, only one left to build
+
+Surveyed this session. Two of the three are already handled and need no work; the
+third is the whole of the 1.5.0 rip-hardening story.
+
+- **Between-tracks gap audio (index 0 of track N, in the tail of track N-1):
+  NO BUILD. Already captured, correctly.** A track's span is
+  `next_track_TOC_address - this_track_TOC_address`, and TOC entries are index-1
+  positions, so the following track's pregap is read as ordinary audio at the
+  tail of the previous track. This is append-to-previous, which is
+  dBpoweramp's and AccurateRip's convention, and the AR window is deliberately
+  positioned to match it. **Verified byte-exact:** Beastie Boys *Hello Nasty* -
+  dBpoweramp places the hidden "El Rey Y Yo" sample at the tail of track 2, and
+  RE-MOCT's tracks 2 and 3 verify clean against AccurateRip. Full mechanism read
+  and anchored in `docs/RECON-gap-handling.md` (untracked recon doc).
+- **End-of-disc hidden tracks: NO BUILD. Already works.** Confirmed on Goo Goo
+  Dolls *Gutterflower*.
+- **HTOA (audio in track 1's pregap, before index 1): the only unhandled case.**
+  Slated for **1.5.0**.
+
+### HTOA - banked recon facts (NOT a design; confirm each on build)
+
+- **The address is fixed, so no subchannel-Q read is needed.** Track 1's index 0
+  is sector 0 by definition, and track 1's index 1 comes from the TOC we already
+  read. The HTOA span is therefore just `sector 0 -> track1.start_lba`, known
+  without any new device capability. This is exactly what makes HTOA tractable
+  while the between-tracks case is not: for tracks 2+ the index-0 address is
+  genuinely unavailable (no subchannel read on the `ICdDevice` seam), which is
+  why that case is left as append-to-previous rather than extracted.
+- **The read machinery for that region already exists, pointed elsewhere.** The
+  AccurateRip preamble already reads the sectors preceding a track's start and
+  feeds them to the AR CRC accumulator only, never to an encoder
+  (`CDRipper::ripTrack`, the preamble block; gate `ar::arPreambleReadable`,
+  `include/ar_crc.h`). Its own comment notes those sectors "contain real disc
+  data (including any disc lead-in content before the nominal track start)".
+  **Caveat to confirm:** the preamble is fixed at 150 sectors, so on a standard
+  disc it happens to cover the whole track-1 pregap, but on an HTOA disc whose
+  index 1 sits far later it reads only the last 150 sectors of the hidden audio.
+  An HTOA build widens that span and routes it to an encoder; it does not get
+  the region for free.
+- **Reference implementation: CUERipper's "Preserve HTOA" toggle.** Same CUETools
+  Database ecosystem the `[C]` rip mode already talks to, so behaviour is
+  comparable against a tool in the same family rather than a foreign convention.
+- **Test disc inbound: Lit - *A Place in the Sun*.**
+- **Open question for build time, deliberately not decided now:** whether an
+  extracted HTOA keeps the whole `0 -> index 1` span or trims the standard
+  150-sector lead-in first. Both are defensible; the disc decides which looks
+  right, so decide it with the disc in hand.
+
+### CTDB repair
+
+Also 1.5.0. `[C]` mode is verify-only today and reports `Correctable` without
+acting on it; real repair means fetching CTDB parity data and running
+Reed-Solomon recovery. Deliberately parked until after HTOA.
+
 ## Parked / deferred (not disturbed)
 - **Config/state dir casing unification (Linux):** the config dir is `~/.config/RE-MOCT`
   (uppercase, existing Config branch) while logs/state land under `$XDG_STATE_HOME/re-moct`
@@ -1009,6 +1070,14 @@ convert / art slices), kept here so they are not re-scoped by accident:
   small standalone fix; the newer convert path already writes the true MIME.
 
 ## Decisions log
+- **Hidden-audio survey closed: two of three cases need no build (2026-07-24).**
+  Between-tracks gap audio is already captured correctly as append-to-previous
+  (the dBpoweramp/AccurateRip convention, verified byte-exact on *Hello Nasty*),
+  and end-of-disc hidden tracks already work (*Gutterflower*). Neither gets a
+  slice. **HTOA is the only unhandled case and is deferred to 1.5.0**, together
+  with CTDB repair, as a rip-hardening release. **1.4.0 ships as it stands** - no
+  new features fold into it. Detail and the banked HTOA recon facts: the
+  "Rip hardening (1.5.0)" section above.
 - **Slice C declined - Phase 2 closed at A+B (2026-07-03).** Dispatch
   uniformity in the audio callback would add a second source of truth for the
   playing mode (a cross-thread `active_src_` pointer that every transition must

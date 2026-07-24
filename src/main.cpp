@@ -8,6 +8,10 @@
 
 #ifdef _WIN32
 #  include <windows.h>
+#  include <shlobj.h>      // IShellLinkW, CLSID_ShellLink, IPersistFile
+#  include <shobjidl.h>    // SetCurrentProcessExplicitAppUserModelID
+#  include <propsys.h>     // IPropertyStore
+#  include <objbase.h>     // CoInitializeEx, PropVariant*
 #endif
 
 #include "UIManager.h"
@@ -15,14 +19,134 @@
 #include "PlaylistManager.h"
 #include "Config.h"
 #include "StringUtils.h"
+#include "Version.h"
 #ifdef _WIN32
 #include "CDSource.h"
 #endif
 
 namespace fs = std::filesystem;
 
+// ─── Informational command-line flags ────────────────────────────────────────
+// Version tag single-sourced from Version.h with the honest per-platform suffix -
+// the same form the status line and About panel show.
 #ifdef _WIN32
+static const char* const kVersionTag = "v" REMOCT_VERSION "-win";
+#else
+static const char* const kVersionTag = "v" REMOCT_VERSION "-linux";
+#endif
+
+static const char* const kUsage =
+    "RE-MOCT - Music On Console Terminal\n"
+    "\n"
+    "Usage: remoct [FILE|DIRECTORY]...\n"
+    "\n"
+    "Audio files are added to the playlist; a directory is searched recursively\n"
+    "and its audio files added in sorted order. With no arguments, the previous\n"
+    "session's playlist and browser location are restored.\n"
+    "\n"
+    "Options:\n"
+    "  -h, --help     show this message and exit\n"
+    "  -V, --version  show the version and exit\n"
+    "\n"
+    "Press ? inside RE-MOCT for the key bindings.\n";
+
+#ifdef _WIN32
+// THE AppUserModelID string - used for BOTH the shortcut stamp and the process call.
+// If the two ever differ, Windows duplicates the taskbar icon, so it is defined exactly
+// ONCE. NOTE: the .lnk BASENAME ("RE-MOCT") is also load-bearing - the media card shows
+// the display name of the shortcut whose AUMID matches, so a future rename of the file
+// would silently change the card name. Keep the constant and the basename in sync.
+static const wchar_t* const kRemoctAumid = L"RE-MOCT";
+
+// PKEY_AppUserModel_ID = {9F4C2855-9F79-4B39-A8D0-E1D42DE1D5F3}, PID 5. Defined here so
+// we don't depend on propkey.h's INITGUID plumbing under MinGW.
+static const PROPERTYKEY kPkeyAumid = {
+    { 0x9F4C2855, 0x9F79, 0x4B39, { 0xA8, 0xD0, 0xE1, 0xD4, 0x2D, 0xE1, 0xD5, 0xF3 } }, 5 };
+
+// Best-effort: ensure a Start-menu shortcut to THIS exe exists and carries the AUMID, so
+// the Windows media card resolves "RE-MOCT" instead of "Unknown app". Check-and-heal
+// every launch: create if missing, repoint if the exe moved, else no-op. Cosmetic only -
+// every step is HRESULT-guarded and NOTHING here can block or crash startup; on any
+// failure (read-only APPDATA, locked .lnk, COM failure) the card simply stays "Unknown
+// app", which is the pre-slice behaviour. UI launch never depends on this.
+static void ensureStartMenuShortcut() noexcept {
+    wchar_t exe[MAX_PATH];
+    if (GetModuleFileNameW(nullptr, exe, MAX_PATH) == 0) return;
+
+    wchar_t appdata[MAX_PATH];
+    DWORD an = GetEnvironmentVariableW(L"APPDATA", appdata, MAX_PATH);
+    if (an == 0 || an >= MAX_PATH) return;
+
+    wchar_t lnk[MAX_PATH];
+    if (_snwprintf(lnk, MAX_PATH,
+                   L"%ls\\Microsoft\\Windows\\Start Menu\\Programs\\RE-MOCT.lnk", appdata) < 0)
+        return;
+
+    HRESULT hrco = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+    if (FAILED(hrco) && hrco != RPC_E_CHANGED_MODE) return;   // COM unavailable -> bail
+    const bool weInit = SUCCEEDED(hrco);                      // only uninit what we init'd
+
+    IShellLinkW* link = nullptr;
+    if (SUCCEEDED(CoCreateInstance(CLSID_ShellLink, nullptr, CLSCTX_INPROC_SERVER,
+                                   IID_IShellLinkW, (void**)&link))) {
+        bool need_write = true;
+
+        // Existing .lnk: load it and decide whether it is already correct (no-op case).
+        IPersistFile* pf = nullptr;
+        if (SUCCEEDED(link->QueryInterface(IID_IPersistFile, (void**)&pf))) {
+            if (SUCCEEDED(pf->Load(lnk, STGM_READ))) {
+                wchar_t cur[MAX_PATH] = L"";
+                link->GetPath(cur, MAX_PATH, nullptr, SLGP_RAWPATH);
+                bool target_ok = (_wcsicmp(cur, exe) == 0);
+                bool aumid_ok  = false;
+                IPropertyStore* ps = nullptr;
+                if (SUCCEEDED(link->QueryInterface(IID_IPropertyStore, (void**)&ps))) {
+                    PROPVARIANT r; PropVariantInit(&r);
+                    if (SUCCEEDED(ps->GetValue(kPkeyAumid, &r)) && r.vt == VT_LPWSTR)
+                        aumid_ok = (wcscmp(r.pwszVal, kRemoctAumid) == 0);
+                    PropVariantClear(&r);
+                    ps->Release();
+                }
+                if (target_ok && aumid_ok) need_write = false;
+            }
+            pf->Release();
+        }
+
+        if (need_write) {   // create, or repoint/re-stamp a stale one
+            link->SetPath(exe);
+            wchar_t dir[MAX_PATH]; wcscpy(dir, exe);
+            if (wchar_t* slash = wcsrchr(dir, L'\\')) { *slash = 0; link->SetWorkingDirectory(dir); }
+            link->SetDescription(L"RE-MOCT - Music On Console Terminal");
+
+            IPropertyStore* ps = nullptr;
+            if (SUCCEEDED(link->QueryInterface(IID_IPropertyStore, (void**)&ps))) {
+                PROPVARIANT pv{}; pv.vt = VT_LPWSTR;
+                size_t n = wcslen(kRemoctAumid) + 1;
+                pv.pwszVal = (LPWSTR)CoTaskMemAlloc(n * sizeof(wchar_t));
+                if (pv.pwszVal) {
+                    wcscpy(pv.pwszVal, kRemoctAumid);
+                    if (SUCCEEDED(ps->SetValue(kPkeyAumid, pv))) ps->Commit();
+                }
+                PropVariantClear(&pv);   // frees pwszVal via CoTaskMemFree (matches CoTaskMemAlloc)
+                ps->Release();
+            }
+            IPersistFile* pfw = nullptr;
+            if (SUCCEEDED(link->QueryInterface(IID_IPersistFile, (void**)&pfw))) {
+                pfw->Save(lnk, TRUE);
+                pfw->Release();
+            }
+        }
+        link->Release();
+    }
+
+    if (weInit) CoUninitialize();
+}
+
 static void win32_console_init() {
+    // Media-card identity: heal the Start-menu shortcut, then set the SAME AUMID on the
+    // process (before initscr / any window / SMTC). Both best-effort; neither gates UI.
+    ensureStartMenuShortcut();
+    SetCurrentProcessExplicitAppUserModelID(kRemoctAumid);
     SetConsoleOutputCP(CP_UTF8);
     SetConsoleCP(CP_UTF8);
     HANDLE h = GetStdHandle(STD_OUTPUT_HANDLE);
@@ -47,6 +171,24 @@ static void handle_sigsegv(int) {
 }
 
 int main(int argc, char* argv[]) {
+    // Informational flags are answered FIRST, before any initialisation: they must
+    // print to a plain stdout and exit, never opening an audio device, stamping the
+    // Windows Start-menu shortcut, or putting the terminal into curses mode. A
+    // packaged install runs `remoct --version` as its post-install check, and
+    // anything short of an immediate quiet exit drops that user into the player.
+    // Arguments that match nothing here stay file/directory operands, as before.
+    for (int i = 1; i < argc; ++i) {
+        const std::string arg(argv[i]);
+        if (arg == "--version" || arg == "-V") {
+            std::cout << "RE-MOCT " << kVersionTag << "\n";
+            return 0;
+        }
+        if (arg == "--help" || arg == "-h") {
+            std::cout << kUsage;
+            return 0;
+        }
+    }
+
     win32_console_init();
 
     try {
@@ -54,9 +196,26 @@ int main(int argc, char* argv[]) {
         PlaylistManager playlist;
         DigiConfig      config;
 
+        // Repeat-mode ownership (XF): the playlist is the authority; this
+        // callback is the ONE sync point for the derived audio-side flag.
+        // Wired BEFORE the config restore below so the persisted mode syncs
+        // at startup too - the desync this kills was exactly the restore
+        // path forgetting the push (mode=One on the playlist, repeat_one_
+        // false, every C2 guard inert until the first r press). Entering
+        // repeat-one also discards any armed next track, whatever route the
+        // mode change arrived by.
+        playlist.setRepeatChanged([&](RepeatMode m) {
+            audio.setRepeatOne(m == RepeatMode::One);
+            if (m == RepeatMode::One) audio.clearNext();
+        });
+
         // ── Load saved config ─────────────────────────────────────────────
         config.load();
         audio.setVolume(config.volume);
+        // Crossfade length (0 = off, the default). Applied before any playback
+        // exists, so the plain member write cannot race the audio callback; a
+        // future live-set path must make this atomic first.
+        audio.crossfade_secs = config.crossfade_secs;
         playlist.setRepeat(static_cast<RepeatMode>(config.repeat_mode));
         playlist.setShuffle(config.shuffle);
         // Restore EQ
@@ -83,21 +242,73 @@ int main(int argc, char* argv[]) {
             playlist.selectAt(config.playlist_current);
 
         // ── Preload-only callback (after crossfade swap) ──────────────────
+        // Accounts for WHAT the swap consumed - the one job the reconcile poll
+        // (XF C3, UIManager::reconcileNextArm) cannot do, because only this
+        // callback fires exactly once per completed swap.
+        //
+        // Since C3 the armed track can be the QUEUE HEAD, and a completed
+        // crossfade consumes it WITHOUT passing through the track-end callback's
+        // queue-pop (a crossfade completion raises preload_next_flag_, never
+        // track_ended_flag_). The head must be popped HERE, or it stays queued,
+        // the poll re-arms the same entry on the next tick, and queue item 1
+        // replays forever - never advancing, never returning to the playlist.
+        //
+        // The identity test is exact: installPendingSwap() ran at the top of
+        // THIS pollEvents pass (C1), so currentTrack() is already the swapped-in
+        // track, and its .path is the verbatim string the poll armed from
+        // queueAt(0) (LocalFileSource carries the open path unchanged). If the
+        // head does NOT match, the head was removed or replaced mid-fade while
+        // the committed fade played the old entry anyway - nothing to consume,
+        // leave the queue alone.
+        //
+        // Queue empty -> the swap consumed the playlist successor: advance the
+        // index past it, as always. The repeat-one check is real since XF item
+        // 4: next() NAVIGATES under repeat-one now (the old identity early
+        // return is gone), and a swap cannot happen under repeat-one anyway
+        // (R1a/b) - the guard keeps that invariant local. The pop deliberately
+        // does NOT advance the playlist index - a queued track is an override
+        // lane, and afterwards playback resumes from the playlist position it
+        // interrupted, exactly as the track-end pop path behaves.
         audio.setPreloadNextCallback([&]() {
-            // Only advance playlist index if no queue override is pending
-            if (playlist.queueEmpty()) {
-                playlist.next();
-                if (playlist.repeatMode() == RepeatMode::One) return;
-                if (auto peek = playlist.peekNext(); peek.has_value())
-                    if (!isCDTrackPath(peek.value()) && !isStreamPath(peek.value()))
-                        audio.preloadNext(peek.value());
+            if (!playlist.queueEmpty() &&
+                playlist.queueAt(0).path == audio.currentTrack().path) {
+                playlist.queuePop();
+                return;
             }
-            // If queue has items, leave playlist index where it is —
-            // on_track_end_ will consume queue and advance correctly
+            if (playlist.queueEmpty() &&
+                playlist.repeatMode() != RepeatMode::One)
+                playlist.next();
+            // Queue has items but the head was not what swapped in: leave the
+            // playlist index where it is — on_track_end_ / the poll handle it.
         });
 
         // ── Auto-advance callback ─────────────────────────────────────────
         audio.setTrackEndCallback([&]() {
+
+            // Podcast episode finished: mark it played and STOP - no auto-advance
+            // into the music queue. g_ui is set before ui.run() (this fires during it).
+            if (g_ui && g_ui->onEpisodeTrackEnd()) return;
+
+            // ── Gapless-splice advance: account, never restart ────────────
+            // When crossfade is inactive at a boundary (crossfade_secs 0, or a
+            // varispeed track end - speed != 1 suppresses the fade trigger but
+            // not arming), the audio thread's splice already swapped the armed
+            // track in: it IS playing. This callback's only job then is the
+            // same accounting the crossfade-completion callback does - pop the
+            // consumed queue head, or advance the playlist index - and NOT the
+            // restart-from-zero it used to do, which doubled the first ~10-90ms
+            // of the track (audible on a quiet intro). Identity test exact as
+            // in the preload callback: installPendingSwap ran at the top of
+            // this pollEvents pass, and paths ride verbatim.
+            if (audio.takeTrackEndAdvanced()) {
+                if (!playlist.queueEmpty() &&
+                    playlist.queueAt(0).path == audio.currentTrack().path)
+                    playlist.queuePop();
+                else if (playlist.queueEmpty() &&
+                         playlist.repeatMode() != RepeatMode::One)
+                    playlist.next();
+                return;
+            }
 
             // Helper: route a path to CD or file playback
             auto play_path = [&](const std::string& p) {
@@ -116,11 +327,10 @@ int main(int argc, char* argv[]) {
                 if (audio.cdMode()) audio.closeCD();
 #endif
                 audio.play(p);
-                if (playlist.queueEmpty()) {
-                    if (auto peek = playlist.peekNext(); peek.has_value())
-                        if (!isCDTrackPath(peek.value()) && !isStreamPath(peek.value()))
-                            audio.preloadNext(peek.value());
-                }
+                // No arming here (XF C3): the reconcile poll re-arms on the next
+                // UI tick against the resolver - queue head first, then peekNext,
+                // never under repeat-one. This retires the C2 repeat-one guard
+                // that lived here along with the arm itself.
             };
 
             // ── Queue priority ────────────────────────────────────────────
@@ -157,6 +367,18 @@ int main(int argc, char* argv[]) {
                 return;
             }
 
+            // ── Repeat-one: replay the current row ────────────────────────
+            // ABOVE the CD block on purpose (XF item 4): with next()'s old
+            // repeat-one early return removed so n/p can navigate, the CD
+            // block's next() would ADVANCE the disc under repeat-one. Handling
+            // repeat-one first keeps CD repeat-one looping - play_path routes
+            // CD rows through parseCDPath/playCDTrack itself.
+            if (playlist.repeatMode() == RepeatMode::One) {
+                if (auto p = playlist.currentPath(); p.has_value())
+                    play_path(p.value());
+                return;
+            }
+
             // ── Normal playlist advance ───────────────────────────────────
 #ifdef _WIN32
             if (audio.cdMode()) {
@@ -174,14 +396,21 @@ int main(int argc, char* argv[]) {
                 } else { return; }
             }
 #endif
-            if (playlist.repeatMode() == RepeatMode::One) {
-                if (auto p = playlist.currentPath(); p.has_value())
-                    play_path(p.value());
-                return;
-            }
             if (playlist.next().has_value()) {
                 if (auto p = playlist.currentPath(); p.has_value())
                     play_path(p.value());
+            } else {
+                // End of playlist (repeat off, shuffle order exhausted or last
+                // row done): STOP. Without this the callback returned having
+                // done nothing while the engine stayed in Playing at EOF -
+                // silence out, position pinned at full duration, and
+                // track_ended re-firing every callback pass - so the UI showed
+                // the finished track "playing" at 3:34/3:34 forever. stop()
+                // from inside on_track_end_ is the podcast-finish path's
+                // proven shape (UIManager::onEpisodeTrackEnd), and it also
+                // clears track_ended_flag_, ending the re-fire loop. Matches
+                // what n at the end of the playlist has always done.
+                audio.stop();
             }
         });
 
@@ -193,12 +422,6 @@ int main(int argc, char* argv[]) {
             else
                 playlist.addDirectory(arg);
         }
-
-        // ── Preload next track ────────────────────────────────────────────
-        if (playlist.repeatMode() != RepeatMode::One)
-            if (auto peek = playlist.peekNext(); peek.has_value())
-                if (!isCDTrackPath(peek.value()) && !isStreamPath(peek.value()))
-                    audio.preloadNext(peek.value());
 
         // ── Start UI ──────────────────────────────────────────────────────
         UIManager ui(playlist, audio, config,

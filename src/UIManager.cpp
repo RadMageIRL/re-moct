@@ -5546,6 +5546,33 @@ void UIManager::startDiscordArtLookup(const std::string& artist,
     });
 }
 
+// The repeat-one loop restarted the same track. A repeated play is a distinct
+// listen - the scrobble format is (track, start time), so consecutive identical
+// scrobbles with different timestamps are correct, not duplicates - but
+// updateScrobbler identifies a track by its metadata, and a loop's metadata is
+// byte-identical, so the same-track guard reads the new pass as the play it is
+// already counting and the loop never scrobbles again.
+//
+// Clearing the committed identity is the whole fix: on the next tick the guard's
+// EXISTING new-track branch fires and does the rest itself - fresh start time,
+// latch cleared, now-playing re-sent. No new condition is added to the guard,
+// which matters, because its default suppression is load-bearing (iHeart relabels
+// a song mid-play, and re-firing on that would be a real duplicate).
+//
+// All THREE strings have to go. The branch needs `!same_track` AND a differing
+// artist-or-title; clearing scrob_normid_ alone satisfies the first and leaves
+// the second false, so nothing would happen.
+//
+// Deliberately a direct clear rather than a deferred flag: this is called from
+// the track-end callback, which runs from audio_.pollEvents() on the UI thread
+// earlier in the same tick than updateScrobbler(), so the clear is already
+// visible when the scrobbler next looks.
+void UIManager::onTrackReplayed() {
+    scrob_normid_.clear();
+    scrob_artist_.clear();
+    scrob_track_.clear();
+}
+
 void UIManager::updateScrobbler() {
     // Portable since slice 2 (the scrobble clients + MD5 signing run on both
     // platforms) — the whole-body _WIN32 gate came off with the ^B/^G key fix:
@@ -5600,10 +5627,30 @@ void UIManager::updateScrobbler() {
 
     auto st = audio_.state();
     if (st != PlaybackState::Playing && st != PlaybackState::Paused) {
-        scrob_artist_.clear(); scrob_track_.clear();   // stopped -> reset
+        // Stopped -> reset. scrob_normid_ goes too: it is what the same-track
+        // guard actually compares, so leaving it set meant stopping a track and
+        // playing the SAME one again was read as a continuation of the play
+        // already scrobbled, and the replay was silently dropped. Clearing all
+        // three lets the guard's normal new-track branch fire on the replay.
+        scrob_artist_.clear(); scrob_track_.clear(); scrob_normid_.clear();
         if (discord_active_) { discord_.clearActivity(); discord_active_ = false; }
         discord_artist_.clear(); discord_track_.clear();
         return;
+    }
+
+    // A new FILE play instance? Then whatever the guard below is holding belongs
+    // to the previous play, even when the track is byte-identical - replaying the
+    // current row, or starting the same file again from any of the browser
+    // sections, is a new listen and must be allowed to scrobble on its own merits.
+    // The counter answers this with a number instead of asking metadata a question
+    // it cannot answer. It never moves for a stream (play() diverts before the
+    // increment), so an iHeart mid-play relabel cannot reach this and the guard
+    // still suppresses it. CD replays do not move it either - playCDTrack is a
+    // separate path - which is why the repeat-one callback and the stopped-state
+    // reset both still clear directly.
+    if (const std::uint64_t gen = audio_.playGeneration(); gen != scrob_play_gen_) {
+        scrob_play_gen_ = gen;
+        onTrackReplayed();      // same clear, so both routes behave identically
     }
 
     std::string artist, track, album;

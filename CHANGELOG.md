@@ -5,6 +5,22 @@ All notable changes to RE-MOCT are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.1] - Unreleased
+
+### Fixed
+
+- Replaying a track now scrobbles again, instead of being silently dropped.
+  Scrobbling recognised a track by its artist and title, so playing the same one
+  a second time looked like the play it had already counted and was skipped.
+  Repeat-one never scrobbled past the first pass, and neither did restarting a
+  track after stopping it, or pressing enter on the row already playing. All of
+  them now count, for files and for CD alike. Each pass still has to earn it by
+  playing past the usual threshold, so a looping track scrobbles once per pass
+  rather than once per restart, and each scrobble carries its own start time,
+  which is what makes repeats legitimate rather than duplicates. Radio is
+  unchanged: a station that relabels the same song mid-play is still counted
+  once.
+
 ## [1.4.0] - 2026-07-24
 
 ### Added

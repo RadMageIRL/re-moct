@@ -236,6 +236,12 @@ bool AudioManager::play(const std::string& path) {
     ma_device_set_master_volume(&device_, volume_.load());
     ma_device_start(&device_);
     state_.store(PlaybackState::Playing);
+    // A file play has definitively started: bump the play generation. Placed HERE,
+    // after every failure exit above, so a play that never started does not count
+    // as an instance. Unreachable by streams (diverted at the top of play()) and by
+    // CDs (playCDTrack is a separate path), which is exactly the containment the
+    // scrobbler's same-metadata guard depends on.
+    play_gen_.fetch_add(1);
     track_ended_flag_.store(false); track_end_advanced_.store(false);
 
     // Seed duration from TagLib (already available in current_track_)

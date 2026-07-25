@@ -67,6 +67,12 @@ public:
     // mark it played and stop, returning true so the auto-advance callback in main
     // does NOT advance into the music queue. Public: called from that callback.
     bool onEpisodeTrackEnd();
+    // A new pass of the SAME track began (the repeat-one loop). Public: called
+    // from that same auto-advance callback. Scrobbling identifies a track by its
+    // metadata, which is byte-identical across a loop, so without being told a
+    // new pass started the scrobbler cannot tell a repeat from the song it is
+    // already counting. See the definition for why this is a clear, not a flag.
+    void onTrackReplayed();
     // wingui only: repaint live during Windows' modal resize-drag loop (the app's
     // getch() loop is blocked there, so without this the window is blank mid-drag).
     // Registered as PDCurses' window-resized callback; a no-op elsewhere.
@@ -699,6 +705,10 @@ private:
                                bool song = false);
     long        scrob_start_ = 0;        // unix time the current track started
     bool        scrob_done_  = false;    // already scrobbled this track
+    // The play generation this scrobble state belongs to. When AudioManager's
+    // count moves, a new FILE play started - which is the one thing metadata
+    // cannot tell us when the replayed track is the same one.
+    std::uint64_t scrob_play_gen_ = 0;
     void        updateScrobbler();       // called each tick; fires now-playing + scrobble
     std::vector<RadioStation> radio_results_;
     // [Podcasts] level-2 backing store: the episodes of the entered feed. The

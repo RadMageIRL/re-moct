@@ -53,6 +53,12 @@ public:
     void seekTo(double seconds);
     void seekBy(double delta_seconds);
     void setRepeatOne(bool on) { repeat_one_.store(on); }
+    // Monotonic count of FILE plays that have started. A consumer that remembers
+    // the value it last saw learns that a new play instance began even when the
+    // track is identical - which metadata alone cannot tell it. Never moves for a
+    // stream (play() diverts before the increment) or for a CD (playCDTrack does
+    // not route through play() at all).
+    std::uint64_t playGeneration() const { return play_gen_.load(); }
     void clearNext();  // discard preloaded next track
 
     // True only while a crossfade is mixing (decoder_ is still the outgoing track,
@@ -237,6 +243,12 @@ private:
     void installPendingSwap();
 
     std::atomic<PlaybackState> state_ { PlaybackState::Stopped };
+    // Bumped once per FILE play that actually starts. Answers "is this a new play
+    // instance?" with a number, so a consumer never has to infer it from metadata
+    // that a replay leaves byte-identical. Incremented AFTER the stream diversion
+    // at the top of play(), so a stream can never move it - which is what keeps an
+    // iHeart mid-play relabel from ever looking like a new play.
+    std::atomic<std::uint64_t> play_gen_ { 0 };
     std::atomic<bool>          track_ended_flag_ { false };
     std::atomic<bool>          track_end_advanced_ { false };  // splice-advance marker, see takeTrackEndAdvanced
     std::atomic<bool>          preload_next_flag_{ false }; // crossfade done — preload only

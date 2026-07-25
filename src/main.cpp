@@ -374,8 +374,17 @@ int main(int argc, char* argv[]) {
             // repeat-one first keeps CD repeat-one looping - play_path routes
             // CD rows through parseCDPath/playCDTrack itself.
             if (playlist.repeatMode() == RepeatMode::One) {
-                if (auto p = playlist.currentPath(); p.has_value())
+                if (auto p = playlist.currentPath(); p.has_value()) {
+                    // Tell the scrobbler a NEW PASS of the same track is starting.
+                    // It identifies tracks by metadata, which does not change on a
+                    // loop, so without this the repeat is read as the play already
+                    // counted and never scrobbles again. Only the threshold decides
+                    // whether the new pass earns a scrobble; this just stops the
+                    // guard from suppressing it. Reachable by files and CD only -
+                    // a stream never fires this callback.
+                    if (g_ui) g_ui->onTrackReplayed();
                     play_path(p.value());
+                }
                 return;
             }
 

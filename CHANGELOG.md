@@ -5,7 +5,7 @@ All notable changes to RE-MOCT are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.4.1] - Unreleased
+## [1.4.1] - 2026-07-25
 
 ### Changed
 
@@ -18,6 +18,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   installing anything. Building by hand with cmake is unchanged and still
   includes the tests, so existing build directories and scripts carry on
   exactly as before.
+- CUETools rip mode now records its verdict in the files it produces, and says
+  plainly that the verdict covers the whole disc. Ripping with [C] computes a
+  CRC32 across the disc and checks it against the CUETools database; that result
+  used to appear on screen and then be gone. Every track from the rip now
+  carries the verdict and the disc ID it was checked under, so a rip can be
+  re-checked later without reading the disc again. The verdict is one result for
+  the whole disc, unlike AccurateRip which reports each track separately with a
+  confidence count, and the wording on screen and in the rip log now says so.
+  The [C] menu entry no longer claims no network is required, because the
+  database check is an online lookup; only [Y] and [B] work entirely offline.
 
 ### Fixed
 
@@ -46,6 +56,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   which is what makes repeats legitimate rather than duplicates. Radio is
   unchanged: a station that relabels the same song mid-play is still counted
   once.
+- The documentation describing how your credentials are stored was wrong, and is
+  corrected. The README, the website, and the privacy policy all still said
+  scrobbling credentials sat in the configuration file as plaintext. That stopped
+  being true when credential protection landed, and the privacy policy put it
+  most strongly, saying anyone with read access to the file could read those
+  secrets. All three now describe what actually happens: which fields are
+  protected, that Windows uses DPAPI bound to your user account, that the Linux
+  side is obfuscation rather than encryption, and which fields genuinely do stay
+  plaintext. Nothing about how credentials are stored changed here - only the
+  description of it, which had been understating the protection and overstating
+  the risk at the same time.
+- The example configuration in the README and on the website was invented rather
+  than copied from a real file, and several of the keys in it do not exist:
+  nothing reads or writes `repeat`, `crossfade_ms`, `theme`, `vol`, or
+  `eq_gains`. Anyone who copied those examples was editing keys that could never
+  take effect. Both are now a trimmed extract of a real generated configuration,
+  with the values that need explaining described underneath rather than invented
+  inside. The website also pointed at the wrong configuration directory and did
+  not mention the Linux location at all.
+- The website still described CUETools mode as requiring no network, and still
+  listed the rip output as FLAC and MP3 only. The database check is an online
+  lookup, and the tagged formats have included Opus, WavPack, and M4A for some
+  time. Both corrected, along with the CUETools verdict and disc ID now being
+  listed among the tags a rip writes.
 
 ## [1.4.0] - 2026-07-24
 

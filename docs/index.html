@@ -585,7 +585,7 @@
   </div>
   <div class="card">
     <div class="card-title">CUETools mode</div>
-    <p>Computes a disc-wide CRC32 (CTDB) that is offset-immune - no drive offset table required. Falls back gracefully when AccurateRip has no entry for the disc.</p>
+    <p>Computes a disc-wide CRC32 (CTDB) that is offset-immune - no drive offset table required. Checking it is an online lookup against the CUETools database, so this mode needs a network connection; only Local and Local 2-pass work entirely offline. The verdict is one result for the whole disc rather than per track, and every track from the rip carries that verdict and the disc ID it was checked under in its tags, so a rip can be re-checked later without reading the disc again. Falls back gracefully when AccurateRip has no entry for the disc.</p>
   </div>
   <div class="card">
     <div class="card-title">Local mode</div>
@@ -593,7 +593,7 @@
   </div>
   <div class="card">
     <div class="card-title">Output &amp; tagging</div>
-    <p>FLAC and MP3 files are tagged with artist, album, title, year, track number, ReplayGain (track + album), AccurateRip result, and embedded cover art. Art comes from the Cover Art Archive first; if that has nothing, RE-MOCT falls back to iTunes, then Deezer, matched by artist and album. No API keys are required.</p>
+    <p>Every tagged output format - FLAC, MP3, Opus, WavPack, and M4A - carries artist, album, title, year, track number, ReplayGain (track + album), the verification result (the AccurateRip verdict, or the CUETools verdict and disc ID in <code>[C]</code> mode), and embedded cover art. Art comes from the Cover Art Archive first; if that has nothing, RE-MOCT falls back to iTunes, then Deezer, matched by artist and album. No API keys are required.</p>
   </div>
 </div>
 
@@ -602,7 +602,7 @@
 <div class="kb-group">Rip mode selection (after Ctrl+Y)</div>
 <div class="kb">
   <div class="kb-row"><div class="kb-key">A</div><div class="kb-desc">AccurateRip - network CRC verify + drive offset correction</div></div>
-  <div class="kb-row"><div class="kb-key">C</div><div class="kb-desc">CUETools - disc-wide CRC32, offset-immune, no network required</div></div>
+  <div class="kb-row"><div class="kb-key">C</div><div class="kb-desc">CUETools - disc-wide CRC32, offset-immune, online database lookup</div></div>
   <div class="kb-row"><div class="kb-key">Y</div><div class="kb-desc">Local - best-effort rip, no verification</div></div>
   <div class="kb-row"><div class="kb-key">B</div><div class="kb-desc">Local 2-pass - best-effort + read-twice determinism check</div></div>
   <div class="kb-row"><div class="kb-key">N / Esc</div><div class="kb-desc">Cancel - return to CD mode without ripping</div></div>

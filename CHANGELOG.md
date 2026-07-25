@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The Discord activity timer now restarts when a track does. Playing a track
+  again left Discord counting up from the first play, so a repeated three minute
+  song would show six, then nine, then longer, with no relation to where the
+  track actually was. It resets on every replay now, whether the track looped
+  under repeat-one, was started again from its row, or was a CD.
 - Replaying a track now scrobbles again, instead of being silently dropped.
   Scrobbling recognised a track by its artist and title, so playing the same one
   a second time looked like the play it had already counted and was skipped.

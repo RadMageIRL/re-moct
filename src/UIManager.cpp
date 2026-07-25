@@ -5571,6 +5571,18 @@ void UIManager::onTrackReplayed() {
     scrob_normid_.clear();
     scrob_artist_.clear();
     scrob_track_.clear();
+    // Discord Rich Presence has the same blind spot, for the same reason: its
+    // change gate is keyed on artist and title, so a replay of the same track
+    // never opens it and discord_start_ is never re-based - Discord keeps counting
+    // up from the FIRST play and sails past the track's length.
+    //
+    // force_update rather than clearing discord_artist_/discord_track_: the
+    // deferred art commit builds its cache key from those two strings, so blanking
+    // them would leave an in-flight cover lookup with an empty key to match
+    // against. This flag is the mechanism already built for "push the current
+    // track on the next tick" (the Discord toggle uses it), and it opens the gate
+    // without lying about what was last sent.
+    discord_force_update_ = true;
 }
 
 void UIManager::updateScrobbler() {
@@ -5638,16 +5650,18 @@ void UIManager::updateScrobbler() {
         return;
     }
 
-    // A new FILE play instance? Then whatever the guard below is holding belongs
-    // to the previous play, even when the track is byte-identical - replaying the
-    // current row, or starting the same file again from any of the browser
-    // sections, is a new listen and must be allowed to scrobble on its own merits.
-    // The counter answers this with a number instead of asking metadata a question
-    // it cannot answer. It never moves for a stream (play() diverts before the
-    // increment), so an iHeart mid-play relabel cannot reach this and the guard
-    // still suppresses it. CD replays do not move it either - playCDTrack is a
-    // separate path - which is why the repeat-one callback and the stopped-state
-    // reset both still clear directly.
+    // A new play instance? Then whatever the guard below is holding belongs to the
+    // previous play, even when the track is byte-identical - replaying the current
+    // row, starting the same file again from any of the browser sections, or
+    // re-entering the CD track already playing is a new listen and must be allowed
+    // to scrobble on its own merits. The counter answers this with a number
+    // instead of asking metadata a question it cannot answer, and it covers files
+    // and discs alike. It never moves for a stream (play() diverts to beginStream
+    // before its increment, and playCDTrack needs a CD mode that beginStream tears
+    // down), so an iHeart mid-play relabel cannot reach this and the guard still
+    // suppresses it. The repeat-one callback and the stopped-state reset still
+    // clear directly; those routes are now belt-and-braces rather than the only
+    // cover, and they are idempotent with this one.
     if (const std::uint64_t gen = audio_.playGeneration(); gen != scrob_play_gen_) {
         scrob_play_gen_ = gen;
         onTrackReplayed();      // same clear, so both routes behave identically

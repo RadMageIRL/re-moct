@@ -673,7 +673,7 @@
   <div class="kb-row"><div class="kb-key">Ctrl+D</div><div class="kb-desc">Discord Rich Presence - current track + album art</div></div>
 </div>
 
-<div class="warn">Credentials are stored in plaintext in <code>remoct.conf</code> (a Last.fm session key, a ListenBrainz token). The file is machine-local and gitignored - keep it private.</div>
+<div class="warn">Sensitive credentials in <code>remoct.conf</code> are protected at rest - the Last.fm secret, session key and pending auth token, the ListenBrainz token, and the Podcast Index secret. Windows encrypts them with DPAPI, bound to your user account; Linux scrambles them with a machine-keyed XOR, which is obfuscation rather than encryption. The Last.fm API key and usernames stay plaintext. The file is machine-local and gitignored - keep it private.</div>
 
 <!-- ── Key Bindings ── -->
 <h2 id="keybindings" class="section-anchor">Key Bindings</h2>

@@ -688,6 +688,42 @@ int main() {
         std::remove(P5A.c_str()); std::remove(P5B.c_str()); std::remove(P5C.c_str());
     }
 
+    // ── 6. Play generation: a REPLAY of the same file is a NEW play instance ──
+    // The scrobbler identifies a track by its metadata, which is byte-identical
+    // when the same file is played again (repeat-one loop, replaying the current
+    // row, restarting after a stop), so metadata alone can never tell it that a
+    // second listen began. AudioManager answers that with a count instead. The
+    // load-bearing assertion is the SAME-file one: two plays of one path must
+    // produce two different generations, or a replay is indistinguishable from
+    // the play already counted and silently never scrobbles again.
+    {
+        AudioManager am6;
+        am6.setVolume(0.0f);
+        am6.toggleMute();
+        const std::uint64_t g0 = am6.playGeneration();
+
+        CHECK(am6.play(A));
+        const std::uint64_t g1 = am6.playGeneration();
+        CHECK(g1 != g0);                       // a play is an instance
+
+        CHECK(am6.play(A));                    // the SAME file, again
+        const std::uint64_t g2 = am6.playGeneration();
+        CHECK(g2 != g1);                       // ...and it counts as its own instance
+
+        CHECK(am6.play(B));                    // a different file
+        const std::uint64_t g3 = am6.playGeneration();
+        CHECK(g3 != g2);
+
+        am6.stop();                            // stopping is not a new play
+        CHECK(am6.playGeneration() == g3);
+
+        am6.seekTo(0.5);                       // nor is seeking within one
+        CHECK(am6.playGeneration() == g3);
+        std::printf("P6: gens %llu %llu %llu %llu\n",
+                    (unsigned long long)g0, (unsigned long long)g1,
+                    (unsigned long long)g2, (unsigned long long)g3);
+    }
+
     std::remove(A.c_str());
     std::remove(B.c_str());
     std::remove(C.c_str());

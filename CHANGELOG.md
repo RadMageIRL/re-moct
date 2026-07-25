@@ -5,6 +5,48 @@ All notable changes to RE-MOCT are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.1] - Unreleased
+
+### Changed
+
+- Installing from source no longer builds the test tools, so a first install
+  finishes considerably sooner. install.sh now builds the player and its
+  streaming plugin and stops there; the forty-odd test programs that ship with
+  the source are of no use in running RE-MOCT, and waiting for them to compile
+  was pure delay for anyone who just wanted the player. Pass --with-tests to
+  build them alongside it, or --tests-only to build only the test tools without
+  installing anything. Building by hand with cmake is unchanged and still
+  includes the tests, so existing build directories and scripts carry on
+  exactly as before.
+
+### Fixed
+
+- The Discord activity timer no longer jumps back to zero partway through a
+  radio song. Stations relabel the song they are already playing, moving a
+  featured artist between fields or changing the spacing, and that was read as a
+  different song starting: the timer restarted mid-song, sometimes more than
+  once. The same song is now recognised through a relabel, the way scrobbling
+  already recognised it, so the timer keeps running. A genuine change to a
+  different song still updates everything as before, and artwork arriving a
+  moment after a song starts now refreshes the cover without disturbing the
+  timer.
+- The Discord activity timer now restarts when a track does. Playing a track
+  again left Discord counting up from the first play, so a repeated three minute
+  song would show six, then nine, then longer, with no relation to where the
+  track actually was. It resets on every replay now, whether the track looped
+  under repeat-one, was started again from its row, or was a CD.
+- Replaying a track now scrobbles again, instead of being silently dropped.
+  Scrobbling recognised a track by its artist and title, so playing the same one
+  a second time looked like the play it had already counted and was skipped.
+  Repeat-one never scrobbled past the first pass, and neither did restarting a
+  track after stopping it, or pressing enter on the row already playing. All of
+  them now count, for files and for CD alike. Each pass still has to earn it by
+  playing past the usual threshold, so a looping track scrobbles once per pass
+  rather than once per restart, and each scrobble carries its own start time,
+  which is what makes repeats legitimate rather than duplicates. Radio is
+  unchanged: a station that relabels the same song mid-play is still counted
+  once.
+
 ## [1.4.0] - 2026-07-24
 
 ### Added

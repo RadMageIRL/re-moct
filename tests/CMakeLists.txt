@@ -907,3 +907,20 @@ target_link_libraries(m4a_encoder_test PRIVATE
     $<$<PLATFORM_ID:Linux>:dl> $<$<PLATFORM_ID:Linux>:pthread> $<$<PLATFORM_ID:Linux>:m>)
 add_test(NAME m4a_encoder_test COMMAND m4a_encoder_test)
 set_tests_properties(m4a_encoder_test PROPERTIES TIMEOUT 120)
+
+# ── The grouping target: `cmake --build build --target remoct_tests` ─────────
+# What install.sh --tests-only builds. Rather than list forty-odd names here -
+# a list that would go stale the first time a slice forgets to update it - ask
+# the directory what it just defined. Every test added below this point joins
+# automatically, with nothing to remember.
+#
+# Queried BEFORE the custom target is created, so remoct_tests cannot end up
+# depending on itself. plugin_sine is deliberately included: it is a fixture
+# plugin_loader_test loads at runtime, not a test of its own.
+#
+# This pulls in remoct_stream too (plugin_hls_parity_test links the real
+# module), but NOT the remoct binary - so --tests-only builds the test tools
+# and the one plugin they exercise, and leaves the player unbuilt.
+get_property(_remoct_test_targets DIRECTORY . PROPERTY BUILDSYSTEM_TARGETS)
+add_custom_target(remoct_tests)
+add_dependencies(remoct_tests ${_remoct_test_targets})

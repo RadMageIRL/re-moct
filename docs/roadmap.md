@@ -946,8 +946,12 @@ carve the ABI first.
 ## Rip hardening (1.5.0)
 
 **Release boundary (decided 2026-07-24): 1.4.0 ships as it stands. HTOA and CTDB
-repair are 1.5.0.** Nothing new folds into 1.4.0 - the Version.h bump and the
-CHANGELOG date finalize happen at the release ceremony, not before it.
+repair are 1.5.0.**
+
+**DONE (2026-07-24): 1.4.0 released and tagged** - main `28c64c3`, annotated tag
+`1.4.0`. **`[1.4.1]` is now the open cycle** (Version.h already reads 1.4.1);
+1.4.1 so far carries the replay fixes, not rip work. HTOA and CTDB repair remain
+1.5.0 either way - they are the rip-hardening release, not a patch.
 
 ### Hidden / non-track audio: three cases, only one left to build
 
@@ -1005,6 +1009,17 @@ acting on it; real repair means fetching CTDB parity data and running
 Reed-Solomon recovery. Deliberately parked until after HTOA.
 
 ## Parked / deferred (not disturbed)
+- **Discord elapsed bar re-bases on an iHeart mid-play relabel (found 2026-07-25,
+  pre-existing).** The scrobbler compares a CANONICAL identity (`normTrackId`), so a
+  station relabelling the song it is already playing - the featured artist hopping
+  fields, spacing shifting - is correctly counted once. Discord's change gate next to
+  it compares the RAW artist/title strings, so the same relabel opens it and re-bases
+  `discord_start_`. Worse, `pos` stays 0 on the stream path, so the bar snaps to zero
+  rather than to the real position. **This is the Discord version of the canonicalization
+  the scrobble guard already has**, and the fix is presumably to key that gate on
+  `normTrackId` too (and give the stream path a real position, if one is available).
+  Untouched by the replay work: that fix is driven by `play_gen_`, which no stream can
+  move. Its own change when someone wants it.
 - **Config/state dir casing unification (Linux):** the config dir is `~/.config/RE-MOCT`
   (uppercase, existing Config branch) while logs/state land under `$XDG_STATE_HOME/re-moct`
   (lowercase). Harmless but inconsistent; unify the casing as its own tiny change.

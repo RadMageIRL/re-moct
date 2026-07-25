@@ -15,6 +15,7 @@ BUILD="${BUILD_DIR:-$SRC/build}"
 PREFIX="${PREFIX:-/usr/local}"
 DO_BUILD=1
 MODE=install
+WITH_TESTS=0
 
 usage() {
   cat <<'EOF'
@@ -22,6 +23,8 @@ Usage: ./install.sh [options]
   --prefix DIR    install prefix (default /usr/local, or $PREFIX)
   --no-build      install an existing build, don't rebuild
   --link          symlink to the build tree instead of copying (dev mode)
+  --with-tests    build the test tools too (default: player + plugin only)
+  --tests-only    build just the test tools, and do not install
   --uninstall     remove installed files
   -h, --help      this message
 
@@ -39,11 +42,19 @@ while [ $# -gt 0 ]; do
       PREFIX="$2"; shift 2 ;;
     --no-build)  DO_BUILD=0; shift ;;
     --link)      MODE=link; DO_BUILD=0; shift ;;
+    --with-tests) WITH_TESTS=1; shift ;;
+    --tests-only) MODE=tests; WITH_TESTS=1; shift ;;
     --uninstall) MODE=uninstall; DO_BUILD=0; shift ;;
     -h|--help)   usage; exit 0 ;;
     *)           echo "unknown option: $1" >&2; usage; exit 2 ;;
   esac
 done
+
+# Building is the whole point of --tests-only, and there is no install for
+# --no-build to skip, so it has nothing to mean here. Normalised after the loop
+# rather than in the branch so the two flags behave the same in either order -
+# otherwise "--tests-only --no-build" would report success having built nothing.
+[ "$MODE" = tests ] && DO_BUILD=1
 
 # An empty prefix would silently mean "/" - i.e. install into /bin - and a
 # relative one would resolve against whatever directory the user happened to be
@@ -65,8 +76,12 @@ MANIFEST="$BUILD/install_manifest.txt"
 # "--prefix ~/.local" would test a missing ~/.local/bin, read it as
 # unwritable, and then sudo would create a root-owned directory inside the
 # user's home. Walk up to the nearest ancestor that exists and test that.
+# Skipped entirely for --tests-only, which never touches the prefix: this probe
+# EXITS when the prefix is unwritable and sudo is missing, which would otherwise
+# refuse to build test tools on a box that simply has no sudo - over a directory
+# that run is never going to write to.
 SUDO=""
-if [ "$(id -u)" -ne 0 ]; then
+if [ "$MODE" != tests ] && [ "$(id -u)" -ne 0 ]; then
   probe="$PREFIX/bin"
   while [ ! -e "$probe" ]; do probe="$(dirname "$probe")"; done
   if [ ! -w "$probe" ]; then
@@ -114,23 +129,47 @@ if [ "$DO_BUILD" = 1 ]; then
   # build directory whose generator differs is a hard cmake error. Ninja when
   # it's there, otherwise whatever cmake defaults to - a missing ninja should
   # not be the difference between installing and not.
+  # Which targets exist is CMake's decision, not this script's - the same rule
+  # the plugin layout follows. All this does is forward the choice. Passed on
+  # EVERY configure rather than only the first: CMake caches the option, so a
+  # build directory configured once without the tests would silently keep
+  # skipping them, and `ctest` reports success when it finds no tests at all.
+  if [ "$WITH_TESTS" = 1 ]; then tests_cfg=ON; else tests_cfg=OFF; fi
+
   if [ ! -f "$BUILD/CMakeCache.txt" ]; then
     gen=()
     command -v ninja >/dev/null 2>&1 && gen=(-G Ninja)
-    cmake -S "$SRC" -B "$BUILD" ${gen[@]+"${gen[@]}"} -DCMAKE_BUILD_TYPE=Release
+    cmake -S "$SRC" -B "$BUILD" ${gen[@]+"${gen[@]}"} -DCMAKE_BUILD_TYPE=Release \
+          -DREMOCT_BUILD_TESTS="$tests_cfg"
   else
-    cmake -S "$SRC" -B "$BUILD" -DCMAKE_BUILD_TYPE=Release
+    cmake -S "$SRC" -B "$BUILD" -DCMAKE_BUILD_TYPE=Release \
+          -DREMOCT_BUILD_TESTS="$tests_cfg"
   fi
+
+  # --tests-only builds the grouping target, which pulls every test tool and the
+  # one plugin they exercise, and leaves the player unbuilt.
+  target=()
+  [ "$MODE" = tests ] && target=(--target remoct_tests)
 
   jobs="$(nproc 2>/dev/null || echo 2)"
   log="$BUILD/install-build.log"
   # Inside `if !`, set -e stands down and pipefail still reports cmake's status,
   # so a failed build reaches this message instead of aborting the script at the
   # pipeline with the explanation unprinted.
-  if ! cmake --build "$BUILD" -j "$jobs" 2>&1 | tee "$log"; then
+  if ! cmake --build "$BUILD" -j "$jobs" ${target[@]+"${target[@]}"} 2>&1 | tee "$log"; then
     echo "build failed - not installing (full log: $log)" >&2
     exit 1
   fi
+fi
+
+# Nothing below this point applies to a tests-only run: there is no player
+# binary to check for, no prefix to install into, and no installed command to
+# report a version. Leaving before the executable check matters - that check
+# would otherwise fail a perfectly good build with "build first".
+if [ "$MODE" = tests ]; then
+  echo "built the test tools in $BUILD (nothing installed)"
+  echo "run them with: ctest --test-dir \"$BUILD\" --no-tests=error --output-on-failure"
+  exit 0
 fi
 
 [ -x "$BIN" ] || {

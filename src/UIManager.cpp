@@ -5546,6 +5546,45 @@ void UIManager::startDiscordArtLookup(const std::string& artist,
     });
 }
 
+// The repeat-one loop restarted the same track. A repeated play is a distinct
+// listen - the scrobble format is (track, start time), so consecutive identical
+// scrobbles with different timestamps are correct, not duplicates - but
+// updateScrobbler identifies a track by its metadata, and a loop's metadata is
+// byte-identical, so the same-track guard reads the new pass as the play it is
+// already counting and the loop never scrobbles again.
+//
+// Clearing the committed identity is the whole fix: on the next tick the guard's
+// EXISTING new-track branch fires and does the rest itself - fresh start time,
+// latch cleared, now-playing re-sent. No new condition is added to the guard,
+// which matters, because its default suppression is load-bearing (iHeart relabels
+// a song mid-play, and re-firing on that would be a real duplicate).
+//
+// All THREE strings have to go. The branch needs `!same_track` AND a differing
+// artist-or-title; clearing scrob_normid_ alone satisfies the first and leaves
+// the second false, so nothing would happen.
+//
+// Deliberately a direct clear rather than a deferred flag: this is called from
+// the track-end callback, which runs from audio_.pollEvents() on the UI thread
+// earlier in the same tick than updateScrobbler(), so the clear is already
+// visible when the scrobbler next looks.
+void UIManager::onTrackReplayed() {
+    scrob_normid_.clear();
+    scrob_artist_.clear();
+    scrob_track_.clear();
+    // Discord Rich Presence has the same blind spot, for the same reason: its
+    // change gate is keyed on artist and title, so a replay of the same track
+    // never opens it and discord_start_ is never re-based - Discord keeps counting
+    // up from the FIRST play and sails past the track's length.
+    //
+    // force_update rather than clearing discord_artist_/discord_track_: the
+    // deferred art commit builds its cache key from those two strings, so blanking
+    // them would leave an in-flight cover lookup with an empty key to match
+    // against. This flag is the mechanism already built for "push the current
+    // track on the next tick" (the Discord toggle uses it), and it opens the gate
+    // without lying about what was last sent.
+    discord_force_update_ = true;
+}
+
 void UIManager::updateScrobbler() {
     // Portable since slice 2 (the scrobble clients + MD5 signing run on both
     // platforms) — the whole-body _WIN32 gate came off with the ^B/^G key fix:
@@ -5600,10 +5639,36 @@ void UIManager::updateScrobbler() {
 
     auto st = audio_.state();
     if (st != PlaybackState::Playing && st != PlaybackState::Paused) {
-        scrob_artist_.clear(); scrob_track_.clear();   // stopped -> reset
+        // Stopped -> reset. scrob_normid_ goes too: it is what the same-track
+        // guard actually compares, so leaving it set meant stopping a track and
+        // playing the SAME one again was read as a continuation of the play
+        // already scrobbled, and the replay was silently dropped. Clearing all
+        // three lets the guard's normal new-track branch fire on the replay.
+        scrob_artist_.clear(); scrob_track_.clear(); scrob_normid_.clear();
         if (discord_active_) { discord_.clearActivity(); discord_active_ = false; }
-        discord_artist_.clear(); discord_track_.clear();
+        // discord_normid_ goes with them: it is what the gate now compares, so
+        // leaving it set would make playing the SAME song again after a stop look
+        // like the activity already on screen, and the elapsed bar would never
+        // re-anchor to the new play.
+        discord_artist_.clear(); discord_track_.clear(); discord_normid_.clear();
         return;
+    }
+
+    // A new play instance? Then whatever the guard below is holding belongs to the
+    // previous play, even when the track is byte-identical - replaying the current
+    // row, starting the same file again from any of the browser sections, or
+    // re-entering the CD track already playing is a new listen and must be allowed
+    // to scrobble on its own merits. The counter answers this with a number
+    // instead of asking metadata a question it cannot answer, and it covers files
+    // and discs alike. It never moves for a stream (play() diverts to beginStream
+    // before its increment, and playCDTrack needs a CD mode that beginStream tears
+    // down), so an iHeart mid-play relabel cannot reach this and the guard still
+    // suppresses it. The repeat-one callback and the stopped-state reset still
+    // clear directly; those routes are now belt-and-braces rather than the only
+    // cover, and they are idempotent with this one.
+    if (const std::uint64_t gen = audio_.playGeneration(); gen != scrob_play_gen_) {
+        scrob_play_gen_ = gen;
+        onTrackReplayed();      // same clear, so both routes behave identically
     }
 
     std::string artist, track, album;
@@ -5731,12 +5796,29 @@ void UIManager::updateScrobbler() {
         // iHeart digital cover (empty in raw mode / on ad breaks -> logo). Tracked so a
         // cover that lands a tick after the track commits still refreshes the presence.
         std::string radio_art = audio_.streamMode() ? audio_.streamArtUrl() : std::string();
-        if (artist != discord_artist_ || track != discord_track_ || discord_force_update_
+        // Compare CANONICAL identity, not the raw strings: iHeart relabels the song
+        // it is already playing (the featured artist hops between fields, spacing
+        // shifts), and a raw comparison reads that as a different song. The
+        // scrobbler has always collapsed those with normTrackId; this gate did not,
+        // so a relabel re-fired the activity and reset the elapsed bar mid-song.
+        // The scrobbler's own call site is left alone - a second call here is cheap
+        // and keeps this fix out of its code.
+        const std::string dnorm = normTrackId(artist, track);
+        if (dnorm != discord_normid_ || discord_force_update_
             || radio_art != discord_radio_art_) {
+            // Which of the three reasons opened the gate decides whether the bar is
+            // re-anchored. Captured BEFORE discord_normid_ is overwritten below.
+            const bool song_changed = (dnorm != discord_normid_);
             discord_radio_art_ = radio_art;
+            discord_normid_ = dnorm;
             discord_artist_ = artist; discord_track_ = track; discord_album_ = album;
             long nowt = (long)std::time(nullptr);
-            discord_start_ = (pos > 0) ? (nowt - pos) : nowt;   // anchor the elapsed bar
+            // Anchor the elapsed bar only when the SONG changed, or a replay asked
+            // for it. Artwork arriving is a reason to push an updated activity, not
+            // to claim the song restarted - and on a stream the anchor would snap to
+            // zero, because a stream has no position to anchor to.
+            if (song_changed || discord_force_update_)
+                discord_start_ = (pos > 0) ? (nowt - pos) : nowt;
             std::string det = track;
             std::string sta = album.empty() ? artist : (artist + " - " + album);
 
@@ -7233,7 +7315,7 @@ void UIManager::handleInput(int ch) {
             } else {
                 discord_.clearActivity();
                 discord_active_ = false;
-                discord_artist_.clear(); discord_track_.clear();
+                discord_artist_.clear(); discord_track_.clear(); discord_normid_.clear();
                 showTrackToast("Discord presence: OFF", "", "");
             }
             break;

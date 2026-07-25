@@ -236,6 +236,13 @@ bool AudioManager::play(const std::string& path) {
     ma_device_set_master_volume(&device_, volume_.load());
     ma_device_start(&device_);
     state_.store(PlaybackState::Playing);
+    // A file play has definitively started: bump the play generation. Placed HERE,
+    // after every failure exit above, so a play that never started does not count
+    // as an instance. Unreachable by streams, which are diverted to beginStream at
+    // the top of this function - that containment is what the scrobbler's
+    // same-metadata guard depends on. (CD plays bump the same counter from
+    // playCDTrack, which is a separate entry point, not this one.)
+    play_gen_.fetch_add(1);
     track_ended_flag_.store(false); track_end_advanced_.store(false);
 
     // Seed duration from TagLib (already available in current_track_)
@@ -1418,7 +1425,19 @@ bool AudioManager::playCDTrack(int track_number) {
     if (!cd_mode_.load() || !cd_source_.isOpen()) return false;
     stream_connect_gen_.fetch_add(1);   // supersede any in-flight stream connect
     bool ok = cd_source_.playTrack(track_number);
-    if (ok) state_.store(PlaybackState::Playing);   // viz / BPM / UI gate on state_
+    if (ok) {
+        state_.store(PlaybackState::Playing);   // viz / BPM / UI gate on state_
+        // A CD play started, so it counts as a play instance exactly as a file
+        // does. Every CD entry point funnels through here - the playlist row's
+        // enter, n/p, a queue pop, the repeat-one replay - so one bump here is
+        // what a targeted clear at any single one of them could not be: complete,
+        // including the sites that can replay the track already playing (a track
+        // queued twice, or previous onto the current row). Inside the `ok` branch
+        // so a refused play is not counted, mirroring play(). A stream can never
+        // arrive here: this early-returns unless CD mode is live, and beginStream
+        // tears CD mode down before it starts.
+        play_gen_.fetch_add(1);
+    }
     return ok;
 }
 const std::vector<CDTrack>& AudioManager::cdTracks() const {

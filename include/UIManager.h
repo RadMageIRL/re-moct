@@ -67,6 +67,12 @@ public:
     // mark it played and stop, returning true so the auto-advance callback in main
     // does NOT advance into the music queue. Public: called from that callback.
     bool onEpisodeTrackEnd();
+    // A new pass of the SAME track began (the repeat-one loop). Public: called
+    // from that same auto-advance callback. Scrobbling identifies a track by its
+    // metadata, which is byte-identical across a loop, so without being told a
+    // new pass started the scrobbler cannot tell a repeat from the song it is
+    // already counting. See the definition for why this is a clear, not a flag.
+    void onTrackReplayed();
     // wingui only: repaint live during Windows' modal resize-drag loop (the app's
     // getch() loop is blocked there, so without this the window is blank mid-drag).
     // Registered as PDCurses' window-resized callback; a no-op elsewhere.
@@ -675,7 +681,12 @@ private:
     DiscordRP   discord_{"1519141025195491338"};   // RE-MOCT application id
     bool        discord_active_       = false;      // an activity is currently set
     bool        discord_force_update_ = false;      // push current track on next tick
-    std::string discord_artist_, discord_track_;    // last activity sent (change gate)
+    std::string discord_artist_, discord_track_;    // last activity sent (raw, for display + art key)
+    // Canonical identity of the song the current activity belongs to. The gate and
+    // the elapsed-bar anchor compare THIS, not the raw strings above, so a station
+    // relabelling the song it is already playing is recognised as the same song.
+    // The raw strings stay raw: they feed the display and the art-lookup cache key.
+    std::string discord_normid_;
     std::string discord_album_;                     // for rebuilding state on art commit
     long        discord_start_ = 0;
     // Async album-art URL resolution (files: iTunes/Deezer lookup, off the UI thread).
@@ -699,6 +710,10 @@ private:
                                bool song = false);
     long        scrob_start_ = 0;        // unix time the current track started
     bool        scrob_done_  = false;    // already scrobbled this track
+    // The play generation this scrobble state belongs to. When AudioManager's
+    // count moves, a new FILE play started - which is the one thing metadata
+    // cannot tell us when the replayed track is the same one.
+    std::uint64_t scrob_play_gen_ = 0;
     void        updateScrobbler();       // called each tick; fires now-playing + scrobble
     std::vector<RadioStation> radio_results_;
     // [Podcasts] level-2 backing store: the episodes of the entered feed. The

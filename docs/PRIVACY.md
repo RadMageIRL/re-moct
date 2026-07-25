@@ -14,7 +14,7 @@ However, RE-MOCT is not an offline-only application. Several of its features - m
 
 All of your audio files, playlists, ripped tracks, and configuration stay on your local machine. RE-MOCT only reads the directories you explicitly point it at for playback and ripping; it does not scan the rest of your file system.
 
-Configuration - including recent/favorite tracks and the credentials described in Section 4 - is stored in a plaintext file:
+Configuration - including recent/favorite tracks and the credentials described in Section 4 - is stored in a single file:
 
 - **Windows:** `%APPDATA%\RE-MOCT\remoct.conf`
 - **Linux:** `~/.config/RE-MOCT/remoct.conf`
@@ -37,12 +37,19 @@ These services are operated by their respective providers and are governed by **
 
 ## 4. Credentials and Authentication
 
-Scrobbling and other authenticated features require you to provide credentials, which RE-MOCT stores **unencrypted** in the configuration file described in Section 2:
+Scrobbling and other authenticated features require you to provide credentials. RE-MOCT stores them in the configuration file described in Section 2, with the sensitive ones protected at rest:
 
-- **Last.fm:** API key and session key
-- **ListenBrainz:** user token
+| Credential | Stored |
+| --- | --- |
+| Last.fm shared secret, session key, pending auth token | protected |
+| ListenBrainz user token | protected |
+| Podcast Index secret | protected |
+| Last.fm API key, Podcast Index API key | plaintext |
+| All usernames | plaintext |
 
-Anyone with read access to that file can read those secrets. Protect it accordingly, and revoke the credentials from the respective service if you believe it has been exposed.
+On Windows the protected values are encrypted with DPAPI and bound to your Windows user account, so another account on the same machine cannot read them. On Linux they are scrambled with a machine-keyed XOR, which is **obfuscation, not encryption** - it is described that way deliberately. It defeats a casual read of the file; it will not stop someone who has the file and wants its contents.
+
+A configuration file carried to another machine or another user account will not decode, and RE-MOCT will ask you to authenticate again rather than failing strangely. Treat the file as sensitive on both platforms, and revoke the credentials from the respective service if you believe it has been exposed.
 
 ## 5. Your Control
 

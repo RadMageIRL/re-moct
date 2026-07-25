@@ -58,8 +58,12 @@ jobs:
         run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
       - name: Build (remoct + test suite)
         run: cmake --build build
+      # --no-tests=error is load-bearing: ctest EXITS 0 when it finds no tests
+      # at all, so a build configured without the test tools would sail through
+      # this step having run nothing, and report green. Make that the failure
+      # it is, rather than trusting every future configure to be right.
       - name: Test
-        run: ctest --test-dir build --output-on-failure
+        run: ctest --test-dir build --no-tests=error --output-on-failure
 
   windows:
     name: Windows (MSYS2 UCRT64)
@@ -95,8 +99,12 @@ jobs:
         run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
       - name: Build
         run: cmake --build build
+      # --no-tests=error is load-bearing: ctest EXITS 0 when it finds no tests
+      # at all, so a build configured without the test tools would sail through
+      # this step having run nothing, and report green. Make that the failure
+      # it is, rather than trusting every future configure to be right.
       - name: Test
-        run: ctest --test-dir build --output-on-failure
+        run: ctest --test-dir build --no-tests=error --output-on-failure
       # ── Option C single-exe package: assert the dependency allowlist ──
       # Build the static wingui package (re-moct.exe + remoct_stream.dll) and
       # confirm the ONLY non-system DLLs across BOTH are exactly libfdk-aac-2.dll
@@ -106,8 +114,13 @@ jobs:
       - name: Option C dependents check (2-DLL allowlist)
         run: |
           set -e
+          # REMOCT_BUILD_TESTS=OFF: this tree exists only to inspect the DLL
+          # dependencies of two artifacts, and the test suite contributes
+          # nothing to that. The suite is already built and run against the
+          # main `build` tree above, so skipping it here costs no coverage.
           cmake -S . -B build-oc -G Ninja -DCMAKE_BUILD_TYPE=Release \
-                -DREMOCT_PDCURSES=ON -DREMOCT_STATIC_PROBE=ON
+                -DREMOCT_PDCURSES=ON -DREMOCT_STATIC_PROBE=ON \
+                -DREMOCT_BUILD_TESTS=OFF
           cmake --build build-oc
           deps=$( { ldd build-oc/bin/remoct.exe; \
                     ldd build-oc/bin/plugins/remoct_stream.dll; } \

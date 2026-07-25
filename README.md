@@ -1,7 +1,7 @@
 # RE-MOCT - Music On Console Terminal
 
-**RE-MOCT** is a terminal music player, CD ripper, and internet-radio client for
-**Windows and Linux**, written in C++20 on ncurses, miniaudio, TagLib, libFLAC, LAME,
+**RE-MOCT** is a terminal music player, CD ripper, internet-radio client, and podcast
+client for **Windows and Linux**, written in C++20 on ncurses, miniaudio, TagLib, libFLAC, LAME,
 libebur128, FDK-AAC, libopus, libvorbis, and libwavpack.
 
 It is a homage to [MOC](http://moc.daper.net/) (Music On Console) with a twist. In
@@ -29,7 +29,9 @@ and a playlist/rip view. The public feature guide is [`docs/index.html`](docs/in
 - Repeat (track/all), shuffle, seek, volume, 10-band equalizer
 - ReplayGain tag support (including Opus R128); per-track play counts
 - LRC lyrics, tag editor (via TagLib), queue, bookmarks, favorites (star key), goto bar
-- Split-pane UI: directory browser + playlist/views; full-text playlist search (`\`)
+- Split-pane UI: directory browser + playlist/views; focus-aware list search (`\`) that
+  jumps to a match in whichever pane has focus - the playlist, or any browser view
+  (directories, feeds, episodes, radio, books, favorites, recent, drives)
 - Page navigation (`PgUp`/`PgDn`/`Home`/`End`), cursor position readout in the playlist
   header (`[3/12]`), optional per-row file-type column (`Shift+F`)
 
@@ -53,7 +55,9 @@ and a playlist/rip view. The public feature guide is [`docs/index.html`](docs/in
 - Eject from the TUI (Shift+E) and drive-list refresh for hot-plugged drives (F12)
 - Four rip modes:
   - **[A] AccurateRip** - network CRC verify against accuraterip.com + drive-offset correction
-  - **[C] CUETools Database** - offset-immune whole-disc CRC32 (cue.tools/db)
+  - **[C] CUETools Database** - offset-immune whole-disc CRC32 (cue.tools/db), an online
+    lookup; the verdict and the disc ID it was checked under are written into every
+    track's tags, so a rip can be re-checked later without reading the disc again
   - **[Y] Local** - best-effort offline rip
   - **[B] Local 2-pass** - best-effort plus a read-twice determinism check
 - Selectable output - **FLAC, MP3, WAV, Opus, WavPack, M4A** (AAC-LC), any
@@ -84,12 +88,28 @@ and a playlist/rip view. The public feature guide is [`docs/index.html`](docs/in
   cut, a split-hold that keeps outros, and ad-aware routing; recording continues
   gaplessly through a playback pause
 
+**Podcasts**
+- Find new shows by searching the Podcast Index (`/`, with your own free API
+  credentials), or subscribe directly by pasting a feed URL (`a`) when you already
+  have one
+- Two levels: subscribed feeds, then a feed's episodes, with per-episode state (new,
+  part-played with position, played)
+- Play an episode, or download it for offline (`Shift+D`) through a queue with a
+  progress readout and retry; `d`/`Del` removes a feed, or deletes a download
+- Resume where you left off; mark an episode played or unplayed by hand (`y`)
+- Chapters from the episode file or published by the feed (`;` to browse, `,` / `.` to
+  jump), with show or episode art in the Track Info pane and on the OS media card
+- A client, not a platform: no refresh daemon, no gpodder sync, no OPML, no
+  auto-download of new episodes, no auto-advance into your music, and podcasts never
+  scrobble
+
 **Scrobbling & presence**
 - Last.fm (Ctrl+G) and ListenBrainz (Ctrl+B) scrobbling + now-playing
 - Discord Rich Presence with album art
 - OS media controls (on by default): the now-playing title, artist, and cover appear
   on the operating system's own media surface - Windows SMTC (volume/lock-screen
-  overlay, media keys, scrubber) and Linux MPRIS (playerctl, desktop widgets)
+  overlay, media keys, scrubber) and Linux MPRIS (playerctl, desktop widgets),
+  identified as RE-MOCT rather than a generic app name
 
 **Interface & visuals**
 - Two modes: **Classic** (a faithful MOC homage) and **Awesome** (**Ctrl+T**) - comet
@@ -120,6 +140,11 @@ Debian/Trixie). In short, on an MSYS2 UCRT64 shell with the toolchain installed:
 cmake -S . -B build -G Ninja && cmake --build build
 ```
 
+On Linux, `./install.sh` builds and installs to a prefix (default `/usr/local`). It builds
+the player and its streaming plugin only; `--with-tests` builds the test tools alongside
+them, and `--tests-only` builds just the test tools and installs nothing. A plain
+`cmake` build still includes the tests.
+
 Binary: `build/bin/remoct.exe` (Windows) / `build/bin/remoct` (Linux), with the streaming
 plugin built beside it in `build/bin/plugins/`. Windows has two render backends - the
 console `ncursesw` build (default) and a GDI **wingui** build (`-DREMOCT_PDCURSES=ON`,
@@ -141,9 +166,10 @@ truecolor + Alt+Enter fullscreen); see [BUILD.md](BUILD.md).
 | `i` / `e` | Track info / 10-band EQ | `Shift+L` / `Shift+A` / `Shift+X` | Lyrics / About / Output device picker |
 | `F2` | Spectrum: classic / 80s LED | `F7` / `F8` | Awesome theme: previous / next |
 | `K` / `J` | Move track up / down | `F3` | Follow the playing track (default on) |
-| `PgUp` / `PgDn` / `Home` / `End` | Page / top-bottom jump | `\` | Playlist search |
+| `PgUp` / `PgDn` / `Home` / `End` | Page / top-bottom jump | `\` | Focus-aware list search |
 | `Shift+F` | File-type column toggle | `Shift+E` | Eject CD drive (in `[Drives]`) |
-| `F12` | Refresh drive list | `;` | Audiobook chapter list |
+| `F12` | Refresh drive list | `;` / `,` / `.` | Chapter list (books, files, episodes) / previous / next |
+| `/` / `a` | Search Podcast Index / add feed by URL (in `[Podcasts]`) | `Shift+D` / `y` | Download episode / mark played-unplayed |
 | `x` / `u` / `U` | Convert / mark / clear marks | `Ctrl+E` | Record playing stream |
 | `Ctrl+O` | Batch ReplayGain (normalize folder) | `Alt+Enter` | Fullscreen (Windows wingui) |
 | `Ctrl+N` | Nerd Font title icons toggle | `F6` | iHeart re-pin mode: off / ad-escape / hybrid / timed / live-edge |
@@ -154,10 +180,14 @@ Config file:
 - **Windows:** `%APPDATA%\RE-MOCT\remoct.conf`
 - **Linux:** `~/.config/RE-MOCT/remoct.conf`
 
-> ⚠ **`remoct.conf` stores scrobbling credentials in plaintext** (Last.fm session key,
-> ListenBrainz token). It is machine-local; keep it private and do not commit it - it is
-> gitignored. RE-MOCT transmits no audio and stores no third-party data beyond what a
-> request needs.
+> ⚠ **`remoct.conf` protects its sensitive fields at rest.** The Last.fm secret, session
+> key, and pending auth token, the ListenBrainz token, and the Podcast Index secret are
+> encrypted with DPAPI on Windows (bound to your user account) and scrambled with a
+> machine-keyed XOR on Linux - obfuscation rather than encryption, and named that way
+> deliberately, because it stops a casual read of the file and nothing stronger. The
+> Last.fm API key and all usernames stay plaintext. The file is machine-local; keep it
+> private and do not commit it - it is gitignored. RE-MOCT transmits no audio and stores
+> no third-party data beyond what a request needs.
 
 ```ini
 volume=5

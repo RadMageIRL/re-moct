@@ -189,16 +189,38 @@ Config file:
 > private and do not commit it - it is gitignored. RE-MOCT transmits no audio and stores
 > no third-party data beyond what a request needs.
 
+The file is written automatically on exit - you do not create it by hand. A trimmed
+slice of a real one, with the playback, appearance, and rip keys people actually edit
+(internal state like `last_dir` and `playlist_current` is left out here, and the
+credential keys are covered above):
+
 ```ini
-volume=5
-repeat=all          # off / track / all
+# RE-MOCT configuration - auto-generated
+volume=0.25
+crossfade=2
+repeat_mode=1
 shuffle=0
-crossfade=1
-crossfade_ms=2000
-theme=dark
-fav=C:\Music\No Doubt
-bookmark=C:\Music\Lossless
+awesome_mode=1
+awesome_theme=0
+eq_enabled=0
+nerd_icons=1
+follow_playing=1
+rip_formats=flac,mp3
+flac_level=5
+mp3=V2
+opus_bitrate=128000
+aac_vbr=1
+aac_vbr_level=4
+bookmark=D:\Music
+fav=c:\users\david\Music\re-moct\Charli xcx - BRAT (2024)\11 - Apple.opus
 ```
+
+The values that are not obvious: `volume` is a fraction from 0 to 1, not a percentage
+or a step count. `repeat_mode` is `0` off, `1` one track, `2` all. `crossfade` is in
+seconds and `0` turns it off. `awesome_theme` is an index into the palette list that
+`F7`/`F8` cycles. `rip_formats` is a comma-separated list, and each format's quality
+lives in its own key (`flac_level`, `mp3`, `opus_bitrate`, and so on), with the `rec_`
+prefixed twins holding the same settings for stream recording.
 
 ## Fonts and Nerd Font icons
 

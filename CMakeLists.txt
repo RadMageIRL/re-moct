@@ -41,6 +41,24 @@ option(REMOCT_PDCURSES "Windows: render via vendored PDCursesMod wingui instead 
 # shipped path carries zero probe code. Removed when Slice 1 closes.
 option(REMOCT_PROBE "Slice-1: compile temporary curses/cover-art probe logging" OFF)
 
+# ── Test tools ─────────────────────────────────────────────────────────────
+# Toggle with -DREMOCT_BUILD_TESTS=OFF to build the player and its plugin
+# WITHOUT the 40-odd test executables — what install.sh asks for by default,
+# since someone building from source to USE RE-MOCT has no reason to wait for
+# the test suite to link. ON by default so every existing build directory, the
+# standing ctest gate, and CI keep working untouched.
+#
+# The tests bring in NO dependency of their own (they inherit the ones found
+# above for the app and plugin), so this saves compile and link time, not
+# configure time. It gates the whole tests/ subdirectory rather than each
+# target, because that subdirectory is added by exactly one line at the bottom
+# of this file and nothing outside it names a test target.
+#
+# CAUTION: `ctest` EXITS 0 when it finds no tests at all — a build directory
+# configured with this OFF reports success having run nothing. Every ctest
+# invocation here and in CI therefore passes --no-tests=error.
+option(REMOCT_BUILD_TESTS "Build the unit-test tools (the ctest suite)" ON)
+
 # ── Sources ────────────────────────────────────────────────────────────────
 set(REMOCT_SOURCES
     src/main.cpp
@@ -425,5 +443,12 @@ add_dependencies(remoct remoct_stream)
 install(TARGETS remoct_stream LIBRARY DESTINATION bin/plugins RUNTIME DESTINATION bin/plugins)
 
 # ── Phase 0 pure-unit tests ───────────────────────────────────────────────
+# enable_testing() stays OUTSIDE the guard deliberately. With it unconditional,
+# a tests-off build directory still carries a test configuration, so ctest says
+# "No tests were found" — which --no-tests=error turns into a real failure.
+# Moving it inside would instead produce a missing-configuration error that
+# reads like a broken build directory rather than a deliberate build mode.
 enable_testing()
-add_subdirectory(tests)
+if(REMOCT_BUILD_TESTS)
+    add_subdirectory(tests)
+endif()

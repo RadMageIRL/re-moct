@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [1.4.1] - Unreleased
 
+### Changed
+
+- Installing from source no longer builds the test tools, so a first install
+  finishes considerably sooner. install.sh now builds the player and its
+  streaming plugin and stops there; the forty-odd test programs that ship with
+  the source are of no use in running RE-MOCT, and waiting for them to compile
+  was pure delay for anyone who just wanted the player. Pass --with-tests to
+  build them alongside it, or --tests-only to build only the test tools without
+  installing anything. Building by hand with cmake is unchanged and still
+  includes the tests, so existing build directories and scripts carry on
+  exactly as before.
+
 ### Fixed
 
 - The Discord activity timer no longer jumps back to zero partway through a

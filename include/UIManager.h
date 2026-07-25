@@ -681,7 +681,12 @@ private:
     DiscordRP   discord_{"1519141025195491338"};   // RE-MOCT application id
     bool        discord_active_       = false;      // an activity is currently set
     bool        discord_force_update_ = false;      // push current track on next tick
-    std::string discord_artist_, discord_track_;    // last activity sent (change gate)
+    std::string discord_artist_, discord_track_;    // last activity sent (raw, for display + art key)
+    // Canonical identity of the song the current activity belongs to. The gate and
+    // the elapsed-bar anchor compare THIS, not the raw strings above, so a station
+    // relabelling the song it is already playing is recognised as the same song.
+    // The raw strings stay raw: they feed the display and the art-lookup cache key.
+    std::string discord_normid_;
     std::string discord_album_;                     // for rebuilding state on art commit
     long        discord_start_ = 0;
     // Async album-art URL resolution (files: iTunes/Deezer lookup, off the UI thread).

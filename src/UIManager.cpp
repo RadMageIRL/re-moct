@@ -5646,7 +5646,11 @@ void UIManager::updateScrobbler() {
         // three lets the guard's normal new-track branch fire on the replay.
         scrob_artist_.clear(); scrob_track_.clear(); scrob_normid_.clear();
         if (discord_active_) { discord_.clearActivity(); discord_active_ = false; }
-        discord_artist_.clear(); discord_track_.clear();
+        // discord_normid_ goes with them: it is what the gate now compares, so
+        // leaving it set would make playing the SAME song again after a stop look
+        // like the activity already on screen, and the elapsed bar would never
+        // re-anchor to the new play.
+        discord_artist_.clear(); discord_track_.clear(); discord_normid_.clear();
         return;
     }
 
@@ -5792,12 +5796,29 @@ void UIManager::updateScrobbler() {
         // iHeart digital cover (empty in raw mode / on ad breaks -> logo). Tracked so a
         // cover that lands a tick after the track commits still refreshes the presence.
         std::string radio_art = audio_.streamMode() ? audio_.streamArtUrl() : std::string();
-        if (artist != discord_artist_ || track != discord_track_ || discord_force_update_
+        // Compare CANONICAL identity, not the raw strings: iHeart relabels the song
+        // it is already playing (the featured artist hops between fields, spacing
+        // shifts), and a raw comparison reads that as a different song. The
+        // scrobbler has always collapsed those with normTrackId; this gate did not,
+        // so a relabel re-fired the activity and reset the elapsed bar mid-song.
+        // The scrobbler's own call site is left alone - a second call here is cheap
+        // and keeps this fix out of its code.
+        const std::string dnorm = normTrackId(artist, track);
+        if (dnorm != discord_normid_ || discord_force_update_
             || radio_art != discord_radio_art_) {
+            // Which of the three reasons opened the gate decides whether the bar is
+            // re-anchored. Captured BEFORE discord_normid_ is overwritten below.
+            const bool song_changed = (dnorm != discord_normid_);
             discord_radio_art_ = radio_art;
+            discord_normid_ = dnorm;
             discord_artist_ = artist; discord_track_ = track; discord_album_ = album;
             long nowt = (long)std::time(nullptr);
-            discord_start_ = (pos > 0) ? (nowt - pos) : nowt;   // anchor the elapsed bar
+            // Anchor the elapsed bar only when the SONG changed, or a replay asked
+            // for it. Artwork arriving is a reason to push an updated activity, not
+            // to claim the song restarted - and on a stream the anchor would snap to
+            // zero, because a stream has no position to anchor to.
+            if (song_changed || discord_force_update_)
+                discord_start_ = (pos > 0) ? (nowt - pos) : nowt;
             std::string det = track;
             std::string sta = album.empty() ? artist : (artist + " - " + album);
 
@@ -7294,7 +7315,7 @@ void UIManager::handleInput(int ch) {
             } else {
                 discord_.clearActivity();
                 discord_active_ = false;
-                discord_artist_.clear(); discord_track_.clear();
+                discord_artist_.clear(); discord_track_.clear(); discord_normid_.clear();
                 showTrackToast("Discord presence: OFF", "", "");
             }
             break;

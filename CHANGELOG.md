@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The Discord activity timer no longer jumps back to zero partway through a
+  radio song. Stations relabel the song they are already playing, moving a
+  featured artist between fields or changing the spacing, and that was read as a
+  different song starting: the timer restarted mid-song, sometimes more than
+  once. The same song is now recognised through a relabel, the way scrobbling
+  already recognised it, so the timer keeps running. A genuine change to a
+  different song still updates everything as before, and artwork arriving a
+  moment after a song starts now refreshes the cover without disturbing the
+  timer.
 - The Discord activity timer now restarts when a track does. Playing a track
   again left Discord counting up from the first play, so a repeated three minute
   song would show six, then nine, then longer, with no relation to where the

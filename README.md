@@ -173,6 +173,7 @@ truecolor + Alt+Enter fullscreen); see [BUILD.md](BUILD.md).
 | `x` / `u` / `U` | Convert / mark / clear marks | `Ctrl+E` | Record playing stream |
 | `Ctrl+O` | Batch ReplayGain (normalize folder) | `Alt+Enter` | Fullscreen (Windows wingui) |
 | `Ctrl+N` | Nerd Font title icons toggle | `F6` | iHeart re-pin mode: off / ad-escape / hybrid / timed / live-edge |
+| `~` | Reload `theme.conf` colours (live) | | |
 
 ## Configuration
 

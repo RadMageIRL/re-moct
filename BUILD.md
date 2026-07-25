@@ -135,12 +135,40 @@ the Linux build - renders with the terminal emulator's font. See the README sect
 ## Tests
 
 ```bash
-ctest --test-dir build --output-on-failure
+ctest --test-dir build --no-tests=error --output-on-failure
 ```
+
+`--no-tests=error` matters: plain `ctest` **exits 0 when it finds no tests at all**, so a
+build configured without them reports success having run nothing. The flag turns that
+into the failure it is, which is why CI passes it too.
 
 `xfade_handoff_test` self-skips (ctest `SKIP_RETURN_CODE 77`) when the machine has no
 audio device - expected on headless CI. Some tests are Windows-only or Linux-only by
 design (platform seam impls); the suite count differs per platform accordingly.
+
+### Building without the test tools
+
+`REMOCT_BUILD_TESTS` controls whether the test executables are defined at all. It
+defaults to **ON**, so the `cmake` commands above build and run the suite as they always
+have. Turn it off to build only the player and its plugin:
+
+```bash
+cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DREMOCT_BUILD_TESTS=OFF
+```
+
+On Linux, `./install.sh` builds and installs to a prefix (default `/usr/local`) and asks
+for elevation only when the destination needs it:
+
+| Command | Builds |
+|---|---|
+| `./install.sh` | the player and its streaming plugin, and installs them |
+| `./install.sh --with-tests` | the above plus the test tools |
+| `./install.sh --tests-only` | only the test tools, installing nothing |
+
+`--tests-only` leaves the player unbuilt and never touches the prefix, so it is the
+quickest way to get a test tree on a machine where you are not installing anything.
+`cmake --build build --target remoct_tests` is the equivalent for a build tree you
+configured yourself.
 
 ## CD ripping on Linux (note)
 

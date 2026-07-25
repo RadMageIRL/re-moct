@@ -772,21 +772,36 @@
 <!-- ── Config ── -->
 <h2 id="config" class="section-anchor">Configuration</h2>
 
-<p>Config is saved automatically on exit to <code>%APPDATA%\remoct\remoct.conf</code> (or the current directory fallback). It is a plain text key=value file.</p>
+<p>Config is saved automatically on exit to <code>%APPDATA%\RE-MOCT\remoct.conf</code> on Windows, or <code>~/.config/RE-MOCT/remoct.conf</code> on Linux (falling back to the current directory if neither location resolves). It is a plain text key=value file.</p>
 
-<pre>vol=15
-repeat=all
+<pre># RE-MOCT configuration - auto-generated
+volume=0.25
+crossfade=2
+repeat_mode=1
 shuffle=0
-crossfade=3.0
-eq_enabled=1
-eq_gains=0,2,1,0,0,-1,0,1,0,0
-last_dir=C:\Users\Music
-track=C:\Music\Albums\Foo Fighters\track01.flac
-track=C:\Music\Albums\Foo Fighters\track02.flac
-recent=C:\Music\track.mp3
-fav=C:\Music\favourites\song.flac
-bookmark=C:\Music\Albums
-stat=C:\Music\track.mp3|7|1718123456</pre>
+awesome_mode=1
+awesome_theme=0
+eq_enabled=0
+eq_0=9
+eq_1=8
+eq_2=6
+eq_3=5
+eq_4=5
+eq_5=5
+eq_6=6
+eq_7=7
+eq_8=8
+eq_9=9
+rip_formats=flac,mp3
+flac_level=5
+mp3=V2
+track=C:\Users\david\Music\Cyndi Lauper\She's So Unusual\02 Cyndi Lauper - Girls Just Want to Have Fun.flac
+recent=C:\Users\david\Music\Cornershop\Sleep On The Left Side - Brimful Of Asha\03 Cornershop - Brimful Of Asha (Norman Cook Original Radio Edit Remix).flac
+fav=c:\users\david\Music\re-moct\Charli xcx - BRAT (2024)\11 - Apple.opus
+bookmark=D:\Music
+stat=c:\users\david\Music\UB40\Labour of Love\06 UB40 - Red, Red Wine.flac|33|1781584506</pre>
+
+<p><code>volume</code> is a fraction from 0 to 1. <code>repeat_mode</code> is 0 off, 1 one track, 2 all. <code>crossfade</code> is in seconds, 0 being off. The equalizer is ten separate <code>eq_0</code>-<code>eq_9</code> keys rather than one list.</p>
 
 <h3>Notable entries</h3>
 <div class="kb">

@@ -661,6 +661,283 @@ static void test_latin1_artist_survives() {
     CHECK(restoreCursor("Bj\xF6rk", a) >= 0, "cursor restores onto a Latin-1 artist");
 }
 
+// ═══ Slice 10: genre, and the play-stat join ════════════════════════════════
+
+// A genre tag can carry several genres. What splits and what does NOT is the whole
+// of the rule, and both non-separators are here BY NAME because each has real
+// records behind it in the reference collection.
+static void test_genre_splitting() {
+    using libidx::detail::splitGenres;
+    auto eq = [&](const std::string& in, const std::vector<std::string>& want) {
+        const auto got = splitGenres(in);
+        CHECK(got == want, "splitGenres(\"%s\") gave %zu parts, wanted %zu",
+              in.c_str(), got.size(), want.size());
+        for (std::size_t i = 0; i < got.size() && i < want.size(); ++i)
+            CHECK(got[i] == want[i], "  part %zu is \"%s\", wanted \"%s\"",
+                  i, got[i].c_str(), want[i].c_str());
+    };
+
+    eq("Rock",                    {"Rock"});
+    eq("Pop / Rock",              {"Pop", "Rock"});
+    eq("Pop;Rock",                {"Pop", "Rock"});
+    eq("Pop/Rock",                {"Pop", "Rock"});          // no spaces, real value
+    eq("Rock / Funk  /  Soul",    {"Rock", "Funk", "Soul"}); // doubled spaces, real value
+    eq("Breakbeat ; Electro",     {"Breakbeat", "Electro"});
+    eq("Rock ; Pop / Soul",       {"Rock", "Pop", "Soul"});  // both separators at once
+
+    // THE TWO THE RULE EXISTS TO PROTECT. Splitting commas would leave a dangling
+    // "& Country"; splitting hyphens would leave "Hip" and "Hop".
+    eq("Folk, World, & Country",       {"Folk, World, & Country"});
+    eq("Rock / Folk, World, & Country",{"Rock", "Folk, World, & Country"});
+    eq("Hip-Hop / Rap",                {"Hip-Hop", "Rap"});
+    eq("Pop-Rock",                     {"Pop-Rock"});
+    // The stated imperfection, asserted so it is a decision and not a surprise:
+    // these are TWO genres, and any rule that merged them would break Hip-Hop.
+    eq("Post Punk",                    {"Post Punk"});
+    eq("Post-Punk",                    {"Post-Punk"});
+    // '&' is not a separator either.
+    eq("R&B",                          {"R&B"});
+    eq("Stage & Screen",               {"Stage & Screen"});
+
+    // Degenerate shapes contribute nothing rather than an empty row.
+    eq("",            {});
+    eq("   ",         {});
+    eq("/",           {});
+    eq(";;",          {});
+    eq("Rock /",      {"Rock"});
+    eq("/ Rock",      {"Rock"});
+    eq("  Rock  ",    {"Rock"});
+}
+
+static LibraryTrack mkg(const std::string& path, const std::string& artist,
+                        const std::string& album, const std::string& title,
+                        const std::string& genre) {
+    LibraryTrack t = mk(path, artist, album, title);
+    t.genre = genre;
+    return t;
+}
+
+static void test_genres_query() {
+    LibraryIndex idx;
+    idx.tracks.push_back(mkg("/1", "A", "Al", "T1", "Rock"));
+    idx.tracks.push_back(mkg("/2", "B", "Bl", "T2", "Pop / Rock"));
+    idx.tracks.push_back(mkg("/3", "C", "Cl", "T3", "rock"));          // case variant
+    idx.tracks.push_back(mkg("/4", "D", "Dl", "T4", ""));              // untagged
+    idx.tracks.push_back(mkg("/5", "E", "El", "T5", "Hip-Hop / Rap"));
+    libidx::rebuildCompilations(idx);
+
+    const auto g = libidx::genres(idx);
+    // Rock, Pop, Hip-Hop, Rap. "rock" folds INTO "Rock" (case-insensitive dedup), and
+    // the untagged track contributes NOTHING - no synthetic "(no genre)" node, which
+    // would be the largest row in a real collection.
+    CHECK(g.size() == 4, "genres gave %zu rows, wanted 4", g.size());
+    bool has_rock = false, has_hiphop = false, has_pop = false;
+    for (const auto& s : g) {
+        if (libidx::detail::icmp(s, "Rock")    == 0) has_rock   = true;
+        if (libidx::detail::icmp(s, "Hip-Hop") == 0) has_hiphop = true;
+        if (libidx::detail::icmp(s, "Pop")     == 0) has_pop    = true;
+        CHECK(!s.empty(), "genres must never emit an empty row");
+    }
+    CHECK(has_rock && has_hiphop && has_pop, "expected Rock, Hip-Hop and Pop rows");
+
+    // Sorted and unique, case-insensitively - the same contract artists() has.
+    for (std::size_t i = 1; i < g.size(); ++i)
+        CHECK(libidx::detail::icmp(g[i-1], g[i]) != 0, "duplicate genre row at %zu", i);
+}
+
+static void test_genre_filtered_queries() {
+    LibraryIndex idx;
+    idx.tracks.push_back(mkg("/1", "Muse",  "Absolution", "T1", "Rock"));
+    idx.tracks.push_back(mkg("/2", "Muse",  "Drones",     "T2", "Pop"));
+    idx.tracks.push_back(mkg("/3", "Adele", "21",         "T3", "Pop"));
+    idx.tracks.push_back(mkg("/4", "Muse",  "Absolution", "T4", ""));   // untagged, same album
+    libidx::rebuildCompilations(idx);
+
+    const auto rock = libidx::artists(idx, "Rock");
+    CHECK(rock.size() == 1 && rock[0] == "Muse", "Rock should list Muse only");
+
+    const auto pop = libidx::artists(idx, "Pop");
+    CHECK(pop.size() == 2, "Pop should list two artists, got %zu", pop.size());
+
+    // Empty filter falls through to the unfiltered query, so callers need no branch.
+    CHECK(libidx::artists(idx, "") == libidx::artists(idx),
+          "empty genre must equal the unfiltered artists()");
+
+    // An album shows if AT LEAST ONE track carries the genre - a single untagged
+    // track must not hide the album the user came looking for.
+    const auto al = libidx::albumsForArtist(idx, "Muse", "Rock");
+    CHECK(al.size() == 1 && al[0] == "Absolution",
+          "Muse/Rock should give Absolution only, got %zu", al.size());
+    CHECK(libidx::albumsForArtist(idx, "Muse", "") == libidx::albumsForArtist(idx, "Muse"),
+          "empty genre must equal the unfiltered albumsForArtist()");
+
+    // Case-insensitive, like every other identity compare in this file.
+    CHECK(libidx::artists(idx, "rock").size() == 1, "genre match must be case-insensitive");
+}
+
+// The join key. On Windows it folds case and separators because NTFS does; on Linux
+// it must NOT, because two paths differing in case may be two different files.
+static void test_fold_path_key() {
+    using libidx::detail::foldPathKey;
+#ifdef _WIN32
+    CHECK(foldPathKey("C:\\Users\\A\\x.flac") == foldPathKey("c:\\users\\a\\x.flac"),
+          "Windows: case must fold");
+    CHECK(foldPathKey("C:/Users/A/x.flac") == foldPathKey("C:\\Users\\A\\x.flac"),
+          "Windows: separators must normalise");
+#else
+    CHECK(foldPathKey("/home/A/x.flac") != foldPathKey("/home/a/x.flac"),
+          "Linux: case must NOT fold - those may be two files");
+    CHECK(foldPathKey("/home/A/x.flac") == "/home/A/x.flac",
+          "Linux: the key is the path itself");
+#endif
+}
+
+// A tiny stand-in for Config::TrackStats, so this test links nothing.
+struct FakeStat { int play_count; long long last_played; };
+
+static void test_play_stats_aggregate() {
+    std::unordered_map<std::string, FakeStat> src;
+#ifdef _WIN32
+    // THE REAL SHAPE, measured on Dos's config: one file, two entries differing only
+    // in case, counts SPLIT between them. `One of Us` is 73 + 22 and a view that
+    // picks one ranks it at neither.
+    src["C:\\Users\\david\\Music\\Joan Osborne\\Relish\\06 One of Us.mp3"] = { 22, 100 };
+    src["c:\\users\\david\\Music\\Joan Osborne\\Relish\\06 One of Us.mp3"] = { 73, 200 };
+    const auto ps = libidx::buildPlayStats(src);
+    CHECK(ps.size() == 1, "the two case-variants must fold to ONE key, got %zu", ps.size());
+    const auto st = libidx::lookupPlayStat(
+        ps, "C:\\Users\\david\\Music\\Joan Osborne\\Relish\\06 One of Us.mp3");
+    CHECK(st.play_count == 95, "counts must SUM to 95, got %lld", (long long)st.play_count);
+    CHECK(st.last_played == 200, "last_played must be the most recent, got %lld",
+          (long long)st.last_played);
+#else
+    src["/home/dos/a.flac"] = { 22, 100 };
+    src["/home/dos/A.flac"] = { 73, 200 };
+    const auto ps = libidx::buildPlayStats(src);
+    CHECK(ps.size() == 2, "Linux: distinct-case paths stay distinct, got %zu", ps.size());
+    CHECK(libidx::lookupPlayStat(ps, "/home/dos/a.flac").play_count == 22,
+          "Linux: no aggregation across case");
+#endif
+    // A path with no entry is a zeroed record, never a missing-key surprise.
+    CHECK(libidx::lookupPlayStat(ps, "/nowhere").play_count == 0, "absent path must read zero");
+}
+
+static void test_most_played() {
+    LibraryIndex idx;
+    idx.tracks.push_back(mkg("/a", "A", "Al", "Ta", "Rock"));
+    idx.tracks.push_back(mkg("/b", "B", "Bl", "Tb", "Rock"));
+    idx.tracks.push_back(mkg("/c", "C", "Cl", "Tc", "Rock"));
+    idx.tracks.push_back(mkg("/d", "D", "Dl", "Td", "Rock"));   // never played
+    libidx::rebuildCompilations(idx);
+
+    std::unordered_map<std::string, FakeStat> src;
+    src["/a"] = { 5, 100 };
+    src["/b"] = { 9, 100 };
+    src["/c"] = { 5, 500 };      // ties /a on count, newer -> ranks above it
+    const auto ps = libidx::buildPlayStats(src);
+
+    std::size_t total = 0;
+    const auto mp = libidx::mostPlayed(idx, ps, 0, &total);
+    CHECK(total == 3, "3 played tracks, got %zu", total);
+    CHECK(mp.size() == 3, "3 rows, got %zu", mp.size());
+    CHECK(mp[0].path == "/b", "highest count first, got %s", mp[0].path.c_str());
+    CHECK(mp[1].path == "/c", "tie broken by last_played, got %s", mp[1].path.c_str());
+    CHECK(mp[2].path == "/a", "then the older of the tie, got %s", mp[2].path.c_str());
+
+    // The cap reports the TRUE total, the LIB-S7 idiom, so a capped list cannot read
+    // as a complete answer.
+    std::size_t t2 = 0;
+    const auto capped = libidx::mostPlayed(idx, ps, 2, &t2);
+    CHECK(capped.size() == 2, "cap must bite");
+    CHECK(t2 == 3, "total must be counted BEFORE the cap, got %zu", t2);
+    CHECK(capped[0].path == "/b" && capped[1].path == "/c", "cap must keep the top rows");
+
+    // Records BY VALUE - no subscript escapes, as since slice 1.
+    CHECK(mp[0].title == "Tb", "records must carry their fields");
+}
+
+static void test_never_played() {
+    LibraryIndex idx;
+    for (int i = 0; i < 5; ++i)
+        idx.tracks.push_back(mkg("/t" + std::to_string(i), "A", "Al", "T", "Rock"));
+    libidx::rebuildCompilations(idx);
+
+    std::unordered_map<std::string, FakeStat> src;
+    src["/t0"] = { 3, 100 };
+    src["/t1"] = { 0, 100 };     // present but ZERO - still never played
+    const auto ps = libidx::buildPlayStats(src);
+
+    std::size_t total = 0;
+    const auto np = libidx::neverPlayed(idx, ps, 0, &total);
+    CHECK(total == 4, "4 never-played (incl. the zero-count entry), got %zu", total);
+    for (const auto& t : np)
+        CHECK(t.path != "/t0", "a played track must not appear in never-played");
+
+    std::size_t t2 = 0;
+    const auto capped = libidx::neverPlayed(idx, ps, 2, &t2);
+    CHECK(capped.size() == 2 && t2 == 4, "cap 2 of a true total of 4, got %zu of %zu",
+          capped.size(), t2);
+}
+
+// Regression guards, not benchmarks - generous bounds, and sized for the default
+// build's empty CMAKE_BUILD_TYPE rather than -O2.
+static void test_stat_queries_scale() {
+    const int N = 100000;
+    LibraryIndex idx;
+    idx.tracks.reserve(N);
+    static const char* gs[] = { "Rock", "Pop / Rock", "Hip-Hop / Rap", "", "Reggae ; Dub" };
+    for (int i = 0; i < N; ++i) {
+        LibraryTrack t = mkg("/p" + std::to_string(i),
+                             "Artist " + std::to_string(i % 900),
+                             "Album "  + std::to_string(i % 3000),
+                             "T", gs[i % 5]);
+        // THE ALBUM-ARTIST IS THE POINT. Without it every synthetic album is
+        // (correctly) flagged a compilation, artists() returns ONE row, and the
+        // timing measures an empty problem. That is exactly how LIB-S8's scale
+        // fixture measured nothing, and this fixture repeated it until the sanity
+        // check below caught it.
+        t.album_artist = t.artist;
+        idx.tracks.push_back(std::move(t));
+    }
+    libidx::rebuildCompilations(idx);
+
+    // CHECK WHAT THE FIXTURE PRODUCED, not just that it ran.
+    // Rock, Pop, Hip-Hop, Rap, Reggae, Dub - six; the empty one contributes nothing.
+    const auto g = libidx::genres(idx);
+    CHECK(g.size() == 6, "fixture sanity: expected 6 distinct genres, got %zu", g.size());
+    CHECK(libidx::artists(idx).size() > 100,
+          "fixture sanity: artists collapsed to %zu rows - measuring nothing",
+          libidx::artists(idx).size());
+
+    using clk = std::chrono::steady_clock;
+    const auto ms = [](clk::time_point a, clk::time_point b) {
+        return std::chrono::duration<double, std::milli>(b - a).count();
+    };
+
+    std::unordered_map<std::string, FakeStat> src;
+    for (int i = 0; i < N; i += 7) src["/p" + std::to_string(i)] = { i % 50 + 1, i };
+
+    const auto t0 = clk::now();
+    const auto ps = libidx::buildPlayStats(src);
+    const auto t1 = clk::now();
+    std::size_t total = 0;
+    const auto mp = libidx::mostPlayed(idx, ps, 500, &total);
+    const auto t2 = clk::now();
+    const auto np = libidx::neverPlayed(idx, ps, 500, &total);
+    const auto t3 = clk::now();
+    const auto gg = libidx::genres(idx);
+    const auto t4 = clk::now();
+
+    std::printf("  scale(100k): buildPlayStats %.1f ms, mostPlayed %.1f ms, "
+                "neverPlayed %.1f ms, genres %.1f ms  (stat entries=%zu, rows=%zu/%zu)\n",
+                ms(t0,t1), ms(t1,t2), ms(t2,t3), ms(t3,t4), src.size(), mp.size(), np.size());
+    CHECK(mp.size() == 500, "mostPlayed must fill the cap, got %zu", mp.size());
+    CHECK(gg.size() == 6, "genres at scale must still be 6, got %zu", gg.size());
+    CHECK(ms(t0,t1) < 3000, "buildPlayStats at 100k took %.1f ms", ms(t0,t1));
+    CHECK(ms(t1,t2) < 3000, "mostPlayed at 100k took %.1f ms", ms(t1,t2));
+    CHECK(ms(t3,t4) < 3000, "genres at 100k took %.1f ms", ms(t3,t4));
+}
+
 int main() {
     test_roundtrip_basic();
     test_roundtrip_hostile_fields();
@@ -683,6 +960,14 @@ int main() {
     test_search_scale();
     test_scale(2773,   "real");       // the measured collection: 2155 + 618
     test_scale(100000, "headroom");   // synthetic, an order of magnitude beyond
+    test_genre_splitting();
+    test_genres_query();
+    test_genre_filtered_queries();
+    test_fold_path_key();
+    test_play_stats_aggregate();
+    test_most_played();
+    test_never_played();
+    test_stat_queries_scale();
 
     std::printf("library_index_test: %d checks, %d failures\n", g_checks, g_fail);
     return g_fail ? 1 : 0;

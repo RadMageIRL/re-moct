@@ -21,6 +21,7 @@
 // simply re-runs from `artist` and `album`. That is why there is no generation
 // counter here and no need of one.
 
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -38,7 +39,17 @@ namespace libnav {
 // dir_display_ in lockstep like every other library level, so every operation slices 5
 // and AA wired - play, append, queue, favourite, mark, convert, chapters - works on a
 // result row by construction rather than by being wired a second time.
-enum class Level { Artists, Albums, Tracks, Results };
+// Slice 10 adds two more, and both are the same trick as Results: a LEVEL, not a
+// separate view. Genres sits ABOVE Artists and hands the three existing levels a
+// filter string, so a genre browse reuses artists/albums/tracks rather than
+// duplicating them. Stats is a flat leaf list like Results, so every operation
+// slices 5 and AA wired works on a stat row by construction.
+enum class Level { Genres, Artists, Albums, Tracks, Results, Stats };
+
+// Which stat view Level::Stats is showing. Recently-played is deliberately ABSENT:
+// [Recent] already is that view, and shipping a second one would be two things that
+// look the same and then drift apart.
+enum class StatView { MostPlayed, NeverPlayed };
 
 // Does a row at this level carry a FILESYSTEM PATH as its identity?
 //
@@ -51,7 +62,14 @@ enum class Level { Artists, Albums, Tracks, Results };
 // Tracks AND Results: a search result is a track, and its identity is the same
 // absolute OS-origin path. This one line is what turns on every level-3 operation for
 // result rows, which is why slice 7 needed almost no new wiring.
-inline bool rowIsPath(Level l) { return l == Level::Tracks || l == Level::Results; }
+// Stats joins Tracks and Results: a stat row IS a track and its identity is the same
+// absolute OS-origin path, so this one line turns on play, append, queue, favourite,
+// mark, convert and chapters for the stat views without wiring any of them again.
+// Genres is NOT here - a genre row is tag text, exactly like an artist or album row,
+// and must never reach fs::path.
+inline bool rowIsPath(Level l) {
+    return l == Level::Tracks || l == Level::Results || l == Level::Stats;
+}
 
 struct State {
     Level level = Level::Artists;
@@ -74,6 +92,22 @@ struct State {
     std::string sel_artist;
     std::string sel_album;
     std::string sel_track;
+    // The fourth, for the same reason as the other three: descending from a genre
+    // into an artist must not overwrite the memory of which genre row we came
+    // through, or ascending lands on row 0 instead of back on it.
+    std::string sel_genre;
+
+    // ── Genre (slice 10) ─────────────────────────────────────────────────────
+    // The active filter. Set at Genres on descend, read by the Artists and Albums
+    // levels beneath, cleared on the way back up - so it is never stale while a
+    // level that reads it is current, the same contract artist and album have.
+    // TAG TEXT: may be raw Latin-1, stored and compared as bytes, never a path.
+    std::string genre;
+
+    // ── Stat views (slice 10) ────────────────────────────────────────────────
+    // Which view Level::Stats shows. Survives leaving and re-entering the level so
+    // the key cycles predictably rather than always restarting at most-played.
+    StatView stat_view = StatView::MostPlayed;
 
     // ── Whole-collection search (slice 7) ────────────────────────────────────
     // The live query. A STRING, which is why results need no invalidation: a rescan, or
@@ -111,6 +145,19 @@ inline bool sameName(const std::string& a, const std::string& b) {
 // throw the memory away exactly when it is wanted.
 inline Action descend(State& s, const std::string& entry) {
     switch (s.level) {
+        case Level::Genres:
+            // Changing genre invalidates every deeper memory, exactly as changing
+            // artist invalidates the album and track ones.
+            if (!sameName(entry, s.sel_genre)) {
+                s.sel_artist.clear(); s.sel_album.clear(); s.sel_track.clear();
+            }
+            s.sel_genre = entry;
+            s.genre     = entry;
+            s.artist.clear();
+            s.album.clear();
+            s.level     = Level::Artists;
+            return Action::Repopulate;
+
         case Level::Artists:
             if (!sameName(entry, s.sel_artist)) { s.sel_album.clear(); s.sel_track.clear(); }
             s.sel_artist = entry;
@@ -128,8 +175,9 @@ inline Action descend(State& s, const std::string& entry) {
 
         case Level::Tracks:
         case Level::Results:
-            // Both are leaves: Enter PLAYS (slice 5) rather than descending, so there is
-            // no deeper level to go to. The selection is still remembered, so the cursor
+        case Level::Stats:
+            // All three are leaves: Enter PLAYS (slice 5) rather than descending, so there
+            // is no deeper level to go to. The selection is still remembered, so the cursor
             // survives a repopulate either way.
             s.sel_track = entry;
             return Action::None;
@@ -155,6 +203,12 @@ inline Action ascend(State& s) {
             s.level = Level::Albums;
             return Action::Repopulate;
 
+        case Level::Stats:
+            // A leaf reached by a key, so it unwinds the way Results does: back to
+            // where it was opened from, not to a fixed level.
+            s.level = s.return_to;
+            return Action::Repopulate;
+
         case Level::Albums:
             s.artist.clear();
             s.album.clear();
@@ -162,6 +216,19 @@ inline Action ascend(State& s) {
             return Action::Repopulate;
 
         case Level::Artists:
+            // Inside a genre, Artists is NOT the top: ascending returns to the genre
+            // list and drops the filter. Outside one it leaves the section, which is
+            // the shipped behaviour and stays untouched.
+            if (!s.genre.empty()) {
+                s.genre.clear();
+                s.artist.clear();
+                s.album.clear();
+                s.level = Level::Genres;
+                return Action::Repopulate;
+            }
+            return Action::LeaveSection;
+
+        case Level::Genres:
             return Action::LeaveSection;
     }
     return Action::LeaveSection;
@@ -183,7 +250,31 @@ inline void reset(State& s) {
     s.sel_album.clear();
     s.sel_track.clear();
     s.query.clear();               // slice 7: a live search does not survive a reset
+    s.genre.clear();               // slice 10: nor does a genre filter
+    s.sel_genre.clear();           // and unlike sel_artist this has no section-level
+                                   // meaning to preserve - the level it belongs to is
+                                   // gone, so a surviving hint would restore a cursor
+                                   // into a list the user is no longer in.
     s.return_to = Level::Artists;
+    // stat_view is NOT reset: it is a display preference for a level, not a position
+    // in the hierarchy, so cycling to never-played and coming back later keeps it.
+}
+
+// Open the stat views. Mirrors beginSearch exactly - capture where to return to, then
+// switch level - so the two key-reached leaves behave the same way.
+inline void beginStats(State& s, StatView v) {
+    if (s.level != Level::Stats) s.return_to = s.level;
+    s.stat_view = v;
+    s.level = Level::Stats;
+}
+
+// Cycle the stat view: most played -> never played -> out of the level entirely.
+// Returns what the caller must do, so the key handler stays one line.
+inline Action cycleStats(State& s) {
+    if (s.level != Level::Stats) { beginStats(s, StatView::MostPlayed); return Action::Repopulate; }
+    if (s.stat_view == StatView::MostPlayed) { s.stat_view = StatView::NeverPlayed; return Action::Repopulate; }
+    s.level = s.return_to;                       // third press leaves, like a toggle
+    return Action::Repopulate;
 }
 
 // Open a search. `from` is the level to come back to, captured at entry so ascending
@@ -285,7 +376,11 @@ inline std::string trackRowLabel(const libidx::LibraryTrack& t, const std::strin
 //
 // Elision priority when the row will not fit: album first (it is context), then artist,
 // and the title last, because the title is what was searched for.
-inline std::string searchRowLabel(const libidx::LibraryTrack& t, int cols) {
+// `idx` is optional and defaulted, so every existing call site is unchanged and the
+// index-free behaviour is still exactly what it was. Passing an index only changes
+// the compilation fallback on the one line that uses it.
+inline std::string searchRowLabel(const libidx::LibraryTrack& t, int cols,
+                                  const libidx::LibraryIndex* idx = nullptr) {
     const std::string ext = [&] {
         const std::string base = libidx::detail::pathStemOf(t.path);
         // Extension = what pathStemOf removed; recover it rather than re-parsing.
@@ -295,7 +390,13 @@ inline std::string searchRowLabel(const libidx::LibraryTrack& t, int cols) {
     }();
 
     const std::string title  = t.title.empty() ? libidx::detail::pathStemOf(t.path) : t.title;
-    const std::string artist = t.artist.empty() ? groupingArtist(t) : t.artist;
+    // SLICE 10: index-aware when the caller has one. The index-free groupingArtist
+    // returns the raw album-artist, so a COMPILATION track with no artist tag used to
+    // show that raw string in a result row instead of `Various Artists` - the whole of
+    // the inconsistency flagged in slice 8, and the whole of its fix.
+    const std::string artist = t.artist.empty()
+        ? (idx ? libidx::groupingArtist(*idx, t) : groupingArtist(t))
+        : t.artist;
     const std::string tail   = ext.empty() ? std::string() : ("  (" + ext + ")");
 
     // Budget in BYTES here deliberately: the caller sanitises and column-clips for the
@@ -308,6 +409,25 @@ inline std::string searchRowLabel(const libidx::LibraryTrack& t, int cols) {
     else if (!t.album.empty() && (int)(title.size() + t.album.size() + 4 + tail.size()) <= budget)
         row = title + "  [" + t.album + "]";      // dropped the artist to keep the album
     return row + tail;
+}
+
+// A most-played row: the play count, then the ordinary search-row shape.
+//
+// The count LEADS because it is the reason the row is in this list at all, and
+// because a column of counts down the left edge is scannable in a way a trailing
+// one is not. It is budgeted out of `cols` before the row is built, so the count
+// never costs the title its space - the elision priority inside searchRowLabel
+// (album first, then artist, title last) is unchanged.
+//
+// Never-played rows do NOT use this: they have no count worth showing, so they are
+// searchRowLabel unchanged. Two views, one row builder plus a prefix.
+inline std::string statRowLabel(const libidx::LibraryTrack& t, int cols,
+                                int64_t play_count,
+                                const libidx::LibraryIndex* idx = nullptr) {
+    const std::string n = std::to_string(play_count);
+    const std::string prefix = "[" + n + "] ";
+    const int budget = (cols > 0) ? cols - (int)prefix.size() : cols;
+    return prefix + searchRowLabel(t, budget, idx);
 }
 
 } // namespace libnav

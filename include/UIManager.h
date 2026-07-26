@@ -191,6 +191,35 @@ private:
     // recent entries are already absolute; normal-dir entries join current_dir_).
     // "" for pseudo-entries ("..", "[Drives]", ...) and drive/radio modes.
     std::string browserEntryPath(int idx) const;
+
+    // ── The info pane's subject: ONE resolver, two readers (slice 10) ─────────
+    //
+    // Before this, drawTrackInfo and the 'e' tag-edit handler each computed the
+    // subject with their own VERBATIM COPY of the same three-branch idx dance, and
+    // neither looked at the browser at all except for the one [Podcasts] case wired
+    // during the podcast campaign. So pressing 'i' on any browser row - a library
+    // track, a search result, a [FAVs] entry, a plain file - showed whatever the
+    // playlist cursor happened to be on. Two copies of one rule is the defect class
+    // BrowserPins.h and PaneScroll.h both exist to end; this is the third.
+    //
+    // WHERE the subject came from is part of the answer, not a detail: tag editing
+    // WRITES the file, so 'e' must refuse anything that did not come from the
+    // playlist. Fixing the display without that gate would have made the pane show
+    // one file while 'e' wrote another, which is worse than the bug it fixes.
+    // Editing browser rows properly is LIB-S14.
+    enum class InfoSource { None, Playlist, Podcast, Browser };
+    struct InfoSubject {
+        InfoSource  source = InfoSource::None;
+        std::string path;
+        std::string display_title;
+        int         duration_sec = 0;
+        std::size_t pl_index     = 0;   // meaningful only when source == Playlist
+    };
+    InfoSubject infoPaneSubject() const;
+    // Does this browser row name a real FILE? A section pin, "..", "[Back]", an
+    // artist/album/genre row and a directory all answer no - none of them has track
+    // metadata to show.
+    bool browserRowIsFile(int idx) const;
     // rec-cover-art: the radio-art machinery's identity/pickup/trigger halves,
     // extracted from refreshRadioArt so the recording wiring can drive the
     // SAME fetch path (same guard, caches, providers) with the pane closed.
@@ -825,9 +854,25 @@ private:
     void showLibraryAlbums();       // slice 4: level 2 - one artist's albums
     void showLibraryTracks();       // slice 4: level 3 - one album's tracks
     void showLibrarySearch();       // slice 7: whole-collection results, re-run per keystroke
-    // Cap on rendered results. The true match count is shown alongside when it bites, so
-    // a capped list never reads as a complete answer - a one-character query matches
-    // almost the whole collection (measured: 2045 of 2156).
+    void showLibraryGenres();       // slice 10: the genre list, one level above artists
+    void showLibraryStats();        // slice 10: most-played / never-played, one level, two views
+
+    // The folded play-stat map, built lazily and reused (slice 10).
+    //
+    // Config::track_stats is keyed on whatever path the playlist entry held at play
+    // time, so its keys disagree on case; libidx::buildPlayStats folds and SUMS them.
+    // Cached rather than rebuilt per call because BOTH the stat views and the info
+    // pane's "Times Played" read it, and the info pane reads it on every draw - a
+    // per-frame rebuild over the stat map is work with a constant answer.
+    // Invalidated by recordPlay, which is the only thing that changes the source.
+    const std::unordered_map<std::string, libidx::PlayStat>& playStats();
+    void invalidatePlayStats() { play_stats_dirty_ = true; }
+    std::unordered_map<std::string, libidx::PlayStat> play_stats_;
+    bool play_stats_dirty_ = true;
+    // Cap on rendered results, and on the stat views for the same reason: never-played
+    // is ~89% of the collection (1,921 rows measured). The true count is shown alongside
+    // when it bites, so a capped list never reads as a complete answer - a one-character
+    // query matches almost the whole collection (measured: 2045 of 2156).
     static constexpr std::size_t kLibSearchMax = 500;
     std::string lib_result_count_;  // "(N)" or "(N of M)" for the header
     // The ONE ascent path, so [Back] and Left are identical at every level by

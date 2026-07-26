@@ -369,6 +369,10 @@ static void test_row_is_path() {
     CHECK(!rowIsPath(Level::Artists), "an artist row is NOT a path");
     CHECK(!rowIsPath(Level::Albums),  "an album row is NOT a path");
     CHECK(rowIsPath(Level::Tracks),   "a track row IS a path");
+    // Slice 10: a GENRE row is tag text like an artist or album row, and a STAT row
+    // is a track. Getting these backwards is the fs::path crash, not a cosmetic bug.
+    CHECK(!rowIsPath(Level::Genres),  "a genre row is NOT a path - it is tag text");
+    CHECK(rowIsPath(Level::Stats),    "a stat row IS a path - it is a track");
 
     // And it agrees with where descend actually leaves you, so the two cannot drift.
     State s;
@@ -452,6 +456,123 @@ static void test_reset() {
     CHECK(q.level == Level::Artists, "and lands at level 1");
 }
 
+// ═══ Slice 10: the genre level and the stat views ═══════════════════════════
+
+static void test_genre_level() {
+    State s;
+    s.level = Level::Genres;
+
+    // Genres sits ABOVE Artists: descending lands on the artist list with the filter
+    // set, rather than on a parallel hierarchy.
+    CHECK(descend(s, "Rock") == Action::Repopulate, "genre descend repopulates");
+    CHECK(s.level == Level::Artists, "genre descend lands on Artists");
+    CHECK(s.genre == "Rock", "the filter is set to the chosen genre");
+    CHECK(s.sel_genre == "Rock", "the genre cursor is remembered");
+
+    // Ascending from Artists INSIDE a genre returns to the genre list and drops the
+    // filter - it does not leave the section, which is what it does outside one.
+    CHECK(ascend(s) == Action::Repopulate, "ascend inside a genre repopulates");
+    CHECK(s.level == Level::Genres, "ascend from a filtered Artists returns to Genres");
+    CHECK(s.genre.empty(), "the filter is dropped on the way up");
+    CHECK(s.sel_genre == "Rock", "but the genre cursor survives, to land back on it");
+
+    // And above Genres there is nothing.
+    CHECK(ascend(s) == Action::LeaveSection, "ascend from Genres leaves the section");
+
+    // Outside a genre, Artists still leaves the section - shipped behaviour, untouched.
+    State t;
+    CHECK(t.level == Level::Artists, "a fresh state starts at Artists");
+    CHECK(ascend(t) == Action::LeaveSection, "unfiltered Artists still leaves");
+}
+
+static void test_genre_filter_lifecycle() {
+    State s;
+    s.level = Level::Genres;
+    descend(s, "Rock");
+    descend(s, "Muse");           // -> Albums
+    CHECK(s.level == Level::Albums, "two descents reach Albums");
+    CHECK(s.genre == "Rock", "the filter SURVIVES the descent - Albums reads it");
+    descend(s, "Absolution");     // -> Tracks
+    CHECK(s.genre == "Rock", "and survives to Tracks, which does not filter but inherits");
+
+    // Unwinding clears in the right order: album, then artist, then the filter.
+    ascend(s); CHECK(s.level == Level::Albums  && s.genre == "Rock", "still filtered at Albums");
+    ascend(s); CHECK(s.level == Level::Artists && s.genre == "Rock", "still filtered at Artists");
+    ascend(s); CHECK(s.level == Level::Genres  && s.genre.empty(),   "filter cleared at Genres");
+
+    // Choosing a DIFFERENT genre discards the deeper cursors, exactly as choosing a
+    // different artist discards the album and track ones.
+    s.sel_artist = "Muse"; s.sel_album = "Absolution"; s.sel_track = "/p";
+    descend(s, "Reggae");
+    CHECK(s.sel_artist.empty() && s.sel_album.empty() && s.sel_track.empty(),
+          "a new genre discards the deeper memories");
+
+    // Re-entering the SAME genre keeps them.
+    State u;
+    u.level = Level::Genres;
+    descend(u, "Rock");
+    u.sel_artist = "Muse";
+    ascend(u);                     // back to Genres
+    descend(u, "Rock");            // same genre again
+    CHECK(u.sel_artist == "Muse", "re-entering the same genre keeps the artist cursor");
+
+    // reset() clears the filter AND the genre cursor. Unlike sel_artist it has no
+    // section-level meaning to preserve: the level it belongs to is gone.
+    State r;
+    r.level = Level::Genres;
+    descend(r, "Rock");
+    r.sel_artist = "Muse";
+    reset(r);
+    CHECK(r.level == Level::Artists, "reset returns to Artists");
+    CHECK(r.genre.empty(),     "reset clears the genre filter");
+    CHECK(r.sel_genre.empty(), "reset clears the genre cursor");
+    CHECK(r.sel_artist == "Muse", "but sel_artist still survives a reset, as since slice 3");
+}
+
+static void test_stats_level() {
+    State s;
+    CHECK(s.stat_view == StatView::MostPlayed, "stats default to most played");
+
+    // First press opens most-played and remembers where to come back to, mirroring
+    // beginSearch exactly.
+    CHECK(cycleStats(s) == Action::Repopulate, "opening the stat views repopulates");
+    CHECK(s.level == Level::Stats, "first press opens the stat level");
+    CHECK(s.stat_view == StatView::MostPlayed, "first press shows most played");
+    CHECK(s.return_to == Level::Artists, "it remembers the level it came from");
+
+    // Second press switches view without leaving the level.
+    cycleStats(s);
+    CHECK(s.level == Level::Stats, "second press stays on the stat level");
+    CHECK(s.stat_view == StatView::NeverPlayed, "second press shows never played");
+
+    // Third press leaves, like a toggle.
+    cycleStats(s);
+    CHECK(s.level == Level::Artists, "third press returns to where it came from");
+
+    // The VIEW is a display preference, not a position: it survives leaving so the
+    // key cycles predictably instead of always restarting at most-played.
+    CHECK(s.stat_view == StatView::NeverPlayed, "the chosen view survives leaving the level");
+    State q; q.stat_view = StatView::NeverPlayed; reset(q);
+    CHECK(q.stat_view == StatView::NeverPlayed, "and survives a reset, for the same reason");
+
+    // Opened from a DEEPER level, it returns there rather than to the top.
+    State d;
+    d.level = Level::Genres;
+    descend(d, "Rock");
+    descend(d, "Muse");            // Albums
+    cycleStats(d);
+    CHECK(d.level == Level::Stats && d.return_to == Level::Albums,
+          "stats opened from Albums returns to Albums");
+    ascend(d);
+    CHECK(d.level == Level::Albums, "[Back] from stats returns to the captured level");
+
+    // A stat row is a leaf: Enter plays rather than descending, and the selection is
+    // still remembered so the cursor survives a repopulate.
+    State l; l.level = Level::Stats;
+    CHECK(descend(l, "/music/x.flac") == Action::None, "a stat row is a leaf");
+    CHECK(l.sel_track == "/music/x.flac", "but it is remembered for the cursor restore");
+}
+
 int main() {
     test_descend_and_ascend();
     test_remembered_cursor_roundtrip();
@@ -468,6 +589,9 @@ int main() {
     test_row_is_path();
     test_search_level();
     test_reset();
+    test_genre_level();
+    test_genre_filter_lifecycle();
+    test_stats_level();
 
     std::printf("library_level_test: %d checks, %d failures\n", g_checks, g_fail);
     return g_fail ? 1 : 0;

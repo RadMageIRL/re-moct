@@ -76,8 +76,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and if you have retagged a file since the last scan, the playlist shows what
   `[Library]` is showing you, which F12 is there to bring up to date.
 
+- **Browse by genre with `g`.** Inside `[Library]`, `g` lists every genre in your
+  collection and picking one narrows the artist list to it, then albums and tracks
+  as usual. Tracks that carry several genres in one tag count under each of them, so
+  a track tagged `Pop / Rock` appears under both. Genres separated by `/` or `;` are
+  split apart; commas and hyphens are left alone, which keeps
+  `Folk, World, & Country` and `Hip-Hop` intact as the single genres they are. A
+  track with no genre tag is not filed under an invented heading - it stays
+  reachable by artist, album and search. On this collection 35 different genre
+  strings become 27 real genres.
+- **Two new views on what you have played, with `%`.** Press it inside `[Library]`
+  to see your most played tracks with their counts, press it again for everything
+  you have never played, and again to go back. Never-played is most of a large
+  collection, so it shows the first 500 with the true total beside it. These are not
+  `[Recent]`, which is the short list of what you played last; these are the whole
+  collection sorted two ways.
+
 ### Fixed
 
+- **The track info pane (`i`) now shows the row you have highlighted.** Highlighting a
+  file in the browser and pressing `i` used to show a track from the playlist instead
+  of the one under the cursor, so the pane looked stuck on an unrelated song. It now
+  follows the cursor through every listing - library artists, albums and tracks,
+  collection search results, `[FAVs]`, `[Recent]`, `[Books]` and ordinary folders -
+  and where a row is not a file at all, such as an artist or a folder, it says so
+  plainly rather than showing something unrelated. Editing tags with `e` still works
+  on playlist rows exactly as before; on a browser row it now declines and tells you
+  to add the track first, rather than editing a different file than the one on screen.
+- **Play counts were being split in two, and the count shown was the wrong one.**
+  RE-MOCT recorded plays under the exact path a track was opened by, and the same
+  file opened from a folder, a playlist and a favourite could produce differently
+  capitalised paths - so one file ended up with two separate tallies. On this
+  collection 17 tracks were affected, and a track played 95 times showed as 73 or as
+  22 depending on which tally was found first. Worse, a track whose only tally was
+  stored under different capitalisation than the way you opened it read as never
+  played at all. Counts are now added together, so the number shown is the number of
+  times you actually played the file. This is a reading fix and nothing stored has
+  been altered.
 - The browser pane now always shows the row the cursor is on. Scroll down a long
   listing, go somewhere else and come back, and the pane used to return to the top
   of the list while the cursor stayed where you left it - so the highlighted row was

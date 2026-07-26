@@ -1659,6 +1659,7 @@ void UIManager::run() {
                 const auto& track = audio_.currentTrack();
                 if (!curIsStream && !track.path.empty()) {
                     config_.recordPlay(track.path);
+                    invalidatePlayStats();   // the one thing that changes the source
                     if (config_.toast_enabled)
                         showTrackToast(track.title, track.artist, track.album);
                 }
@@ -2946,8 +2947,27 @@ void UIManager::drawDirBrowser() {
             return truncateToWidth(d, cols - 1) + "\xE2\x80\xA6";   // U+2026, one column
         };
         switch (lib_nav_.level) {
+            case libnav::Level::Genres:
+                hdr = " [Library] genres (Enter:artists  %:stats  [Back]/Left:leave) ";
+                break;
+            case libnav::Level::Stats:
+                // Says WHICH view and how many, for the same reason Results does: both
+                // are capped, and a capped list that does not say so reads as complete.
+                // It also names itself so nobody reads it as [Recent].
+                hdr = std::string(" [Library] ") +
+                      (lib_nav_.stat_view == libnav::StatView::MostPlayed
+                           ? "most played " : "never played ") +
+                      lib_result_count_ + " (Enter:play  a:add  %:next  [Back]/Left:back) ";
+                break;
             case libnav::Level::Artists:
-                hdr = " [Library] (Enter:albums  F12:rescan  [Back]/Left:leave) ";
+                // Inside a genre the header says so, and says Left goes back to the
+                // genre list rather than out of the section - because that is what it
+                // now does, and a header that lied about the way out was the thing
+                // slice 4 fixed in four sections at once.
+                hdr = lib_nav_.genre.empty()
+                    ? " [Library] (Enter:albums  g:genres  %:stats  F12:rescan  [Back]/Left:leave) "
+                    : " [Library] " + clip(lib_nav_.genre, 20) +
+                      " (Enter:albums  [Back]/Left:genres) ";
                 break;
             case libnav::Level::Albums:
                 hdr = " [Library] " + clip(lib_nav_.artist, 24) +
@@ -4791,49 +4811,44 @@ void UIManager::drawTrackInfo() {
     int rows, cols;
     getmaxyx(w, rows, cols);
 
-    // Which track to show: cursored row if browsing the playlist, else the playing
-    // row (stream-aware), else the last-known index for the nothing-playing floor.
-    std::size_t idx;
-    if (focus_ == Pane::Playlist && pl_cursor_ < (int)playlist_.size()) {
-        idx = (std::size_t)pl_cursor_;
-    } else if (auto r = nowPlayingRow()) {
-        idx = *r;
-    } else {
-        idx = playlist_.current();   // nothing playing / queue-launched stream: last-known index
-    }
+    // WHAT the pane is looking at is infoPaneSubject()'s decision, not this
+    // function's - the 'e' handler reads the same answer, so the pane and the tag
+    // editor cannot disagree about which file they mean. That mattered: before
+    // slice 10 each computed it separately and neither consulted the browser.
+    const InfoSubject subj = infoPaneSubject();
+    const std::size_t idx  = subj.pl_index;
 
-    // Header
+    // Header. It advertises 'e' only when 'e' will actually do something - editing is
+    // playlist-only until LIB-S14, and a header offering an action that then refuses
+    // is how a user learns to distrust the header.
     std::string hdr = tag_edit_mode_
         ? " Track Info  [Enter:save  Esc:cancel  Up/Dn:field] "
-        : " Track Info  [i:close  e:edit tags] ";
+        : (subj.source == InfoSource::Playlist ? " Track Info  [i:close  e:edit tags] "
+                                               : " Track Info  [i:close] ");
     hdr.resize((size_t)cols, ' ');
     wattron(w, COLOR_PAIR(CP_FOCUSED) | A_BOLD);
     mvwaddnstr(w, 0, 0, hdr.c_str(), cols);
     wattroff(w, COLOR_PAIR(CP_FOCUSED) | A_BOLD);
 
-    PlaylistEntry pod_entry;
     // Browsing the [Podcasts] section: the HIGHLIGHTED row drives the pane - show ITS
     // title + RSS art, playing or not (Dos's "normal behavior": the info pane follows
-    // the cursor here, never a stale/unrelated playlist track). The highlighted row
-    // WINS over the playing episode below, so scrolling always previews what's under
-    // the cursor. Feed rows preview the show art; episode rows prefer the episode
-    // image, falling back to show art (resolveEpisodeArt).
+    // the cursor here, never a stale/unrelated playlist track). Feed rows preview the
+    // show art; episode rows prefer the episode image, falling back to show art.
+    //
+    // ONLY THE ART is decided here as of slice 10. The subject - which row, and what
+    // its title and duration are - is infoPaneSubject()'s, and this block used to
+    // compute a second copy of it. The two agreeing was maintenance rather than
+    // structure, and that is precisely what let the pane and 'e' drift apart.
     std::string browse_art_url, browse_art_disk;
     bool browse_art_feed = false;
     bool podcast_browse  = false;
     if (in_podcasts_ && focus_ == Pane::DirBrowser && dir_cursor_ >= 1) {
         if (in_podcast_feed_ && dir_cursor_ - 1 < (int)podcast_episodes_.size()) {
             const PodcastEpisode& ep = podcast_episodes_[(size_t)(dir_cursor_ - 1)];
-            pod_entry.path          = episodeCacheFile(podcast_feed_url_, ep);   // ASCII-safe
-            pod_entry.display_title = sanitizeForDisplay(ep.title);
-            pod_entry.duration_sec  = (int)ep.duration_sec;
             resolveEpisodeArt(ep, browse_art_url, browse_art_feed, browse_art_disk);
             podcast_browse = true;
         } else if (!in_podcast_feed_ && dir_cursor_ - 1 < (int)config_.podcast_feeds.size()) {
             const std::string& furl = config_.podcast_feeds[(size_t)(dir_cursor_ - 1)];
-            std::string title = config_.podcastFeedTitle(furl);
-            pod_entry.path          = pathSafeAscii(furl);   // pseudo-path; never a real file
-            pod_entry.display_title = sanitizeForDisplay(title.empty() ? furl : title);
             browse_art_url  = config_.podcastFeedArt(furl);
             browse_art_feed = true;
             browse_art_disk = browse_art_url.empty() ? std::string()
@@ -4841,28 +4856,28 @@ void UIManager::drawTrackInfo() {
             podcast_browse = true;
         }
     }
-    // A playing episode is standalone (not in the playlist). When we're NOT browsing
-    // the podcast pane (e.g. focused the playlist, or off in another view), still show
-    // IT - its own tags + art - so the info pane follows now-playing like radio/music,
-    // instead of the last (unrelated) playlist track. Yields to podcast_browse above.
-    const bool show_podcast = !podcast_browse
-        && isPlayingPodcast()
-        && audio_.state() != PlaybackState::Stopped
-        && !(focus_ == Pane::Playlist && pl_cursor_ < (int)playlist_.size());
-    if (show_podcast) {
-        pod_entry.path          = podcast_playing_path_;
-        pod_entry.display_title = audio_.currentTrack().title;
-        pod_entry.duration_sec  = audio_.currentTrack().duration_sec;
-    }
-    const bool pod_pane = show_podcast || podcast_browse;
-    if (!pod_pane && playlist_.empty()) {
+
+    if (subj.source == InfoSource::None) {
+        // Nothing to show, said honestly rather than by falling back to an unrelated
+        // track. Reachable two ways: an empty playlist with nothing playing, and a
+        // browser row that is not a file - an artist, album or genre row, a section
+        // pin, "..", or a directory. None of those has track metadata, and showing
+        // the playlist's current row for them is exactly the bug this slice fixed.
         wattron(w, COLOR_PAIR(CP_DIM));
-        mvwaddstr(w, rows/2, 2, "No track selected");
+        mvwaddstr(w, rows/2, 2,
+                  (focus_ == Pane::DirBrowser) ? "No track info for this row"
+                                               : "No track selected");
         wattroff(w, COLOR_PAIR(CP_DIM));
     } else {
-        if (idx >= playlist_.size())            // defensive: a stale current() must never throw
-            idx = playlist_.empty() ? 0 : playlist_.size() - 1;
-        const PlaylistEntry& entry = pod_pane ? pod_entry : playlist_.at(idx);
+        // One synthetic entry so the rest of the function reads the subject and only
+        // the subject. A playlist subject still resolves to its real row, so nothing
+        // about the playlist path changes.
+        PlaylistEntry subj_entry;
+        subj_entry.path          = subj.path;
+        subj_entry.display_title = subj.display_title;
+        subj_entry.duration_sec  = subj.duration_sec;
+        const PlaylistEntry& entry = (subj.source == InfoSource::Playlist)
+                                   ? playlist_.at(idx) : subj_entry;
         const std::string& path = entry.path;
 
         // Use cached metadata from PlaylistManager — no file open needed
@@ -4983,13 +4998,22 @@ void UIManager::drawTrackInfo() {
         add("Path", sanitizeForDisplay(path));
 
         // Play statistics — not applicable for CD tracks (volatile, not saved)
+        //
+        // SLICE 10: through the SAME folded, aggregating lookup the most-played view
+        // ranks on, so the number here and the number there cannot disagree. The old
+        // byte-exact track_stats.find(path) was wrong on real data and visibly so:
+        // Config keys stats on whatever path the playlist entry held at play time, and
+        // those disagree on case, so 17 files on Dos's machine hold TWO entries with
+        // their counts split. `One of Us` is 73 + 22 and this pane showed one of them,
+        // and files whose only entry differed in case from the path they were opened by
+        // read "never". Fixed here; normalising the STORED keys is LIB-S13.
         if (!isCDTrackPath(path)) {
-            auto it = config_.track_stats.find(path);
-            if (it != config_.track_stats.end()) {
-                addInt("Times Played", it->second.play_count);
-                if (it->second.last_played > 0) {
+            const libidx::PlayStat st = libidx::lookupPlayStat(playStats(), path);
+            if (st.play_count > 0) {
+                addInt("Times Played", (int)st.play_count);
+                if (st.last_played > 0) {
                     char tsbuf[32];
-                    std::tm tmbuf{}; localtimeSafe(it->second.last_played, tmbuf); std::tm* tm = &tmbuf;
+                    std::tm tmbuf{}; localtimeSafe((std::time_t)st.last_played, tmbuf); std::tm* tm = &tmbuf;
                     std::strftime(tsbuf, sizeof(tsbuf), "%Y-%m-%d %H:%M", tm);
                     add("Last Played", tsbuf);
                 }
@@ -7079,14 +7103,30 @@ void UIManager::handleInput(int ch) {
                 return;
             case 'e': {   // E freed for eject (was a pure dupe of e)
                 // Enter edit mode — only for real files, not CD tracks, not currently playing
-                std::size_t idx;
-                if (focus_ == Pane::Playlist && pl_cursor_ < (int)playlist_.size()) {
-                    idx = (std::size_t)pl_cursor_;
-                } else if (auto r = nowPlayingRow()) {
-                    idx = *r;
-                } else {
-                    idx = playlist_.current();   // nothing playing / queue-launched stream: last-known index
+                //
+                // THE SAME RESOLVER THE PANE DRAWS FROM. This used to be a verbatim
+                // copy of drawTrackInfo's idx dance, which is how the two could mean
+                // different files; now they cannot.
+                //
+                // AND EDITING IS PLAYLIST-ONLY. Slice 10 made the pane follow the
+                // browser cursor, so without this gate 'e' would have written tags to
+                // the playlist's current row while the pane displayed a browser row -
+                // a file-writing mismatch, strictly worse than the display bug it
+                // fixes. Refusing is the whole gate: it cannot write the wrong file
+                // because it does not write at all. Editing browser rows properly
+                // needs TagEditability, PlayingLocked and the playlist-sync loop in
+                // saveTagEdits to mean something for a file that is not in the
+                // playlist, which is LIB-S14 and not this slice.
+                const InfoSubject subj = infoPaneSubject();
+                if (subj.source == InfoSource::Browser
+                    || subj.source == InfoSource::Podcast) {
+                    warn_msg_ = "Tag editing works on playlist rows - press Enter to add this first";
+                    warn_msg_ticks_ = 0;
+                    redraw_needed_.store(true);
+                    return;
                 }
+                if (subj.source != InfoSource::Playlist) return;   // nothing to edit
+                const std::size_t idx = subj.pl_index;
                 if (idx < playlist_.size()) {
                     const std::string& path = playlist_.at(idx).path;
                     switch (tagEditability(path)) {
@@ -7867,6 +7907,22 @@ void UIManager::handleInput(int ch) {
             }
             break;
         case 'g': case 'G':
+            // Inside [Library] this is the genre list; everywhere else it stays
+            // goto-directory. The d/D-in-[Podcasts] pattern: a key that means something
+            // else where it has nothing to do, since a library section has no
+            // directories to go to.
+            //
+            // The g/G ALIAS IS KEPT INTACT rather than split. Most letter pairs in this
+            // handler are aliases, and taking a Shift+letter means splitting one - which
+            // would leave G doing goto-directory inside a section where that is exactly
+            // as meaningless as it is for g.
+            if (ui_overlay_ == UIOverlay::None && focus_ == Pane::DirBrowser
+                && in_library_ && !lib_scan_running_) {
+                lib_nav_.level = libnav::Level::Genres;
+                showLibraryGenres();
+                redraw_needed_.store(true);
+                break;
+            }
             gotoOpen(); break;
         case '\\':   // focus-aware list search - pick-to-jump (never a filter)
             // Same modal guard as the other input-bar keys; the goto machinery
@@ -7903,6 +7959,21 @@ void UIManager::handleInput(int ch) {
                 libnav::beginSearch(lib_nav_, "");         // remembers the level to return to
                 showLibrarySearch();
                 openInputBar(InputMode::LibrarySearch, "");
+            }
+            break;
+        case '%':   // cycle the stat views: most played -> never played -> back out
+            // SECTION-SCOPED, and it has to be. 'p' was rejected for this: previous-track
+            // is a transport control, music playing while browsing is the normal state,
+            // and [Library] is precisely where someone reaches for it. '%' is unbound
+            // (swept: every case label AND every pre-switch if - which is how '?' turned
+            // out to be the Help pane and not free at all), it reads as statistics, and
+            // it is plain printable ASCII so it needs no cross-platform proof. The '|'
+            // precedent exactly.
+            if (ui_overlay_ == UIOverlay::None && focus_ == Pane::DirBrowser
+                && in_library_ && !lib_scan_running_) {
+                libnav::cycleStats(lib_nav_);
+                populateLevel();
+                redraw_needed_.store(true);
             }
             break;
         case 's':
@@ -9563,6 +9634,94 @@ std::string UIManager::browserEntryPath(int idx) const {
     return fs::path(nm).is_absolute() ? nm : (fs::path(current_dir_) / nm).string();
 }
 
+// Does this browser row name a real file, i.e. something with track metadata?
+//
+// browserEntryPath already rejects the pseudo-rows (section pins, "..", "[Back]",
+// empty identities) and every level whose identity is tag text. What it does NOT
+// reject is a DIRECTORY in the plain folder browser, which resolves to a perfectly
+// good path with no tags behind it.
+//
+// The fs::is_directory guard mirrors the draw loop's own at drawDirBrowser: it runs
+// ONLY outside the virtual sections, because a library or feed row is tag text and
+// fs::path over invalid UTF-8 throws on Windows. Cost is one call for the cursor
+// row; the draw loop already makes the same call for every VISIBLE row.
+bool UIManager::browserRowIsFile(int idx) const {
+    const std::string p = browserEntryPath(idx);
+    if (p.empty()) return false;
+    if (in_recent_ || in_favs_ || in_books_ || in_library_) return true;   // always files
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    const bool dir = fs::is_directory(fs::path(p), ec);
+    return !ec && !dir;
+}
+
+// The ONE place that decides what the info pane is looking at. See UIManager.h.
+//
+// Order matters and each step earns its place:
+//   1. a [Podcasts] row under the cursor - the podcast campaign's behaviour, kept
+//   2. any other browser row - THE SLICE-10 FIX
+//   3. a standalone playing episode - so the pane follows it from the playlist side
+//   4. the playlist: cursored row, else the playing row, else the last-known index
+//
+// THE RULE, in one sentence: when the browser has focus the pane shows the row under
+// the cursor, or says it has nothing. No exceptions, because "sometimes follows the
+// cursor and sometimes shows the playing track" is the behaviour that reads as broken.
+UIManager::InfoSubject UIManager::infoPaneSubject() const {
+    InfoSubject s;
+
+    if (in_podcasts_ && focus_ == Pane::DirBrowser && dir_cursor_ >= 1) {
+        if (in_podcast_feed_ && dir_cursor_ - 1 < (int)podcast_episodes_.size()) {
+            const PodcastEpisode& ep = podcast_episodes_[(size_t)(dir_cursor_ - 1)];
+            s.source        = InfoSource::Podcast;
+            s.path          = episodeCacheFile(podcast_feed_url_, ep);   // ASCII-safe
+            s.display_title = sanitizeForDisplay(ep.title);
+            s.duration_sec  = (int)ep.duration_sec;
+            return s;
+        }
+        if (!in_podcast_feed_ && dir_cursor_ - 1 < (int)config_.podcast_feeds.size()) {
+            const std::string& furl = config_.podcast_feeds[(size_t)(dir_cursor_ - 1)];
+            const std::string title = config_.podcastFeedTitle(furl);
+            s.source        = InfoSource::Podcast;
+            s.path          = pathSafeAscii(furl);   // pseudo-path; never a real file
+            s.display_title = sanitizeForDisplay(title.empty() ? furl : title);
+            return s;                                // a feed row: art and title, no file
+        }
+    }
+
+    if (focus_ == Pane::DirBrowser) {
+        if (browserRowIsFile(dir_cursor_)) {
+            s.source = InfoSource::Browser;
+            s.path   = browserEntryPath(dir_cursor_);
+            s.display_title = (dir_cursor_ >= 0 && dir_cursor_ < (int)dir_display_.size())
+                            ? dir_display_[(size_t)dir_cursor_] : s.path;
+            return s;
+        }
+        return s;                           // source stays None: an honest empty state
+    }
+
+    if (isPlayingPodcast() && audio_.state() != PlaybackState::Stopped
+        && !(focus_ == Pane::Playlist && pl_cursor_ < (int)playlist_.size())) {
+        s.source        = InfoSource::Podcast;
+        s.path          = podcast_playing_path_;
+        s.display_title = audio_.currentTrack().title;
+        s.duration_sec  = audio_.currentTrack().duration_sec;
+        return s;
+    }
+
+    if (playlist_.empty()) return s;
+    std::size_t idx;
+    if (focus_ == Pane::Playlist && pl_cursor_ < (int)playlist_.size()) idx = (std::size_t)pl_cursor_;
+    else if (auto r = nowPlayingRow())                                  idx = *r;
+    else                                                                idx = playlist_.current();
+    if (idx >= playlist_.size()) idx = playlist_.size() - 1;   // defensive, as before
+    s.source        = InfoSource::Playlist;
+    s.pl_index      = idx;
+    s.path          = playlist_.at(idx).path;
+    s.display_title = playlist_.at(idx).display_title;
+    s.duration_sec  = playlist_.at(idx).duration_sec;
+    return s;
+}
+
 // ─── [Podcasts] section (slice 2) ────────────────────────────────────────────
 
 // Format one episode row: "Title  (YYYY-MM-DD, H:MM:SS)". Date derived from the
@@ -9836,10 +9995,15 @@ void UIManager::showLibraryArtists() {
         return;
     }
 
-    const std::vector<std::string> rows = libidx::artists(library_index_);
+    // Slice 10: the genre filter, if one is active. libidx::artists falls straight
+    // through to the unfiltered form on an empty genre, so there is one call here
+    // rather than a branch that could drift.
+    const std::vector<std::string> rows = libidx::artists(library_index_, lib_nav_.genre);
     if (rows.empty()) {
         dir_entries_.push_back("");
-        dir_display_.push_back("No audio found under " +
+        dir_display_.push_back(!lib_nav_.genre.empty()
+            ? ("No artists in " + sanitizeForDisplay(lib_nav_.genre))
+            : "No audio found under " +
                                sanitizeForDisplay(library_index_.root.empty()
                                                   ? CDRipper::musicRoot() : library_index_.root));
         dir_cursor_ = 0; dir_scroll_ = 0;
@@ -9875,7 +10039,7 @@ void UIManager::showLibraryAlbums() {
     dir_entries_.push_back("[Back]"); dir_display_.push_back("[Back]");
 
     const std::vector<std::string> rows =
-        libidx::albumsForArtist(library_index_, lib_nav_.artist);
+        libidx::albumsForArtist(library_index_, lib_nav_.artist, lib_nav_.genre);
     if (rows.empty()) {
         // Reachable without a bug: a rescan can complete while this level is open
         // and no longer carry the artist (every file by them deleted or retagged).
@@ -10044,11 +10208,115 @@ std::string UIManager::libraryRowPath() {
 // the wrong level.
 void UIManager::populateLevel() {
     switch (lib_nav_.level) {
+        case libnav::Level::Genres:  showLibraryGenres(); break;
         case libnav::Level::Artists: showLibraryArtists(); break;
         case libnav::Level::Albums:  showLibraryAlbums();  break;
         case libnav::Level::Tracks:  showLibraryTracks();  break;
         case libnav::Level::Results: showLibrarySearch();  break;
+        case libnav::Level::Stats:   showLibraryStats();   break;
     }
+}
+
+// The folded play-stat map, rebuilt only when the source changed. See the header
+// for why it is folded at all; the short version is that a byte-exact join over
+// Dos's real config matched 20 entries of 295.
+const std::unordered_map<std::string, libidx::PlayStat>& UIManager::playStats() {
+    if (play_stats_dirty_) {
+        play_stats_ = libidx::buildPlayStats(config_.track_stats);
+        play_stats_dirty_ = false;
+    }
+    return play_stats_;
+}
+
+// ─── [Library] genres (slice 10) ─────────────────────────────────────────────
+//
+// A genre row's identity is TAG TEXT, exactly like an artist or album row, so it is
+// subject to the same prohibition: nothing may build an fs::path from it. That is
+// why Genres is absent from libnav::rowIsPath.
+void UIManager::showLibraryGenres() {
+    lib_nav_.level = libnav::Level::Genres;
+    dir_entries_.clear(); dir_display_.clear();
+    dir_entries_.push_back("[Back]"); dir_display_.push_back("[Back]");
+
+    const std::vector<std::string> rows = libidx::genres(library_index_);
+    if (rows.empty()) {
+        // Honest and reachable without a bug: a collection where nothing is tagged
+        // with a genre. 679 of Dos's 2,157 records have none, so an entirely
+        // untagged collection is only more of the same.
+        dir_entries_.push_back("");
+        dir_display_.push_back("No genres tagged in this collection");
+        dir_cursor_ = 0;
+        return;
+    }
+    for (const auto& g : rows) {
+        dir_entries_.push_back(g);
+        dir_display_.push_back(sanitizeForDisplay(g));
+    }
+    const int row = libidx::restoreCursor(lib_nav_.sel_genre, rows);
+    dir_cursor_ = (row < 0) ? 0 : row + 1;
+    if (dir_cursor_ >= (int)dir_entries_.size()) dir_cursor_ = 0;
+    // No dir_scroll_ reset - see showLibraryArtists.
+}
+
+// ─── [Library] stat views (slice 10) ─────────────────────────────────────────
+//
+// Two views, one level, no new section - the same shape as Results, so every
+// operation slices 5 and AA wired works on these rows by construction.
+//
+// THE JOIN IS THE INTERESTING PART. Config::track_stats is keyed on whatever path
+// the playlist entry held at play time, and those disagree on case: MEASURED on the
+// real config, a byte-exact join matched 20 of 295 entries and 17 files held two
+// case-variant entries with their counts SPLIT between them. libidx::buildPlayStats
+// folds and SUMS them, so what is ranked here is what the file was actually played.
+// The read-side fold is this slice; normalising the stored keys is LIB-S13.
+void UIManager::showLibraryStats() {
+    lib_nav_.level = libnav::Level::Stats;
+    dir_entries_.clear(); dir_display_.clear();
+    dir_entries_.push_back("[Back]"); dir_display_.push_back("[Back]");
+    lib_result_count_.clear();
+
+    const auto& ps = playStats();
+    const bool most = (lib_nav_.stat_view == libnav::StatView::MostPlayed);
+
+    std::size_t total = 0;
+    const std::vector<libidx::LibraryTrack> rows =
+        most ? libidx::mostPlayed (library_index_, ps, kLibSearchMax, &total)
+             : libidx::neverPlayed(library_index_, ps, kLibSearchMax, &total);
+
+    if (rows.empty()) {
+        dir_entries_.push_back("");
+        dir_display_.push_back(most ? "Nothing played yet"
+                                    : "Everything here has been played");
+        dir_cursor_ = 0;
+        return;
+    }
+
+    lib_result_count_ = (total > rows.size())
+        ? ("(" + std::to_string(rows.size()) + " of " + std::to_string(total) + ")")
+        : ("(" + std::to_string(total) + ")");
+
+    int wrows = 0, wcols = 0;
+    if (win_dir_) getmaxyx(win_dir_, wrows, wcols);
+    (void)wrows;
+    const int cols = std::max(20, wcols - 4);
+
+    std::vector<std::string> ident;
+    ident.reserve(rows.size());
+    for (const libidx::LibraryTrack& t : rows) {
+        dir_entries_.push_back(t.path);                  // IDENTITY: the real path
+        // Most-played leads with the count, because the count is why the row is in
+        // the list. Never-played has no count worth showing and is the ordinary
+        // search row, so the two views share one builder plus a prefix.
+        dir_display_.push_back(sanitizeForDisplay(
+            most ? libnav::statRowLabel(t, cols, libidx::lookupPlayStat(ps, t.path).play_count,
+                                        &library_index_)
+                 : libnav::searchRowLabel(t, cols, &library_index_)));
+        ident.push_back(t.path);
+    }
+    const int row = libidx::restoreCursor(lib_nav_.sel_track, ident);
+    dir_cursor_ = (row < 0) ? 0 : row + 1;
+    if (dir_cursor_ >= (int)dir_entries_.size()) dir_cursor_ = 0;
+    // No dir_scroll_ reset - see showLibraryArtists.
 }
 
 // Whole-collection search results as a browser level (slice 7).
@@ -10096,7 +10364,9 @@ void UIManager::showLibrarySearch() {
     ident.reserve(rows.size());
     for (const libidx::LibraryTrack& t : rows) {
         dir_entries_.push_back(t.path);                  // IDENTITY: the real path
-        dir_display_.push_back(sanitizeForDisplay(libnav::searchRowLabel(t, cols)));
+        // Index-aware since slice 10: a compilation track with no artist tag now shows
+        // `Various Artists` here rather than the raw album-artist string.
+        dir_display_.push_back(sanitizeForDisplay(libnav::searchRowLabel(t, cols, &library_index_)));
         ident.push_back(t.path);
     }
     const int row = libidx::restoreCursor(lib_nav_.sel_track, ident);

@@ -360,6 +360,95 @@ inline void sortUniqueCI(std::vector<std::string>& v) {
             v.end());
 }
 
+// ── Genre splitting (slice 10) ──────────────────────────────────────────────
+//
+// One track can carry several genres in one tag, and on the reference collection
+// that is the ENTIRE shape of the mess: 35 distinct raw strings over 1,478 tagged
+// records, with ZERO case variants. The separators are `/` and `;`.
+//
+// COMMAS AND HYPHENS ARE DELIBERATELY NOT SEPARATORS, and each has a real record
+// behind it:
+//   `Rock / Folk, World, & Country`  splitting commas leaves a dangling `& Country`
+//   `Hip-Hop / Rap`                  splitting hyphens leaves `Hip` and `Hop`
+// So `Pop-Rock` (12 records) stays its own genre, and `Post Punk` (5) and
+// `Post-Punk` (2) stay two. Both are STATED IMPERFECTIONS rather than oversights:
+// any rule that merged them would break `Hip-Hop`, which is 49 records and seven
+// times as common. `R&B` (38) and `Stage & Screen` (12) survive for the same
+// reason - `&` is not a separator either.
+//
+// Parts are trimmed, so the spacing variants in the wild (`Pop/Rock`,
+// `Pop / Rock`, `Rock / Funk  /  Soul` with doubled spaces) all land on the same
+// genres without a special case. Empty parts are dropped, so a trailing separator
+// contributes nothing.
+//
+// MEASURED: on the real 2,157-record index this turns 35 raw strings into 27
+// genres, and rolls 748 raw `Rock` up to 979.
+inline std::vector<std::string> splitGenres(const std::string& g) {
+    std::vector<std::string> out;
+    std::size_t i = 0;
+    while (i <= g.size()) {
+        std::size_t j = i;
+        while (j < g.size() && g[j] != '/' && g[j] != ';') ++j;
+        std::size_t b = i, e = j;
+        while (b < e && (unsigned char)g[b] <= ' ') ++b;      // trim left
+        while (e > b && (unsigned char)g[e - 1] <= ' ') --e;  // trim right
+        if (e > b) out.push_back(g.substr(b, e - b));
+        if (j >= g.size()) break;
+        i = j + 1;
+    }
+    return out;
+}
+
+// Does this track carry `genre` among its (split) genres? Case-insensitive, so it
+// matches how genres() dedups and how every other identity compare in this file works.
+inline bool trackHasGenre(const std::string& tag, const std::string& genre) {
+    if (genre.empty()) return false;
+    for (const std::string& g : splitGenres(tag))
+        if (icmp(g, genre) == 0) return true;
+    return false;
+}
+
+// ── The play-stat join key (slice 10) ───────────────────────────────────────
+//
+// MEASURED ON DOS'S REAL FILES, and this is why the function exists rather than a
+// bare string compare. Config::recordPlay keys track_stats on whatever path the
+// PLAYLIST ENTRY held at play time, and those come from the folder browser, a
+// loaded .m3u, a favourite, a bookmark - which do not agree on case. Of 295 real
+// stat entries, 241 have a lowercase drive letter and 54 an uppercase one, while
+// every index path comes from the OS walk and is uppercase.
+//
+//   byte-exact join  -> 20 of 295 matched, "never played" reads 99.1%
+//   case-folded join -> 236 of 295 matched, "never played" reads 89.1%
+//
+// BOTH of those would have passed a glance, which is the LIB-S8 fixture lesson
+// landing on the product instead of a fixture.
+//
+// WINDOWS ONLY. NTFS is case-insensitive, so two paths differing only in case name
+// one file and folding is what "same file" MEANS there. Linux paths are
+// case-sensitive and two such paths may be two different files, so folding there
+// would merge them and invent play counts. This is a filesystem property, not a
+// preference.
+//
+// Separators are normalised too: the same file reached as `a/b` and `a\b` is one
+// file on Windows.
+//
+// This is a READ-SIDE fold. It does not touch the stored keys - normalising those
+// and merging the 17 real split pairs mutates persisted user data and is LIB-S13.
+inline std::string foldPathKey(const std::string& p) {
+#ifdef _WIN32
+    std::string o;
+    o.reserve(p.size());
+    for (char c : p) {
+        unsigned char u = (unsigned char)c;
+        if (c == '/') { o.push_back('\\'); continue; }
+        o.push_back((u < 0x80 && u >= 'A' && u <= 'Z') ? (char)(u - 'A' + 'a') : c);
+    }
+    return o;
+#else
+    return p;
+#endif
+}
+
 } // namespace detail
 
 // ── The grouping seam ───────────────────────────────────────────────────────
@@ -640,12 +729,88 @@ inline std::vector<std::string> artists(const LibraryIndex& idx) {
     return out;
 }
 
+// Every distinct genre in the collection, split and folded (slice 10).
+//
+// Dedup-first from birth rather than shipping the shape slice 8 had to fix: this
+// does strictly more work per record than artists() - a split per record, not one
+// push - so it is the one query where sorting one entry per TRACK would hurt most.
+//
+// An untagged track contributes nothing and gets NO synthetic "(no genre)" row.
+// 679 of 2,157 records here are untagged: a bucket holding a third of the
+// collection, under a name that is not a genre, would be the largest row in the
+// list. Those tracks stay reachable by artist, album and search, which is where
+// someone looks for them.
+inline std::vector<std::string> genres(const LibraryIndex& idx) {
+    std::unordered_set<std::string> seen;
+    seen.reserve(64);
+    std::vector<std::string> out;
+    for (const LibraryTrack& t : idx.tracks) {
+        if (t.genre.empty()) continue;
+        for (std::string& g : detail::splitGenres(t.genre))
+            if (seen.insert(g).second) out.push_back(std::move(g));
+    }
+    // sortUniqueCI, not a plain sort: the hash set dedups by BYTES, so a future
+    // `rock` alongside `Rock` must still collapse to one row. This collection has
+    // no case variants today; that is measured, not assumed to continue.
+    detail::sortUniqueCI(out);
+    return out;
+}
+
+// The artist list RESTRICTED to one genre (slice 10).
+//
+// A genre is one new LEVEL plus this filter, rather than a parallel hierarchy: the
+// album and track levels beneath inherit the filter through libnav::State, so
+// `Genres -> Artists -> Albums -> Tracks` reuses three levels that already exist.
+//
+// Still routed through groupingArtist, so a compilation stays ONE `Various Artists`
+// row inside a genre exactly as it does outside one. That is the slice-1 seam doing
+// its job for the fourth time.
+inline std::vector<std::string> artists(const LibraryIndex& idx,
+                                        const std::string& genre) {
+    if (genre.empty()) return artists(idx);
+    std::unordered_set<std::string> seen;
+    std::vector<std::string> out;
+    for (const LibraryTrack& t : idx.tracks) {
+        if (!detail::trackHasGenre(t.genre, genre)) continue;
+        const std::string& a = groupingArtist(idx, t);
+        if (seen.insert(a).second) out.push_back(a);
+    }
+    detail::sortUniqueCI(out);
+    return out;
+}
+
 inline std::vector<std::string> albumsForArtist(const LibraryIndex& idx,
                                                 const std::string& artist) {
     std::unordered_set<std::string> seen;
     std::vector<std::string> out;
     for (const LibraryTrack& t : idx.tracks)
         if (detail::icmp(groupingArtist(idx, t), artist) == 0 && seen.insert(t.album).second)
+            out.push_back(t.album);
+    detail::sortUniqueCI(out);
+    return out;
+}
+
+// The album list restricted to a genre (slice 10). An album is shown when AT LEAST
+// ONE of its tracks carries the genre - not when all of them do, because a single
+// untagged track would otherwise hide the album the user came looking for.
+//
+// THE FILTER STOPS HERE. Level 3 shows the WHOLE album, unfiltered, and that is
+// deliberate on two grounds. An album is the unit a listener thinks in, so showing
+// eleven of fourteen tracks because three are tagged differently is worse than
+// showing three tracks that are not strictly the genre. And libnav::albumTracks is
+// the ONE ordering function, shared with the album append since LIB-AA - filtering
+// it here would either make the drawn order diverge from the appended order or
+// force a second filtered path, which is the two-lists defect again.
+inline std::vector<std::string> albumsForArtist(const LibraryIndex& idx,
+                                                const std::string& artist,
+                                                const std::string& genre) {
+    if (genre.empty()) return albumsForArtist(idx, artist);
+    std::unordered_set<std::string> seen;
+    std::vector<std::string> out;
+    for (const LibraryTrack& t : idx.tracks)
+        if (detail::icmp(groupingArtist(idx, t), artist) == 0
+            && detail::trackHasGenre(t.genre, genre)
+            && seen.insert(t.album).second)
             out.push_back(t.album);
     detail::sortUniqueCI(out);
     return out;
@@ -790,6 +955,110 @@ inline std::vector<LibraryTrack> search(const LibraryIndex& idx,
 
     out.reserve(n);
     for (std::size_t k = 0; k < n; ++k) out.push_back(idx.tracks[hits[k]]);
+    return out;
+}
+
+// ── Play statistics (slice 10) ──────────────────────────────────────────────
+//
+// The two stat views join the index against Config::track_stats AT QUERY TIME.
+// Nothing is copied into the index and no play data is stored here: Config stays
+// the one source of what has been played, the index stays the one description of
+// what exists. That was slice 1's decision and it holds.
+//
+// The join goes through a FOLDED map the caller builds once, rather than a lookup
+// per record against the raw one, for two reasons that are the same reason: see
+// detail::foldPathKey. A byte-exact join finds 20 of 295 real entries, and 17 real
+// files hold TWO entries differing only in case whose counts are split between them
+// (`One of Us` is 73 + 22 = 95). Building the folded map SUMS those, so the count a
+// view ranks on is the count the file actually has.
+
+// A track's play record, aggregated. Deliberately not Config's TrackStats: this
+// header is pure and links into a test with nothing else, so it cannot include
+// Config.h. buildPlayStats is a template for exactly that reason.
+struct PlayStat {
+    int64_t play_count  = 0;
+    int64_t last_played = 0;
+};
+
+// Fold Config's track_stats into a join-ready map, SUMMING entries whose paths
+// differ only in case (Windows) and keeping the most recent last_played.
+//
+// Templated on the source map so this file gains no dependency on Config. Any map
+// of path -> { .play_count, .last_played } works.
+template <class StatMap>
+inline std::unordered_map<std::string, PlayStat> buildPlayStats(const StatMap& src) {
+    std::unordered_map<std::string, PlayStat> out;
+    out.reserve(src.size());
+    for (const auto& kv : src) {
+        PlayStat& p = out[detail::foldPathKey(kv.first)];
+        p.play_count += (int64_t)kv.second.play_count;         // AGGREGATE, not overwrite
+        const int64_t lp = (int64_t)kv.second.last_played;
+        if (lp > p.last_played) p.last_played = lp;
+    }
+    return out;
+}
+
+// One track's aggregated play record, or a zeroed one when it has never played.
+// The info pane reads this too, so the number it prints and the number the
+// most-played view ranks on cannot disagree.
+inline PlayStat lookupPlayStat(const std::unordered_map<std::string, PlayStat>& ps,
+                               const std::string& path) {
+    const auto it = ps.find(detail::foldPathKey(path));
+    return (it == ps.end()) ? PlayStat{} : it->second;
+}
+
+// Most played, count descending. `total_out` receives the TRUE count before the cap,
+// the LIB-S7 idiom, so a capped view can say "500 of 1921" rather than understate.
+//
+// The order is TOTAL - count, then last_played, then path - so a repopulate cannot
+// shuffle rows that tie. Records BY VALUE: no subscript escapes, as since slice 1.
+inline std::vector<LibraryTrack> mostPlayed(const LibraryIndex& idx,
+                                            const std::unordered_map<std::string, PlayStat>& ps,
+                                            std::size_t limit,
+                                            std::size_t* total_out = nullptr) {
+    std::vector<std::size_t> hits;
+    for (std::size_t i = 0; i < idx.tracks.size(); ++i)
+        if (lookupPlayStat(ps, idx.tracks[i].path).play_count > 0) hits.push_back(i);
+
+    if (total_out) *total_out = hits.size();
+
+    const auto by_plays = [&](std::size_t a, std::size_t b) {
+        const PlayStat pa = lookupPlayStat(ps, idx.tracks[a].path);
+        const PlayStat pb = lookupPlayStat(ps, idx.tracks[b].path);
+        if (pa.play_count  != pb.play_count)  return pa.play_count  > pb.play_count;
+        if (pa.last_played != pb.last_played) return pa.last_played > pb.last_played;
+        return idx.tracks[a].path < idx.tracks[b].path;
+    };
+    const std::size_t n = (limit && hits.size() > limit) ? limit : hits.size();
+    // partial_sort for the same reason search() uses it: only the first n are ever
+    // returned, and sorting the rest is work whose result is discarded.
+    if (n < hits.size())
+        std::partial_sort(hits.begin(), hits.begin() + (std::ptrdiff_t)n, hits.end(), by_plays);
+    else
+        std::sort(hits.begin(), hits.end(), by_plays);
+
+    std::vector<LibraryTrack> out;
+    out.reserve(n);
+    for (std::size_t k = 0; k < n; ++k) out.push_back(idx.tracks[hits[k]]);
+    return out;
+}
+
+// Never played: indexed tracks with no stat entry, or one whose count is zero.
+//
+// ~89% of the reference collection, which is why it takes the LIB-S7 cap rather
+// than building 1,921 rows nobody scrolls. Index order, which is already total.
+inline std::vector<LibraryTrack> neverPlayed(const LibraryIndex& idx,
+                                             const std::unordered_map<std::string, PlayStat>& ps,
+                                             std::size_t limit,
+                                             std::size_t* total_out = nullptr) {
+    std::size_t total = 0;
+    std::vector<LibraryTrack> out;
+    for (const LibraryTrack& t : idx.tracks) {
+        if (lookupPlayStat(ps, t.path).play_count > 0) continue;
+        ++total;
+        if (!limit || out.size() < limit) out.push_back(t);
+    }
+    if (total_out) *total_out = total;
     return out;
 }
 

@@ -20,8 +20,20 @@ once it holds.
 has **no dependency beyond the standard library**, so the test compiles the header and
 links nothing at all.
 
-Split trigger, inherited from `PodcastFeed.h`: it moves to a `.cpp` when a second product
-TU needs it. Slice 3 will be the first. Flagged, not pre-empted.
+**Split trigger - CORRECTED at LIB-S3.** This originally read, inherited from
+`PodcastFeed.h`: "it moves to a `.cpp` when a second product TU needs it", and named slice 3
+as the trip point. Slice 3 arrived, and the trigger was **not** taken, because the condition
+as worded over-fires.
+
+The real condition is **non-inline definitions**, not translation-unit count. Every function
+in this header is `inline`, so any number of TUs may include it with no ODR problem and no
+duplicate symbols; the only cost of a second includer is parsing the file again, which is
+noise. The rule that matters: **split when something in here stops being `inline`** - a
+non-inline function, a non-`inline` variable with external linkage, or a static member
+needing a definition. Until then, TU count is not a reason to move anything.
+
+Recorded so the corrected condition is what slice 4 reads, rather than the original wording
+firing a second time.
 
 Defensive contract, inherited verbatim: never crash, never throw, never hang. A malformed
 file degrades to fewer records, ultimately to an empty index the caller reports as an

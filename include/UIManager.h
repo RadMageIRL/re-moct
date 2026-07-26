@@ -17,6 +17,7 @@
 #include "PodcastFeed.h"    // podcasts slice 2: PodcastEpisode/PodcastFeed for the [Podcasts] section
 #include "PodcastClient.h"  // podcasts slice 2: the async feed fetch result type
 #include "PodcastIndex.h"   // podcasts slice 6: Podcast Index byterm search result types
+#include "LibraryScanner.h" // library slice 3: the [Library] index + its off-thread scanner
 #include <cstdint>          // podcasts slice 3: uint64_t/int32_t download-progress + cancel state
 #include <deque>            // podcasts slice 4: the download queue
 #include "LastFm.h"
@@ -630,6 +631,39 @@ private:
     bool in_podcast_feed_ = false;
     bool in_podcastindex_search_ = false;  // slice 6: showing Podcast Index results at level 1
     std::string podcast_feed_url_;       // the feed whose episodes are shown at level 2
+
+    // ── [Library] (library slice 3) ─────────────────────────────────────────
+    // ONE flag, because every exclusion chain in this file is a conjunction of
+    // !in_X_ and a library section has to appear in them or it inherits
+    // file-browser behaviour. The LEVELS are not flags: they live in the
+    // library-only descriptor below, so slice 4 adds depth by extending LibLevel
+    // and one switch rather than by adding in_library_album_ / in_library_track_.
+    //
+    // WHY THE EXCLUSION-CHAIN EDITS ARE CORRECTNESS WORK, NOT BOOKKEEPING: rows
+    // here are ARTIST STRINGS FROM TAGS, and several existing sites build an
+    // fs::path out of a dir_entries_ value. Tag text may be raw Latin-1, and an
+    // fs::path built from invalid UTF-8 throws on Windows - site 2992 does it in
+    // the DRAW LOOP, which is the slice-5 crash exactly. Every such site is
+    // guarded with !in_library_.
+    enum class LibLevel { Artists, Albums, Tracks };   // slice 3 uses Artists only
+    bool        in_library_ = false;
+    LibLevel    lib_level_  = LibLevel::Artists;
+    std::string lib_artist_;      // selection that led to the current level (slice 4)
+    std::string lib_album_;       // ditto (slice 4)
+    // The remembered IDENTITY of the selected row - never an index. This is the
+    // staleness answer: query results are consumed inside one populate call and
+    // never survive a frame, so a rebuild cannot leave a stale subscript behind.
+    // libidx::restoreCursor puts the cursor back by name after a repopulate.
+    std::string lib_selected_;
+    libidx::LibraryIndex  library_index_;
+    libidx::LibraryScanner library_scanner_;
+    bool        lib_scan_running_   = false;
+    // Set when the user cancels a scan. The NEXT entry into [Library] shows the
+    // cancelled state and clears this, arming a retry; the entry after that
+    // scans. Without it, cancelling a 15.8 s scan and reopening the section would
+    // immediately restart it - the section fighting the user.
+    bool        lib_scan_cancelled_ = false;
+    std::string lib_status_;      // honest in-progress / empty / cancelled line
     // Chapter table for the currently playing book (empty if none / not a book).
     std::vector<Mp4Chapter> current_chapters_;
     std::string             chapters_for_path_;   // path current_chapters_ reflects
@@ -740,6 +774,11 @@ private:
     // fetch expires on its own instead of inheriting the pin. Cleared on pickup.
     std::string           podcast_fetch_pin_;
     void startPodcastFetch(const std::string& url, PodcastFetchPurpose purpose);
+    // ── [Library] (slice 3) ──
+    void enterLibrarySection();     // enter [Library]: load the index, or start the first scan
+    void showLibraryArtists();      // (re)populate dir_entries_/dir_display_ at level 1
+    void pollLibraryScan();         // UI thread, per-frame: install a finished scan
+
     void pollPodcastFetch();        // UI thread, per-frame: install a finished fetch
     void enterPodcastSection();     // enter [Podcasts]: build the level-1 feed list
     void showPodcastFeedList();     // (re)populate dir_entries_/dir_display_ at level 1

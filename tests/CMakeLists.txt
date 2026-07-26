@@ -166,6 +166,18 @@ add_test(NAME podcast_chapters_test COMMAND podcast_chapters_test)
 # resolves to nothing. Includes a MEASURED scale pass (real 2773, synthetic
 # 100k), printed rather than asserted as a promised number. Device-free, both
 # matrix jobs.
+# browser-pins - the browser's pinned-row order, asserted rather than read. The
+# order used to live in two hand-maintained lists (refreshDir's pushes and the
+# sort comparator) that had to agree; [Library] was added to one and not the
+# other, sorted as an ordinary file, and rendered at the bottom of the pane -
+# a hardware-gate failure whose insert had been correct all along. One list now,
+# and this is what keeps it one: the exact rendered sequence, the strict-weak-
+# ordering contract the old chain violated, and a full sort reproducing it.
+# Header-only, pure, both matrix jobs.
+add_executable(browser_pins_test browser_pins_test.cpp)
+target_include_directories(browser_pins_test PRIVATE ${CMAKE_SOURCE_DIR}/include)
+add_test(NAME browser_pins_test COMMAND browser_pins_test)
+
 add_executable(library_index_test library_index_test.cpp)
 target_include_directories(library_index_test PRIVATE
     ${CMAKE_SOURCE_DIR}/include)

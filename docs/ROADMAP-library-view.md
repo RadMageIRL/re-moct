@@ -1,11 +1,30 @@
 # ROADMAP - Library view (core module, config-toggled)
 
-Status: **BANKED, POST-HTOA. Not scheduled, not a green light to build.**
-Written 2026-07-25 against tip `6d40021` / main `ef1676a` (v1.4.1 released).
+Status: **IN PROGRESS - this is CURRENT WORK, shipping as 1.5.0.**
+Written 2026-07-25 as a banked candidate; promoted to current work on 2026-07-26.
+HTOA does not preempt it, and HTOA's release number is undetermined.
 
-Two questions this document raised are now **closed by Dos's decisions of 2026-07-25**: the
+**Progress: slices 1, 2 and 3 are built and gated. Slice 3 passed on hardware.**
+
+| slice | state |
+|---|---|
+| 1 - index format + hierarchy queries | shipped, `c6287ee` |
+| 2 - scanner + mtime revalidation + cancel | shipped, `5152b46` |
+| 3 - `[Library]` section, level 1 | built and hardware-gated; UNCOMMITTED |
+| pinned-row consolidation (unplanned, inserted before slice 4) | built; UNCOMMITTED |
+| 4 - levels 2-3 | next |
+
+Two questions this document raised were **closed by Dos's decisions of 2026-07-25**: the
 fork in section 8 is resolved to (b) with the hedge, and Enter on a library track row
-appends to the playlist (section 5). Both are marked in place. Nothing else has changed.
+appends to the playlist (section 5). Both are marked in place.
+
+**One slice was added that this plan did not anticipate.** Slice 3's hardware gate failed
+on row placement: `[Library]` was pushed into the pane correctly and then the SORT moved
+it to the bottom, because the comparator kept its own hand-maintained copy of the pinned
+order and nobody had added the new row to it. The fix was one pin; the lesson was that the
+order lived in two lists that had to agree. `include/BrowserPins.h` now holds it once, both
+readers consume it, and `browser_pins_test` asserts the rendered sequence. Sequenced before
+slice 4 deliberately - slice 4 adds section surface on top of that structure.
 
 Design of record for the capability question: recon debrief `library/recon-abi-capability`.
 Its verdict is settled and is not re-derived here: the plugin ABI is an audio-source
@@ -315,7 +334,17 @@ scale genuinely want their own slice rather than riding slice 4.
 | 1 | Index format + hierarchy queries (pure, header-inline) | Riskiest, and fully provable with no UI, no device, no seam |
 | 2 | Background scanner + mtime revalidation + cancel | Needs slice 1's format; proven async idiom; still no UI |
 | 3 | `[Library]` section, level 1 (artists) | First user-visible slice; pays the section-flag tax once |
+| 3b | Pinned-row consolidation (unplanned - see the header) | The section-flag tax proved fragile; consolidate before adding more |
 | 4 | Levels 2-3 (albums, tracks) + `[Back]`/Left | Extends slice 3; the `in_podcast_feed_` pattern at depth |
+
+**What slice 3 actually cost, measured rather than estimated.** The plan called the
+seventh-flag tax "a known pattern written six times". It is not: of roughly 25 branch
+sites, **six were crash-or-corruption**, because existing code builds `fs::path` out of
+`dir_entries_` values and a library row is an artist string from a tag, which may be raw
+Latin-1. The worst is in the DRAW LOOP, where it would throw every frame. The exclusion
+chains are correctness work. This does not reverse the fork - path (a) would have put six
+shipped sections at that risk instead of confining it to new code - but slice 4 should
+budget for it rather than expecting bookkeeping.
 
 **Slice 3 inherits one open question from slice 1** (design of record:
 `docs/library-index-plan.md` section 8). `tracksForAlbum` returns indices into the index,

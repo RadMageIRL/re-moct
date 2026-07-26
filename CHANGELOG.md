@@ -7,8 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [1.5.0] - Unreleased
 
+### Added
+
+- A `[Library]` section in the browser, listing every artist in your music
+  folder regardless of how the folders are arranged. RE-MOCT stays a folder
+  player - the directory browser is unchanged and still where everything
+  starts - and this sits beside it for the times you know the artist and not
+  the folder. Opening it the first time reads the tags of everything under your
+  music folder, which takes a little while and shows its progress as it goes;
+  after that it opens instantly, and it only re-reads files that have actually
+  changed. Choosing an artist does nothing yet - albums and tracks arrive next.
+
 ### Fixed
 
+- `[Drives]` now has a `[Back]` row, and the left arrow leaves it, the way every
+  other section already worked. It was the one section with no way out: there is
+  no parent directory to rise to from a list of drives, so the left arrow did
+  nothing there, and the only exits were opening a drive or jumping sideways
+  into another section. Whichever folder you were browsing when you opened it
+  was simply unreachable again. Both now return you to it.
 - Opening an older playlist no longer closes RE-MOCT. A .m3u or .pls written
   years ago, or by another program, stores its text in the Windows ANSI encoding
   rather than UTF-8, so an accented or punctuated filename inside it is not

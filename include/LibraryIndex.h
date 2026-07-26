@@ -372,6 +372,28 @@ inline ParseResult parseIndex(const std::string& text) {
 // group rather than dropped — losing tracks silently would be worse. What that
 // row is LABELLED is the UI's call in slices 3-4.
 
+// ── Surviving a rebuild ─────────────────────────────────────────────────────
+// THE STALENESS ANSWER, and the reason no generation counter is needed: the UI
+// remembers the IDENTITY it had selected - an artist name here, a path for a
+// track row later - and never an index into anything. Query results are consumed
+// inside one populate call and never survive a frame, so a rebuild underneath a
+// live selection cannot leave a stale subscript behind; there is nothing to
+// invalidate. After repopulating, the caller asks this where the cursor goes.
+//
+// Returns the row matching `remembered` (case-insensitively, the same fold the
+// lists are built with), or the nearest valid row when it has gone: 0 for a
+// non-empty list, and -1 only for an empty one, which the caller renders as its
+// own empty state rather than a selection.
+inline int restoreCursor(const std::string& remembered,
+                         const std::vector<std::string>& rows) {
+    if (rows.empty()) return -1;
+    if (!remembered.empty()) {
+        for (std::size_t i = 0; i < rows.size(); ++i)
+            if (detail::icmp(rows[i], remembered) == 0) return static_cast<int>(i);
+    }
+    return 0;
+}
+
 inline std::vector<std::string> artists(const LibraryIndex& idx) {
     std::vector<std::string> out;
     out.reserve(idx.tracks.size());

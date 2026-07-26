@@ -65,6 +65,7 @@ set(REMOCT_SOURCES
     src/UIManager.cpp
     src/AudioManager.cpp
     src/PlaylistManager.cpp
+    src/LibraryScanner.cpp        # library slice 3: the [Library] section now drives it
     src/Config.cpp
     src/LrcData.cpp
     src/CDSource.cpp

@@ -296,6 +296,58 @@ static void test_scale(std::size_t n, const char* label) {
     (void)arts;
 }
 
+// ── restoreCursor: the staleness answer, proven without curses ──────────────
+// The UI remembers the artist NAME it had selected, never a subscript, so a scan
+// landing underneath a live selection re-seats on the same artist rather than on
+// whatever row that index now happens to be. These are the cases that matters in.
+static void test_restore_cursor() {
+    const std::vector<std::string> rows = {"", "Beatles", "Cyndi Lauper", "UB40"};
+
+    CHECK(restoreCursor("Beatles", rows) == 1,      "found -> its row");
+    CHECK(restoreCursor("UB40", rows) == 3,         "found -> last row");
+    CHECK(restoreCursor("BEATLES", rows) == 1,      "case-insensitive, same fold as the list");
+    CHECK(restoreCursor("beatles", rows) == 1,      "duplicate-by-case resolves to one row");
+    CHECK(restoreCursor("", rows) == 0,             "empty remembered -> first row, not the empty artist by luck");
+    CHECK(restoreCursor("Gone Band", rows) == 0,    "artist deleted by a rescan -> clamp to a valid row");
+    CHECK(restoreCursor("Beatles", {}) == -1,       "empty list -> -1, caller renders its own empty state");
+    CHECK(restoreCursor("", {}) == -1,              "empty list, nothing remembered -> -1");
+
+    // The whole point: a REBUILD must not move the selection off the artist.
+    // "" and "New Band" appear/disappear around it, so "Beatles" slides 1 -> 0.
+    std::vector<std::string> after = {"Beatles", "Cyndi Lauper", "New Band", "UB40"};
+    const int before_row = restoreCursor("Beatles", rows);
+    const int after_row  = restoreCursor("Beatles", after);
+    CHECK(before_row == 1 && after_row == 0,
+          "the subscript genuinely moved (%d -> %d)", before_row, after_row);
+    CHECK(after[(size_t)after_row] == "Beatles", "but the SELECTION survived the rebuild");
+    CHECK(rows[(size_t)before_row] == after[(size_t)after_row],
+          "same artist under the cursor before and after");
+}
+
+// ── A Latin-1 artist tag must survive the index, not crash it ───────────────
+// Planted rather than hoped for: this is the exact payload the [Library] section's
+// exclusion chains exist to survive, and "the real collection probably has one"
+// is not a gate. Tag text is display text and never becomes a path.
+static void test_latin1_artist_survives() {
+    LibraryIndex idx;
+    idx.root = "/m";
+    LibraryTrack t = mk("/m/a.flac", "Bj\xF6rk", "Post", "Army of Me");  // raw 0xF6, invalid UTF-8
+    idx.tracks.push_back(t);
+    LibraryTrack t2 = mk("/m/b.flac", "caf\xC3\xA9 tacvba", "Re", "El Ciclon");  // valid UTF-8
+    idx.tracks.push_back(t2);
+
+    auto r = parseIndex(serialiseIndex(idx));
+    CHECK(r.ok && r.index.tracks.size() == 2, "both survive the format");
+    if (r.index.tracks.size() == 2)
+        CHECK(r.index.tracks[0].artist == "Bj\xF6rk", "raw Latin-1 artist round-trips byte-exact");
+
+    auto a = artists(r.index);
+    CHECK(a.size() == 2, "both artists listed (%zu)", a.size());
+    // The query surface must not care that one of them is not valid UTF-8.
+    CHECK(!albumsForArtist(r.index, "Bj\xF6rk").empty(), "albums resolve for a Latin-1 artist");
+    CHECK(restoreCursor("Bj\xF6rk", a) >= 0, "cursor restores onto a Latin-1 artist");
+}
+
 int main() {
     test_roundtrip_basic();
     test_roundtrip_hostile_fields();
@@ -306,6 +358,8 @@ int main() {
     test_grouping_artist();
     test_queries();
     test_untagged_ordering();
+    test_restore_cursor();
+    test_latin1_artist_survives();
     test_scale(2773,   "real");       // the measured collection: 2155 + 618
     test_scale(100000, "headroom");   // synthetic, an order of magnitude beyond
 

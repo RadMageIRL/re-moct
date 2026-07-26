@@ -22,8 +22,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   album you are inside. Tracks are ordered by disc and track number, falling
   back to the filename for rips that were never tagged, and albums that share a
   name between two artists stay separate. Coming back up a level puts the cursor
-  back on the row you came through rather than at the top of the list. Playing a
-  track from here arrives next.
+  back on the row you came through rather than at the top of the list.
+  A library track behaves exactly like the same file in the folder browser, so
+  everything you already know works on it: Enter adds it to the playlist and plays
+  it, `a` adds it without playing so you can walk an album picking tracks, `q`
+  queues it, `*` favourites it, `u` marks it and `x` converts it, and `;` opens its
+  chapters. The `\` search works at all three levels, artists, albums and tracks.
+  If a track has been deleted or moved since the last scan, RE-MOCT now says which
+  file is missing instead of doing nothing, because the answer is to rescan and
+  there was no way to tell that from silence.
 
 ### Fixed
 
@@ -43,6 +50,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   saved stations while still treating them as search results, so pressing Enter
   quietly did nothing at all. Two of these leftover search states were not being
   cleared; both are now.
+- The `[FAVs]` header said `f:fav/unfav`. The favourite key is `*`; `f` toggles
+  ReplayGain. The one section whose whole purpose is favourites was naming the
+  wrong key for managing them.
 - In `[Recently Played]`, the row at the top of the list is now labelled `[Back]`
   however you got there. Opening it from `[Drives]` labelled that row `[Drives]`,
   but it has always returned to the folder browser rather than to the drive list,

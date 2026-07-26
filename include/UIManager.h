@@ -782,6 +782,10 @@ private:
     // ── [Library] (slices 3-4) ──
     void enterLibrarySection();     // enter [Library]: load the index, or start the first scan
     void populateLevel();           // slice 4: dispatch to the populate for lib_nav_.level
+    // Slice 5: the level-3 row under the cursor as an ACTIONABLE path, or empty.
+    // One definition, so Enter, 'a', '*' and 'b' cannot disagree about which rows are
+    // actionable or about what to say when the index is out of date.
+    std::string libraryRowPath();
     void showLibraryArtists();      // (re)populate dir_entries_/dir_display_ at level 1
     void showLibraryAlbums();       // slice 4: level 2 - one artist's albums
     void showLibraryTracks();       // slice 4: level 3 - one album's tracks

@@ -2910,7 +2910,10 @@ void UIManager::drawDirBrowser() {
     // side effect of walking the browser up a directory.
     if (in_drive_list_)   hdr = " [Drives] (Enter:open  F12:refresh  E:eject  [Back]/Left:back) ";
     else if (in_recent_)  hdr = " [Recently Played] (Enter:play  [Back]/Left:leave) ";
-    else if (in_favs_)    hdr = " [FAVs] (f:fav/unfav  Enter:play  Del:remove  [Back]/Left:leave) ";
+    // "*:fav/unfav", not "f". This said f for as long as it has existed, but f is the
+    // ReplayGain toggle (case 'f') and the favourite toggle is case '*' - so the one
+    // section whose whole purpose is favourites named the wrong key for managing them.
+    else if (in_favs_)    hdr = " [FAVs] (*:fav/unfav  Enter:play  Del:remove  [Back]/Left:leave) ";
     else if (in_radio_) {
         // Level-aware, so the search sub-mode says where Left actually goes - it
         // returns to the saved stations, it does not leave the section.
@@ -2945,9 +2948,11 @@ void UIManager::drawDirBrowser() {
                       " (Enter:tracks  [Back]/Left:artists) ";
                 break;
             case libnav::Level::Tracks:
-                // No Enter: verb - Enter is a placeholder here until slice 5.
-                hdr = " [Library] " + clip(lib_nav_.artist, 20) + " - " +
-                      clip(lib_nav_.album, 20) + " ([Back]/Left:albums) ";
+                // Enter gained a verb in slice 5. The name budgets shrink to pay for
+                // it, because the keys are the part a user cannot guess.
+                hdr = " [Library] " + clip(lib_nav_.artist, 16) + " - " +
+                      clip(lib_nav_.album, 16) +
+                      " (Enter:play  a:add  q:queue  [Back]/Left:albums) ";
                 break;
         }
     }
@@ -7534,20 +7539,28 @@ void UIManager::handleInput(int ch) {
             PlaylistEntry qe;
             if (focus_ == Pane::Playlist && pl_cursor_ < (int)playlist_.size()) {
                 qe = playlist_.at((size_t)pl_cursor_);
-            } else if (focus_ == Pane::DirBrowser && in_library_) {
+            } else if (focus_ == Pane::DirBrowser && in_library_
+                       && !libnav::rowIsPath(lib_nav_.level)) {
                 // Levels 1-2 are artist and album NAMES - nothing queueable, and
                 // treating one as a path would reach fs::is_directory /
                 // fs::path::stem below, both of which throw on tag text that is not
-                // valid UTF-8. Level 3 rows DO carry a real path as of slice 4, and
-                // are still excluded here: queueing library tracks is slice 5, which
-                // enables them at browserEntryPath and gets its own gate.
+                // valid UTF-8. LEVEL 3 FALLS THROUGH to the branch below, where the
+                // explicit in_library_ term resolves the row without rebuilding it.
                 break;
             } else if (focus_ == Pane::DirBrowser && dir_cursor_ < (int)dir_entries_.size()) {
                 const std::string& nm = dir_entries_[(size_t)dir_cursor_];
                 // Build full path — dir_entries_ stores names, not full paths
                 std::string p;
-                if (in_recent_ || in_favs_ || in_radio_ || in_podcasts_ || fs::path(nm).is_absolute()) {
-                    p = nm;  // recent/fav/radio/podcast entries are already full paths or URLs
+                // in_library_ is listed EXPLICITLY rather than left to the
+                // is_absolute() fallback. Relying on that fallback would make levels
+                // 1-2's safety depend on a tag string happening not to look like an
+                // absolute path, which is not a property tag text has - and reaching
+                // is_absolute() at all means fs::path() has already been constructed
+                // from it, which is the throw. Only level 3 gets here (see above), and
+                // its identity is already the full path.
+                if (in_recent_ || in_favs_ || in_radio_ || in_podcasts_ || in_library_
+                    || fs::path(nm).is_absolute()) {
+                    p = nm;  // recent/fav/radio/podcast/library rows are already full paths or URLs
                 } else {
                     p = (fs::path(current_dir_) / nm).string();
                 }
@@ -7653,6 +7666,11 @@ void UIManager::handleInput(int ch) {
             } else if (focus_ == Pane::DirBrowser && in_favs_
                        && dir_cursor_ < (int)dir_entries_.size()) {
                 fav_path = dir_entries_[(size_t)dir_cursor_];
+            } else if (focus_ == Pane::DirBrowser && in_library_) {
+                // A level-3 library row is a path, so favouriting it is the obvious
+                // motion once you have found something by artist. Empty above level 3,
+                // where the row is tag text. The shared checks below still apply.
+                fav_path = libraryRowPath();
             } else if (focus_ == Pane::DirBrowser
                        && dir_cursor_ < (int)dir_entries_.size()
                        && !in_drive_list_ && !in_recent_ && !in_favs_ && !in_radio_ && !in_podcasts_ && !in_books_ && !in_library_) {
@@ -7754,12 +7772,17 @@ void UIManager::handleInput(int ch) {
             // Cursor on an audiobook file in the normal browser -> toggle in [Books].
             if (focus_ == Pane::DirBrowser
                 && !in_drive_list_ && !in_recent_ && !in_favs_ && !in_radio_ && !in_podcasts_ && !in_books_
-                && !in_library_
+                && (!in_library_ || libnav::rowIsPath(lib_nav_.level))
                 && dir_cursor_ < (int)dir_entries_.size()) {
                 const std::string& nm = dir_entries_[(size_t)dir_cursor_];
-                std::string full = fs::path(nm).is_absolute() ? nm
-                                 : (fs::path(current_dir_) / nm).string();
-                if (PlaylistManager::isAudiobook(full) && fs::exists(full)) {
+                // A library row is ALREADY absolute, so it is resolved rather than
+                // joined to current_dir_. Levels 1-2 never reach here (the term above),
+                // which matters because the join would construct fs::path from tag text.
+                std::string full = in_library_
+                                 ? libraryRowPath()
+                                 : (fs::path(nm).is_absolute() ? nm
+                                    : (fs::path(current_dir_) / nm).string());
+                if (!full.empty() && PlaylistManager::isAudiobook(full) && fs::exists(full)) {
                     if (config_.isSavedBook(full)) {
                         config_.removeAudiobook(full);
                         showTrackToast("Removed from Books", "", "");
@@ -8125,10 +8148,17 @@ void UIManager::handleInput(int ch) {
                 if (!in_podcast_feed_)
                     openInputBar(InputMode::PodcastAddUrl, "");
             } else if (focus_ == Pane::DirBrowser && in_library_) {
-                // Library rows are artist names, not files. Explicit no-op for the
-                // same reason the podcast branch above is explicit: falling through
-                // would build current_dir_/<artist>, which is not a file and - worse
-                // than the podcast case - THROWS if the tag text is not valid UTF-8.
+                // At levels 1-2 this stays an explicit no-op, for the same reason the
+                // podcast branch above is explicit: falling through would build
+                // current_dir_/<artist>, which is not a file and - worse than the
+                // podcast case - THROWS if the tag text is not valid UTF-8.
+                //
+                // At level 3, 'a' APPENDS WITHOUT PLAYING. That is the walk-an-album-
+                // adding-tracks motion, and it is the single difference between 'a' and
+                // Enter here. libraryRowPath() returns empty and silent above level 3.
+                const std::string p = libraryRowPath();
+                if (!p.empty() && PlaylistManager::isSupportedAudio(p))
+                    playlist_.addTrack(p);
             } else if (focus_ == Pane::DirBrowser && dir_cursor_ < (int)dir_entries_.size()) {
                 fs::path full = fs::path(current_dir_) / dir_entries_[(size_t)dir_cursor_];
                 if (PlaylistManager::isSupportedAudio(full.string()))
@@ -8838,12 +8868,31 @@ void UIManager::activateSelection() {
                 case libnav::Action::Repopulate:
                     populateLevel();
                     break;
-                case libnav::Action::None:
-                    // Level 3. Enter on a track row does not play in slice 4 -
-                    // slice 5 wires it, and it will APPEND TO THE PLAYLIST.
-                    showTrackToast("Playing library tracks arrives in the next slice",
-                                   sanitizeForDisplay(dir_display_[(size_t)dir_cursor_]), "");
+                case libnav::Action::None: {
+                    // Level 3: THE FOLDER-BROWSER PRECEDENT, all four steps of it -
+                    // append, select, play, record as recently played. Identical to
+                    // pressing Enter on this same file in the directory browser, which
+                    // is the point: the same file behaves the same way whichever route
+                    // reached it, and the track becomes a playlist MEMBER so it saves
+                    // and loads with the rest.
+                    //
+                    // The contrast is the PODCAST path, where an episode plays
+                    // standalone and never joins the playlist at all - which is why
+                    // that path needs its own scrobble guard and its own resume
+                    // bookkeeping and this one needs neither.
+                    //
+                    // 'a' is the same thing WITHOUT playing, for walking an album
+                    // adding tracks. That is the only difference between the two keys.
+                    const std::string p = libraryRowPath();
+                    if (p.empty()) break;      // not actionable; already reported if it mattered
+                    const std::size_t pi = playlist_.addTrack(p);
+                    playlist_.selectAt(pi);
+                    if (auto cp = playlist_.currentPath(); cp.has_value()) {
+                        audio_.play(cp.value());
+                        config_.addRecentTrack(cp.value());
+                    }
                     break;
+                }
                 case libnav::Action::LeaveSection:
                     break;            // descend never leaves; here for exhaustiveness
             }
@@ -9376,14 +9425,14 @@ std::string UIManager::browserEntryPath(int idx) const {
     // fs::path() and out of fs::exists(s, ec) too, ec included, because the
     // conversion runs before ec applies.
     //
-    // Level 3 rows DO carry a real, OS-origin path as of slice 4, and are STILL
-    // excluded - deliberately, and not on safety grounds. This one function feeds
-    // five callers (the draw-loop glyph plus four key handlers), so returning a path
-    // for Tracks here would enable playback, chapters, marking and converting across
-    // all five in a single edit, arriving with no gate. Slice 5 owns that: it is one
-    // line, and it gets a real gate. It must also budget for the cost, because this
-    // is called PER VISIBLE ROW PER FRAME from the draw loop.
-    if (in_drive_list_ || in_radio_ || in_podcasts_ || in_library_) return {};
+    // Level 3 rows DO carry a real, OS-origin path - the scanner's own directory walk
+    // produced it - so as of slice 5 they resolve here like any [FAVs] row. That one
+    // narrowing is what turns on playback, queueing, marking, converting and chapters
+    // for library tracks, because this function is the single definition of "what path
+    // is this row" that all of them consult. Slices 3 and 4 deliberately held it shut
+    // so depth could ship without those five call sites changing behaviour unwatched.
+    if (in_drive_list_ || in_radio_ || in_podcasts_) return {};
+    if (in_library_ && !libnav::rowIsPath(lib_nav_.level)) return {};
     namespace fs = std::filesystem;
     return fs::path(nm).is_absolute() ? nm : (fs::path(current_dir_) / nm).string();
 }
@@ -9671,6 +9720,35 @@ void UIManager::showLibraryTracks() {
     dir_cursor_ = (row < 0) ? 0 : row + 1;
     if (dir_cursor_ >= (int)dir_entries_.size()) dir_cursor_ = 0;
     dir_scroll_ = 0;
+}
+
+// The level-3 row under the cursor as a path something can be DONE to, or empty.
+//
+// Empty and silent at levels 1-2: an artist or album row is not actionable and
+// pressing a file key there is not an error worth a message. Empty and LOUD when the
+// row names a file the disk no longer has.
+//
+// That second case is the one thing a library row can do that no folder-browser row
+// can. The index is a CACHE: a track can be deleted, moved or renamed between the
+// last scan and this keypress, and the row will still be listed. [FAVs] and [Recent]
+// hit the same situation and fail silently (`if (!fs::exists(name)) return;`), which
+// is survivable there because those lists are user-curated and short. A library row
+// is one of thousands and the remedy is a rescan, which is not something silence can
+// convey - so it is named.
+//
+// fs::exists takes the error_code form on principle even though a scanner-produced
+// path is OS-origin and safe: the conversion runs before the code applies, so the
+// code is not what protects us here - the origin of the string is.
+std::string UIManager::libraryRowPath() {
+    const std::string p = browserEntryPath(dir_cursor_);
+    if (p.empty()) return {};                   // wrong level, or a non-row
+    std::error_code ec;
+    if (!fs::exists(p, ec) || ec) {
+        showTrackToast("Missing file - rescan the library",
+                       sanitizeForDisplay(libnav::pathStem(p)), "");
+        return {};
+    }
+    return p;
 }
 
 // The one populate dispatch. Every caller that means "relist the section" calls

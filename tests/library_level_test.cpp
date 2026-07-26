@@ -254,7 +254,29 @@ static void test_path_stem() {
     CHECK(pathStem("/a/b/") .empty(), "trailing separator, no crash");
 }
 
-// ── 6. The reset trap ───────────────────────────────────────────────────────
+// ── 6. rowIsPath - slice 5's entire safety, in one predicate ────────────────
+static void test_row_is_path() {
+    // Only level 3 identities are filesystem paths. Levels 1-2 are tag text, which
+    // may be invalid UTF-8, and handing one to fs::path throws on Windows. This
+    // predicate is what browserEntryPath consults, so a flipped polarity here is a
+    // crash and not a cosmetic bug - which is the reason it is a named function
+    // rather than an open-coded comparison inside a curses handler.
+    CHECK(!rowIsPath(Level::Artists), "an artist row is NOT a path");
+    CHECK(!rowIsPath(Level::Albums),  "an album row is NOT a path");
+    CHECK(rowIsPath(Level::Tracks),   "a track row IS a path");
+
+    // And it agrees with where descend actually leaves you, so the two cannot drift.
+    State s;
+    CHECK(!rowIsPath(s.level), "fresh state is not actionable");
+    descend(s, "Muse");
+    CHECK(!rowIsPath(s.level), "after descending to albums, still not actionable");
+    descend(s, "Absolution");
+    CHECK(rowIsPath(s.level), "after descending to tracks, actionable");
+    ascend(s);
+    CHECK(!rowIsPath(s.level), "ascending back out of tracks stops being actionable");
+}
+
+// ── 7. The reset trap ───────────────────────────────────────────────────────
 static void test_reset() {
     State s;
     descend(s, "Muse");
@@ -282,6 +304,7 @@ int main() {
     test_latin1_identity_survives();
     test_track_row_label();
     test_path_stem();
+    test_row_is_path();
     test_reset();
 
     std::printf("library_level_test: %d checks, %d failures\n", g_checks, g_fail);

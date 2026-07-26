@@ -33,6 +33,16 @@ namespace libnav {
 
 enum class Level { Artists, Albums, Tracks };
 
+// Does a row at this level carry a FILESYSTEM PATH as its identity?
+//
+// This is the whole of slice 5's safety in one predicate, and it is here rather
+// than open-coded in browserEntryPath so the product and the test read the same
+// comparison instead of two copies of it. A flipped polarity in that comparison
+// is not a cosmetic bug: it would hand artist and album strings - tag text, which
+// may be invalid UTF-8 - to code that builds fs::path, which is the crash the six
+// slice-3 guards exist to prevent.
+inline bool rowIsPath(Level l) { return l == Level::Tracks; }
+
 struct State {
     Level level = Level::Artists;
 

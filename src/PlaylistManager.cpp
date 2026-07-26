@@ -21,13 +21,35 @@
 
 namespace fs = std::filesystem;
 
-// Non-throwing existence check: the throwing fs::exists overload can raise
-// filesystem_error on a malformed path from a crafted playlist, which would
-// propagate out of the loaders below. The error_code overload returns false
-// on any error instead.
+// Genuinely non-throwing existence check.
+//
+// The error_code overload is NOT sufficient on its own, which this comment used
+// to claim: on Windows a narrow path is decoded as UTF-8, and for invalid UTF-8
+// the conversion throws BEFORE the error code can be set, so fs::exists(p, ec)
+// raises filesystem_error just like the throwing overload. Measured on UCRT64.
+// Every caller here is fed paths that came out of a playlist file, so the catch
+// is the part that actually holds. Loaders now also run their lines through
+// ensure_utf8, which removes the usual cause rather than only surviving it.
 static bool path_exists(const std::string& p) {
-    std::error_code ec;
-    return fs::exists(p, ec);
+    try {
+        std::error_code ec;
+        return fs::exists(p, ec);
+    } catch (...) {
+        return false;
+    }
+}
+
+// fs::path::stem() on a path that is not valid UTF-8 throws on Windows for the
+// same reason, and entries can arrive from places that never saw a playlist
+// file. Pure string form, no filesystem involved: last component, minus a final
+// extension, with a leading dot not counting as one (fs::path's own rule).
+static std::string path_stem(const std::string& p) {
+    const size_t sep = p.find_last_of("/\\");
+    std::string name = (sep == std::string::npos) ? p : p.substr(sep + 1);
+    if (name == "." || name == "..") return name;
+    const size_t dot = name.find_last_of('.');
+    if (dot != std::string::npos && dot != 0) name.resize(dot);
+    return name;
 }
 
 // The list itself now lives in AudioExts.h so the library scanner reads the SAME
@@ -41,13 +63,11 @@ bool PlaylistManager::isSupportedAudio(const std::string& path) {
 }
 
 bool PlaylistManager::isAudiobook(const std::string& path) {
-    std::string ext = fs::path(path).extension().string();
-    std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
-    return ext == ".m4b";
+    return audioext::extensionOf(path) == ".m4b";
 }
 
 void PlaylistManager::populateMetadata(PlaylistEntry& entry) {
-    entry.display_title = fs::path(entry.path).stem().string();
+    entry.display_title = path_stem(entry.path);
 #ifdef _WIN32
     TagLib::FileRef ref(utf8_to_wide(entry.path).c_str(), true,
                         TagLib::AudioProperties::Fast);
@@ -334,17 +354,28 @@ int PlaylistManager::loadM3U(const std::string& path) {
             ++added;
             continue;
         }
-        // Could be absolute or relative path
-        fs::path p(line);
-        if (p.is_relative())
-            p = fs::path(path).parent_path() / p;
-        std::string abs = p.string();
-        if (path_exists(abs) && isSupportedAudio(abs)) {
-            addTrack(abs);
-            ++added;
-        } else if (isSupportedAudio(abs)) {
-            ++last_load_missing_;   // audio entry whose file is not on disk
-        }
+        // A .m3u from an older tool is CP1252, so an accented filename arrives as
+        // raw high bytes. Rescue it to UTF-8 BEFORE it reaches fs::path, which
+        // decodes narrow strings as UTF-8 on Windows and throws on anything else.
+        // Valid UTF-8 (a .m3u8, or anything modern) passes through untouched.
+        line = ensure_utf8(line);
+
+        // Belt and braces: ensure_utf8 removes the known cause, and this makes a
+        // malformed entry skip rather than abandon the rest of the playlist,
+        // whatever the cause turns out to be next time.
+        try {
+            // Could be absolute or relative path
+            fs::path p(line);
+            if (p.is_relative())
+                p = fs::path(path).parent_path() / p;
+            std::string abs = p.string();
+            if (path_exists(abs) && isSupportedAudio(abs)) {
+                addTrack(abs);
+                ++added;
+            } else if (isSupportedAudio(abs)) {
+                ++last_load_missing_;   // audio entry whose file is not on disk
+            }
+        } catch (...) { ++last_load_missing_; }
     }
     return added;
 }
@@ -389,16 +420,18 @@ int PlaylistManager::loadPLS(const std::string& path) {
         std::string file_key  = "File"  + std::to_string(i);
         std::string title_key = "Title" + std::to_string(i);
         if (!kv.count(file_key)) continue;
-        std::string p = kv[file_key];
-        fs::path fp(p);
-        if (fp.is_relative()) fp = fs::path(path).parent_path() / fp;
-        std::string abs = fp.string();
-        if (path_exists(abs) && isSupportedAudio(abs)) {
-            addTrack(abs);
-            ++added;
-        } else if (isSupportedAudio(abs)) {
-            ++last_load_missing_;   // audio entry whose file is not on disk
-        }
+        std::string p = ensure_utf8(kv[file_key]);   // legacy CP1252 .pls, see loadM3U
+        try {
+            fs::path fp(p);
+            if (fp.is_relative()) fp = fs::path(path).parent_path() / fp;
+            std::string abs = fp.string();
+            if (path_exists(abs) && isSupportedAudio(abs)) {
+                addTrack(abs);
+                ++added;
+            } else if (isSupportedAudio(abs)) {
+                ++last_load_missing_;   // audio entry whose file is not on disk
+            }
+        } catch (...) { ++last_load_missing_; }
     }
     return added;
 }
@@ -499,22 +532,26 @@ int PlaylistManager::loadXSPF(const std::string& path) {
         extract_tags("location", track_block, locations);
         if (locations.empty()) continue;
 
-        std::string uri = xml_unescape(locations[0]);
+        // XSPF is nominally UTF-8, but a file written by a tool that ignored that
+        // still has to load rather than throw. See loadM3U.
+        std::string uri = ensure_utf8(xml_unescape(locations[0]));
         // Strip file:/// prefix
         if (uri.substr(0, 8) == "file:///") uri = uri.substr(8);
         // Convert forward slashes back to backslashes on Windows
 #ifdef _WIN32
         for (char& c : uri) if (c == '/') c = '\\';
 #endif
-        fs::path fp(uri);
-        if (fp.is_relative()) fp = fs::path(path).parent_path() / fp;
-        std::string abs = fp.string();
-        if (path_exists(abs) && isSupportedAudio(abs)) {
-            addTrack(abs);
-            ++added;
-        } else if (isSupportedAudio(abs)) {
-            ++last_load_missing_;   // audio entry whose file is not on disk
-        }
+        try {
+            fs::path fp(uri);
+            if (fp.is_relative()) fp = fs::path(path).parent_path() / fp;
+            std::string abs = fp.string();
+            if (path_exists(abs) && isSupportedAudio(abs)) {
+                addTrack(abs);
+                ++added;
+            } else if (isSupportedAudio(abs)) {
+                ++last_load_missing_;   // audio entry whose file is not on disk
+            }
+        } catch (...) { ++last_load_missing_; }
     }
     return added;
 }
@@ -522,9 +559,7 @@ int PlaylistManager::loadXSPF(const std::string& path) {
 // ─── Unified save/load ────────────────────────────────────────────────────────
 
 static std::string playlist_ext(const std::string& path) {
-    std::string ext = fs::path(path).extension().string();
-    for (char& c : ext) c = (char)std::tolower((unsigned char)c);
-    return ext;
+    return audioext::extensionOf(path);   // pure, lowercased, and cannot throw
 }
 
 bool PlaylistManager::savePlaylist(const std::string& path) const {
@@ -650,7 +685,7 @@ void PlaylistManager::loaderWorker() {
         }
         PlaylistEntry entry;
         entry.path = path;
-        entry.display_title = fs::path(path).stem().string();
+        entry.display_title = path_stem(path);
         populateMetadata(entry);
         pending_count_.fetch_sub(1);
         {

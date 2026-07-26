@@ -182,6 +182,22 @@ add_test(NAME library_index_test COMMAND library_index_test)
 # would otherwise mass-delete records for files the walk never reached. The
 # real-collection pass is opt-in via REMOCT_LIBRARY_SCAN_ROOT so a CI runner with
 # no music stays green. Both matrix jobs.
+# playlist-encoding - a legacy CP1252 .m3u/.pls/.xspf must LOAD, not crash. On
+# Windows std::filesystem decodes a narrow path as UTF-8 and throws on anything
+# else, from fs::path AND from fs::exists(p, ec), so one ordinary legacy playlist
+# used to terminate the application (nothing in UIManager catches). Pins both
+# halves: the loaders no longer throw, and the named track actually loads because
+# the line is rescued to UTF-8 rather than skipped. Both matrix jobs.
+add_executable(playlist_encoding_test
+    playlist_encoding_test.cpp
+    ${CMAKE_SOURCE_DIR}/src/PlaylistManager.cpp
+)
+target_include_directories(playlist_encoding_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/lib
+    ${TAGLIB_INCLUDE_DIRS} ${FDKAAC_INCLUDE} ${OPUS_INCLUDE} ${WAVPACK_INCLUDE})
+target_link_libraries(playlist_encoding_test PRIVATE ${TAGLIB_LIBRARIES})
+add_test(NAME playlist_encoding_test COMMAND playlist_encoding_test)
+
 add_executable(library_scanner_test
     library_scanner_test.cpp
     ${CMAKE_SOURCE_DIR}/src/LibraryScanner.cpp

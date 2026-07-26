@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [1.5.0] - Unreleased
 
+### Fixed
+
+- Opening an older playlist no longer closes RE-MOCT. A .m3u or .pls written
+  years ago, or by another program, stores its text in the Windows ANSI encoding
+  rather than UTF-8, so an accented or punctuated filename inside it is not
+  valid UTF-8. Handing one of those lines to the system's path handling raised
+  an error that nothing caught, and the player exited on the spot - not a failed
+  load, an exit. Any playlist naming a file with an accent in it could do it,
+  which is to say a great many playlists that predate this one.
+  Those lines are now converted to UTF-8 as they are read, so the track loads
+  and plays instead of merely failing quietly, and a line that still cannot be
+  made sense of is skipped and counted with the other missing files rather than
+  taking the rest of the playlist down with it. Playlists already written in
+  UTF-8, including everything RE-MOCT saves itself, are read exactly as before,
+  byte for byte.
+
 ### Internal
 
 - Groundwork for the library view: the metadata index, its on-disk cache format,

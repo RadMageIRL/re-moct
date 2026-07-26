@@ -48,7 +48,7 @@ enum class RightPane { Playlist, Visualizer, Help, TrackInfo, Bookmarks, Lyrics,
 enum class SearchSource { Playlist, Browser };   // which list \-search targets (from focus_)
 
 // Modal overlays drawn on top of the normal layout
-enum class UIOverlay { None, RipConfirm, MBSearch, RecPanel, ConvertScope, ConvertConfirm, PlaylistFormat, PodcastPlayConflict, PodcastIndexCreds };
+enum class UIOverlay { None, RipConfirm, MBSearch, RecPanel, ConvertScope, ConvertConfirm, PlaylistFormat, PodcastPlayConflict, PodcastIndexCreds, LibraryRoot };
 
 class UIManager {
 public:
@@ -827,7 +827,12 @@ private:
     // ── slice 6 ──
     // The folder the library indexes: config_.library_root if set, else the OS music
     // folder MEMOIZED (CDRipper::musicRoot is a COM SHGetKnownFolderPath).
-    std::string libraryRoot() const;
+    std::vector<std::string> libraryRoots() const;   // slice 11: configured roots, or the OS music folder
+    std::string rootsSummary() const;                // all roots on one line, for messages
+    void addLibraryRoot(const std::string& raw);     // with the three dedupe rejections
+    void removeLibraryRoot(const std::string& raw);  // records leave immediately, no rescan
+    void libRootReject(const std::string& msg);      // yellow bottom-left, ~5s (NOT lib_status_)
+    bool isLibraryRoot(const std::string& path) const;
     // Is that folder actually readable? Treats the string as UNTRUSTED - a config root
     // can be invalid UTF-8, which throws out of fs::path on Windows - so it goes through
     // utf8Path inside a catch, never a bare fs::exists(std::string).
@@ -958,6 +963,12 @@ private:
     bool episodeQueued(const std::string& id) const;         // in the pending queue?
     std::string episodeCacheFile(const std::string& feed_url, const PodcastEpisode& ep) const;  // pure, no mkdir
     void drawPodcastPlayConflict();             // the [W]ait / [P]lay-now / [Esc] popup
+    // Slice 11: the add/remove-a-library-root confirm. A popup rather than a silent
+    // toggle because adding a root starts a scan (15.8 s for 2,155 files, measured),
+    // and something that costs that much should say so before it happens.
+    void drawLibraryRootConfirm();
+    std::string lib_root_candidate_;   // the folder the popup is about
+    bool        lib_root_removing_ = false;   // true = it is already a root, so this removes
 
     // The podcast episode currently playing (resume latch + played-on-finish).
     std::string  podcast_playing_id_;          // episode id of the playing local file

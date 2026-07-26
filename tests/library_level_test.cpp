@@ -48,7 +48,7 @@ static libidx::LibraryTrack mk(const std::string& path, const std::string& artis
 
 static libidx::LibraryIndex makeIndex() {
     libidx::LibraryIndex idx;
-    idx.root = "/music";
+    idx.roots = { "/music" };
     idx.tracks = {
         mk("/music/Muse/Absolution/01 Apocalypse Please.flac", "Muse", "Absolution", "Apocalypse Please", 1, 201),
         mk("/music/Muse/Absolution/02 Time Is Running Out.flac", "Muse", "Absolution", "Time Is Running Out", 2, 237),
@@ -274,7 +274,7 @@ static void test_path_stem() {
 // what makes "it appends in the order you see" true rather than hoped for.
 static void test_album_tracks_order() {
     libidx::LibraryIndex idx;
-    idx.root = "/music";
+    idx.roots = { "/music" };
     // Deliberately shuffled input across two discs, so ordering is being proved and
     // not merely inherited from insertion order.
     idx.tracks = {

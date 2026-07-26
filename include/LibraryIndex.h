@@ -59,6 +59,37 @@ namespace libidx {
 // A version mismatch DISCARDS and rescans. There is no migration path and there
 // is deliberately no plan for one: the index is a cache, entirely rebuildable
 // from the files it describes, so carrying migration code would be pure cost.
+//
+// ── VERSION 1 DESCRIBES TWO SLIGHTLY DIFFERENT FILES, AND THAT IS DELIBERATE ──
+//
+// Slice 11 made the library index several roots instead of one. The file shape is:
+//
+//     remoct-library-index<TAB>1        line 0: magic + version, exactly 2 fields
+//     root<TAB><path>                   line 1: the first root, exactly 2 fields
+//     root<TAB><path>                   OPTIONAL, zero or more further root lines
+//     <12 tab-separated fields>         one record per line, to the end
+//
+// THE RULE: a reader takes the RUN of `root` lines beginning at line 1. One root
+// line is the shipped single-root file; two or more is a multi-root file. Both are
+// version 1, and the version was deliberately NOT bumped.
+//
+// Why not: the version field means "discard and rescan", and nothing here requires
+// discarding. A single-root file read by this parser yields a list of one and needs
+// no rescan at all, so bumping would fire an incompatibility mechanism in a case
+// that is compatible - and charge every existing user a full rescan (15.8 s for
+// 2,155 files, measured at slice 2) to arrive at the index they already had.
+//
+// THE OTHER DIRECTION IS SAFE TOO, and this is the part worth writing down rather
+// than leaving for someone to rediscover: an OLDER reader takes line 1 as the only
+// root, then meets the second `root` line in its record loop, finds 2 fields where
+// it wants 12, and counts it as a skipped record. It still loads EVERY record,
+// including those under the roots it does not know about. No crash and no data loss.
+// (`skipped_records` is not surfaced to the user anywhere - both loadIndexFile call
+// sites omit the optional out-parameter - so that costs not even a warning.)
+//
+// The one accepted exposure: an older build believes in one root, so its next
+// RESCAN walks only that root and drops the other roots' records. Recoverable by
+// upgrading and rescanning.
 inline constexpr const char* kMagic         = "remoct-library-index";
 inline constexpr int         kFormatVersion = 1;
 
@@ -95,7 +126,11 @@ struct LibraryTrack {
 };
 
 struct LibraryIndex {
-    std::string               root;    // the music root this index was built from
+    // The music roots this index was built from, in configured order (slice 11).
+    // A vector rather than a string so the compiler finds every reader - the same
+    // reason slice 4 made the level an enum instead of adding a bool. Empty means
+    // "the OS music folder", which is what an empty `root` meant before it.
+    std::vector<std::string>  roots;
     std::vector<LibraryTrack> tracks;
     // Slice 8: album names (folded) judged to be compilations. DERIVED at load from
     // fields already on disk, never serialised - so this is not a format change and
@@ -449,6 +484,60 @@ inline std::string foldPathKey(const std::string& p) {
 #endif
 }
 
+// ── Root paths (slice 11) ───────────────────────────────────────────────────
+//
+// Both of these sit beside foldPathKey and USE it rather than rolling a second
+// comparison, because "same path" must mean one thing. That helper arrived in
+// slice 10 for the play-stat join and already carries the platform rule:
+// case-and-separator folded on Windows because NTFS is case-insensitive, byte-exact
+// on Linux because two paths differing in case may be two different files.
+
+// A root with trailing separators removed, so "D:\Music\" and "D:\Music" are the
+// same root. A bare drive root ("C:\", "/") keeps its separator - stripping it
+// would leave "C:", which names the drive's CURRENT DIRECTORY rather than its root.
+//
+// WHICH CHARACTERS COUNT AS SEPARATORS IS PLATFORM-DEPENDENT, and getting that
+// wrong is not cosmetic. On Windows both '/' and '\' separate. **On Linux a
+// backslash is an ORDINARY FILENAME CHARACTER**, so a directory really can be named
+// `weird\` and stripping the backslash would name a different directory - or
+// nothing. Caught by the Linux gate, which is exactly what a platform-split helper
+// needs one for.
+inline bool isSep(char c) {
+#ifdef _WIN32
+    return c == '/' || c == '\\';
+#else
+    return c == '/';
+#endif
+}
+
+inline std::string normaliseRoot(const std::string& p) {
+    std::string s = p;
+    while (s.size() > 1 && isSep(s.back())) {
+#ifdef _WIN32
+        if (s.size() == 3 && s[1] == ':') break;    // "C:\" - keep it
+#endif
+        s.pop_back();
+    }
+    return s;
+}
+
+// Is `path` inside `root`, or equal to it?
+//
+// THE BOUNDARY CHECK IS THE WHOLE POINT. A plain prefix compare makes "C:\Music" a
+// parent of "C:\Musicology", which would reject a legitimate second root as a
+// duplicate and - worse, once carry-forward uses this - hand one root's records to
+// another. So the prefix must end exactly at a separator.
+inline bool isPathUnder(const std::string& path, const std::string& root) {
+    const std::string p = foldPathKey(normaliseRoot(path));
+    const std::string r = foldPathKey(normaliseRoot(root));
+    if (r.empty() || p.size() < r.size()) return false;
+    if (p.compare(0, r.size(), r) != 0) return false;
+    if (p.size() == r.size()) return true;                  // equal
+    // A root that already ends in a separator ("C:\", "/") needs no extra one.
+    if (isSep(r.back())) return true;
+    return isSep(p[r.size()]);
+}
+
 } // namespace detail
 
 // ── The grouping seam ───────────────────────────────────────────────────────
@@ -577,9 +666,20 @@ inline std::string serialiseIndex(const LibraryIndex& idx) {
     out += '\t';
     out += std::to_string(kFormatVersion);
     out += '\n';
-    out += "root\t";
-    out += detail::escape(idx.root);
-    out += '\n';
+    // One `root` line per root. ALWAYS AT LEAST ONE, even when there are no roots
+    // configured: line 1 is structural - parseIndex rejects a file without it - and
+    // an empty value is exactly what a single unconfigured root wrote before slice 11,
+    // so a no-roots index is byte-identical to the file that shipped.
+    if (idx.roots.empty()) {
+        out += "root\t";
+        out += '\n';
+    } else {
+        for (const std::string& r : idx.roots) {
+            out += "root\t";
+            out += detail::escape(r);
+            out += '\n';
+        }
+    }
 
     for (const auto& t : idx.tracks) {
         out += detail::escape(t.path);         out += '\t';
@@ -634,17 +734,33 @@ inline ParseResult parseIndex(const std::string& text) {
         int32_t ver = 0;
         if (!detail::parseI32(f[1], ver) || ver != kFormatVersion) return res;
     }
-    // Root line.
+    // Root lines: the RUN of them starting at line 1. Line 1 is required (a file
+    // without it is not this format); further ones are optional and are what makes
+    // the index multi-root. See the format note at the top of this file - a `root`
+    // line has 2 fields and a record has 12, so the two can never be confused, which
+    // is why this needed no version bump.
+    std::size_t li = 1;
     {
         const auto f = detail::splitTabs(lines[1]);
         if (f.size() != 2 || f[0] != "root") return res;
-        res.index.root = detail::unescape(f[1]);
+        // An EMPTY value means "no root configured" and yields no entry, so an
+        // unconfigured index parses to an empty list rather than a list of one
+        // empty string that would later be treated as a real root.
+        std::string r = detail::unescape(f[1]);
+        if (!r.empty()) res.index.roots.push_back(std::move(r));
+        ++li;
+        for (; li < lines.size(); ++li) {
+            const auto g = detail::splitTabs(lines[li]);
+            if (g.size() != 2 || g[0] != "root") break;
+            std::string extra = detail::unescape(g[1]);
+            if (!extra.empty()) res.index.roots.push_back(std::move(extra));
+        }
     }
 
     res.ok = true;
-    res.index.tracks.reserve(lines.size() > 2 ? lines.size() - 2 : 0);
+    res.index.tracks.reserve(lines.size() > li ? lines.size() - li : 0);
 
-    for (std::size_t li = 2; li < lines.size(); ++li) {
+    for (; li < lines.size(); ++li) {
         if (lines[li].empty()) continue;              // blank line: not a record
         const auto f = detail::splitTabs(lines[li]);
         if (f.size() != kFieldCount) { ++res.skipped_records; continue; }

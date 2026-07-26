@@ -122,10 +122,10 @@ static void test_first_scan() {
     writeFile(join(join(dir, "sub"), "three.wav"), tinyWav());        // recursion
 
     ScanProgress pr;
-    ScanOutcome out = scanCollection(dir, LibraryIndex{}, pr);
+    ScanOutcome out = scanCollection({dir}, LibraryIndex{}, pr);
 
     CHECK(out.completed, "completed");
-    CHECK(out.index.root == dir, "root recorded");
+    CHECK(out.index.roots == std::vector<std::string>{dir}, "roots recorded");
     CHECK(out.counts.seen == 5, "seen=%u (5 audio, txt ignored)", out.counts.seen);
     CHECK(out.index.tracks.size() == 5, "indexed=%zu", out.index.tracks.size());
     CHECK(out.counts.added == 5, "added=%u", out.counts.added);
@@ -150,8 +150,8 @@ static void test_first_scan() {
 // ── Rescan with nothing changed re-reads NOTHING ────────────────────────────
 static void test_rescan_reads_nothing() {
     const std::string dir = join(g_root, "coll");
-    ScanProgress p1; ScanOutcome first = scanCollection(dir, LibraryIndex{}, p1);
-    ScanProgress p2; ScanOutcome again = scanCollection(dir, first.index, p2);
+    ScanProgress p1; ScanOutcome first = scanCollection({dir}, LibraryIndex{}, p1);
+    ScanProgress p2; ScanOutcome again = scanCollection({dir}, first.index, p2);
 
     CHECK(again.completed, "completed");
     CHECK(again.counts.unchanged == first.counts.seen,
@@ -166,14 +166,14 @@ static void test_rescan_reads_nothing() {
 // ── Add, modify, delete produce exactly the three deltas ────────────────────
 static void test_deltas() {
     const std::string dir = join(g_root, "coll");
-    ScanProgress p0; ScanOutcome base = scanCollection(dir, LibraryIndex{}, p0);
+    ScanProgress p0; ScanOutcome base = scanCollection({dir}, LibraryIndex{}, p0);
     const std::size_t n0 = base.index.tracks.size();
 
     writeFile(join(dir, "added.wav"), tinyWav());                 // add
     writeFile(join(dir, "two.mp3"), "not really an mp3 - longer"); // modify (size changes)
     fs::remove(P(join(dir, "one.wav")));                           // delete
 
-    ScanProgress p1; ScanOutcome out = scanCollection(dir, base.index, p1);
+    ScanProgress p1; ScanOutcome out = scanCollection({dir}, base.index, p1);
     CHECK(out.completed, "completed");
     CHECK(out.counts.added == 1,   "added=%u",   out.counts.added);
     CHECK(out.counts.updated == 1, "updated=%u", out.counts.updated);
@@ -199,7 +199,7 @@ static void test_cancel_never_commits() {
 
     // Establish a good index first, and remember its bytes.
     {
-        ScanProgress p; ScanOutcome full = scanCollection(dir, LibraryIndex{}, p);
+        ScanProgress p; ScanOutcome full = scanCollection({dir}, LibraryIndex{}, p);
         CHECK(full.completed && full.index.tracks.size() == 400, "seeded 400");
         CHECK(saveIndexFileAtomic(idxp, full.index), "seed index written");
     }
@@ -209,7 +209,7 @@ static void test_cancel_never_commits() {
     // Cancel already set: the walk must report incomplete immediately.
     {
         ScanProgress p; p.cancel.store(true);
-        ScanOutcome out = scanCollection(dir, LibraryIndex{}, p);
+        ScanOutcome out = scanCollection({dir}, LibraryIndex{}, p);
         CHECK(!out.completed, "pre-cancelled scan is incomplete");
     }
 
@@ -219,7 +219,7 @@ static void test_cancel_never_commits() {
     for (int i = 0; i < 200; ++i) fs::remove(P(join(dir, "t" + std::to_string(i) + ".wav")));
 
     LibraryScanner sc;
-    sc.start(dir, idxp);
+    sc.start({dir}, idxp);
     sc.cancel();
     for (int i = 0; i < 500 && !sc.done(); ++i)
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
@@ -237,7 +237,7 @@ static void test_worker_commits_when_complete() {
     const std::string idxp = join(g_root, "worker.idx");
 
     LibraryScanner sc;
-    sc.start(dir, idxp);
+    sc.start({dir}, idxp);
     for (int i = 0; i < 1000 && !sc.done(); ++i)
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
     CHECK(sc.done(), "worker finished");
@@ -247,11 +247,11 @@ static void test_worker_commits_when_complete() {
     LibraryIndex loaded;
     CHECK(loadIndexFile(idxp, loaded), "index file readable");
     CHECK(loaded.tracks.size() == res.index.tracks.size(), "committed all records");
-    CHECK(loaded.root == dir, "root persisted");
+    CHECK(loaded.roots == std::vector<std::string>{dir}, "roots persisted");
 
     // Destructor on a running scan must not hang - start and let it fall out of
     // scope immediately.
-    { LibraryScanner s2; s2.start(join(g_root, "many"), join(g_root, "d.idx")); }
+    { LibraryScanner s2; s2.start({join(g_root, "many")}, join(g_root, "d.idx")); }
     CHECK(true, "destructor cancelled and joined without hanging");
 }
 
@@ -267,7 +267,7 @@ static void test_index_io() {
     CHECK(out.tracks.empty(), "corrupt yields empty index");
 
     // Partial corruption is still usable, and says how much it dropped.
-    LibraryIndex good; good.root = "/m";
+    LibraryIndex good; good.roots = { "/m" };
     LibraryTrack t; t.path = "/m/a.flac"; t.mtime = 5; t.size = 7;
     good.tracks.push_back(t);
     writeFile(p, serialiseIndex(good) + "garbage-line\n");
@@ -278,23 +278,23 @@ static void test_index_io() {
     // ATOMIC REPLACE over an existing file - asserted on both toolchains rather
     // than assumed, since a rename that refused to replace would leave a stale
     // index and make every scan look like a no-op.
-    LibraryIndex v2; v2.root = "/m2";
+    LibraryIndex v2; v2.roots = { "/m2" };
     CHECK(saveIndexFileAtomic(p, v2), "atomic write over an existing file");
-    CHECK(loadIndexFile(p, out) && out.root == "/m2", "replaced content, root=%s", out.root.c_str());
+    CHECK(loadIndexFile(p, out) && out.roots == std::vector<std::string>{"/m2"}, "replaced content");
     std::error_code ec;
     CHECK(!fs::exists(P(p + ".tmp"), ec), "no .tmp left behind");
 
     // A stray .tmp from a previous crash must not block the next write.
     writeFile(p + ".tmp", "leftover");
-    LibraryIndex v3; v3.root = "/m3";
+    LibraryIndex v3; v3.roots = { "/m3" };
     CHECK(saveIndexFileAtomic(p, v3), "stray .tmp does not block the write");
-    CHECK(loadIndexFile(p, out) && out.root == "/m3", "replaced again");
+    CHECK(loadIndexFile(p, out) && out.roots == std::vector<std::string>{"/m3"}, "replaced again");
 }
 
 // ── An unreadable root does not fake an empty library ───────────────────────
 static void test_bad_root() {
     ScanProgress p;
-    ScanOutcome out = scanCollection(join(g_root, "does-not-exist"), LibraryIndex{}, p);
+    ScanOutcome out = scanCollection({join(g_root, "does-not-exist")}, LibraryIndex{}, p);
     CHECK(!out.completed, "missing root -> incomplete, so nothing commits");
     CHECK(out.index.tracks.empty(), "no tracks invented");
 
@@ -306,7 +306,7 @@ static void test_bad_root() {
     const std::string dir  = join(g_root, "coll");
     const std::string idxp = join(g_root, "badroot.idx");
     {
-        ScanProgress q; ScanOutcome good = scanCollection(dir, LibraryIndex{}, q);
+        ScanProgress q; ScanOutcome good = scanCollection({dir}, LibraryIndex{}, q);
         CHECK(good.completed, "seeded a good index");
         CHECK(saveIndexFileAtomic(idxp, good.index), "seed written");
     }
@@ -315,7 +315,7 @@ static void test_bad_root() {
 
     // Through the THREADED scanner, which is the path that would actually commit.
     LibraryScanner sc;
-    sc.start(join(g_root, "does-not-exist-either"), idxp);
+    sc.start({join(g_root, "does-not-exist-either")}, idxp);
     for (int i = 0; i < 500 && !sc.done(); ++i)
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
     CHECK(sc.done(), "worker finished on an unreadable root");
@@ -339,12 +339,12 @@ static void test_real_collection() {
 
     ScanProgress p1;
     auto t0 = clk::now();
-    ScanOutcome first = scanCollection(root, LibraryIndex{}, p1);
+    ScanOutcome first = scanCollection({root}, LibraryIndex{}, p1);
     auto t1 = clk::now();
 
     ScanProgress p2;
     auto t2 = clk::now();
-    ScanOutcome again = scanCollection(root, first.index, p2);
+    ScanOutcome again = scanCollection({root}, first.index, p2);
     auto t3 = clk::now();
 
     CHECK(first.completed && again.completed, "real scans completed");
@@ -355,6 +355,109 @@ static void test_real_collection() {
     std::printf("  [real scan] files=%u tagless=%u errors=%u  first=%.0f ms  rescan=%.0f ms  index=%zu bytes\n",
                 first.counts.seen, first.counts.tagless, first.counts.errors,
                 ms(t0, t1), ms(t2, t3), serialiseIndex(first.index).size());
+}
+
+// ═══ Slice 11: several roots, and the one that is not there ═════════════════
+
+static void test_multi_root_scan() {
+    const std::string a = join(g_root, "mr_a");
+    const std::string b = join(g_root, "mr_b");
+    fs::create_directories(P(a));
+    fs::create_directories(P(b));
+    writeFile(join(a, "a1.wav"), tinyWav());
+    writeFile(join(a, "a2.wav"), tinyWav());
+    writeFile(join(b, "b1.wav"), tinyWav());
+
+    ScanProgress pr;
+    ScanOutcome out = scanCollection({a, b}, LibraryIndex{}, pr);
+    CHECK(out.completed, "two readable roots complete");
+    CHECK(out.index.tracks.size() == 3, "records from BOTH roots, got %zu",
+          out.index.tracks.size());
+    CHECK(out.index.roots.size() == 2, "both roots recorded on the index");
+    CHECK(out.skipped_roots.empty(), "nothing was skipped");
+
+    std::size_t from_a = 0, from_b = 0;
+    for (const auto& t : out.index.tracks) {
+        if (libidx::detail::isPathUnder(t.path, a)) ++from_a;
+        if (libidx::detail::isPathUnder(t.path, b)) ++from_b;
+    }
+    CHECK(from_a == 2 && from_b == 1, "2 from A and 1 from B, got %zu and %zu", from_a, from_b);
+}
+
+// THE ONE THAT MATTERS MOST. A root that is offline must be SKIPPED, not read as
+// empty: deletion here is implicit, so a root contributing no records would lose all
+// of them. On the reference machine that is 619 tracks vanishing because a drive was
+// unplugged.
+static void test_offline_root_records_survive() {
+    const std::string a    = join(g_root, "mr2_a");
+    const std::string gone = join(g_root, "mr2_gone");
+    fs::create_directories(P(a));
+    fs::create_directories(P(gone));
+    writeFile(join(a, "a1.wav"),    tinyWav());
+    writeFile(join(a, "doomed.wav"), tinyWav());
+    writeFile(join(gone, "g1.wav"), tinyWav());
+    writeFile(join(gone, "g2.wav"), tinyWav());
+
+    ScanProgress p0;
+    ScanOutcome base = scanCollection({a, gone}, LibraryIndex{}, p0);
+    CHECK(base.completed && base.index.tracks.size() == 4, "baseline has all four");
+
+    // The drive goes away, AND a file under the readable root is deleted, so this
+    // proves both halves at once: the offline root is preserved and the live root's
+    // deletions still apply.
+    std::error_code ec;
+    fs::remove_all(P(gone), ec);
+    fs::remove(P(join(a, "doomed.wav")), ec);
+
+    ScanProgress p1;
+    ScanOutcome out = scanCollection({a, gone}, base.index, p1);
+    CHECK(out.completed, "a scan with one root offline still COMPLETES and commits");
+    CHECK(out.skipped_roots.size() == 1, "the offline root is reported, got %zu",
+          out.skipped_roots.size());
+
+    std::size_t survivors = 0, live = 0;
+    for (const auto& t : out.index.tracks) {
+        if (libidx::detail::isPathUnder(t.path, gone)) ++survivors;
+        if (libidx::detail::isPathUnder(t.path, a))    ++live;
+    }
+    CHECK(survivors == 2, "the offline root's records SURVIVE, got %zu", survivors);
+    CHECK(live == 1, "and the live root's deletion still applies, got %zu", live);
+    // The removed count must describe the WALKED roots only, or it reports the size of
+    // the offline drive as deletions.
+    CHECK(out.counts.removed == 1, "removed counts the walked root only, got %u",
+          out.counts.removed);
+}
+
+static void test_no_root_readable() {
+    const std::string x = join(g_root, "mr3_missing_a");
+    const std::string y = join(g_root, "mr3_missing_b");
+    ScanProgress pr;
+    ScanOutcome out = scanCollection({x, y}, LibraryIndex{}, pr);
+    // Not one root could be walked, so nothing is committed - which with a SINGLE
+    // root is byte-for-byte the shipped behaviour slice 6 relies on.
+    CHECK(!out.completed, "no readable root means the scan did not complete");
+
+    ScanProgress p2;
+    ScanOutcome one = scanCollection({x}, LibraryIndex{}, p2);
+    CHECK(!one.completed, "and a single unreadable root behaves exactly as before");
+}
+
+static void test_cancel_with_two_roots() {
+    const std::string a = join(g_root, "mr4_a");
+    const std::string b = join(g_root, "mr4_b");
+    fs::create_directories(P(a));
+    fs::create_directories(P(b));
+    for (int i = 0; i < 40; ++i) writeFile(join(a, "a" + std::to_string(i) + ".wav"), tinyWav());
+    for (int i = 0; i < 40; ++i) writeFile(join(b, "b" + std::to_string(i) + ".wav"), tinyWav());
+
+    ScanProgress pr;
+    pr.cancel.store(true);                      // cancelled before the first file
+    ScanOutcome out = scanCollection({a, b}, LibraryIndex{}, pr);
+    CHECK(!out.completed, "a cancelled multi-root walk never completes");
+    // Cancellation returns BEFORE any carry-forward bookkeeping, so a partial
+    // multi-root scan cannot commit a half-deleted index any more than a single-root
+    // one could.
+    CHECK(out.skipped_roots.empty(), "and reports no skipped roots, it simply stopped");
 }
 
 int main() {
@@ -372,6 +475,10 @@ int main() {
     test_worker_commits_when_complete();
     test_index_io();
     test_bad_root();
+    test_multi_root_scan();
+    test_offline_root_records_survive();
+    test_no_root_readable();
+    test_cancel_with_two_roots();
     test_real_collection();
 
     fs::remove_all(P(g_root), ec);

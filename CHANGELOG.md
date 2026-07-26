@@ -76,6 +76,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and if you have retagged a file since the last scan, the playlist shows what
   `[Library]` is showing you, which F12 is there to bring up to date.
 
+- **The library can now watch more than one folder.** Music kept on a second drive,
+  or in a folder outside your music folder, was invisible to the library and to the
+  `|` collection search no matter how much of it there was. Put the cursor on a
+  folder in the browser and press `@` to add it; press `@` on one you have already
+  added to remove it. A box asks first, because adding a folder starts a scan.
+  Removing one takes its tracks out of the library straight away and never touches
+  the files. Folders you add are remembered between runs. Adding a folder that is
+  already covered, or one that contains a folder you already added, is refused with a
+  message rather than quietly doing the wrong thing.
+- **A folder that is not there is skipped, not emptied.** If one of your library
+  folders lives on a drive that is unplugged, or you rename it, a rescan leaves its
+  tracks in the library exactly as they were and tells you it could not read that
+  folder. Before, anything the scan could not reach was treated as deleted.
 - **Browse by genre with `g`.** Inside `[Library]`, `g` lists every genre in your
   collection and picking one narrows the artist list to it, then albums and tracks
   as usual. Tracks that carry several genres in one tag count under each of them, so

@@ -70,13 +70,30 @@ struct ScanOutcome {
     // a cancel was requested, and validates the root before starting at all) rather than
     // by adding a reason code here, so this type keeps its shape.
     bool          completed = false;
+
+    // ── Roots that could not be walked (slice 11) ───────────────────────────
+    //
+    // A root that is offline, unplugged or renamed is SKIPPED, not treated as empty:
+    // its records are carried forward from `previous` untouched. Without that, one
+    // rescan with a drive unplugged would silently delete every track on it - 619 of
+    // them on the reference machine - because deletion here is implicit (the output
+    // holds only what the walk found).
+    //
+    // Listing them is what lets the caller say so rather than reporting a clean scan.
+    // A STRUCT FIELD, not a format change: nothing here is serialised.
+    std::vector<std::string> skipped_roots;
 };
 
 // ── The synchronous core (testable without threads) ─────────────────────────
 // Walks `root`, reusing records from `previous` whose path, mtime and size all
 // match. Never throws: an unreadable directory, an unstat-able file or a path
 // std::filesystem refuses degrades to a counter, not an exception.
-ScanOutcome scanCollection(const std::string& root,
+// Slice 11: walks EVERY root in order, accumulating into one index. A root that
+// cannot be iterated is skipped and its previous records survive (see skipped_roots).
+// `completed` is false only when the walk was CANCELLED or when NOT ONE root could be
+// read - so with a single root this behaves exactly as it did before multi-root, which
+// is the property that makes the change safe.
+ScanOutcome scanCollection(const std::vector<std::string>& roots,
                            const LibraryIndex& previous,
                            ScanProgress& progress);
 
@@ -108,7 +125,7 @@ public:
     LibraryScanner& operator=(const LibraryScanner&) = delete;
 
     // No-op if a scan is already running.
-    void start(const std::string& root, const std::string& index_path);
+    void start(const std::vector<std::string>& roots, const std::string& index_path);
     void cancel();                       // request; returns immediately
     bool active() const { return active_.load(std::memory_order_acquire); }
     bool done()   const { return done_.load(std::memory_order_acquire); }

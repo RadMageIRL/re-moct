@@ -188,11 +188,11 @@ bool saveIndexFileAtomic(const std::string& path, const LibraryIndex& idx) {
     return true;
 }
 
-ScanOutcome scanCollection(const std::string& root,
+ScanOutcome scanCollection(const std::vector<std::string>& roots,
                            const LibraryIndex& previous,
                            ScanProgress& progress) {
     ScanOutcome out;
-    out.index.root = root;
+    out.index.roots = roots;
 
     // Previous records by path, so revalidation is a hash lookup rather than a
     // scan per file. A root change invalidates everything by construction: the
@@ -201,75 +201,108 @@ ScanOutcome scanCollection(const std::string& root,
     prev.reserve(previous.tracks.size() * 2);
     for (const auto& t : previous.tracks) prev.emplace(t.path, &t);
 
-    std::error_code ec;
-    fs::recursive_directory_iterator it;
-    try {
-        it = fs::recursive_directory_iterator(
-            toPath(root), fs::directory_options::skip_permission_denied, ec);
-    } catch (...) {
-        ec = std::make_error_code(std::errc::invalid_argument);
+    std::size_t walked_roots = 0;
+
+    for (const std::string& root : roots) {
+        std::error_code ec;
+        fs::recursive_directory_iterator it;
+        try {
+            it = fs::recursive_directory_iterator(
+                toPath(root), fs::directory_options::skip_permission_denied, ec);
+        } catch (...) {
+            ec = std::make_error_code(std::errc::invalid_argument);
+        }
+        if (ec) {
+            // SKIPPED, NOT EMPTY. An unplugged drive must not read as "every track
+            // on it was deleted", which is what would happen if we simply walked
+            // nothing: deletion here is implicit, so a root that contributes no
+            // records loses all of them. Carry its previous records forward verbatim.
+            out.skipped_roots.push_back(root);
+            for (const LibraryTrack& t : previous.tracks)
+                if (detail::isPathUnder(t.path, root)) out.index.tracks.push_back(t);
+            continue;
+        }
+        ++walked_roots;
+
+        const fs::recursive_directory_iterator end;
+        for (; it != end; ) {
+            if (progress.cancel.load(std::memory_order_acquire)) {
+                // CANCELLATION BEATS EVERYTHING, and returns before any of the
+                // bookkeeping below. A partial multi-root walk must not commit a
+                // half-deleted index any more than a partial single-root one could.
+                out.completed = false;      // PARTIAL - caller must not commit
+                return out;
+            }
+
+            std::string path;
+            bool is_file = false;
+            try {
+                std::error_code fe;
+                is_file = it->is_regular_file(fe);
+                if (!fe && is_file) path = fromPath(it->path());
+            } catch (...) {
+                ++out.counts.errors;
+            }
+
+            // Advance first, so any failure below cannot turn into an infinite loop.
+            std::error_code ie;
+            it.increment(ie);
+            if (ie) break;
+
+            if (!is_file || path.empty()) continue;
+            if (!audioext::isSupportedAudio(path)) continue;
+
+            ++out.counts.seen;
+            progress.files_seen.fetch_add(1, std::memory_order_relaxed);
+
+            int64_t  mtime = 0;
+            uint64_t size  = 0;
+            if (!port::statFile(path, mtime, size)) { ++out.counts.errors; continue; }
+
+            auto pit = prev.find(path);
+            if (pit != prev.end() && pit->second->mtime == mtime && pit->second->size == size) {
+                out.index.tracks.push_back(*pit->second);   // unchanged: no tag read
+                ++out.counts.unchanged;
+                continue;
+            }
+
+            LibraryTrack t;
+            t.path  = path;
+            t.mtime = mtime;
+            t.size  = size;
+            if (!readTags(path, t)) ++out.counts.tagless;   // indexed anyway
+            progress.files_read.fetch_add(1, std::memory_order_relaxed);
+            if (pit != prev.end()) ++out.counts.updated; else ++out.counts.added;
+            out.index.tracks.push_back(std::move(t));
+        }
     }
-    if (ec) {
-        // An unreadable root is not a crash and not a silent empty library: the
-        // scan simply did not complete, so nothing will be committed.
+
+    // NOT ONE root could be read. With a single configured root this is exactly the
+    // shipped behaviour - nothing walked, nothing committed, and slice 6's
+    // "Cannot read the music folder" path fires as it always has. Multi-root ADDS a
+    // case rather than changing this one.
+    if (walked_roots == 0 && !roots.empty()) {
         out.completed = false;
         return out;
     }
 
-    const fs::recursive_directory_iterator end;
-    for (; it != end; ) {
-        if (progress.cancel.load(std::memory_order_acquire)) {
-            out.completed = false;      // PARTIAL - caller must not commit
-            return out;
-        }
-
-        std::string path;
-        bool is_file = false;
-        try {
-            std::error_code fe;
-            is_file = it->is_regular_file(fe);
-            if (!fe && is_file) path = fromPath(it->path());
-        } catch (...) {
-            ++out.counts.errors;
-        }
-
-        // Advance first, so any failure below cannot turn into an infinite loop.
-        std::error_code ie;
-        it.increment(ie);
-        if (ie) break;
-
-        if (!is_file || path.empty()) continue;
-        if (!audioext::isSupportedAudio(path)) continue;
-
-        ++out.counts.seen;
-        progress.files_seen.fetch_add(1, std::memory_order_relaxed);
-
-        int64_t  mtime = 0;
-        uint64_t size  = 0;
-        if (!port::statFile(path, mtime, size)) { ++out.counts.errors; continue; }
-
-        auto pit = prev.find(path);
-        if (pit != prev.end() && pit->second->mtime == mtime && pit->second->size == size) {
-            out.index.tracks.push_back(*pit->second);   // unchanged: no tag read
-            ++out.counts.unchanged;
-            continue;
-        }
-
-        LibraryTrack t;
-        t.path  = path;
-        t.mtime = mtime;
-        t.size  = size;
-        if (!readTags(path, t)) ++out.counts.tagless;   // indexed anyway
-        progress.files_read.fetch_add(1, std::memory_order_relaxed);
-        if (pit != prev.end()) ++out.counts.updated; else ++out.counts.added;
-        out.index.tracks.push_back(std::move(t));
-    }
-
     // Anything in the previous index the walk never reached is gone from disk.
     // Sound ONLY because the walk completed - see the invariant in the header.
+    //
+    // COUNTED AGAINST WALKED ROOTS ONLY. Records carried forward from a skipped root
+    // were not "kept" by a walk and must not be counted as removals either, or the
+    // number reported is the size of the offline drive - the same class of lie the
+    // album-append count would have told if it had counted instead of measuring.
+    std::size_t prev_in_walked = previous.tracks.size();
+    std::size_t carried        = 0;
+    for (const std::string& skipped : out.skipped_roots)
+        for (const LibraryTrack& t : previous.tracks)
+            if (detail::isPathUnder(t.path, skipped)) ++carried;
+    prev_in_walked = prev_in_walked > carried ? prev_in_walked - carried : 0;
+
     const std::size_t kept = out.counts.unchanged + out.counts.updated;
-    out.counts.removed = previous.tracks.size() > kept
-                       ? static_cast<uint32_t>(previous.tracks.size() - kept) : 0u;
+    out.counts.removed = prev_in_walked > kept
+                       ? static_cast<uint32_t>(prev_in_walked - kept) : 0u;
     out.completed = true;
     // Slice 8: the compilation set is derived from the records, so a freshly scanned
     // index has to build it too - a scan is the other of the two ways an index comes
@@ -295,7 +328,8 @@ void LibraryScanner::cancel() {
     progress_.cancel.store(true, std::memory_order_release);
 }
 
-void LibraryScanner::start(const std::string& root, const std::string& index_path) {
+void LibraryScanner::start(const std::vector<std::string>& roots,
+                           const std::string& index_path) {
     if (active_.load(std::memory_order_acquire)) return;
     join();                       // reap a finished previous run
 
@@ -306,11 +340,11 @@ void LibraryScanner::start(const std::string& root, const std::string& index_pat
     done_.store(false, std::memory_order_release);
     active_.store(true, std::memory_order_release);
 
-    worker_ = std::thread([this, root, index_path]() {
+    worker_ = std::thread([this, roots, index_path]() {
         LibraryIndex previous;
         (void)loadIndexFile(index_path, previous);      // absent/corrupt -> full scan
 
-        ScanOutcome res = scanCollection(root, previous, progress_);
+        ScanOutcome res = scanCollection(roots, previous, progress_);
 
         // THE INVARIANT: a cancelled scan never commits. Its index is partial,
         // and committing it would delete every record the walk had not reached.

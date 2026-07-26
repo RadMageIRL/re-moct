@@ -117,7 +117,11 @@ struct DigiConfig {
     // UNTRUSTED for path purposes: a user types this, so it is not guaranteed valid
     // UTF-8, and on Windows fs::path() throws on invalid UTF-8 (as does
     // fs::exists(s, ec), because the conversion runs before the code applies).
-    std::string library_root;
+    // Slice 11: SEVERAL roots, persisted as repeated `library_root=` lines - the
+    // idiom `podcast=` and `pod_ep=` already use for lists. Empty still means the OS
+    // music folder, so an untouched config behaves exactly as it did, and a config
+    // with one line yields a vector of one.
+    std::vector<std::string> library_roots;
 
     // Follow the playing track: auto-move the playlist cursor to the playing row on
     // track change (F3). false = cursor stays where you left it (browse undisturbed).

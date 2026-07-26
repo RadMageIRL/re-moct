@@ -48,14 +48,14 @@ static LibraryTrack mk(const std::string& path, const std::string& artist,
 // ── Round-trip: a plain index survives serialise -> parse unchanged ──────────
 static void test_roundtrip_basic() {
     LibraryIndex idx;
-    idx.root = "C:\\Users\\david\\Music";
+    idx.roots = { "C:\\Users\\david\\Music" };
     idx.tracks.push_back(mk("C:\\Users\\david\\Music\\a.flac", "Artist", "Album", "Title"));
     idx.tracks.push_back(mk("/home/dos/Music/b.opus", "Other", "Record", "Song"));
 
     auto r = parseIndex(serialiseIndex(idx));
     CHECK(r.ok, "header understood");
     CHECK(r.skipped_records == 0, "skipped=%zu", r.skipped_records);
-    CHECK(r.index.root == idx.root, "root [%s]", r.index.root.c_str());
+    CHECK(r.index.roots == idx.roots, "roots n=%zu", r.index.roots.size());
     CHECK(r.index.tracks.size() == 2, "n=%zu", r.index.tracks.size());
     if (r.index.tracks.size() == 2) {
         CHECK(sameTrack(r.index.tracks[0], idx.tracks[0]), "track 0 exact");
@@ -83,7 +83,7 @@ static void test_roundtrip_hostile_fields() {
     };
     for (const auto& s : nasty) {
         LibraryIndex idx;
-        idx.root = s;
+        idx.roots = s.empty() ? std::vector<std::string>{} : std::vector<std::string>{ s };
         LibraryTrack t;
         t.path = s; t.artist = s; t.album = s; t.album_artist = s;
         t.title = s; t.genre = s;
@@ -96,7 +96,8 @@ static void test_roundtrip_hostile_fields() {
 
         auto r = parseIndex(serialiseIndex(idx));
         CHECK(r.ok && r.skipped_records == 0, "parsed [len=%zu]", s.size());
-        CHECK(r.index.root == s, "root exact [len=%zu]", s.size());
+        CHECK(r.index.roots == (s.empty() ? std::vector<std::string>{} : std::vector<std::string>{ s }),
+              "root exact [len=%zu]", s.size());
         if (r.index.tracks.size() == 1)
             CHECK(sameTrack(r.index.tracks[0], t), "fields exact [len=%zu]", s.size());
         else
@@ -138,7 +139,8 @@ static void test_header_rejection() {
     // A valid header with zero records is legitimately an EMPTY library, not an
     // error - a scan that found nothing must be distinguishable from a corrupt file.
     auto r = parseIndex("remoct-library-index\t1\nroot\t/m\n");
-    CHECK(r.ok && r.index.tracks.empty() && r.index.root == "/m", "empty library is ok");
+    CHECK(r.ok && r.index.tracks.empty() && r.index.roots == std::vector<std::string>{"/m"},
+          "empty library is ok");
 }
 
 // ── Malformed records are skipped and counted, never guessed at ─────────────
@@ -167,7 +169,7 @@ static void test_record_rejection() {
 // ── Truncation, CRLF, and a missing trailing newline all behave ─────────────
 static void test_truncation_and_line_endings() {
     LibraryIndex idx;
-    idx.root = "/m";
+    idx.roots = { "/m" };
     idx.tracks.push_back(mk("/p1", "a", "b", "c"));
     idx.tracks.push_back(mk("/p2", "a", "b", "d"));
     const std::string full = serialiseIndex(idx);
@@ -209,7 +211,7 @@ static void test_grouping_artist() {
 // ── Hierarchy queries: grouping, dedupe, determinism ───────────────────────
 static void test_queries() {
     LibraryIndex idx;
-    idx.root = "/m";
+    idx.roots = { "/m" };
     // A compilation: three artists, one album-artist. Must be ONE artist row.
     for (int i = 0; i < 3; ++i) {
         LibraryTrack t = mk("/c" + std::to_string(i), "Guest " + std::to_string(i),
@@ -578,10 +580,10 @@ static void test_compilation_scale() {
 
 static void test_scale(std::size_t n, const char* label) {
     LibraryIndex idx;
-    idx.root = "C:\\Users\\david\\Music";
+    idx.roots = { "C:\\Users\\david\\Music" };
     idx.tracks.reserve(n);
     for (std::size_t i = 0; i < n; ++i) {
-        LibraryTrack t = mk(idx.root + "\\Artist " + std::to_string(i % 400) +
+        LibraryTrack t = mk(idx.roots.front() + "\\Artist " + std::to_string(i % 400) +
                                 "\\Album " + std::to_string(i % 1200) +
                                 "\\" + std::to_string(i) + " caf\xC3\xA9.flac",
                             "Artist " + std::to_string(i % 400),
@@ -643,7 +645,7 @@ static void test_restore_cursor() {
 // is not a gate. Tag text is display text and never becomes a path.
 static void test_latin1_artist_survives() {
     LibraryIndex idx;
-    idx.root = "/m";
+    idx.roots = { "/m" };
     LibraryTrack t = mk("/m/a.flac", "Bj\xF6rk", "Post", "Army of Me");  // raw 0xF6, invalid UTF-8
     idx.tracks.push_back(t);
     LibraryTrack t2 = mk("/m/b.flac", "caf\xC3\xA9 tacvba", "Re", "El Ciclon");  // valid UTF-8
@@ -938,6 +940,116 @@ static void test_stat_queries_scale() {
     CHECK(ms(t3,t4) < 3000, "genres at 100k took %.1f ms", ms(t3,t4));
 }
 
+// ═══ Slice 11: root paths and the multi-root format ═════════════════════════
+
+static void test_normalise_root() {
+    using libidx::detail::normaliseRoot;
+    CHECK(normaliseRoot("/home/dos/m/")  == "/home/dos/m", "trailing slash stripped");
+    CHECK(normaliseRoot("/home/dos/m")   == "/home/dos/m", "already clean is unchanged");
+    CHECK(normaliseRoot("")              == "",            "empty stays empty");
+    CHECK(normaliseRoot("/")             == "/",           "the filesystem root keeps its separator");
+#ifdef _WIN32
+    CHECK(normaliseRoot("D:\\Music\\")   == "D:\\Music", "one trailing backslash stripped");
+    CHECK(normaliseRoot("D:\\Music\\\\") == "D:\\Music", "repeated separators stripped");
+    // A BARE DRIVE ROOT KEEPS ITS SEPARATOR. "C:" is not "C:\" - it names the drive's
+    // CURRENT DIRECTORY, which is a different folder entirely.
+    CHECK(normaliseRoot("C:\\") == "C:\\", "a bare drive root keeps its separator");
+#else
+    // ON LINUX A BACKSLASH IS AN ORDINARY FILENAME CHARACTER. A directory really can
+    // be called `weird\`, and stripping it would name something else - or nothing.
+    // This assertion exists because the first cut of normaliseRoot stripped both
+    // characters on both platforms and the Linux gate caught it.
+    CHECK(normaliseRoot("/home/dos/weird\\") == "/home/dos/weird\\",
+          "Linux: a trailing backslash is part of the name, not a separator");
+    CHECK(normaliseRoot("C:\\") == "C:\\", "Linux: 'C:\\' is just a filename, unchanged");
+#endif
+}
+
+static void test_is_path_under() {
+    using libidx::detail::isPathUnder;
+    CHECK(isPathUnder("/m/a/b.flac", "/m"),     "a file under the root");
+    CHECK(isPathUnder("/m/a/b.flac", "/m/a"),   "under a deeper root");
+    CHECK(isPathUnder("/m", "/m"),              "a root is under itself");
+    CHECK(isPathUnder("/m/", "/m"),             "trailing separators do not matter");
+    CHECK(!isPathUnder("/m", "/m/a"),           "a parent is NOT under its child");
+    CHECK(!isPathUnder("/other/x", "/m"),       "a sibling is not under it");
+    CHECK(!isPathUnder("/m/a", ""),             "nothing is under an empty root");
+
+    // THE BOUNDARY CASE, BY NAME. A plain prefix compare says "/music" contains
+    // "/musicology", which would refuse a legitimate second root as a duplicate and -
+    // once carry-forward uses this - hand one root's records to another.
+    CHECK(!isPathUnder("/musicology/x", "/music"), "/music is NOT a parent of /musicology");
+    CHECK(isPathUnder("/music/x", "/music"),       "but the real child still matches");
+
+    // A root that already ends in a separator needs no extra one.
+    CHECK(isPathUnder("/anything", "/"), "everything is under /");
+
+#ifdef _WIN32
+    // Windows-shaped paths only mean anything on Windows: on Linux a backslash is an
+    // ordinary character, so "C:\Music\x" is one filename with no separators in it and
+    // is correctly not under anything. Asserting these unconditionally is what the
+    // Linux gate rejected.
+    CHECK(!isPathUnder("C:\\Musicology\\x.flac", "C:\\Music"),
+          "C:\\Music is NOT a parent of C:\\Musicology");
+    CHECK(isPathUnder("C:\\Music\\x.flac", "C:\\Music"), "the real Windows child matches");
+    CHECK(isPathUnder("C:\\anything.flac", "C:\\"),      "everything is under a drive root");
+    CHECK(isPathUnder("c:\\music\\X.FLAC", "C:\\Music"), "Windows: case folds");
+    CHECK(isPathUnder("C:/Music/x.flac",   "C:\\Music"), "Windows: separators fold");
+#else
+    CHECK(!isPathUnder("/Music/x", "/music"), "Linux: case does NOT fold");
+    CHECK(!isPathUnder("C:\\Music\\x.flac", "C:\\Music"),
+          "Linux: a Windows path is one filename, under nothing");
+#endif
+}
+
+// The format rule from the header, asserted so it stays true: version 1 permits one
+// or more root lines, and an older reader survives the extras.
+static void test_multi_root_format() {
+    LibraryIndex idx;
+    idx.roots = { "C:\\Users\\david\\Music", "D:\\Music" };
+    idx.tracks.push_back(mk("C:\\Users\\david\\Music\\a.flac", "A", "B", "C"));
+    idx.tracks.push_back(mk("D:\\Music\\b.flac",               "D", "E", "F"));
+
+    const std::string text = serialiseIndex(idx);
+    auto r = parseIndex(text);
+    CHECK(r.ok, "multi-root header understood");
+    CHECK(r.skipped_records == 0, "no records lost, skipped=%zu", r.skipped_records);
+    CHECK(r.index.roots == idx.roots, "both roots round-trip in order");
+    CHECK(r.index.tracks.size() == 2, "both records survive");
+
+    // A SHIPPED SINGLE-ROOT (v1) FILE parses to a list of one. This is the assertion
+    // that says no rescan is needed on upgrade, which is the whole reason the version
+    // was not bumped.
+    auto one = parseIndex("remoct-library-index\t1\nroot\t/m\n"
+                          "/m/x.flac\ta\tb\tc\td\te\t1\t1\t2000\t180\t170\t500\n");
+    CHECK(one.ok, "a v1 single-root file still parses");
+    CHECK(one.index.roots == std::vector<std::string>{"/m"}, "as a list of one");
+    CHECK(one.index.tracks.size() == 1, "with its record");
+
+    // No roots configured writes one EMPTY root line - byte-identical to what shipped
+    // for an unconfigured root - and parses back to an empty list, not a list holding
+    // one empty string that would later look like a real root.
+    LibraryIndex none;
+    none.tracks.push_back(mk("/x.flac", "a", "b", "c"));
+    auto rn = parseIndex(serialiseIndex(none));
+    CHECK(rn.ok && rn.index.roots.empty(), "no roots round-trips as an empty list");
+    CHECK(rn.index.tracks.size() == 1, "and keeps its records");
+
+    // THE DOWNGRADE PATH: an older reader takes line 1 as the only root and meets the
+    // second root line in its record loop, where it has 2 fields instead of 12. It is
+    // counted as a skipped record and EVERY record still loads. Simulated by feeding a
+    // 2-field line into the record region.
+    auto old_style = parseIndex("remoct-library-index\t1\nroot\t/m\n"
+                                "/m/x.flac\ta\tb\tc\td\te\t1\t1\t2000\t180\t170\t500\n"
+                                "root\t/m2\n"
+                                "/m2/y.flac\ta\tb\tc\td\te\t1\t1\t2000\t180\t170\t500\n");
+    CHECK(old_style.ok, "a root line among the records is not fatal");
+    CHECK(old_style.index.tracks.size() == 2,
+          "and every record still loads, got %zu", old_style.index.tracks.size());
+    CHECK(old_style.skipped_records == 1, "the stray root line is counted, skipped=%zu",
+          old_style.skipped_records);
+}
+
 int main() {
     test_roundtrip_basic();
     test_roundtrip_hostile_fields();
@@ -968,6 +1080,9 @@ int main() {
     test_most_played();
     test_never_played();
     test_stat_queries_scale();
+    test_normalise_root();
+    test_is_path_under();
+    test_multi_root_format();
 
     std::printf("library_index_test: %d checks, %d failures\n", g_checks, g_fail);
     return g_fail ? 1 : 0;

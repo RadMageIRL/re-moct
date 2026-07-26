@@ -233,6 +233,7 @@ void DigiConfig::load() {
     fav_tracks.clear();
     radio_stations.clear();
     radio_station_names.clear();
+    library_roots.clear();      // repeated key: appends on parse, so it must start empty
     podcast_feeds.clear();
     podcast_feed_titles.clear();
     podcast_feed_art.clear();
@@ -276,7 +277,9 @@ void DigiConfig::load() {
         // Library slice 6. An ABSENT key leaves the default (on), so an existing
         // config gains the section; "library=0" is how a folder-player user opts out.
         else if (key == "library")            library            = (val == "1");
-        else if (key == "library_root")       library_root       = val;
+        // Repeated: each line APPENDS. An empty value is ignored rather than stored,
+        // so a stray "library_root=" cannot become a root that resolves to nothing.
+        else if (key == "library_root")     { if (!val.empty()) library_roots.push_back(val); }
         else if (key == "follow_playing")     follow_playing     = (val == "1");
         else if (key == "show_filetype")      show_filetype      = (val == "1");
         else if (key == "rip_formats")        rip_formats        = val;
@@ -494,7 +497,8 @@ void DigiConfig::save() const {
         // Written only when set, so an unset root stays unset rather than being frozen
         // to whatever the OS music folder happened to be on the day it was saved. The
         // rec_dir convention.
-        if (!library_root.empty()) f << "library_root=" << library_root << "\n";
+        for (const std::string& r : library_roots)
+            if (!r.empty()) f << "library_root=" << r << "\n";
         f << "follow_playing="    << (follow_playing ? "1" : "0") << "\n";
         f << "show_filetype="     << (show_filetype ? "1" : "0") << "\n";
         f << "rip_formats="       << rip_formats << "\n";

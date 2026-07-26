@@ -1881,6 +1881,7 @@ void UIManager::drawOverlay() {
     else if (ui_overlay_ == UIOverlay::ConvertConfirm) drawConvertConfirm();
     else if (ui_overlay_ == UIOverlay::PlaylistFormat) drawPlaylistFormat();
     else if (ui_overlay_ == UIOverlay::PodcastPlayConflict) drawPodcastPlayConflict();
+    else if (ui_overlay_ == UIOverlay::LibraryRoot)         drawLibraryRootConfirm();
     else if (ui_overlay_ == UIOverlay::PodcastIndexCreds)   drawPodcastIndexCreds();
 }
 
@@ -6165,6 +6166,23 @@ void UIManager::handleInput(int ch) {
     // ── Podcast play-conflict popup: a DIFFERENT episode is downloading and the user
     // pressed play. [W] wait (queue it to play next) / [P] play now (interrupt the
     // active download, which restarts later) / [Esc] cancel.
+    if (ui_overlay_ == UIOverlay::LibraryRoot) {
+        if (ch == 'y' || ch == 'Y') {
+            ui_overlay_ = UIOverlay::None;
+            if (lib_root_removing_) removeLibraryRoot(lib_root_candidate_);
+            else                    addLibraryRoot(lib_root_candidate_);
+            lib_root_candidate_.clear();
+            redraw_needed_.store(true);
+            return;
+        }
+        if (ch == 27 || ch == 'n' || ch == 'N') {
+            ui_overlay_ = UIOverlay::None;
+            lib_root_candidate_.clear();
+            redraw_needed_.store(true);
+            return;
+        }
+        return;                              // modal: swallow everything else
+    }
     if (ui_overlay_ == UIOverlay::PodcastPlayConflict) {
         int idx = podcast_conflict_index_;
         if (ch == 'w' || ch == 'W') {
@@ -7415,7 +7433,11 @@ void UIManager::handleInput(int ch) {
             // had exactly one caller, the destructor, so slice 3's cancelled-and-retry
             // state could only be entered by quitting mid-scan - which destroyed the flag
             // before its message could render.
-            if (in_library_ && lib_scan_running_) {
+            // NOT gated on in_library_ any more (slice 11): '@' can start a scan from
+            // the folder browser, so cancel has to be reachable from there too, or the
+            // user is told "Esc to cancel" by a key that does nothing. lib_scan_running_
+            // alone still scopes it to exactly the moments a scan is in flight.
+            if (lib_scan_running_) {
                 cancelLibraryScan();
                 redraw_needed_.store(true);
             }
@@ -7961,6 +7983,37 @@ void UIManager::handleInput(int ch) {
                 openInputBar(InputMode::LibrarySearch, "");
             }
             break;
+        case '@': {  // make this folder a library folder, or stop it being one
+            // '@' reads as "this location", it is plain printable ASCII so it needs no
+            // cross-platform proof (the '|' precedent), and the sweep confirmed it
+            // unbound - re-run against the tree rather than trusting the survey, since
+            // the last one handed over said '?' was free and '?' is the Help pane.
+            //
+            // FOLDER BROWSER ONLY, on a directory row. The mirror of 'g': a key that
+            // means something where it has something to do. Inside [Library] there are
+            // no directories to make a root of.
+            if (ui_overlay_ != UIOverlay::None || focus_ != Pane::DirBrowser) break;
+            if (!config_.library) { libRootReject("The library is switched off"); break; }
+            if (in_library_ || in_drive_list_ || in_recent_ || in_favs_
+                || in_radio_ || in_podcasts_ || in_books_) break;
+            if (lib_scan_running_) { libRootReject("A library scan is already running"); break; }
+            if (dir_cursor_ < 0 || dir_cursor_ >= (int)dir_entries_.size()) break;
+            const std::string& nm = dir_entries_[(size_t)dir_cursor_];
+            if (nm.empty() || nm == ".." || nm == "[Back]" || nm.front() == '[') break;
+            namespace fsx = std::filesystem;
+            std::string cand = fsx::path(nm).is_absolute()
+                             ? nm : (fsx::path(current_dir_) / nm).string();
+            std::error_code dec;
+            if (!fsx::is_directory(fsx::path(cand), dec) || dec) {
+                libRootReject("Only a folder can be a library folder");
+                break;
+            }
+            lib_root_candidate_ = libidx::detail::normaliseRoot(cand);
+            lib_root_removing_  = isLibraryRoot(lib_root_candidate_);
+            ui_overlay_ = UIOverlay::LibraryRoot;
+            redraw_needed_.store(true);
+            break;
+        }
         case '%':   // cycle the stat views: most played -> never played -> back out
             // SECTION-SCOPED, and it has to be. 'p' was rejected for this: previous-track
             // is a transport control, music playing while browsing is the normal state,
@@ -9863,10 +9916,131 @@ static fs::path utf8Path(const std::string& s);
 // folder, MEMOIZED - CDRipper::musicRoot() is a COM SHGetKnownFolderPath, and calling
 // one of those per row per frame was the suspected cause of a scroll-time crash during
 // the podcast campaign. This is a session constant either way.
-std::string UIManager::libraryRoot() const {
-    if (!config_.library_root.empty()) return config_.library_root;
+std::vector<std::string> UIManager::libraryRoots() const {
+    if (!config_.library_roots.empty()) return config_.library_roots;
     static const std::string kMusicRoot = CDRipper::musicRoot();
-    return kMusicRoot;
+    return { kMusicRoot };
+}
+
+// Is this exact folder one of the configured roots? Exact (folded) match, not
+// coverage: '@' on a SUBFOLDER of a root must offer to add it and then be told it is
+// already covered, rather than silently offering to remove the parent.
+bool UIManager::isLibraryRoot(const std::string& path) const {
+    const std::string p = libidx::detail::foldPathKey(libidx::detail::normaliseRoot(path));
+    for (const std::string& e : config_.library_roots)
+        if (libidx::detail::foldPathKey(libidx::detail::normaliseRoot(e)) == p) return true;
+    return false;
+}
+
+// Yellow, bottom-left, ~5 s. THE mechanism for an in-place refusal, and not
+// lib_status_ - that is a ROW INSIDE the library pane (the scanning line), with no
+// colour and no timeout. This is the F6-confirm line, which is where "yellow, in
+// place, never a toast" was ruled.
+void UIManager::libRootReject(const std::string& msg) {
+    status_msg_        = msg;
+    status_msg_ticks_  = 0;
+    status_msg_yellow_ = true;
+    redraw_needed_.store(true);
+}
+
+// Add a folder as a library root, or explain why not.
+//
+// THREE REJECTIONS, and the third is the one worth arguing about. Adding a PARENT of
+// an existing root is refused rather than absorbing the child: absorbing silently
+// deletes a root the user configured, its undo is a 15.8 s rescan, and it is the one
+// case where a typo ("C:\") has a blast radius measured in the whole disk. Refusing
+// and naming the conflict leaves them able to remove the child first if that is what
+// they meant.
+void UIManager::addLibraryRoot(const std::string& raw) {
+    const std::string root = libidx::detail::normaliseRoot(raw);
+    if (root.empty()) return;
+
+    for (const std::string& e : config_.library_roots) {
+        if (libidx::detail::foldPathKey(libidx::detail::normaliseRoot(e))
+            == libidx::detail::foldPathKey(root)) {
+            libRootReject("Folder is already in the library");
+            return;
+        }
+        if (libidx::detail::isPathUnder(root, e)) {
+            libRootReject("Already covered by " + sanitizeForDisplay(e));
+            return;
+        }
+        if (libidx::detail::isPathUnder(e, root)) {
+            libRootReject("That folder contains " + sanitizeForDisplay(e)
+                          + " - remove that one first");
+            return;
+        }
+    }
+
+    // The FIRST explicit root must not silently drop the implicit default. Until now
+    // an empty list meant the OS music folder; writing one root would make that folder
+    // vanish from the library without the user having removed anything.
+    if (config_.library_roots.empty()) {
+        const std::vector<std::string> implied = libraryRoots();   // the memoized default
+        for (const std::string& d : implied) {
+            const std::string nd = libidx::detail::normaliseRoot(d);
+            if (nd.empty()) continue;
+            if (libidx::detail::foldPathKey(nd) == libidx::detail::foldPathKey(root)) continue;
+            if (libidx::detail::isPathUnder(root, nd)) {   // the default already covers it
+                libRootReject("Already covered by " + sanitizeForDisplay(nd));
+                return;
+            }
+            config_.library_roots.push_back(nd);
+        }
+    }
+
+    config_.library_roots.push_back(root);
+    config_.save();
+    startLibraryScan("Added a library folder - scanning...");
+}
+
+// Remove a root. Its records leave IMMEDIATELY - isPathUnder already identifies them,
+// so no walk is needed - and the index file is rewritten so the removal survives a
+// restart. Instant is the honest behaviour here: a removal that waited for a rescan
+// would leave the user unable to tell whether it had worked.
+void UIManager::removeLibraryRoot(const std::string& raw) {
+    const std::string root = libidx::detail::normaliseRoot(raw);
+    auto& roots = config_.library_roots;
+    const std::size_t before = roots.size();
+    roots.erase(std::remove_if(roots.begin(), roots.end(),
+                    [&](const std::string& e) {
+                        return libidx::detail::foldPathKey(libidx::detail::normaliseRoot(e))
+                            == libidx::detail::foldPathKey(root);
+                    }),
+                roots.end());
+    if (roots.size() == before) { libRootReject("That folder is not a library folder"); return; }
+
+    auto& tr = library_index_.tracks;
+    const std::size_t tracks_before = tr.size();
+    tr.erase(std::remove_if(tr.begin(), tr.end(),
+                 [&](const libidx::LibraryTrack& t) {
+                     return libidx::detail::isPathUnder(t.path, root);
+                 }),
+             tr.end());
+    library_index_.roots = roots;
+    // The compilation set is DERIVED from the records, so it has to be rebuilt or a
+    // removed root could leave an album flagged on evidence that is no longer there.
+    libidx::rebuildCompilations(library_index_);
+    (void)libidx::saveIndexFileAtomic(libidx::libraryIndexPath(), library_index_);
+    config_.save();
+
+    if (in_library_) { libnav::reset(lib_nav_); populateLevel(); }
+    libRootReject("Removed " + sanitizeForDisplay(root) + " - "
+                  + std::to_string(tracks_before - tr.size()) + " tracks left the library");
+}
+
+// Every configured root on one line, for messages. Named rather than formatted at the
+// call site because two messages that list roots differently is a small version of the
+// two-lists problem this campaign keeps closing.
+std::string UIManager::rootsSummary() const {
+    const std::vector<std::string> roots = libraryRoots();
+    if (roots.empty()) return CDRipper::musicRoot();
+    std::string s;
+    for (std::size_t i = 0; i < roots.size(); ++i) {
+        if (i) s += (i + 1 == roots.size()) ? " and " : ", ";
+        s += roots[i];
+    }
+    return s;
 }
 
 // Can that folder actually be walked? Answering BEFORE starting a scan is what makes a
@@ -9889,17 +10063,27 @@ bool UIManager::libraryRootReadable(const std::string& root) const {
 // Start a scan. Shared by first enable, a changed root, and the F12 rescan, so all
 // three validate the root and set the same state - there is one way to start a scan.
 void UIManager::startLibraryScan(const char* reason) {
-    const std::string root = libraryRoot();
-    if (!libraryRootReadable(root)) {
+    const std::vector<std::string> roots = libraryRoots();
+    // Slice 11: refuse only when NOT ONE root is readable. With a single configured
+    // root that is exactly the shipped test and exactly the shipped message; with
+    // several, one offline drive must not stop the others being scanned, and the
+    // scanner carries the offline one's records forward untouched.
+    std::size_t readable = 0;
+    for (const std::string& r : roots) if (libraryRootReadable(r)) ++readable;
+    if (readable == 0) {
         // NOT "cancelled". This is the message that did not exist before slice 6, and
         // its absence is why an unreadable root reported a cancellation.
         lib_scan_running_     = false;
         lib_cancel_requested_ = false;
-        lib_status_ = "Cannot read the music folder: " + sanitizeForDisplay(root);
-        populateLevel();
+        lib_status_ = (roots.size() == 1)
+            ? "Cannot read the music folder: " + sanitizeForDisplay(roots.front())
+            : "Cannot read any of the " + std::to_string(roots.size()) + " library folders";
+        // ONLY WHEN THE USER IS LOOKING AT THE LIBRARY. See the note below.
+        if (in_library_) populateLevel();
+        else             libRootReject(lib_status_);
         return;
     }
-    library_scanner_.start(root, libidx::libraryIndexPath());
+    library_scanner_.start(roots, libidx::libraryIndexPath());
     lib_scan_running_     = true;
     lib_cancel_requested_ = false;
     // The reason is part of the message, not set by the caller beforehand: this
@@ -9908,7 +10092,25 @@ void UIManager::startLibraryScan(const char* reason) {
     // message on the first cut of this slice.
     lib_status_ = std::string(reason ? reason : "Scanning the music folder...")
                 + " (Esc to cancel)";
-    populateLevel();
+
+    // ── THE PANE IS NOT THIS FUNCTION'S TO TAKE (slice 11 gate failure) ────────
+    //
+    // populateLevel() used to run unconditionally here, and every caller of this
+    // function was inside [Library] until slice 11 added '@'. Pressing '@' in the
+    // FOLDER BROWSER therefore cleared dir_entries_ and pushed the library's [Back]
+    // row and lib_status_ into it: the directory listing vanished, the header still
+    // said "Dir: D:\", and the completion path could not put it back because THAT one
+    // is correctly guarded on in_library_.
+    //
+    // lib_status_ is a row inside the LIBRARY pane - established when this campaign
+    // corrected the brief's claim that it was the bottom-left line. Writing it into a
+    // pane the library does not own was the whole bug.
+    //
+    // So: repopulate only when the library pane is what the user is looking at.
+    // Otherwise the scan is background work and reports on the bottom-left yellow
+    // line, which is the mechanism for saying something without taking a pane.
+    if (in_library_) populateLevel();
+    else             libRootReject(lib_status_);
 }
 
 // Esc while a scan is running. The scanner already polls this per file and already
@@ -9920,7 +10122,8 @@ void UIManager::cancelLibraryScan() {
     lib_cancel_requested_ = true;      // tells the pickup which of the two this was
     library_scanner_.cancel();
     lib_status_ = "Cancelling the library scan...";
-    populateLevel();
+    if (in_library_) populateLevel();  // same rule as startLibraryScan - never take a
+    else             libRootReject(lib_status_);   // pane the library is not showing
 }
 
 void UIManager::enterLibrarySection() {
@@ -9945,9 +10148,15 @@ void UIManager::enterLibrarySection() {
         // root into the index, so the next entry compares equal and does nothing. Same
         // shape as the first-enable guard being "no index FILE" rather than "empty
         // index" - the guard has to be a condition the scan itself resolves.
-        const std::string root = libraryRoot();
-        if (!library_index_.root.empty() && library_index_.root != root) {
-            startLibraryScan("Music folder changed - rescanning...");
+        // Slice 11: the comparison is over the LIST, order included. Two roots that
+        // swapped places index the same files, but comparing sets rather than lists
+        // would mean writing a second comparison rule for a case nobody can reach
+        // without editing the config by hand - and the rescan it triggers is 251 ms
+        // of revalidation, not a re-read.
+        const std::vector<std::string> roots = libraryRoots();
+        if (!library_index_.roots.empty() && library_index_.roots != roots) {
+            startLibraryScan(roots.size() == 1 ? "Music folder changed - rescanning..."
+                                               : "Library folders changed - rescanning...");
             return;
         }
         lib_status_.clear();
@@ -10001,11 +10210,11 @@ void UIManager::showLibraryArtists() {
     const std::vector<std::string> rows = libidx::artists(library_index_, lib_nav_.genre);
     if (rows.empty()) {
         dir_entries_.push_back("");
+        // Slice 11: the empty state NAMES EVERY ROOT. "under X" was right when there
+        // was one; with three configured it would be wrong about where it looked.
         dir_display_.push_back(!lib_nav_.genre.empty()
             ? ("No artists in " + sanitizeForDisplay(lib_nav_.genre))
-            : "No audio found under " +
-                               sanitizeForDisplay(library_index_.root.empty()
-                                                  ? CDRipper::musicRoot() : library_index_.root));
+            : ("No audio found under " + sanitizeForDisplay(rootsSummary())));
         dir_cursor_ = 0; dir_scroll_ = 0;
         return;
     }
@@ -10436,14 +10645,25 @@ void UIManager::pollLibraryScan() {
     if (!lib_scan_running_) return;
 
     if (library_scanner_.active()) {                       // still walking: live count
+        const uint32_t seen = library_scanner_.progress().files_seen.load();
+        std::string s = "Scanning the music folder... " + std::to_string(seen) + " files";
         if (in_library_) {
-            const uint32_t seen = library_scanner_.progress().files_seen.load();
-            std::string s = "Scanning the music folder... " + std::to_string(seen) + " files";
             // Level 1 specifically, not populateLevel(): a scan can only be in
             // flight AT level 1, because the only row a scanning section shows is
             // the status row, whose identity is "" and which therefore cannot be
             // descended through. The status row belongs to level 1 and so does this.
             if (s != lib_status_) { lib_status_ = s; showLibraryArtists(); }
+        } else {
+            // Slice 11: a scan started with '@' runs while the user stands in the
+            // folder browser, so its progress goes on the bottom-left line and the
+            // listing is left alone. REFRESHED EVERY POLL on purpose - status_msg_
+            // expires after ~60 ticks (~5 s) and a scan takes 15, so a set-once
+            // message would vanish two-thirds of the way through and read as a
+            // finished scan. Re-setting resets the tick count.
+            lib_status_        = s;
+            status_msg_        = s + " (Esc to cancel)";
+            status_msg_ticks_  = 0;
+            status_msg_yellow_ = true;
         }
         return;
     }
@@ -10451,11 +10671,39 @@ void UIManager::pollLibraryScan() {
 
     libidx::ScanOutcome out = library_scanner_.take();
     lib_scan_running_ = false;
+    // Whether the user was watching the library pane while this ran. Decides who
+    // reports the result: the pane, or the bottom-left line.
+    const bool watching = in_library_;
 
     if (out.completed) {
+        // Slice 11: a scan that skipped a root SUCCEEDED - the other roots were walked
+        // and committed, and the skipped root's records were carried forward untouched.
+        // But it is not a clean scan, and saying nothing would let a user believe an
+        // offline drive had been rescanned. Yellow on the command line, in place, ~5s.
+        if (!out.skipped_roots.empty()) {
+            std::string s = "Kept tracks from " + std::to_string(out.skipped_roots.size())
+                          + (out.skipped_roots.size() == 1 ? " folder that is" : " folders that are")
+                          + " not readable: " + sanitizeForDisplay(out.skipped_roots.front());
+            if (out.skipped_roots.size() > 1) s += ", ...";
+            status_msg_        = s;
+            status_msg_ticks_  = 0;
+            status_msg_yellow_ = true;
+        }
+        const std::size_t n = out.index.tracks.size();
         library_index_ = std::move(out.index);
         lib_status_.clear();
         lib_scan_cancelled_ = false;
+        // Started from the folder browser: the pane never changed and must not change
+        // now, so the ONLY sign the scan finished is this line. Without it the progress
+        // message would simply stop updating and expire, which reads as a scan that
+        // died rather than one that finished. Skipped-root warnings above win.
+        // Not keyed on status_msg_yellow_: that flag can be true for an unrelated
+        // reason, and "was the user watching the library pane" is the actual question.
+        if (!watching && out.skipped_roots.empty()) {
+            status_msg_        = "Library scan complete - " + std::to_string(n) + " tracks";
+            status_msg_ticks_  = 0;
+            status_msg_yellow_ = true;
+        }
     } else if (lib_cancel_requested_) {
         // The user pressed Esc. Nothing was committed - the LIB-S2 invariant - so any
         // previous index file is still on disk, byte for byte.
@@ -10468,7 +10716,7 @@ void UIManager::pollLibraryScan() {
         // retrying an unreadable folder just fails again.
         lib_scan_cancelled_ = false;
         lib_status_ = "Could not read the music folder: " +
-                      sanitizeForDisplay(libraryRoot());
+                      sanitizeForDisplay(rootsSummary());
     }
     lib_cancel_requested_ = false;
     // populateLevel() rather than showLibraryArtists(): a completed scan relists
@@ -10477,7 +10725,19 @@ void UIManager::pollLibraryScan() {
     // behaviour change today - it is the correct shape for slice 6's rescan key,
     // which CAN fire from any level, and it re-queries from the two held strings
     // rather than from anything the old index handed out.
-    if (in_library_) populateLevel();
+    //
+    // The in_library_ guard was ALREADY here and correct; what was wrong was that
+    // startLibraryScan had no matching one, so a scan begun from the folder browser
+    // took the pane on the way in and nothing could give it back.
+    if (!watching) {
+        // Not watching: the pane was never touched, so there is nothing to relist.
+        // Cancelled and failed scans still owe the user a word, since the progress
+        // line they were reading is about to stop.
+        if (!out.completed && !lib_status_.empty()) libRootReject(lib_status_);
+        redraw_needed_.store(true);
+        return;
+    }
+    populateLevel();
 }
 
 // Spawn the byterm search worker (slice 6). Runs off the UI thread - a slow endpoint
@@ -11402,6 +11662,39 @@ void UIManager::drawPodcastPlayConflict() {
     mvwaddstr(w, 5, 3, "[W] Wait - queue this to play next");
     mvwaddstr(w, 6, 3, "[P] Play now - interrupt the download (it restarts later)");
     mvwaddstr(w, 7, 3, "[Esc] Cancel");
+    wrefresh(w);
+    delwin(w);
+}
+
+// Add or remove a library root (slice 11). Mirrors drawPodcastPlayConflict's box.
+//
+// A popup rather than a silent toggle because ADDING a root starts a scan, and a
+// keystroke that costs 15.8 seconds should say so first. Removal confirms too, and
+// says what it does - the records go IMMEDIATELY, no rescan - because "did that work,
+// or is something still pending?" is the question a silent removal leaves behind.
+void UIManager::drawLibraryRootConfirm() {
+    const int BOX_W = 66, BOX_H = 9;
+    int y0 = (screen_rows_ - BOX_H) / 2, x0 = (screen_cols_ - BOX_W) / 2;
+    if (y0 < 0) y0 = 0;
+    if (x0 < 0) x0 = 0;
+    WINDOW* w = newwin(BOX_H, BOX_W, y0, x0);
+    if (!w) return;
+    wbkgd(w, config_.awesome_mode ? COLOR_PAIR(CP_DIM) : COLOR_PAIR(0));
+    werase(w);
+    const char* title = lib_root_removing_ ? " REMOVE LIBRARY FOLDER " : " ADD LIBRARY FOLDER ";
+    panelFrame(w, title, true);
+    if (!config_.awesome_mode) mvwaddstr(w, 0, (BOX_W - (int)strlen(title)) / 2, title);
+
+    mvwaddnstr(w, 2, 3, sanitizeForDisplay(lib_root_candidate_).c_str(), BOX_W - 5);
+    if (lib_root_removing_) {
+        mvwaddstr(w, 4, 3, "Its tracks leave the library immediately. The files are");
+        mvwaddstr(w, 5, 3, "not touched, and no rescan is needed.");
+    } else {
+        mvwaddstr(w, 4, 3, "The library will scan this folder and everything under it.");
+        mvwaddstr(w, 5, 3, "Folders already indexed are revalidated, not re-read.");
+    }
+    mvwaddstr(w, 7, 3, lib_root_removing_ ? "[Y] Remove it    [Esc] Cancel"
+                                          : "[Y] Add it       [Esc] Cancel");
     wrefresh(w);
     delwin(w);
 }

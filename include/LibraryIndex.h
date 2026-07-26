@@ -434,12 +434,61 @@ inline std::vector<std::string> splitGenres(const std::string& g) {
     return out;
 }
 
-// Does this track carry `genre` among its (split) genres? Case-insensitive, so it
-// matches how genres() dedups and how every other identity compare in this file works.
+// ── The genre GROUPING key (slice 16) ───────────────────────────────────────
+//
+// `Post Punk` and `Post-Punk` are one genre written two ways. LIB-S10 recorded this
+// as not-fixed, and it was right about the fix it considered: SPLITTING on hyphens
+// breaks `Hip-Hop`, which is 49 records against Post-Punk's 2. But splitting is not
+// the only operation available. Grouping on a key that ignores punctuation joins the
+// two variants WITHOUT splitting anything, so `Hip-Hop` stays exactly one genre of
+// exactly 49 records - nothing is being cut in half.
+//
+// MEASURED over every one of the 30 post-split genre values in the real collection:
+// 29 rows out, and EXACTLY ONE group merges - `postpunk`, 5 + 2 = 7 records. The two
+// values that a careless rule would eat both survive:
+//   Hip-Hop              -> hiphop            49, alone
+//   Folk, World, & Country -> folkworldcountry 41, alone (it is NOT `folk`, which is 3)
+//   Pop-Rock             -> poprock           12, alone (neither `pop` nor `rock`)
+//
+// NON-ASCII BYTES PASS THROUGH UNTOUCHED and are never case-folded. Folding above
+// ASCII needs a Unicode table this program does not have and should not grow, and a
+// wrong fold merges genres that are not the same. So two values differing only in a
+// high byte stay two rows - failing toward "too many rows", which is the recoverable
+// direction. Same rule, same reason, as foldPathKey.
+//
+// THIS IS A DISPLAY AND COMPARE KEY. The tag on disk is not touched, the index file
+// is not touched, and nothing normalised is ever stored - a rescan produces a
+// byte-identical library.idx. Exactly the read-side shape foldPathKey has.
+inline std::string genreKey(const std::string& g) {
+    std::string o;
+    o.reserve(g.size());
+    for (char c : g) {
+        const unsigned char u = (unsigned char)c;
+        if (u > 0x7F)                  o.push_back(c);                    // never touched
+        else if (u >= 'A' && u <= 'Z') o.push_back((char)(u - 'A' + 'a'));
+        else if ((u >= 'a' && u <= 'z') || (u >= '0' && u <= '9')) o.push_back(c);
+        // every other ASCII byte - space, hyphen, ampersand, comma, dot - is dropped
+    }
+    return o;
+}
+
+// Does this track carry `genre` among its (split) genres?
+//
+// SLICE 16: compares on genreKey, not on icmp. This is not optional and it is not a
+// tidiness change. genres() now shows `Post Punk` as one row of 7, and this function
+// is what the artist and album levels beneath it filter with - so an exact compare
+// here would open that row onto the 5 tracks tagged `Post Punk` and hide the 2 tagged
+// `Post-Punk`. A list and a filter that disagree is a row that lies about its own
+// contents.
+//
+// One key, three readers: genres(), artists(idx, genre), albumsForGenre. No second
+// rule, for the same reason there is exactly one foldPathKey.
 inline bool trackHasGenre(const std::string& tag, const std::string& genre) {
     if (genre.empty()) return false;
+    const std::string key = genreKey(genre);
+    if (key.empty()) return false;      // a genre of pure punctuation matches nothing
     for (const std::string& g : splitGenres(tag))
-        if (icmp(g, genre) == 0) return true;
+        if (genreKey(g) == key) return true;
     return false;
 }
 
@@ -856,18 +905,48 @@ inline std::vector<std::string> artists(const LibraryIndex& idx) {
 // collection, under a name that is not a genre, would be the largest row in the
 // list. Those tracks stay reachable by artist, album and search, which is where
 // someone looks for them.
+// Slice 16: grouped on detail::genreKey, and the row is LABELLED with the variant
+// that the most records actually use - `Post Punk` (5) rather than `Post-Punk` (2).
+//
+// THE TIE RULE IS NOT DECORATION. Two variants with equal counts have to resolve
+// deterministically or the genre list reorders between runs on an unchanged
+// collection, because the winner would be whichever the hash map happened to yield
+// first. The tie goes to whichever sorts first under detail::icmp - the comparison
+// sortUniqueCI already uses, so it is not a new rule either.
+//
+// Counting is PER TRACK per distinct variant: a tag reading `Rock / Rock` is one
+// record's worth of Rock, not two.
 inline std::vector<std::string> genres(const LibraryIndex& idx) {
-    std::unordered_set<std::string> seen;
-    seen.reserve(64);
-    std::vector<std::string> out;
+    struct Variant { std::string label; std::size_t count = 0; };
+    std::unordered_map<std::string, std::vector<Variant>> groups;   // key -> its variants
+    std::unordered_set<std::string> per_track;
+
     for (const LibraryTrack& t : idx.tracks) {
         if (t.genre.empty()) continue;
-        for (std::string& g : detail::splitGenres(t.genre))
-            if (seen.insert(g).second) out.push_back(std::move(g));
+        per_track.clear();
+        for (const std::string& g : detail::splitGenres(t.genre)) {
+            if (!per_track.insert(g).second) continue;      // same variant twice on one tag
+            std::vector<Variant>& vs = groups[detail::genreKey(g)];
+            bool found = false;
+            for (Variant& v : vs)
+                if (v.label == g) { ++v.count; found = true; break; }
+            if (!found) vs.push_back({ g, 1 });
+        }
     }
-    // sortUniqueCI, not a plain sort: the hash set dedups by BYTES, so a future
-    // `rock` alongside `Rock` must still collapse to one row. This collection has
-    // no case variants today; that is measured, not assumed to continue.
+
+    std::vector<std::string> out;
+    out.reserve(groups.size());
+    for (auto& kv : groups) {
+        const Variant* best = nullptr;
+        for (const Variant& v : kv.second) {
+            if (!best || v.count > best->count
+                || (v.count == best->count && detail::icmp(v.label, best->label) < 0))
+                best = &v;
+        }
+        if (best) out.push_back(best->label);
+    }
+    // sortUniqueCI, not a plain sort: one row per key means the labels are already
+    // distinct, but the list still has to come out in a stable display order.
     detail::sortUniqueCI(out);
     return out;
 }

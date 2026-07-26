@@ -1050,7 +1050,138 @@ static void test_multi_root_format() {
           old_style.skipped_records);
 }
 
+// ═══ Slice 16: genre variant grouping ═══════════════════════════════════════
+//
+// `Post Punk` and `Post-Punk` are one genre written two ways. The key that joins
+// them must NOT join anything else - and the two values that a careless rule eats
+// are Hip-Hop (which hyphen-splitting breaks, which is why LIB-S10 stopped) and
+// `Folk, World, & Country` against `Folk`. Both are asserted, not spot-checked.
+static void test_genre_key() {
+    using libidx::detail::genreKey;
+
+    CHECK(genreKey("Post Punk") == genreKey("Post-Punk"),
+          "the two Post Punk variants must key the same");
+    CHECK(genreKey("Post Punk") == "postpunk", "key is folded and stripped");
+
+    // THE ONE THAT MATTERS. Nothing is split, so Hip-Hop stays whole and joins nothing.
+    CHECK(genreKey("Hip-Hop") == "hiphop", "Hip-Hop keys whole");
+    CHECK(genreKey("Hip-Hop") != genreKey("Hip"), "Hip-Hop is not Hip");
+    CHECK(genreKey("Hip-Hop") != genreKey("Hop"), "Hip-Hop is not Hop");
+    CHECK(genreKey("Hip-Hop") != genreKey("Rock"), "and not anything else");
+
+    // The comma case: `Folk, World, & Country` (41 records) must not become `Folk` (3).
+    CHECK(genreKey("Folk, World, & Country") == "folkworldcountry", "commas and & drop");
+    CHECK(genreKey("Folk, World, & Country") != genreKey("Folk"),
+          "*** Folk, World, & Country must NOT merge with Folk ***");
+
+    // Compound names keep away from their parts, because nothing is split.
+    CHECK(genreKey("Pop-Rock") != genreKey("Pop"),  "Pop-Rock is not Pop");
+    CHECK(genreKey("Pop-Rock") != genreKey("Rock"), "Pop-Rock is not Rock");
+    CHECK(genreKey("Indie Pop") != genreKey("Indie"), "Indie Pop is not Indie");
+    CHECK(genreKey("R&B") == "rb", "R&B keys to rb");
+    CHECK(genreKey("R&B") != genreKey("Rock"), "and collides with nothing present");
+
+    // Case folding is ASCII-only, and high bytes are carried through untouched.
+    const std::string a = "Bj\xC3\xB6rk-pop";      // valid UTF-8
+    const std::string b = "Bj\xC3\xB6rk pop";
+    CHECK(genreKey(a) == genreKey(b), "punctuation drops around a non-ASCII byte too");
+    CHECK(genreKey(a).find("\xC3\xB6") != std::string::npos,
+          "the non-ASCII bytes survive the key verbatim");
+    const std::string latin1 = "Rock\x92n";        // raw CP1252 byte, invalid UTF-8
+    CHECK(genreKey(latin1) == std::string("rock\x92n"),
+          "a raw high byte is kept, not dropped and not folded");
+    // Two genres differing ONLY above ASCII stay apart - failing toward two rows.
+    CHECK(genreKey("caf\xC3\xA9") != genreKey("caf\xC3\x89"),
+          "no case folding above ASCII, so these stay two genres");
+
+    CHECK(genreKey("---").empty(), "a value of pure punctuation keys to nothing");
+}
+
+static void test_genre_grouping_and_label() {
+    LibraryIndex idx;
+    // 3 x "Post Punk" against 1 x "Post-Punk": the more common variant labels the row.
+    idx.tracks.push_back(mkg("/1", "A", "Al", "T1", "Post Punk"));
+    idx.tracks.push_back(mkg("/2", "B", "Bl", "T2", "Post Punk"));
+    idx.tracks.push_back(mkg("/3", "C", "Cl", "T3", "Post Punk"));
+    idx.tracks.push_back(mkg("/4", "D", "Dl", "T4", "Post-Punk"));
+    idx.tracks.push_back(mkg("/5", "E", "El", "T5", "Hip-Hop / Rap"));
+    idx.tracks.push_back(mkg("/6", "F", "Fl", "T6", "Folk, World, & Country"));
+    idx.tracks.push_back(mkg("/7", "G", "Gl", "T7", "Folk"));
+    libidx::rebuildCompilations(idx);
+
+    const auto g = libidx::genres(idx);
+    // Post Punk (one row), Hip-Hop, Rap, Folk World & Country, Folk = 5.
+    CHECK(g.size() == 5, "genres gave %zu rows, wanted 5", g.size());
+
+    int postpunk = 0, hiphop = 0, folk = 0, fwc = 0;
+    std::string pp_label;
+    for (const auto& s : g) {
+        if (libidx::detail::genreKey(s) == "postpunk")         { ++postpunk; pp_label = s; }
+        if (libidx::detail::genreKey(s) == "hiphop")           ++hiphop;
+        if (libidx::detail::genreKey(s) == "folk")             ++folk;
+        if (libidx::detail::genreKey(s) == "folkworldcountry") ++fwc;
+    }
+    CHECK(postpunk == 1, "the two Post Punk variants are ONE row, saw %d", postpunk);
+    CHECK(pp_label == "Post Punk", "labelled by the more common variant, got \"%s\"",
+          pp_label.c_str());
+    CHECK(hiphop == 1, "Hip-Hop is one row");
+    CHECK(folk == 1 && fwc == 1, "Folk and Folk, World, & Country stay two rows");
+
+    // THE TIE. Equal counts must resolve the same way every run, or the list reorders.
+    LibraryIndex t;
+    t.tracks.push_back(mkg("/1", "A", "Al", "T1", "Post-Punk"));
+    t.tracks.push_back(mkg("/2", "B", "Bl", "T2", "Post Punk"));
+    libidx::rebuildCompilations(t);
+    const auto tg = libidx::genres(t);
+    CHECK(tg.size() == 1, "a tie is still one row");
+    const std::string first = tg.empty() ? std::string() : tg[0];
+    for (int i = 0; i < 8; ++i) {
+        const auto again = libidx::genres(t);
+        CHECK(!again.empty() && again[0] == first,
+              "the tie label changed between runs: \"%s\" then \"%s\"",
+              first.c_str(), again.empty() ? "" : again[0].c_str());
+    }
+
+    // A tag naming the same variant twice is one record's worth, not two.
+    LibraryIndex d;
+    d.tracks.push_back(mkg("/1", "A", "Al", "T1", "Rock / Rock"));
+    libidx::rebuildCompilations(d);
+    CHECK(libidx::genres(d).size() == 1, "a doubled variant on one tag is one row");
+}
+
+// The half the brief did not name: grouping the LIST without the FILTER ships a row
+// that lies - one Post Punk row counting 7 that opens onto 5.
+static void test_genre_filter_matches_across_variants() {
+    LibraryIndex idx;
+    idx.tracks.push_back(mkg("/1", "A", "Al", "T1", "Post Punk"));
+    idx.tracks.push_back(mkg("/2", "B", "Bl", "T2", "Post-Punk"));
+    idx.tracks.push_back(mkg("/3", "C", "Cl", "T3", "Hip-Hop"));
+    libidx::rebuildCompilations(idx);
+
+    using libidx::detail::trackHasGenre;
+    CHECK(trackHasGenre("Post-Punk", "Post Punk"),
+          "*** filtering on Post Punk must find a Post-Punk track ***");
+    CHECK(trackHasGenre("Post Punk", "Post-Punk"), "and the compare is symmetric");
+    CHECK(!trackHasGenre("Hip-Hop", "Post Punk"), "and does not over-match");
+    CHECK(!trackHasGenre("Hip", "Hip-Hop"), "Hip does not satisfy Hip-Hop");
+    CHECK(!trackHasGenre("Rock", ""), "an empty genre matches nothing");
+    CHECK(!trackHasGenre("Rock", "---"), "a punctuation-only genre matches nothing");
+
+    // The artist list under the grouped row must contain BOTH tracks' artists.
+    const auto ar = libidx::artists(idx, "Post Punk");
+    CHECK(ar.size() == 2, "the grouped genre lists %zu artists, wanted 2", ar.size());
+
+    // Splitting still runs first, keying second.
+    CHECK(trackHasGenre("Rock / Folk, World, & Country", "Folk, World, & Country"),
+          "a split part is keyed independently");
+    CHECK(!trackHasGenre("Rock / Folk, World, & Country", "Folk"),
+          "and that part is still not Folk");
+}
+
 int main() {
+    test_genre_key();
+    test_genre_grouping_and_label();
+    test_genre_filter_matches_across_variants();
     test_roundtrip_basic();
     test_roundtrip_hostile_fields();
     test_roundtrip_numeric_extremes();

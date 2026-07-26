@@ -235,6 +235,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The play queue is unaffected, and that is on purpose: the queue is an order to
   play things in rather than a list of what you own, so asking for the same song
   twice in a row is a reasonable thing to want and still works.
+- **`g` now closes the genre list as well as opening it.** It used to be a one-way
+  door: once you were looking at genres, nothing inside `[Library]` took you back to
+  the plain artist list, and the only way out was to leave the section entirely and
+  come back. Pressing `g` a second time now returns you exactly where you pressed it,
+  and the left arrow and `[Back]` agree with it. `%` already worked this way, and
+  this is `g` catching up. The one cost, said plainly: leaving `[Library]` from the
+  genre list now takes two presses instead of one, because each press of the left
+  arrow undoes exactly one thing, which is how it behaves everywhere else.
+- **The left arrow could stop working entirely.** Pressing `%` for the stat views and
+  then `|` to search, then coming back, left the left arrow doing nothing at all -
+  permanently, until you went somewhere else. `[Back]` was dead alongside it. It only
+  needed two keypresses from opening the section, and it is fixed.
+- **Genres written two ways are one genre.** `Post Punk` and `Post-Punk` were two
+  rows; they are now one, listed under whichever spelling more of your files use, and
+  opening it shows everything from both. Nothing is split to achieve this, so
+  `Hip-Hop` is still one genre and not a "Hip" and a "Hop", and
+  `Folk, World, & Country` is still itself and not filed under `Folk`. Your files are
+  not touched, the tags are not rewritten, and a rescan produces exactly the same
+  index it did before - this only changes which row a track is listed under.
+- `?` now covers `[Library]`. Sixteen slices of it had gone in without the help pane
+  ever mentioning the section existed, so there was no way to find out from inside
+  the program that you could browse by artist, search everything you own with `|`,
+  add a folder with `@`, or that `e` in the info pane edits tags. It says what exists
+  and which key reaches it; the per-list detail stays in the header of the list it
+  applies to, where it was already right.
 
 ### Internal
 

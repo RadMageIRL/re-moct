@@ -2960,7 +2960,11 @@ void UIManager::drawDirBrowser() {
         };
         switch (lib_nav_.level) {
             case libnav::Level::Genres:
-                hdr = " [Library] genres (Enter:artists  %:stats  [Back]/Left:leave) ";
+                // Slice 16: "back", not "leave" - because that is what it now does.
+                // The header stating where Left goes is the thing LIB-S4 fixed in
+                // four sections at once, so it has to keep pace when the answer
+                // changes.
+                hdr = " [Library] genres (Enter:artists  g:back  %:stats  [Back]/Left:back) ";
                 break;
             case libnav::Level::Stats:
                 // Says WHICH view and how many, for the same reason Results does: both
@@ -2969,7 +2973,7 @@ void UIManager::drawDirBrowser() {
                 hdr = std::string(" [Library] ") +
                       (lib_nav_.stat_view == libnav::StatView::MostPlayed
                            ? "most played " : "never played ") +
-                      lib_result_count_ + " (Enter:play  a:add  %:next  [Back]/Left:back) ";
+                      lib_result_count_ + " (Enter:play  a:add  %:next/out  [Back]/Left:back) ";
                 break;
             case libnav::Level::Artists:
                 // Inside a genre the header says so, and says Left goes back to the
@@ -3496,7 +3500,7 @@ void UIManager::drawHelp() {
         { "PgDn / PgUp",    "Navigate down / up one page"         },
         { "Home / End",     "Jump to first / last row"            },
         { "Left arrow",     "Go to parent directory"              },
-        { "g",              "Goto directory  (Tab = complete)"    },
+        { "g",              "Goto directory  (in [Library]: genres - see below)" },
         { "Playlist",       "",                             true  },
         { "a",              "Add selection to playlist (recursive)"},
         { "d",              "Delete selected track"               },
@@ -3519,7 +3523,8 @@ void UIManager::drawHelp() {
         { "L  (Shift+L)",   "Toggle lyrics  (needs .lrc file)"   },
         { "A  (Shift+A)",   "About RE-MOCT"                      },
         { "X  (Shift+X)",   "Output device picker"               },
-        { "i",              "Track info popup"                    },
+        { "i",              "Track info - follows the cursor in either pane"  },
+        { "e  (in info)",   "Edit tags of the track the info pane is showing" },
         { "Ctrl+L",         "Force redraw / fix layout after resize" },
         { "?",              "Toggle this help  (j/k, PgUp/PgDn, Home/End scroll)"  },
         { "q",              "Add track to play queue"             },
@@ -3533,10 +3538,27 @@ void UIManager::drawHelp() {
         { "F6",             "iHeart re-pin: off / ad-escape / hybrid / timed / live-edge" },
         { "F7  /  F8",      "Awesome theme: previous / next" },
         { "F  (Shift+F)",   "Toggle file-type column (FLAC/MP3/...) in the playlist" },
-        { "F12",            "Refresh the [Drives] list (pick up hot-plugged drives)" },
+        { "F12",            "Refresh [Drives], or rescan [Library]" },
         { "E  (Shift+E)",   "Eject highlighted CD drive (in [Drives])" },
         { "\\",             "Search the focused list - playlist or browser (jump to a row)" },
         { "/",              "Find new online: stations in [Radio], podcasts in [Podcasts]" },
+        // ── [Library] ────────────────────────────────────────────────────────
+        // Sixteen slices of capability that a user could not previously discover
+        // from this pane at all. DISCOVERY ONLY: what exists and which key reaches
+        // it. The per-level "[Back]/Left goes here" detail deliberately stays in the
+        // browser header, where it is already correct and level-aware - putting it
+        // here too would be a second list that has to agree with the first, which is
+        // the BrowserPins failure LIB-S3b existed to fix.
+        { "[Library]",      "",                             true  },
+        { "(about)",        "Browse by artist / album / track, however the folders are arranged" },
+        { "(setup)",        "Off by default: library=1 in remoct.conf, library_root=<folder>" },
+        { "@",              "Add or remove a library folder (on a folder in the browser)" },
+        { "Enter",          "Open artist, then album; on a track, add it and play it" },
+        { "a",              "Add without playing - on an album row, adds the whole album" },
+        { "|  (Shift+\\)",  "Search your WHOLE collection  (\\ searches just this list)" },
+        { "g",              "Genres  (press again to go back)"    },
+        { "%",              "Most played / never played  (again for next, again to leave)" },
+        { "F12  /  Esc",    "Rescan the library / cancel a running scan" },
 #ifdef PDCURSES
         { "Alt+Enter",      "Toggle fullscreen (borderless)"      },
 #endif
@@ -8013,8 +8035,11 @@ void UIManager::handleInput(int ch) {
             // as meaningless as it is for g.
             if (ui_overlay_ == UIOverlay::None && focus_ == Pane::DirBrowser
                 && in_library_ && !lib_scan_running_) {
-                lib_nav_.level = libnav::Level::Genres;
-                showLibraryGenres();
+                // Slice 16: a TOGGLE, through libnav, exactly as '%' goes through
+                // cycleStats. This used to assign the level directly, which is what
+                // made it the one view key with no way back.
+                libnav::toggleGenres(lib_nav_);
+                populateLevel();
                 redraw_needed_.store(true);
                 break;
             }

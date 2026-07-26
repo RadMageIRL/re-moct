@@ -476,8 +476,15 @@ static void test_genre_level() {
     CHECK(s.genre.empty(), "the filter is dropped on the way up");
     CHECK(s.sel_genre == "Rock", "but the genre cursor survives, to land back on it");
 
-    // And above Genres there is nothing.
-    CHECK(ascend(s) == Action::LeaveSection, "ascend from Genres leaves the section");
+    // SLICE 16 CHANGED THIS LINE, deliberately. It used to read:
+    //     CHECK(ascend(s) == Action::LeaveSection, "ascend from Genres leaves the section");
+    // and that WAS the shipped behaviour - which is precisely what made `g` one-way,
+    // because nothing inside the section led back to the unfiltered artist list.
+    // Genres is a VIEW, so it now unwinds to return_to like Stats and Results do.
+    // The default return_to on a fresh State is Artists.
+    CHECK(ascend(s) == Action::Repopulate, "ascend from Genres now goes back, not out");
+    CHECK(s.level == Level::Artists, "...to the unfiltered artist list");
+    CHECK(ascend(s) == Action::LeaveSection, "and Left from THERE leaves the section");
 
     // Outside a genre, Artists still leaves the section - shipped behaviour, untouched.
     State t;
@@ -573,7 +580,124 @@ static void test_stats_level() {
     CHECK(l.sel_track == "/music/x.flac", "but it is remembered for the cursor restore");
 }
 
+// ═══ Slice 16: the three key-reached views unwind coherently ════════════════
+//
+// Genres, Stats and Results are all opened by a key and all unwind to return_to.
+// Before this slice `g` was the odd one out - it assigned the level directly and
+// ascend() at Genres left the section - and return_to could be overwritten with a
+// view, which killed Left outright. Both are pinned here.
+
+// 1 + 2: 'g' is a toggle, and Left agrees with it.
+static void test_genre_view_toggles() {
+    State s; reset(s);
+    CHECK(s.level == Level::Artists, "fresh state is the artist list");
+
+    CHECK(toggleGenres(s) == Action::Repopulate, "g opens the genre view");
+    CHECK(s.level == Level::Genres, "...and lands on Genres");
+    CHECK(s.return_to == Level::Artists, "...remembering where it came from");
+
+    CHECK(toggleGenres(s) == Action::Repopulate, "g again closes it");
+    CHECK(s.level == Level::Artists, "...back to the artist list, NOT out of the section");
+
+    // From a deeper level the toggle returns THERE, not to the top.
+    State d; reset(d);
+    descend(d, "Muse");                       // Artists -> Albums
+    CHECK(d.level == Level::Albums, "descended to albums");
+    toggleGenres(d);
+    CHECK(d.level == Level::Genres, "g from albums opens genres");
+    toggleGenres(d);
+    CHECK(d.level == Level::Albums, "g again returns to ALBUMS, where it was pressed");
+
+    // ascend() must agree with the toggle: Left is the same thing.
+    State a; reset(a);
+    toggleGenres(a);
+    CHECK(ascend(a) == Action::Repopulate,
+          "Left at Genres repopulates - it must NOT LeaveSection any more");
+    CHECK(a.level == Level::Artists, "Left at Genres returns to where g was pressed");
+}
+
+// 3 + 4: THE DEAD-LEFT REGRESSION. This is the bug this slice found.
+static void test_return_to_never_holds_a_view() {
+    // The exact sequence the probe walked: % then | then Left then Left.
+    State s; reset(s);
+    cycleStats(s);                            // '%'  -> Stats
+    CHECK(s.level == Level::Stats, "% opened the stat view");
+    CHECK(s.return_to == Level::Artists, "and captured Artists as the way back");
+
+    beginSearch(s, "abc");                    // '|'  -> Results
+    CHECK(s.level == Level::Results, "| opened the results view");
+    CHECK(s.return_to == Level::Artists,
+          "return_to must STILL be Artists - a view may never be captured as the way back");
+
+    Level before = s.level;
+    Action a1 = ascend(s);                    // Left
+    CHECK(s.level != before, "Left out of Results moved somewhere");
+    CHECK(s.level == Level::Artists, "...straight back to Artists, not into Stats");
+
+    // Left again - this is where it used to stand still forever. LEAVING is progress
+    // too, so the assertion is "it did something", not "the level changed": a no-op
+    // is the failure, and pinning a destination would let a different wrong answer
+    // through.
+    before = s.level;
+    Action a2 = ascend(s);
+    CHECK(s.level != before || a2 == Action::LeaveSection,
+          "*** Left did nothing - this is the dead-Left bug ***");
+    (void)a1;
+
+    // Every ordering of the three view keys, and return_to survives all of them.
+    const char* order[] = { "g%|", "g|%", "%g|", "%|g", "|g%", "|%g" };
+    for (const char* seq : order) {
+        State t; reset(t);
+        for (const char* p = seq; *p; ++p) {
+            if      (*p == 'g') toggleGenres(t);
+            else if (*p == '%') cycleStats(t);
+            else                beginSearch(t, "q");
+        }
+        CHECK(!isViewLevel(t.return_to),
+              "after \"%s\", return_to holds a view level - Left will stand still", seq);
+    }
+
+    // And Left always makes progress from any view, whatever the route in.
+    for (const char* seq : order) {
+        State t; reset(t);
+        for (const char* p = seq; *p; ++p) {
+            if      (*p == 'g') toggleGenres(t);
+            else if (*p == '%') cycleStats(t);
+            else                beginSearch(t, "q");
+        }
+        for (int i = 0; i < 4; ++i) {
+            const Level was = t.level;
+            const Action act = ascend(t);
+            if (act == Action::LeaveSection) break;      // left the section: fine
+            CHECK(t.level != was, "after \"%s\", Left #%d was a no-op at a view", seq, i + 1);
+        }
+    }
+}
+
+// 5: the genre HIERARCHY path is untouched by any of the above.
+static void test_genre_hierarchy_still_walks() {
+    State s; reset(s);
+    toggleGenres(s);                          // 'g'
+    CHECK(s.level == Level::Genres, "at the genre list");
+
+    CHECK(descend(s, "Post Punk") == Action::Repopulate, "Enter on a genre descends");
+    CHECK(s.level == Level::Artists, "...into the artist list");
+    CHECK(s.genre == "Post Punk", "...with the filter set");
+
+    CHECK(ascend(s) == Action::Repopulate, "Left from a filtered artist list");
+    CHECK(s.level == Level::Genres, "...returns to the genre list");
+    CHECK(s.genre.empty(), "...and DROPS the filter");
+
+    // One more Left is now the toggle's answer, not LeaveSection.
+    CHECK(ascend(s) == Action::Repopulate, "Left at Genres goes back rather than out");
+    CHECK(s.level == Level::Artists, "...to the unfiltered artist list");
+    CHECK(ascend(s) == Action::LeaveSection, "and Left THERE leaves the section");
+}
+
 int main() {
+    test_genre_view_toggles();
+    test_return_to_never_holds_a_view();
+    test_genre_hierarchy_still_walks();
     test_descend_and_ascend();
     test_remembered_cursor_roundtrip();
     test_different_selection_discards_deeper_cursor();

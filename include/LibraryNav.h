@@ -71,6 +71,32 @@ inline bool rowIsPath(Level l) {
     return l == Level::Tracks || l == Level::Results || l == Level::Stats;
 }
 
+// ── The three levels reached by a KEY rather than by descending (slice 16) ───
+//
+// Genres (g), Stats (%) and Results (|) are all opened by pressing something, and
+// all three unwind to `return_to` rather than to a parent - they have no parent,
+// because they are not positions in the artist/album/track hierarchy.
+//
+// WHY THIS PREDICATE EXISTS, and it is not tidiness. `return_to` is ONE slot, and
+// before this slice both beginSearch and beginStats would write ANY current level
+// into it, including another view. Measured on the real navigation model:
+//
+//     press %   -> level=Stats    return_to=Artists
+//     press |   -> level=Results  return_to=Stats     <- a VIEW became the way back
+//     Left      -> level=Stats    return_to=Stats
+//     Left      -> level=Stats    *** NO-OP: Left is now dead ***
+//
+// Two keypresses from a fresh section entry, and it took out [Back] and Left
+// together - the one pair LIB-S4 established must always agree. This is the
+// single-slot-two-roles shape the XF campaign paid for in C1.
+//
+// The fix is to make the bad state UNREPRESENTABLE rather than to handle it: every
+// capture is guarded by this predicate, so `return_to` can only ever hold a
+// hierarchy level, and Left can never resolve to where it already is.
+inline bool isViewLevel(Level l) {
+    return l == Level::Genres || l == Level::Stats || l == Level::Results;
+}
+
 struct State {
     Level level = Level::Artists;
 
@@ -229,7 +255,16 @@ inline Action ascend(State& s) {
             return Action::LeaveSection;
 
         case Level::Genres:
-            return Action::LeaveSection;
+            // SLICE 16: a view unwinds to where it was opened from, exactly as
+            // Results and Stats already do. It used to LeaveSection, which made `g`
+            // one-way: nothing inside the section led back to the unfiltered artist
+            // list.
+            //
+            // Leaving the section from here now costs two presses rather than one -
+            // Genres to Artists, then Artists out. That is the price, and it buys the
+            // rule that holds everywhere else: every Left undoes exactly one thing.
+            s.level = s.return_to;
+            return Action::Repopulate;
     }
     return Action::LeaveSection;
 }
@@ -260,10 +295,17 @@ inline void reset(State& s) {
     // in the hierarchy, so cycling to never-played and coming back later keeps it.
 }
 
+// Capture where a view should unwind to. THE ONE PLACE return_to is written, so the
+// isViewLevel guard cannot be present at two of the three call sites and missing at
+// the third - which is exactly how the dead-Left bug documented on isViewLevel got in.
+inline void captureReturn(State& s) {
+    if (!isViewLevel(s.level)) s.return_to = s.level;
+}
+
 // Open the stat views. Mirrors beginSearch exactly - capture where to return to, then
 // switch level - so the two key-reached leaves behave the same way.
 inline void beginStats(State& s, StatView v) {
-    if (s.level != Level::Stats) s.return_to = s.level;
+    captureReturn(s);
     s.stat_view = v;
     s.level = Level::Stats;
 }
@@ -272,6 +314,7 @@ inline void beginStats(State& s, StatView v) {
 // Returns what the caller must do, so the key handler stays one line.
 inline Action cycleStats(State& s) {
     if (s.level != Level::Stats) { beginStats(s, StatView::MostPlayed); return Action::Repopulate; }
+    // (the return_to capture lives in beginStats -> captureReturn, above)
     if (s.stat_view == StatView::MostPlayed) { s.stat_view = StatView::NeverPlayed; return Action::Repopulate; }
     s.level = s.return_to;                       // third press leaves, like a toggle
     return Action::Repopulate;
@@ -280,9 +323,28 @@ inline Action cycleStats(State& s) {
 // Open a search. `from` is the level to come back to, captured at entry so ascending
 // returns where the user was rather than to the top of the section.
 inline void beginSearch(State& s, const std::string& q) {
-    if (s.level != Level::Results) s.return_to = s.level;
+    captureReturn(s);
     s.query = q;
     s.level = Level::Results;
+}
+
+// ── The genre view as a TOGGLE (slice 16) ───────────────────────────────────
+//
+// `g` was the odd one out. `%` cycles back out on its third press and `|` unwinds to
+// return_to, but the g handler assigned `lib_nav_.level = Level::Genres` directly -
+// no capture, no way back - and ascend() at Genres returned LeaveSection. So the one
+// route back to the unfiltered artist list was to leave the section and re-enter it.
+//
+// This is written to LOOK LIKE cycleStats because it is the same thing: press to
+// open, press again to close, and Left agrees with both.
+inline Action toggleGenres(State& s) {
+    if (s.level != Level::Genres) {
+        captureReturn(s);
+        s.level = Level::Genres;
+        return Action::Repopulate;
+    }
+    s.level = s.return_to;              // second press closes, as %'s third does
+    return Action::Repopulate;
 }
 
 // ── One album's tracks, in the order they are shown ─────────────────────────

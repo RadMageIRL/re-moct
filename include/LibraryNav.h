@@ -247,13 +247,24 @@ inline std::string pathStem(const std::string& p) { return libidx::detail::pathS
 // `dur` is pre-formatted by the caller so UIManager::formatTime stays the single
 // duration formatter in the program and a library row reads exactly like a
 // playlist row.
-inline std::string trackRowLabel(const libidx::LibraryTrack& t, const std::string& dur) {
+// `include_artist` (slice 8) puts the per-track artist on the row, for COMPILATIONS.
+// It is not decoration: on a various-artists album the artist differs per track, and a
+// list of bare titles gives no way to tell who is performing - which is the failure this
+// slice exists to fix, inverted. On a normal album it stays off, because there the
+// artist is the same on every row and would be pure repetition.
+//
+// Width: the artist goes between the number and the title, and the TITLE is what
+// survives when the row will not fit, because the title is what identifies the row -
+// the same priority slice 7's result rows use. The pane does the column-correct cutting.
+inline std::string trackRowLabel(const libidx::LibraryTrack& t, const std::string& dur,
+                                 bool include_artist = false) {
     std::string out;
     if (t.track_no > 0) {
         const std::string n = std::to_string(t.track_no);
         out += (n.size() < 2 ? "0" + n : n);
         out += ". ";
     }
+    if (include_artist && !t.artist.empty()) { out += t.artist; out += " - "; }
     out += t.title.empty() ? pathStem(t.path) : t.title;
     if (!dur.empty()) { out += "  ("; out += dur; out += ")"; }
     return out;

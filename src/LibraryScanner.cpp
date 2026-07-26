@@ -271,6 +271,12 @@ ScanOutcome scanCollection(const std::string& root,
     out.counts.removed = previous.tracks.size() > kept
                        ? static_cast<uint32_t>(previous.tracks.size() - kept) : 0u;
     out.completed = true;
+    // Slice 8: the compilation set is derived from the records, so a freshly scanned
+    // index has to build it too - a scan is the other of the two ways an index comes
+    // into existence, the first being parseIndex. Only on the COMPLETED path: a
+    // cancelled walk returns a partial index the caller must not commit, and computing
+    // a compilation verdict over half an album would be wrong as well as wasted.
+    rebuildCompilations(out.index);
     return out;
 }
 

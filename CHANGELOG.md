@@ -78,6 +78,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Compilations no longer shatter. A various-artists album used to appear in
+  `[Library]` as one album per track, filed under a different artist each time, so a
+  40-track eighties compilation became forty one-track albums under forty artists.
+  They now group together under `Various Artists`, one row, with each track showing
+  who performed it. On this collection that removed about a hundred artist rows that
+  should never have been there. An album is treated as a compilation when it has no
+  album-artist tag, or one saying something like `Various` or `Soundtrack`, and at
+  least three different track artists - so an album with guest features on it, like
+  a Gorillaz record with six credited artists, stays where it belongs rather than
+  being scattered. Nothing about your files changes; this is how they are read.
+- Opening `[Library]` is faster, and noticeably so on a large collection. Building
+  the artist list was sorting one entry per track rather than one per artist: with a
+  hundred thousand tracks that was about sixty milliseconds every time the section
+  was opened or rescanned, and it is now about three.
 - The left arrow now does the same thing as the `[Back]` row in every section,
   and leaving a section no longer moves you to a different folder. Previously the
   left arrow only really worked in the folder browser: in `[FAVs]`, `[Radio]`,

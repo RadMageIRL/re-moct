@@ -241,6 +241,21 @@ static void test_track_row_label() {
     libidx::LibraryTrack u = mk("/music/unknown/track07.mp3", "", "", "");
     CHECK(trackRowLabel(u, "") == "track07", "untagged: stem only, no crash: [%s]",
           trackRowLabel(u, "").c_str());
+
+    // Slice 8: on a COMPILATION the per-track artist goes on the row, because there it
+    // differs per track and a list of bare titles cannot say who is performing.
+    libidx::LibraryTrack c = mk("/m/p/05 Take On Me.flac", "A-ha", "Pure 80s", "Take On Me", 5, 225);
+    CHECK(trackRowLabel(c, "3:45", false) == "05. Take On Me  (3:45)",
+          "ordinary album: no artist, as before: [%s]", trackRowLabel(c, "3:45", false).c_str());
+    CHECK(trackRowLabel(c, "3:45", true) == "05. A-ha - Take On Me  (3:45)",
+          "compilation: artist between the number and the title: [%s]",
+          trackRowLabel(c, "3:45", true).c_str());
+    // Default is off, so every existing caller is unchanged.
+    CHECK(trackRowLabel(c, "3:45") == trackRowLabel(c, "3:45", false), "default is off");
+    // A compilation track with no artist tag must not produce a dangling separator.
+    libidx::LibraryTrack n = mk("/m/p/06 Unknown.flac", "", "Pure 80s", "Unknown", 6, 100);
+    CHECK(trackRowLabel(n, "", true) == "06. Unknown",
+          "no artist -> no \" - \" left behind: [%s]", trackRowLabel(n, "", true).c_str());
 }
 
 static void test_path_stem() {

@@ -9911,13 +9911,19 @@ void UIManager::showLibraryTracks() {
         dir_cursor_ = 0; dir_scroll_ = 0;
         return;
     }
+    // Slice 8: on a compilation every row is a different artist, so the rows carry it.
+    // Asked once for the album rather than per row - the verdict is per album by
+    // construction, and asking per row would invite the two disagreeing.
+    const bool compilation = !rows.empty() && libidx::isCompilation(library_index_, rows.front());
+
     std::vector<std::string> ident;      // for restoreCursor: the paths, in row order
     ident.reserve(rows.size());
     for (const libidx::LibraryTrack& t : rows) {
         const std::string dur = (t.duration_sec > 0)
                               ? formatTime((double)t.duration_sec) : std::string();
         dir_entries_.push_back(t.path);                  // IDENTITY: the real path
-        dir_display_.push_back(sanitizeForDisplay(libnav::trackRowLabel(t, dur)));
+        dir_display_.push_back(
+            sanitizeForDisplay(libnav::trackRowLabel(t, dur, compilation)));
         ident.push_back(t.path);
     }
     const int row = libidx::restoreCursor(lib_nav_.sel_track, ident);

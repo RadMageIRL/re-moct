@@ -19,14 +19,22 @@
 // Every string field is therefore escaped losslessly and round-trips byte-exact.
 //
 // PATHS ARE STRINGS, START TO FINISH. Constructing a std::filesystem::path from
-// a std::string THROWS in this application for any byte the ANSI codepage
-// cannot map: RE-MOCT calls setlocale(LC_ALL, ""), so the narrow-to-wide
-// conversion is CP1252, and even fs::exists(str, ec) throws because the
-// conversion runs before the error-code applies. That took down the podcast
-// list draw in slice 5, and roughly 5% of the paths in a real collection are
-// non-ASCII. This unit never converts a path to anything. Where a later slice
-// must actually open a file, port::fopenUtf8 (_wfopen over utf8_to_wide) is the
-// one sanctioned route.
+// a std::string THROWS on Windows for INVALID UTF-8 — and even fs::exists(str, ec)
+// throws, because the conversion runs before the error code applies. That took down
+// the podcast list draw in podcast slice 5, which built a path out of feed TITLE text.
+//
+// CORRECTED 2026-07-26, measured on both toolchains: the trigger is INVALID UTF-8, not
+// "non-ASCII", and libstdc++ on Windows decodes a narrow path as UTF-8 rather than as
+// the ANSI codepage. Valid UTF-8 of any kind — accents, smart quotes, CJK, 4-byte
+// emoji — constructs fine and round-trips byte-exact. The earlier wording here said
+// "any byte the ANSI codepage cannot map", which was wrong and could not explain why
+// UIManager's own directory_iterator has always worked over this collection's 137
+// non-ASCII paths.
+//
+// The operative rule: paths that come FROM THE OS are safe; strings built from tag or
+// feed text are not. This unit never converts a path to anything either way. Where a
+// later slice must actually open a file, port::fopenUtf8 (_wfopen over utf8_to_wide) is
+// the one sanctioned route.
 //
 // DEFENSIVE CONTRACT: never crash, never throw, never hang. A malformed file
 // degrades to fewer records — ultimately to an empty index, which the caller
@@ -41,6 +49,8 @@
 #include <cstddef>
 #include <cstdint>
 #include <string>
+#include <unordered_map>     // slice 8: compilation detection, and the dedup-first queries
+#include <unordered_set>
 #include <vector>
 
 namespace libidx {
@@ -87,6 +97,11 @@ struct LibraryTrack {
 struct LibraryIndex {
     std::string               root;    // the music root this index was built from
     std::vector<LibraryTrack> tracks;
+    // Slice 8: album names (folded) judged to be compilations. DERIVED at load from
+    // fields already on disk, never serialised - so this is not a format change and
+    // every shipped index stays readable. Rebuilt by rebuildCompilations() after a
+    // parse and after a scan, which are the only two ways an index comes to exist.
+    std::unordered_set<std::string> compilations;
 };
 
 struct ParseResult {
@@ -357,8 +372,109 @@ inline void sortUniqueCI(std::vector<std::string>& v) {
 //
 // The simplest defensible rule: album-artist when the tag carries one, else
 // artist. That already keeps a properly-tagged compilation together.
+//
+// SLICE 8 KEPT THIS FORM and added the index-aware one below. This one is what a
+// caller with no index in hand uses - the scanner, building records one file at a
+// time - and its behaviour is unchanged.
 inline const std::string& groupingArtist(const LibraryTrack& t) {
     return t.album_artist.empty() ? t.artist : t.album_artist;
+}
+
+// ── Compilations (slice 8) ──────────────────────────────────────────────────
+//
+// The name a compilation groups under. A real string rather than a sentinel, because
+// it is drawn as an artist row, sorted with the others, and searched like any other
+// text - it is not a special case anywhere above this file.
+inline constexpr const char* kVariousArtists = "Various Artists";
+
+// Is this album-artist tag one of the "not really an artist" markers?
+//
+// Matched through foldAscii, so case and accents do not matter. The list is what the
+// real collection and the common taggers actually write - MEASURED: of ten genuine
+// compilations in the reference collection, EIGHT carry no album-artist at all, and
+// the two that do say "Various" and "Soundtrack" rather than "Various Artists". So
+// this test exists for the minority; the empty case below carries most of the weight.
+inline bool isVariousish(const std::string& album_artist) {
+    if (album_artist.empty()) return true;
+    const std::string f = detail::foldAscii(album_artist);
+    return f == "various" || f == "various artists" || f == "va" ||
+           f == "compilation" || f == "compilations" ||
+           f == "soundtrack" || f == "ost" || f == "original soundtrack" ||
+           f == "original motion picture soundtrack";
+}
+
+// The minimum number of distinct track artists before an album with no usable
+// album-artist is called a compilation.
+//
+// MEASURED, not tuned: on the reference collection the flagged set is IDENTICAL for
+// every threshold from 2 to 5, because each genuine compilation has at least 9 distinct
+// artists and no empty-album-artist album has 2. So the album-artist test is the
+// discriminator and this is a backstop. 3 is the safe middle - low enough to catch a
+// genuine three-way split release, high enough that two unrelated albums sharing a name
+// and both missing album-artist cannot collide into one.
+inline constexpr std::size_t kCompilationMinArtists = 3;
+
+// Rebuild the derived set of compilation album names.
+//
+// DERIVED, NEVER STORED: computed from fields already on disk, so there is NO INDEX
+// FORMAT CHANGE and no shipped library.idx is invalidated. Called after a parse and
+// after a scan, which are the only two ways an index comes into existence.
+//
+// THE RULE, and the false positives it is built to reject:
+//   1. every non-empty album-artist on the album is various-ish (or there are none), AND
+//   2. at least kCompilationMinArtists distinct track artists.
+//
+// Test 1 is what saves the guest-artist album. The reference collection contains both
+// shapes this is measured against: "Plastic Beach" (16 tracks, SIX credited artists,
+// album-artist "Gorillaz") and "The Ultimate Collection" (21 tracks, three artists,
+// album-artist "Jackson 5, The"). Neither is a compilation, and an artist-count
+// threshold on its own would call both one.
+//
+// ACCEPTED FALSE NEGATIVE, stated rather than hidden: a genuine compilation whose
+// album-artist names one of its contributors is not detected. There is no signal left -
+// the tags say it is that artist's album - and inventing one would need an online
+// lookup, which is a campaign non-goal.
+inline void rebuildCompilations(LibraryIndex& idx) {
+    idx.compilations.clear();
+    // Album name -> (distinct artists, every album-artist various-ish so far).
+    struct Acc { std::vector<std::string> artists; bool aa_ok = true; };
+    std::unordered_map<std::string, Acc> by_album;
+    by_album.reserve(idx.tracks.size() / 8 + 16);
+
+    for (const LibraryTrack& t : idx.tracks) {
+        if (t.album.empty()) continue;              // no album, nothing to group
+        Acc& a = by_album[detail::foldAscii(t.album)];
+        if (!isVariousish(t.album_artist)) a.aa_ok = false;
+        if (!t.artist.empty()) {
+            const std::string f = detail::foldAscii(t.artist);
+            bool seen = false;
+            for (const std::string& s : a.artists) if (s == f) { seen = true; break; }
+            if (!seen) a.artists.push_back(f);
+        }
+    }
+    for (const LibraryTrack& t : idx.tracks) {
+        if (t.album.empty()) continue;
+        const Acc& a = by_album[detail::foldAscii(t.album)];
+        if (a.aa_ok && a.artists.size() >= kCompilationMinArtists)
+            idx.compilations.insert(detail::foldAscii(t.album));
+    }
+}
+
+// Is this track on a compilation?
+inline bool isCompilation(const LibraryIndex& idx, const LibraryTrack& t) {
+    return !t.album.empty() &&
+           idx.compilations.find(detail::foldAscii(t.album)) != idx.compilations.end();
+}
+
+// THE SEAM, index-aware. Every hierarchy query routes through this, which is why one
+// change here makes artists, albums, tracks AND search compilation-aware at once and
+// makes it impossible for them to disagree.
+inline const std::string& groupingArtist(const LibraryIndex& idx, const LibraryTrack& t) {
+    if (isCompilation(idx, t)) {
+        static const std::string various = kVariousArtists;
+        return various;
+    }
+    return groupingArtist(t);
 }
 
 // ── Serialise ───────────────────────────────────────────────────────────────
@@ -465,6 +581,10 @@ inline ParseResult parseIndex(const std::string& text) {
         t.genre        = detail::unescape(f[5]);
         res.index.tracks.push_back(std::move(t));
     }
+    // Slice 8: the compilation set is derived, so it is built HERE rather than left to
+    // callers - parsing is one of only two ways an index comes into existence, and a
+    // caller that forgot would get a browse tree silently missing its compilations.
+    rebuildCompilations(res.index);
     return res;
 }
 
@@ -498,19 +618,35 @@ inline int restoreCursor(const std::string& remembered,
     return 0;
 }
 
+// DEDUP BEFORE SORTING (slice 8). The old form pushed one string per TRACK and then
+// sorted the lot: at 100,000 records that is sorting 100,000 strings down to 900, and
+// it MEASURED at 56.6 ms. A hash set first, sorting only the distinct values, is
+// 1.4 ms - the same output, byte for byte, asserted in the test.
+//
+// It matters more than the raw figure suggests, because this query is on the path INTO
+// the section and runs again on every repopulate after a rescan. It is the one query
+// whose cost the user waits on rather than asks for.
 inline std::vector<std::string> artists(const LibraryIndex& idx) {
+    std::unordered_set<std::string> seen;
+    seen.reserve(idx.tracks.size() / 8 + 16);
     std::vector<std::string> out;
-    out.reserve(idx.tracks.size());
-    for (const auto& t : idx.tracks) out.push_back(groupingArtist(t));
+    for (const LibraryTrack& t : idx.tracks) {
+        const std::string& a = groupingArtist(idx, t);
+        if (seen.insert(a).second) out.push_back(a);
+    }
+    // Still sortUniqueCI, not a plain sort: the hash set dedups by BYTES, and two
+    // artists differing only in case must still collapse to one row.
     detail::sortUniqueCI(out);
     return out;
 }
 
 inline std::vector<std::string> albumsForArtist(const LibraryIndex& idx,
                                                 const std::string& artist) {
+    std::unordered_set<std::string> seen;
     std::vector<std::string> out;
-    for (const auto& t : idx.tracks)
-        if (detail::icmp(groupingArtist(t), artist) == 0) out.push_back(t.album);
+    for (const LibraryTrack& t : idx.tracks)
+        if (detail::icmp(groupingArtist(idx, t), artist) == 0 && seen.insert(t.album).second)
+            out.push_back(t.album);
     detail::sortUniqueCI(out);
     return out;
 }
@@ -530,7 +666,7 @@ inline std::vector<std::size_t> tracksForAlbum(const LibraryIndex& idx,
     std::vector<std::size_t> out;
     for (std::size_t i = 0; i < idx.tracks.size(); ++i) {
         const auto& t = idx.tracks[i];
-        if (detail::icmp(groupingArtist(t), artist) == 0 &&
+        if (detail::icmp(groupingArtist(idx, t), artist) == 0 &&
             detail::icmp(t.album, album) == 0)
             out.push_back(i);
     }
@@ -629,7 +765,7 @@ inline std::vector<LibraryTrack> search(const LibraryIndex& idx,
     const auto by_place = [&idx](std::size_t a, std::size_t b) {
         const LibraryTrack& x = idx.tracks[a];
         const LibraryTrack& y = idx.tracks[b];
-        int c = detail::icmp(groupingArtist(x), groupingArtist(y));
+        int c = detail::icmp(groupingArtist(idx, x), groupingArtist(idx, y));
         if (c != 0) return c < 0;
         c = detail::icmp(x.album, y.album);
         if (c != 0) return c < 0;

@@ -406,6 +406,176 @@ static void test_search_scale() {
     std::printf("  [search scale] 100k records, 100k matches, capped 500: %.1f ms\n", ms);
 }
 
+// ── Slice 8: compilations ───────────────────────────────────────────────────
+// The fixture reproduces all four shapes MEASURED in the real collection, which is
+// what makes this a regression test rather than a description of an idea.
+static libidx::LibraryIndex compIndex() {
+    libidx::LibraryIndex idx;
+    auto add = [&](const char* path, const char* artist, const char* album, const char* aa) {
+        libidx::LibraryTrack t = mk(path, artist, album, "T");
+        t.album_artist = aa;
+        idx.tracks.push_back(t);
+    };
+    // 1. The COMMON case: a real compilation with NO album-artist at all. Eight of the
+    //    ten in the reference collection look exactly like this.
+    add("/m/p1.flac", "Toto",     "Pure 80s", "");
+    add("/m/p2.flac", "A-ha",     "Pure 80s", "");
+    add("/m/p3.flac", "Berlin",   "Pure 80s", "");
+    // 2. A compilation whose album-artist is a VARIANT marker, not "Various Artists".
+    add("/m/r1.flac", "Chuck Berry", "Rock Era", "Various");
+    add("/m/r2.flac", "Fats Domino", "Rock Era", "Various");
+    add("/m/r3.flac", "Little Richard", "Rock Era", "Various");
+    // 3. THE GUEST-ARTIST ALBUM - "Plastic Beach", six credited artists under one real
+    //    album-artist. A distinct-artist threshold ALONE calls this a compilation.
+    add("/m/g1.flac", "Gorillaz",              "Plastic Beach", "Gorillaz");
+    add("/m/g2.flac", "Gorillaz feat. Snoop",  "Plastic Beach", "Gorillaz");
+    add("/m/g3.flac", "Gorillaz feat. De La",  "Plastic Beach", "Gorillaz");
+    add("/m/g4.flac", "Gorillaz feat. Mos Def","Plastic Beach", "Gorillaz");
+    // 4. ARTIST-TAG VARIANCE within one artist's own record.
+    add("/m/u1.flac", "Jackson 5",     "Ultimate", "Jackson 5, The");
+    add("/m/u2.flac", "Jackson 5, The","Ultimate", "Jackson 5, The");
+    add("/m/u3.flac", "Michael Jackson","Ultimate","Jackson 5, The");
+    // 5. An ordinary single-artist album - must be untouched.
+    add("/m/n1.flac", "Muse", "Absolution", "Muse");
+    add("/m/n2.flac", "Muse", "Absolution", "Muse");
+    libidx::rebuildCompilations(idx);
+    return idx;
+}
+
+static void test_compilation_detection() {
+    const libidx::LibraryIndex idx = compIndex();
+
+    CHECK(idx.compilations.size() == 2, "exactly two albums flagged, got %zu",
+          idx.compilations.size());
+    CHECK(libidx::isCompilation(idx, idx.tracks[0]), "no-album-artist multi-artist IS one");
+    CHECK(libidx::isCompilation(idx, idx.tracks[3]), "album-artist \"Various\" IS one");
+    // The two that matter most - the false positives an artist-count rule would catch.
+    CHECK(!libidx::isCompilation(idx, idx.tracks[6]),
+          "GUEST-ARTIST album is NOT a compilation (four artists, real album-artist)");
+    CHECK(!libidx::isCompilation(idx, idx.tracks[10]),
+          "ARTIST-VARIANCE album is NOT a compilation");
+    CHECK(!libidx::isCompilation(idx, idx.tracks[13]), "ordinary album is not one");
+
+    // The seam: this is what makes artists/albums/tracks/search agree.
+    CHECK(libidx::groupingArtist(idx, idx.tracks[0]) == libidx::kVariousArtists,
+          "a compilation track groups under Various Artists");
+    CHECK(libidx::groupingArtist(idx, idx.tracks[6]) == "Gorillaz",
+          "the guest-artist album still groups under its real album-artist");
+    CHECK(libidx::groupingArtist(idx, idx.tracks[13]) == "Muse", "ordinary album unchanged");
+    // The one-argument form is untouched, for callers with no index (the scanner).
+    CHECK(libidx::groupingArtist(idx.tracks[0]) == "Toto",
+          "the index-free form is unchanged and still returns the track's own artist");
+
+    // ...and the whole browse tree follows from the seam.
+    const auto as = libidx::artists(idx);
+    int va = 0;
+    for (const auto& a : as) if (a == libidx::kVariousArtists) ++va;
+    CHECK(va == 1, "ONE Various Artists row, not one per contributing artist");
+    for (const auto& a : as)
+        CHECK(a != "Toto" && a != "A-ha" && a != "Berlin",
+              "a compilation's contributors do not appear as top-level artists: %s", a.c_str());
+    CHECK(libidx::albumsForArtist(idx, libidx::kVariousArtists).size() == 2,
+          "both compilations sit under it");
+    CHECK(libidx::tracksForAlbum(idx, libidx::kVariousArtists, "Pure 80s").size() == 3,
+          "and the album keeps all three of its tracks");
+}
+
+static void test_compilation_variants_and_threshold() {
+    // Variant matching is fold-based, so case and accents do not matter.
+    CHECK(libidx::isVariousish(""), "empty album-artist is 'no usable album-artist'");
+    CHECK(libidx::isVariousish("Various"), "Various");
+    CHECK(libidx::isVariousish("VARIOUS ARTISTS"), "case-insensitive");
+    CHECK(libidx::isVariousish("Soundtrack"), "Soundtrack");
+    CHECK(libidx::isVariousish("Original Motion Picture Soundtrack"), "long OST form");
+    CHECK(libidx::isVariousish("VA"), "VA");
+    CHECK(!libidx::isVariousish("Gorillaz"), "a real artist is not various-ish");
+    CHECK(!libidx::isVariousish("Various Cruelties"), "a BAND whose name starts with Various");
+
+    // The threshold boundary: 2 distinct artists is not enough, 3 is.
+    auto build = [](int n_artists) {
+        libidx::LibraryIndex i;
+        for (int k = 0; k < n_artists; ++k) {
+            libidx::LibraryTrack t = mk("/m/" + std::to_string(k) + ".flac",
+                                        "Artist " + std::to_string(k), "Split", "");
+            i.tracks.push_back(t);
+        }
+        libidx::rebuildCompilations(i);
+        return i;
+    };
+    CHECK(build(2).compilations.empty(), "two artists is not a compilation");
+    CHECK(build(3).compilations.size() == 1, "three is");
+
+    // A compilation with a non-ASCII album name must round-trip through the fold.
+    libidx::LibraryIndex a;
+    for (const char* who : {"Sigur Rós", "Björk", "Múm"}) {
+        libidx::LibraryTrack t = mk(std::string("/m/") + who + ".flac", who, "Íslensk Tónlist", "");
+        a.tracks.push_back(t);
+    }
+    libidx::rebuildCompilations(a);
+    CHECK(a.compilations.size() == 1, "non-ASCII album name detected");
+    CHECK(libidx::groupingArtist(a, a.tracks[0]) == libidx::kVariousArtists, "and groups");
+
+    // Hostile: an album with no name must never be grouped as a compilation.
+    libidx::LibraryIndex e;
+    for (int k = 0; k < 5; ++k)
+        e.tracks.push_back(mk("/m/e" + std::to_string(k) + ".flac",
+                              "A" + std::to_string(k), "", ""));
+    libidx::rebuildCompilations(e);
+    CHECK(e.compilations.empty(), "no album name -> never a compilation");
+}
+
+// The dedup-first rewrite must be OUTPUT-IDENTICAL, not merely faster.
+static void test_artists_dedup_identical() {
+    libidx::LibraryIndex idx;
+    const char* names[] = {"Muse", "muse", "MUSE", "Björk", "bjork", "", "Zed", "Abe"};
+    int k = 0;
+    for (const char* n : names)
+        for (int r = 0; r < 3; ++r)                       // duplicates, as a real index has
+            idx.tracks.push_back(mk("/m/" + std::to_string(k++) + ".flac", n, "Al", "T"));
+    libidx::rebuildCompilations(idx);
+
+    // The pre-slice-8 shape: one push per track, then sortUniqueCI.
+    std::vector<std::string> old;
+    old.reserve(idx.tracks.size());
+    for (const auto& t : idx.tracks) old.push_back(libidx::groupingArtist(idx, t));
+    libidx::detail::sortUniqueCI(old);
+
+    const auto now = libidx::artists(idx);
+    CHECK(now == old, "dedup-first output is byte-identical to push-everything-then-sort");
+    CHECK(now.size() < 8, "case variants still collapse to one row each: %zu rows", now.size());
+}
+
+static void test_compilation_scale() {
+    libidx::LibraryIndex big;
+    big.tracks.reserve(100000);
+    for (std::size_t i = 0; i < 100000; ++i) {
+        libidx::LibraryTrack t = mk("/m/" + std::to_string(i) + ".flac",
+                                    "Artist " + std::to_string(i % 900),
+                                    "Album " + std::to_string(i % 300), "T");
+        // album_artist SET, so this is 300 ordinary albums rather than 300 accidental
+        // compilations. Without it every album has ~333 artists and no album-artist, the
+        // rule correctly flags all of them, and artists() returns ONE row - which would
+        // time the wrong thing and read as a bug in the numbers.
+        t.album_artist = "Artist " + std::to_string(i % 900);
+        big.tracks.push_back(std::move(t));
+    }
+    auto t0 = std::chrono::steady_clock::now();
+    libidx::rebuildCompilations(big);
+    const double build_ms = std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - t0).count();
+    t0 = std::chrono::steady_clock::now();
+    const auto as = libidx::artists(big);
+    const double art_ms = std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - t0).count();
+    // Regression guards, deliberately generous - measured at ~13 ms and ~3 ms. The one
+    // that matters is artists(): before slice 8 it was 59 ms at this size, and it is on
+    // the path INTO the section.
+    CHECK(build_ms < 900.0, "compilation build stayed linear: %.1f ms", build_ms);
+    CHECK(art_ms   < 400.0, "artists() stayed fast: %.1f ms", art_ms);
+    std::printf("  [comp scale] 100k: rebuildCompilations %.1f ms, artists() %.1f ms (%zu rows)\n",
+                build_ms, art_ms, as.size());
+}
+
 static void test_scale(std::size_t n, const char* label) {
     LibraryIndex idx;
     idx.root = "C:\\Users\\david\\Music";
@@ -503,6 +673,10 @@ int main() {
     test_untagged_ordering();
     test_restore_cursor();
     test_latin1_artist_survives();
+    test_compilation_detection();
+    test_compilation_variants_and_threshold();
+    test_artists_dedup_identical();
+    test_compilation_scale();
     test_fold_ascii();
     test_search_matching();
     test_search_cap_order_and_identity();

@@ -5,6 +5,16 @@ All notable changes to RE-MOCT are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.0] - Unreleased
+
+### Internal
+
+- Groundwork for the library view: the metadata index, its on-disk cache format,
+  and the artist/album/track queries the browser will read from. Nothing is
+  wired to it yet, so there is no user-visible change in this entry - the index
+  has no scanner to fill it and no screen to draw it. It is recorded here
+  because the version now reads 1.5.0, and a build that says so should say why.
+
 ## [1.4.1] - 2026-07-25
 
 ### Changed

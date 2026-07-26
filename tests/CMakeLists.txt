@@ -155,6 +155,22 @@ target_include_directories(podcast_chapters_test PRIVATE
     ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/lib)
 add_test(NAME podcast_chapters_test COMMAND podcast_chapters_test)
 
+# library-index (Library slice 1) - LibraryIndex.h proven in ISOLATION before any
+# caller exists: the record model, the on-disk FORMAT, and the hierarchy queries
+# the [Library] pane will consume. Header-only with NO dependency beyond the
+# standard library, so there is nothing to link and no lib/ include - the scanner
+# (TagLib, directory walk) is slice 2 and deliberately absent here. The format's
+# first field is a path, i.e. identity, so the central assertion is EXACT
+# round-trip through tabs, newlines, backslashes, NULs and non-ASCII; the config
+# file's lossy tab-fold would have produced an index that parses clean and
+# resolves to nothing. Includes a MEASURED scale pass (real 2773, synthetic
+# 100k), printed rather than asserted as a promised number. Device-free, both
+# matrix jobs.
+add_executable(library_index_test library_index_test.cpp)
+target_include_directories(library_index_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/include)
+add_test(NAME library_index_test COMMAND library_index_test)
+
 # podcast-client (Podcasts slice 2) - the fetch-and-parse glue over the core::IHttp
 # seam, proven headless with a FakeHttp (core::setHttp). Asserts the feed-sized
 # request (64 MB cap / 30 s) and the fetched-vs-parsed distinction the honest

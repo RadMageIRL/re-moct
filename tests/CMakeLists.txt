@@ -285,6 +285,25 @@ add_test(NAME podcastindex_parse_test COMMAND podcastindex_parse_test)
 # + the DigiConfig podcast_progress round-trip (resume pos + played flag). Links
 # Config.cpp (+ the secret backend it now depends on), redirects the config dir to a
 # temp. Pure, both matrix jobs.
+# config-stats (Library slice 13) - play-count key normalisation and the migration
+# that repairs configs written before it. The ONLY slice in the campaign that rewrites
+# persisted user data, so this asserts the things a rollback would otherwise have to:
+# no count is lost (sum in == sum out), nothing is dropped, the merge is idempotent,
+# the platform split holds, and THE BACKUP IS NEVER CLOBBERED.
+#
+# Links Config.cpp + the secret backend, same as podcast_state_test. Config.cpp gained
+# an include of LibraryIndex.h in this slice; that header is pure and library-free, so
+# it adds no link dependency - which this target existing and building proves.
+add_executable(config_stats_test
+    config_stats_test.cpp
+    ${CMAKE_SOURCE_DIR}/src/Config.cpp
+    ${SECRET_IMPL}   # Config.cpp -> secret::protect/unprotect
+)
+target_include_directories(config_stats_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/lib)
+target_link_libraries(config_stats_test PRIVATE ${SECRET_LIBS})
+add_test(NAME config_stats_test COMMAND config_stats_test)
+
 add_executable(podcast_state_test
     podcast_state_test.cpp
     ${CMAKE_SOURCE_DIR}/src/Config.cpp

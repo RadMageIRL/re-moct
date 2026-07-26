@@ -221,6 +221,31 @@ struct DigiConfig {
     void addRecentTrack(const std::string& path);
     void recordPlay(const std::string& path);   // increment count + timestamp
 
+    // ── Stat-key normalisation (library slice 13) ────────────────────────────
+    //
+    // recordPlay used to key on whatever path the playlist entry happened to hold,
+    // and those disagree on case depending on how the file was added - browser,
+    // loaded .m3u, favourite, bookmark, [Recent]. MEASURED on the reference config:
+    // 241 of 295 keys had a lowercase drive letter and 54 an uppercase one, and 17
+    // files held TWO entries with their play counts split between them.
+    //
+    // recordPlay now normalises on write so new plays cannot re-split, and load()
+    // merges what is already stored so the existing pairs are repaired. They are
+    // different jobs and neither alone is sufficient - one prevents, one fixes.
+    //
+    // Returns the number of entries that merged away, so the caller can say so once.
+    // ZERO on Linux by construction, not by an #ifdef: the fold is the identity
+    // there, so it groups only byte-identical keys, and those cannot be duplicates
+    // in a map. Two paths differing in case on Linux are two different files.
+    std::size_t mergeStatKeys();
+    // Set by load() when a merge actually changed something, so the UI can report it
+    // once. Not persisted.
+    std::size_t stats_merged = 0;
+    // Whether ANY stat key changed shape, which is a broader condition than merging:
+    // a key folding from uppercase to lowercase with no collision merges nothing and
+    // still rewrites the file. The BACKUP is keyed on this.
+    bool stats_keys_rewritten = false;
+
     static std::string configPath();
     static std::string themePath();
     void load();

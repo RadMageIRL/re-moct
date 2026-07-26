@@ -116,6 +116,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   plainly rather than showing something unrelated. Editing tags with `e` still works
   on playlist rows exactly as before; on a browser row it now declines and tells you
   to add the track first, rather than editing a different file than the one on screen.
+- **Split play counts are now repaired, once, on the next start.** The reading fix
+  below made the right number appear; this fixes the stored data, so a track that had
+  two separate tallies now has one and every future play adds to it. On this
+  collection 17 tracks were affected and not a single play is lost in the merge - the
+  totals before and after are identical. **A backup of your settings file is written
+  first**, as `remoct.conf.statbak` beside it, and RE-MOCT says so on the status line
+  the one time it happens. If anything looks wrong afterwards, quit RE-MOCT, rename
+  `remoct.conf.statbak` over `remoct.conf`, and start it again - you are back exactly
+  where you were. The backup is written only once and is never overwritten by a later
+  run. Nothing else in the file is touched, and no play history is discarded: stats
+  for tracks you have deleted, or that live outside your library folders, are kept.
 - **Play counts were being split in two, and the count shown was the wrong one.**
   RE-MOCT recorded plays under the exact path a track was opened by, and the same
   file opened from a folder, a playlist and a favourite could produce differently

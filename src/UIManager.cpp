@@ -342,6 +342,17 @@ UIManager::UIManager(PlaylistManager& playlist, AudioManager& audio,
     if (!media_) media_ = &core::mediaControl();
     wireMediaControl();
 
+    // Slice 13: say ONCE that play counts were merged, and where the backup is.
+    // A migration the user did not ask for should say so and get out of the way -
+    // so the bottom-left yellow line, which is the mechanism for reporting without
+    // taking a pane, and not a toast or a popup.
+    if (config_.stats_merged > 0) {
+        status_msg_ = "Merged " + std::to_string(config_.stats_merged) +
+                      " duplicate play counts - backup in remoct.conf.statbak";
+        status_msg_ticks_  = 0;
+        status_msg_yellow_ = true;
+    }
+
     running_ = true;
 }
 

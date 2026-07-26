@@ -22,6 +22,7 @@
 // counter here and no need of one.
 
 #include <string>
+#include <vector>
 
 #include "LibraryIndex.h"   // detail::icmp - deliberately the SAME compare that
                             // libidx::restoreCursor uses to re-seat the cursor.
@@ -152,6 +153,38 @@ inline void reset(State& s) {
     s.album.clear();
     s.sel_album.clear();
     s.sel_track.clear();
+}
+
+// ── One album's tracks, in the order they are shown ─────────────────────────
+//
+// THE ONE ORDERING FUNCTION. Both readers call this: showLibraryTracks to draw the
+// level-3 list, and the album append to add rows to the playlist. So "it appends in
+// the order you see" is true BY CONSTRUCTION rather than because two loops happen to
+// agree - which is precisely the defect BrowserPins.h was written to end, caught here
+// before it existed rather than after a gate failed.
+//
+// THE STALENESS RULE IS ENFORCED HERE. libidx::tracksForAlbum returns INDICES into
+// the index, valid only against the instance that produced them; they are resolved
+// inside this function and the vector holding them dies at the closing brace. What
+// leaves is RECORDS BY VALUE - no subscripts, no references into the index, nothing
+// that can go stale when a rescan replaces it.
+//
+// Records rather than bare paths, deliberately: the drawing caller needs the title,
+// track number and duration as well, and a paths-only return would force it either to
+// look each path back up (quadratic) or to run its own second query, which is the
+// duplication this function exists to remove.
+//
+// Order is libidx::tracksForAlbum's: disc, then track number, then title, then path.
+// The last two are what give an untagged rip, where every track_no is 0, a total and
+// stable order from the filename.
+inline std::vector<libidx::LibraryTrack> albumTracks(const libidx::LibraryIndex& idx,
+                                                     const std::string& artist,
+                                                     const std::string& album) {
+    const std::vector<std::size_t> hits = libidx::tracksForAlbum(idx, artist, album);
+    std::vector<libidx::LibraryTrack> out;
+    out.reserve(hits.size());
+    for (std::size_t i : hits) out.push_back(idx.tracks[i]);
+    return out;
 }
 
 // ── Level-3 row label ───────────────────────────────────────────────────────

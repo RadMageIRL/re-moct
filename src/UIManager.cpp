@@ -2944,8 +2944,8 @@ void UIManager::drawDirBrowser() {
                 hdr = " [Library] (Enter:albums  [Back]/Left:leave) ";
                 break;
             case libnav::Level::Albums:
-                hdr = " [Library] " + clip(lib_nav_.artist, 28) +
-                      " (Enter:tracks  [Back]/Left:artists) ";
+                hdr = " [Library] " + clip(lib_nav_.artist, 24) +
+                      " (Enter:tracks  a:add album  [Back]/Left:artists) ";
                 break;
             case libnav::Level::Tracks:
                 // Enter gained a verb in slice 5. The name budgets shrink to pay for
@@ -8153,12 +8153,22 @@ void UIManager::handleInput(int ch) {
                 // current_dir_/<artist>, which is not a file and - worse than the
                 // podcast case - THROWS if the tag text is not valid UTF-8.
                 //
-                // At level 3, 'a' APPENDS WITHOUT PLAYING. That is the walk-an-album-
-                // adding-tracks motion, and it is the single difference between 'a' and
-                // Enter here. libraryRowPath() returns empty and silent above level 3.
-                const std::string p = libraryRowPath();
-                if (!p.empty() && PlaylistManager::isSupportedAudio(p))
-                    playlist_.addTrack(p);
+                // 'a' means the SAME thing at every depth - add what the cursor is on -
+                // and only the cursor's subject changes. Level 3 is a track; level 2 is
+                // a whole album (LIB-AA); level 1 stays the no-op it was, because an
+                // artist is unbounded and appending 400 tracks from one keypress wants a
+                // confirmation, which is new UI and its own slice.
+                //
+                // At level 3 this APPENDS WITHOUT PLAYING, which is the single
+                // difference between 'a' and Enter. libraryRowPath() returns empty and
+                // silent at level 1, so that case needs no branch of its own.
+                if (lib_nav_.level == libnav::Level::Albums) {
+                    appendAlbumUnderCursor();
+                } else {
+                    const std::string p = libraryRowPath();
+                    if (!p.empty() && PlaylistManager::isSupportedAudio(p))
+                        playlist_.addTrack(p);
+                }
             } else if (focus_ == Pane::DirBrowser && dir_cursor_ < (int)dir_entries_.size()) {
                 fs::path full = fs::path(current_dir_) / dir_entries_[(size_t)dir_cursor_];
                 if (PlaylistManager::isSupportedAudio(full.string()))
@@ -9677,25 +9687,28 @@ void UIManager::showLibraryAlbums() {
     dir_scroll_ = 0;
 }
 
-// Level 3: one album's tracks. THE STALENESS RULE IS ENFORCED HERE, and this is
-// the only place in the program where it could be broken: tracksForAlbum returns
-// INDICES into library_index_, valid only against the instance that produced them.
-// They are converted to paths in this loop and the vector dies at the closing
-// brace. Nothing outside this function ever sees a subscript.
+// Level 3: one album's tracks.
+//
+// THE STALENESS RULE now lives in libnav::albumTracks, which is where index
+// subscripts are resolved and where they die - LIB-AA moved it there so the album
+// append reads the SAME function and the drawn order cannot drift from the appended
+// order. No subscript reaches this function at all any more.
 //
 // A track path is OS-origin - the scanner's directory walk produced it - so unlike
-// levels 1-2 it is safe to hand to the filesystem. Slice 5 is what will do that;
-// browserEntryPath still returns {} for every library level (see its comment), so
-// slice 4 ships depth without silently enabling playback, chapters, marking and
-// converting across five call sites with no gate.
+// levels 1-2 it is safe to hand to the filesystem, which is what LIB-S5 wired: a
+// level-3 row resolves through browserEntryPath like any [FAVs] row.
 void UIManager::showLibraryTracks() {
     lib_nav_.level = libnav::Level::Tracks;
     dir_entries_.clear(); dir_display_.clear();
     dir_entries_.push_back("[Back]"); dir_display_.push_back("[Back]");
 
-    const std::vector<std::size_t> hits =
-        libidx::tracksForAlbum(library_index_, lib_nav_.artist, lib_nav_.album);
-    if (hits.empty()) {
+    // libnav::albumTracks, not libidx::tracksForAlbum directly: the album append reads
+    // the SAME function, so the order rows are drawn in and the order they are appended
+    // in cannot drift apart. It is also where the index subscripts are resolved, so
+    // none reaches this function at all.
+    const std::vector<libidx::LibraryTrack> rows =
+        libnav::albumTracks(library_index_, lib_nav_.artist, lib_nav_.album);
+    if (rows.empty()) {
         dir_entries_.push_back("");
         dir_display_.push_back("No tracks on " +
                                sanitizeForDisplay(lib_nav_.album.empty()
@@ -9703,13 +9716,9 @@ void UIManager::showLibraryTracks() {
         dir_cursor_ = 0; dir_scroll_ = 0;
         return;
     }
-    // Ordered disc, then track number, then title, then path by tracksForAlbum -
-    // the last two tie-breakers are what give an untagged rip, where every
-    // track_no is 0, a stable total order from the filename.
     std::vector<std::string> ident;      // for restoreCursor: the paths, in row order
-    ident.reserve(hits.size());
-    for (std::size_t i : hits) {
-        const libidx::LibraryTrack& t = library_index_.tracks[i];
+    ident.reserve(rows.size());
+    for (const libidx::LibraryTrack& t : rows) {
         const std::string dur = (t.duration_sec > 0)
                               ? formatTime((double)t.duration_sec) : std::string();
         dir_entries_.push_back(t.path);                  // IDENTITY: the real path
@@ -9720,6 +9729,66 @@ void UIManager::showLibraryTracks() {
     dir_cursor_ = (row < 0) ? 0 : row + 1;
     if (dir_cursor_ >= (int)dir_entries_.size()) dir_cursor_ = 0;
     dir_scroll_ = 0;
+}
+
+// 'a' on a level-2 album row: append the whole album, in the order level 3 draws it.
+//
+// WHY THE COUNT IS MEASURED AND NOT COUNTED. PlaylistManager::addTrack DEDUPS BY PATH -
+// it returns the existing index rather than appending a second copy - so appending an
+// album three of whose tracks are already in the playlist adds fifteen rows, not
+// eighteen. Reporting the number of paths iterated would over-report on every
+// partially-owned album, which is the common case for anyone who built a playlist by
+// hand first. So the report is playlist_.size() before against after: what actually
+// happened, not what was attempted.
+//
+// Missing files are SKIPPED AND COUNTED rather than aborting the append: fifteen tracks
+// is more useful than nothing, and a silent skip of three of eighteen is exactly the
+// silence LIB-S5 ruled against for one of one. The index is a cache and the remedy is a
+// rescan, so the count says so.
+//
+// Ordering, and the fact that it is the same order the pane shows, belong to
+// libnav::albumTracks. This function does no ordering of its own.
+void UIManager::appendAlbumUnderCursor() {
+    if (dir_cursor_ < 1 || dir_cursor_ >= (int)dir_entries_.size()) return;
+    const std::string album = dir_entries_[(size_t)dir_cursor_];
+    // The status and empty-state rows push "" as identity. An album name genuinely CAN
+    // be empty (untagged files), and that row is real and displays "(no album)", so the
+    // two are told apart by the display rather than by the identity being empty.
+    if (album.empty() && dir_display_[(size_t)dir_cursor_] != "(no album)") return;
+    const std::string label = dir_display_[(size_t)dir_cursor_];
+
+    const std::vector<libidx::LibraryTrack> rows =
+        libnav::albumTracks(library_index_, lib_nav_.artist, album);
+    if (rows.empty()) {                       // the index no longer lists this album
+        showTrackToast("No tracks on this album", label, "");
+        return;
+    }
+
+    const std::size_t before  = playlist_.size();
+    std::size_t       missing = 0;
+    for (const libidx::LibraryTrack& t : rows) {
+        // OS-origin paths - the scanner's own walk produced them - so this cannot throw
+        // the way a path built from tag text would. The error_code form regardless.
+        std::error_code ec;
+        if (!fs::exists(t.path, ec) || ec) { ++missing; continue; }
+        playlist_.addTrack(t.path);
+    }
+    const std::size_t added = playlist_.size() - before;
+
+    const char* unit = (added == 1) ? " track" : " tracks";
+    if (added == 0 && missing == rows.size()) {
+        showTrackToast("No tracks found on disk - rescan the library", label, "");
+    } else if (added == 0 && missing > 0) {
+        showTrackToast("Already in the playlist, " + std::to_string(missing) + " missing",
+                       label, "");
+    } else if (added == 0) {
+        showTrackToast("Already in the playlist", label, "");
+    } else if (missing > 0) {
+        showTrackToast("Added " + std::to_string(added) + unit + ", " +
+                       std::to_string(missing) + " missing", label, "");
+    } else {
+        showTrackToast("Added " + std::to_string(added) + unit, label, "");
+    }
 }
 
 // The level-3 row under the cursor as a path something can be DONE to, or empty.

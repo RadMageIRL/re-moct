@@ -786,6 +786,9 @@ private:
     // One definition, so Enter, 'a', '*' and 'b' cannot disagree about which rows are
     // actionable or about what to say when the index is out of date.
     std::string libraryRowPath();
+    // LIB-AA: 'a' on a level-2 row appends that album's tracks, in the order level 3
+    // draws them. Reports rows ACTUALLY added, which is not the track count.
+    void appendAlbumUnderCursor();
     void showLibraryArtists();      // (re)populate dir_entries_/dir_display_ at level 1
     void showLibraryAlbums();       // slice 4: level 2 - one artist's albums
     void showLibraryTracks();       // slice 4: level 3 - one album's tracks

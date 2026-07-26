@@ -254,6 +254,96 @@ static void test_path_stem() {
     CHECK(pathStem("/a/b/") .empty(), "trailing separator, no crash");
 }
 
+// ── 5b. albumTracks - THE one ordering function (LIB-AA) ────────────────────
+// Both the level-3 display and the album append read this, so these assertions are
+// what makes "it appends in the order you see" true rather than hoped for.
+static void test_album_tracks_order() {
+    libidx::LibraryIndex idx;
+    idx.root = "/music";
+    // Deliberately shuffled input across two discs, so ordering is being proved and
+    // not merely inherited from insertion order.
+    idx.tracks = {
+        mk("/m/d2t02.flac", "A", "Boxset", "D2T2", 2, 100),
+        mk("/m/d1t03.flac", "A", "Boxset", "D1T3", 3, 100),
+        mk("/m/d2t01.flac", "A", "Boxset", "D2T1", 1, 100),
+        mk("/m/d1t01.flac", "A", "Boxset", "D1T1", 1, 100),
+        mk("/m/d1t02.flac", "A", "Boxset", "D1T2", 2, 100),
+    };
+    idx.tracks[0].disc_no = 2; idx.tracks[2].disc_no = 2;
+    idx.tracks[1].disc_no = 1; idx.tracks[3].disc_no = 1; idx.tracks[4].disc_no = 1;
+
+    const auto rows = albumTracks(idx, "A", "Boxset");
+    CHECK(rows.size() == 5, "all five tracks, got %zu", rows.size());
+    // DISC then track - not track then disc. A multi-disc set must not interleave.
+    CHECK(rows[0].title == "D1T1" && rows[1].title == "D1T2" && rows[2].title == "D1T3",
+          "disc 1 in track order first: [%s %s %s]",
+          rows[0].title.c_str(), rows[1].title.c_str(), rows[2].title.c_str());
+    CHECK(rows[3].title == "D2T1" && rows[4].title == "D2T2",
+          "then disc 2 in track order: [%s %s]",
+          rows[3].title.c_str(), rows[4].title.c_str());
+
+    // NO SUBSCRIPT ESCAPES: every returned record must correspond to a real indexed
+    // path. An index leaking out as a number could not satisfy this.
+    for (const auto& r : rows) {
+        bool found = false;
+        for (const auto& t : idx.tracks) if (t.path == r.path) { found = true; break; }
+        CHECK(found, "record carries a real indexed path: %s", r.path.c_str());
+    }
+}
+
+static void test_album_tracks_untagged_and_duplicate_numbers() {
+    libidx::LibraryIndex idx;
+    // Every track_no 0 - the untagged rip. Order must fall to title then path and be
+    // total, so the list is stable between two calls.
+    idx.tracks = {
+        mk("/m/03 c.flac", "A", "Al", ""),
+        mk("/m/01 a.flac", "A", "Al", ""),
+        mk("/m/02 b.flac", "A", "Al", ""),
+    };
+    const auto a = albumTracks(idx, "A", "Al");
+    const auto b = albumTracks(idx, "A", "Al");
+    CHECK(a.size() == 3, "three untagged tracks");
+    CHECK(a[0].path < a[1].path && a[1].path < a[2].path,
+          "untagged falls to filename order: [%s %s %s]",
+          a[0].path.c_str(), a[1].path.c_str(), a[2].path.c_str());
+    bool same = a.size() == b.size();
+    for (std::size_t i = 0; same && i < a.size(); ++i) same = (a[i].path == b[i].path);
+    CHECK(same, "and the order is stable across calls");
+
+    // Duplicated track numbers must still produce a total order, losing and repeating
+    // nothing.
+    libidx::LibraryIndex dup;
+    dup.tracks = {
+        mk("/m/y.flac", "A", "Al", "Y", 1),
+        mk("/m/x.flac", "A", "Al", "X", 1),
+    };
+    const auto d = albumTracks(dup, "A", "Al");
+    CHECK(d.size() == 2, "both rows kept despite the same track number");
+    CHECK(d[0].title == "X" && d[1].title == "Y", "tie broken by title: [%s %s]",
+          d[0].title.c_str(), d[1].title.c_str());
+}
+
+static void test_album_tracks_edge_cases() {
+    const libidx::LibraryIndex idx = makeIndex();
+    CHECK(albumTracks(idx, "Nobody", "Nothing").empty(), "unknown artist+album -> empty");
+    CHECK(albumTracks(idx, "Muse", "Nothing").empty(), "known artist, unknown album -> empty");
+    CHECK(albumTracks(libidx::LibraryIndex{}, "A", "B").empty(), "empty index -> empty");
+
+    // Shared album name stays disjoint at the record level too.
+    CHECK(albumTracks(idx, "Queen", "Greatest Hits").size() == 1, "Queen's one row");
+    CHECK(albumTracks(idx, "Muse", "Greatest Hits").size() == 1, "Muse's one row");
+    CHECK(albumTracks(idx, "Queen", "Greatest Hits")[0].path !=
+          albumTracks(idx, "Muse", "Greatest Hits")[0].path, "and they are different rows");
+
+    // A Latin-1 album NAME selects correctly and is never turned into a path.
+    libidx::LibraryIndex l1;
+    const std::string bad = "Don\x92t Look Back";
+    l1.tracks = { mk("/m/one.flac", "A", bad, "T", 1) };
+    const auto r = albumTracks(l1, "A", bad);
+    CHECK(r.size() == 1, "invalid-UTF-8 album name matches by bytes");
+    CHECK(r[0].album == bad, "and round-trips byte-exact");
+}
+
 // ── 6. rowIsPath - slice 5's entire safety, in one predicate ────────────────
 static void test_row_is_path() {
     // Only level 3 identities are filesystem paths. Levels 1-2 are tag text, which
@@ -304,6 +394,9 @@ int main() {
     test_latin1_identity_survives();
     test_track_row_label();
     test_path_stem();
+    test_album_tracks_order();
+    test_album_tracks_untagged_and_duplicate_numbers();
+    test_album_tracks_edge_cases();
     test_row_is_path();
     test_reset();
 

@@ -27,7 +27,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   everything you already know works on it: Enter adds it to the playlist and plays
   it, `a` adds it without playing so you can walk an album picking tracks, `q`
   queues it, `*` favourites it, `u` marks it and `x` converts it, and `;` opens its
-  chapters. The `\` search works at all three levels, artists, albums and tracks.
+  chapters. `a` on an album row takes the whole album in one press, in the order
+  the album is listed - disc then track number, falling back to the filename for
+  discs that were never tagged - and says how many tracks it added. Tracks you
+  already have in the playlist are not added twice, so the count is what actually
+  went in rather than the length of the album, and any track that has been deleted
+  since the last scan is reported as missing rather than passed over in silence. The `\` search works at all three levels, artists, albums and tracks.
   If a track has been deleted or moved since the last scan, RE-MOCT now says which
   file is missing instead of doing nothing, because the answer is to rescan and
   there was no way to tell that from silence.

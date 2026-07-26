@@ -4,15 +4,10 @@ Status: **IN PROGRESS - this is CURRENT WORK, shipping as 1.5.0.**
 Written 2026-07-25 as a banked candidate; promoted to current work on 2026-07-26.
 HTOA does not preempt it, and HTOA's release number is undetermined.
 
-**Progress: slices 1, 2 and 3 are built and gated. Slice 3 passed on hardware.**
-
-| slice | state |
-|---|---|
-| 1 - index format + hierarchy queries | shipped, `c6287ee` |
-| 2 - scanner + mtime revalidation + cancel | shipped, `5152b46` |
-| 3 - `[Library]` section, level 1 | built and hardware-gated; UNCOMMITTED |
-| pinned-row consolidation (unplanned, inserted before slice 4) | built; UNCOMMITTED |
-| 4 - levels 2-3 | next |
+**Current state is the shipped-slice table near the end of this document, not this
+header.** Slices 1 through 9 are built; the remaining work and its numbering are
+tabled there. The stale progress note that used to sit here said "slices 1, 2 and 3",
+which was true for about six hours.
 
 Two questions this document raised were **closed by Dos's decisions of 2026-07-25**: the
 fork in section 8 is resolved to (b) with the hedge, and Enter on a library track row
@@ -325,9 +320,22 @@ also means it cannot be validated by a user-facing gate, only by "nothing broke.
 
 ## 9. Slice sequencing
 
-Riskiest and most-provable-in-isolation first. **Confirmed at 7 slices under path (b)**,
-revised from the debrief's 6-8 - the fork resolved downward, and genre/compilations plus
-scale genuinely want their own slice rather than riding slice 4.
+Riskiest and most-provable-in-isolation first. Planned at 7 slices under path (b).
+
+**IT CAME OUT AT 10, and the three extra were all discovered rather than planned** - the
+estimate was not wrong about the work, it was wrong about what the work would turn up:
+
+- **3b** pinned-row consolidation, inserted when slice 3's gate failed on a second list of
+  section names that had to agree with the first
+- **AA** append-whole-album, raised out of slice 5 rather than absorbed, because it is the
+  first operation touching many playlist rows at once
+- **the 7/8 split** - the original slice 7 became collection-wide search (a capability the
+  original scope MISSED entirely: `\` searched the current pane, which is right for a
+  folder browser and wrong for a library), and the original slice 7's contents became
+  slices 8 and 9
+
+The honest read: a seven-slice estimate for a campaign of this shape was about 30% light,
+and every overrun came from something the plan could not see from the outside.
 
 | # | Slice | Why here |
 |---|---|---|
@@ -385,17 +393,38 @@ design-of-record. It is recorded here rather than deleted because the correction
 point: a wrong premise in a roadmap costs something in every slice that reads it, and this
 document was read at the start of slices 1, 2 and 3.
 
-**Shipped so far, all pushed and hardware-gated:**
+**Shipped so far, all pushed:**
 
 | slice | commit | state |
 |---|---|---|
 | 1 - index format + queries | `c6287ee` | CI green |
 | 2 - background scanner | `5152b46` | CI green |
-| 3 - `[Library]` level 1 | `30b8d40` | eyes-on by Dos, passing |
-| 3b - pinned-row consolidation | `30b8d40` | eyes-on by Dos, passing |
+| 3 - `[Library]` level 1 | `30b8d40` | CI green, eyes-on passing |
+| 3b - pinned-row consolidation | `30b8d40` | CI green, eyes-on passing |
+| 4 - levels 2-3 + the one ascent path | `0eb7cd6` | CI green, eyes-on passing |
+| 5 - playback, queue, `\` search | `bf79789` | CI green, eyes-on passing |
+| AA - append whole album | `fcadcf9` | CI green, eyes-on passing |
+| 6 - toggle, music root, F12 rescan, Esc cancel | `b955fe6` | CI green, eyes-on passing |
+| 7 - collection-wide search (`\|`) | `bba2c8e` | CI green, eyes-on passing |
+| 8 - compilations + `artists()` scale fix | `fed8658` | CI green, eyes-on OPEN |
+| 9 - browse pane scroll-to-cursor | this commit | gates green, eyes-on OPEN |
 
-`Version.h` reads 1.5.0; the CHANGELOG heading is `## [1.5.0] - Unreleased`. Next is
-slice 4 (levels 2-3).
+**RENUMBERED 2026-07-26.** A correctness defect found on hardware took the number
+LIB-S9, so what this document previously called slice 9 is now **LIB-S10**. The
+campaign came out at 10 planned slices and is now running past that, for the same
+reason it ran past 7: the overruns are things the plan could not see from outside.
+
+**Remaining:**
+
+| # | Slice | State |
+|---|---|---|
+| **S10** | genre + stat views + remaining scale, plus the `libnav::searchRowLabel` compilation fallback | **designed** - `docs/library-slice8-plan.md` §2-§5, Dos's rulings pinned. No design phase to redo. |
+| **S11** | multi-root library | **designed, no brief yet** - comes after S10. Repeated `library_root=` keys; the index header becomes a list, which is a **FORMAT CHANGE and a stop-and-raise**; per-root offline handling so a skipped root is never treated as empty; a toggle key using the existing popup pane for add/remove confirms; dedupe including nested-path coverage, rejected via the bottom-left status line **in yellow, not a toast**. |
+| **S12** | cleanup: drop the four redundant `ensureDirCursorVisible()` handler calls | raised by S9 - once the draw-time invariant exists they are redundant but not wrong, and deleting working hardware-gated call sites was out of scope under additive-only. See `docs/library-slice9-plan.md` §3. |
+
+**Then the 1.5.0 ceremony**, which is Dos's call and is not scheduled.
+
+`Version.h` reads 1.5.0; the CHANGELOG heading is `## [1.5.0] - Unreleased`.
 
 **Anchor provenance.** The anchors in this document were verified at tip `6d40021` on
 2026-07-25. Re-verified against tip `30b8d40` on 2026-07-26, for slice 4's design note

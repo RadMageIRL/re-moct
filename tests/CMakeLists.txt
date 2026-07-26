@@ -178,6 +178,19 @@ add_executable(browser_pins_test browser_pins_test.cpp)
 target_include_directories(browser_pins_test PRIVATE ${CMAKE_SOURCE_DIR}/include)
 add_test(NAME browser_pins_test COMMAND browser_pins_test)
 
+# pane-scroll (Library slice 9) - the cursor/scroll rule BOTH list panes share.
+#
+# Same reason browser_pins_test exists: the rule used to live in two places free to
+# disagree. The playlist reconciled at draw time; the browser had a partial copy
+# called from four handlers and never from the draw, so a repopulate, a delete, a
+# resize or a by-name cursor restore each left the cursor off-pane. The central
+# assertions are the reported bug as a single case, and that the landing policy is
+# MINIMAL movement - a visible cursor must not move the view at all.
+# Header-only, links nothing, both matrix jobs.
+add_executable(pane_scroll_test pane_scroll_test.cpp)
+target_include_directories(pane_scroll_test PRIVATE ${CMAKE_SOURCE_DIR}/include)
+add_test(NAME pane_scroll_test COMMAND pane_scroll_test)
+
 add_executable(library_index_test library_index_test.cpp)
 target_include_directories(library_index_test PRIVATE
     ${CMAKE_SOURCE_DIR}/include)

@@ -78,6 +78,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The browser pane now always shows the row the cursor is on. Scroll down a long
+  listing, go somewhere else and come back, and the pane used to return to the top
+  of the list while the cursor stayed where you left it - so the highlighted row was
+  off the screen and the arrow keys appeared to do nothing until you had scrolled
+  back down to find it. The view now follows the cursor wherever it moves and
+  whatever moved it: returning to a section, stepping between artist, album and
+  track levels, rescanning with `F12`, searching, deleting a station, feed,
+  favourite or bookmark, and resizing the terminal smaller. This was never specific
+  to `[Library]` - it applied to any long listing, including a large folder,
+  `[FAVs]`, `[Recent]`, `[Books]` and a podcast's episodes - but the library made it
+  easy to hit, being the first section that routinely runs to hundreds of rows. The
+  view moves as little as it has to, so a row that is already visible never shifts
+  the pane. The playlist pane, which has always behaved this way, is unchanged.
 - Compilations no longer shatter. A various-artists album used to appear in
   `[Library]` as one album per track, filed under a different artist each time, so a
   40-track eighties compilation became forty one-track albums under forty artists.

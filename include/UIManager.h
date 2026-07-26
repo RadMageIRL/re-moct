@@ -212,8 +212,10 @@ private:
     void navigateDown();
     void navigateUp();
     // Page / Home / End for the focused list pane (playlist or browser).
-    // Cursor-movement only: playlist scroll = the slice-5 draw-time invariant;
-    // the browser has NO invariant, so these clamp dir_scroll_ themselves.
+    // Cursor-movement only: BOTH panes now reconcile scroll at draw time (the
+    // playlist since slice 5, the browser since library slice 9), so these just
+    // move the cursor. The browser's own ensureDirCursorVisible() calls are kept
+    // but redundant - the helper is idempotent. Do not add new ones.
     void navigatePage(int dir);          // +1 = PgDn, -1 = PgUp; page = visible-1
     void navigateHomeEnd(bool to_end);   // false = Home (row 0), true = End (last)
     void activateSelection();
@@ -283,13 +285,15 @@ private:
     // stream has no TrackInfo; callers show stream metadata separately). File/CD only.
     const TrackInfo* nowPlayingTrack() const;
 
-    // The single owner of pl_scroll_'s relationship to pl_cursor_: clamps the cursor
-    // into range, then scrolls the minimum needed to bring it inside the visible
-    // window. Enforced once at the top of drawPlaylist(); every path that moves the
-    // cursor just lets the next draw reveal it. Idempotent. See lessons.md - do NOT
-    // reintroduce per-handler "if cursor < scroll then nudge" math.
-    void ensurePlaylistCursorVisible();
-    void ensureDirCursorVisible();   // browser twin: clamp dir_scroll_ to keep dir_cursor_ shown
+    // The single owner of each pane's scroll/cursor relationship: clamp the cursor
+    // into range, scroll the minimum needed to bring it inside the visible window,
+    // and never leave the view past the end of the list. Both are wrappers over
+    // panescroll::ensureVisible (PaneScroll.h) - ONE rule, so the two panes cannot
+    // disagree. Each is enforced once at the top of its pane's draw; every path that
+    // moves a cursor just lets the next draw reveal it. Idempotent. See lessons.md -
+    // do NOT reintroduce per-handler "if cursor < scroll then nudge" math.
+    void ensurePlaylistCursorVisible();   // enforced at the top of drawPlaylist()
+    void ensureDirCursorVisible();        // enforced at the top of drawDirBrowser()
     std::string browserSectionLabel() const;   // display-only: names the current browser list
                                                // (dir leaf / feed title / section) for messages
 

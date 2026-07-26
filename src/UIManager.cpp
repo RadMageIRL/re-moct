@@ -11,6 +11,7 @@
 #include "CoverArt.h"
 #include "PortUtil.h"   // port::exeDir — locate a bundled wingui font beside the exe
 #include "BrowserPins.h" // the one pinned-row order, shared by refreshDir and the sort
+#include "PaneScroll.h"  // the one cursor/scroll rule, shared by both list panes
 #ifdef _WIN32
 #include <shellapi.h>   // ShellExecuteA for Last.fm browser auth
 #else
@@ -2896,6 +2897,11 @@ void UIManager::drawCwd() {
 
 void UIManager::drawDirBrowser() {
     werase(win_dir_);
+    // The invariant, mirroring drawPlaylist(): every path that leaves the cursor
+    // off-pane self-heals here. Before this the browser clamped per-handler, so a
+    // repopulate, a delete, a resize or a by-name cursor restore could each leave
+    // the pane drawing rows the cursor was not among. See PaneScroll.h.
+    ensureDirCursorVisible();
     int rows, cols;
     getmaxyx(win_dir_, rows, cols);
     (void)rows;
@@ -3147,15 +3153,13 @@ const TrackInfo* UIManager::nowPlayingTrack() const {
     return &audio_.currentTrack();
 }
 
+// Both panes' cursor/scroll reconciliation is panescroll::ensureVisible - the same
+// three steps in the same order, so the two panes cannot land on different rules.
+// The math moved to PaneScroll.h unchanged when the browser pane got the same
+// invariant (slice 9); this body is a wrapper over what it always did.
 void UIManager::ensurePlaylistCursorVisible() {
-    const int n = (int)playlist_.size();
-    if (n == 0) { pl_cursor_ = 0; pl_scroll_ = 0; return; }
-    pl_cursor_ = std::clamp(pl_cursor_, 0, n - 1);
-    const int visible = win_playlist_ ? paneVisibleRows(win_playlist_) : 0;
-    if (visible <= 0) return;                       // pane not built yet
-    if (pl_cursor_ < pl_scroll_)                    pl_scroll_ = pl_cursor_;
-    else if (pl_cursor_ >= pl_scroll_ + visible)    pl_scroll_ = pl_cursor_ - visible + 1;
-    pl_scroll_ = std::clamp(pl_scroll_, 0, std::max(0, n - visible));
+    panescroll::ensureVisible(pl_cursor_, pl_scroll_, (int)playlist_.size(),
+                              win_playlist_ ? paneVisibleRows(win_playlist_) : 0);
 }
 
 // Short uppercase type tag for the optional F11 filetype column (MOC parity).
@@ -3765,15 +3769,22 @@ void UIManager::jumpToBrowserIndex(std::size_t idx) {
     redraw_needed_.store(true);
 }
 
-// The browser has no draw-time cursor-visible invariant (j/k nudge per-handler), so
-// several sites clamp dir_scroll_ by hand after a cursor move; this is that clamp,
-// factored. NOT idempotent scroll math like ensurePlaylistCursorVisible - it only
-// pulls the view to cover dir_cursor_ (never re-centres), matching the prior inline.
+// The browser twin, and as of slice 9 it is the SAME function as the playlist's -
+// panescroll::ensureVisible, not a second implementation of the same idea.
+//
+// It used to be step 2 of three: it pulled the view to cover dir_cursor_ but never
+// clamped the cursor into range and never clamped the scroll off the tail, and it
+// ran only where a handler remembered to call it. It is now enforced at the top of
+// drawDirBrowser(), so the four surviving handler calls are redundant rather than
+// load-bearing - they are left in place because the function is idempotent and
+// deleting working call sites buys nothing.
+//
+// win_dir_ is null-checked here where the old body was not. Not reachable today
+// (every caller runs after the windows exist), but the draw-time call makes this
+// the pane's one reconciliation point and it should not depend on that staying true.
 void UIManager::ensureDirCursorVisible() {
-    int vis = paneVisibleRows(win_dir_);
-    if (dir_cursor_ < dir_scroll_) dir_scroll_ = dir_cursor_;
-    else if (vis > 0 && dir_cursor_ >= dir_scroll_ + vis)
-        dir_scroll_ = dir_cursor_ - vis + 1;
+    panescroll::ensureVisible(dir_cursor_, dir_scroll_, (int)dir_entries_.size(),
+                              win_dir_ ? paneVisibleRows(win_dir_) : 0);
 }
 
 // Display-only: names the browser list the user is looking at, for the \-search
@@ -9841,7 +9852,11 @@ void UIManager::showLibraryArtists() {
     const int row = libidx::restoreCursor(lib_nav_.sel_artist, rows);
     dir_cursor_ = (row < 0) ? 0 : row + 1;                // +1 for the [Back] row
     if (dir_cursor_ >= (int)dir_entries_.size()) dir_cursor_ = 0;
-    dir_scroll_ = 0;
+    // NO dir_scroll_ = 0 here. Restoring the cursor by name and then pinning the
+    // view to the top is what hid it: the row was correct and off-pane. The scroll
+    // is left as the user had it and drawDirBrowser's invariant reconciles the two
+    // against the NEW list, so a stale offset cannot survive as anything wrong -
+    // and a restored cursor of 0 drives it to 0 anyway, which is what this line did.
 }
 
 // ─── [Library] levels 2 and 3 (slice 4) ──────────────────────────────────────
@@ -9879,7 +9894,7 @@ void UIManager::showLibraryAlbums() {
     const int row = libidx::restoreCursor(lib_nav_.sel_album, rows);
     dir_cursor_ = (row < 0) ? 0 : row + 1;
     if (dir_cursor_ >= (int)dir_entries_.size()) dir_cursor_ = 0;
-    dir_scroll_ = 0;
+    // No dir_scroll_ reset - see showLibraryArtists.
 }
 
 // Level 3: one album's tracks.
@@ -9929,7 +9944,7 @@ void UIManager::showLibraryTracks() {
     const int row = libidx::restoreCursor(lib_nav_.sel_track, ident);
     dir_cursor_ = (row < 0) ? 0 : row + 1;
     if (dir_cursor_ >= (int)dir_entries_.size()) dir_cursor_ = 0;
-    dir_scroll_ = 0;
+    // No dir_scroll_ reset - see showLibraryArtists.
 }
 
 // 'a' on a level-2 album row: append the whole album, in the order level 3 draws it.
@@ -10087,7 +10102,9 @@ void UIManager::showLibrarySearch() {
     const int row = libidx::restoreCursor(lib_nav_.sel_track, ident);
     dir_cursor_ = (row < 0) ? 0 : row + 1;
     if (dir_cursor_ >= (int)dir_entries_.size()) dir_cursor_ = 0;
-    dir_scroll_ = 0;
+    // No dir_scroll_ reset - see showLibraryArtists. Live as-you-type search relies
+    // on this too: every keystroke repopulates, and resetting the scroll each time
+    // would fight the user's own scrolling through a 500-row result set.
 }
 
 // The ONE ascent path. [Back] and Left both call this, which is what makes them

@@ -409,7 +409,8 @@ document was read at the start of slices 1, 2 and 3.
 | 8 - compilations + `artists()` scale fix | `fed8658` | CI green, eyes-on OPEN |
 | 9 - browse pane scroll-to-cursor | `23d0f52` | CI green, eyes-on OPEN |
 | 10 - genre, stat views, scale, the stat-join fix | `db9f482` | CI green, eyes-on OPEN |
-| 11 - multi-root library | this commit | gates green, eyes-on OPEN |
+| 11 - multi-root library | `f127f78` | CI green, eyes-on OPEN |
+| 12 - remove the per-handler scroll math | this commit | gates green, eyes-on OPEN |
 
 **RENUMBERED 2026-07-26.** A correctness defect found on hardware took the number
 LIB-S9, so what this document previously called slice 9 is now **LIB-S10**. The
@@ -420,7 +421,6 @@ reason it ran past 7: the overruns are things the plan could not see from outsid
 
 | # | Slice | State |
 |---|---|---|
-| **S12** | cleanup: drop the four redundant `ensureDirCursorVisible()` handler calls | raised by S9 - once the draw-time invariant exists they are redundant but not wrong, and deleting working hardware-gated call sites was out of scope under additive-only. See `docs/library-slice9-plan.md` §3. |
 | **S13** | normalise `track_stats` keys in `Config`, merge the split pairs | **raised by S10 §0.** S10 folds case on the READ side, which fixes both views and the info pane. This fixes the STORE: `recordPlay` keys on whatever path the playlist entry held, so one file accumulates two tallies. Mutates persisted user data, so it wants its own gate and rollback story. S10's read-side fold is not wasted by it - old configs still need the fold until they migrate. |
 | **S14** | tag-EDIT a browser row | **narrowed by S10.** The display half shipped in S10: `infoPaneSubject()` makes `i` follow the browser cursor everywhere, and `e` refuses a browser subject rather than writing the wrong file. S14 is the write half - what `TagEditability`, `PlayingLocked` and `saveTagEdits`'s playlist-sync loop mean for a file that is not in the playlist. |
 

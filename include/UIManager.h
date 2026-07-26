@@ -241,10 +241,16 @@ private:
     void navigateDown();
     void navigateUp();
     // Page / Home / End for the focused list pane (playlist or browser).
-    // Cursor-movement only: BOTH panes now reconcile scroll at draw time (the
-    // playlist since slice 5, the browser since library slice 9), so these just
-    // move the cursor. The browser's own ensureDirCursorVisible() calls are kept
-    // but redundant - the helper is idempotent. Do not add new ones.
+    //
+    // CURSOR MOVEMENT ONLY. Both panes reconcile scroll at DRAW TIME - the playlist
+    // since slice 5, the browser since library slice 9 - so every one of these just
+    // moves a cursor and lets the next draw reveal it.
+    //
+    // Per-handler scroll math is the defect slice 9 removed, and slice 12 deleted the
+    // last six copies of it. It is not a second way of doing the same thing: for a
+    // single-step move the inline `++dir_scroll_` and the helper's
+    // `cursor - visible + 1` compute the SAME value. Writing it here as well as there
+    // is what let paths exist that nobody remembered to write it into. Do not add it back.
     void navigatePage(int dir);          // +1 = PgDn, -1 = PgUp; page = visible-1
     void navigateHomeEnd(bool to_end);   // false = Home (row 0), true = End (last)
     void activateSelection();

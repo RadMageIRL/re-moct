@@ -3778,13 +3778,14 @@ void UIManager::jumpToPlaylistIndex(std::size_t idx) {
 }
 
 // Browser twin of jumpToPlaylistIndex. Unlike the playlist jump, focus STAYS on the
-// browser (the user searched the left pane and wants to land there), and the browser
-// has no draw-time scroll invariant, so we clamp dir_scroll_ ourselves. Closing the
+// browser (the user searched the left pane and wants to land there). Closing the
 // results overlay (right_pane_ -> Playlist) returns the right pane to its normal view.
+//
+// One cursor assignment is the whole jump, exactly as in jumpToPlaylistIndex:
+// scroll-to-visible is drawDirBrowser's invariant since slice 9.
 void UIManager::jumpToBrowserIndex(std::size_t idx) {
     if (idx >= dir_entries_.size()) return;
     dir_cursor_ = (int)idx;
-    ensureDirCursorVisible();
     focus_ = Pane::DirBrowser;
     right_pane_ = RightPane::Playlist;
     redraw_needed_.store(true);
@@ -7417,9 +7418,6 @@ void UIManager::handleInput(int ch) {
                     for (std::size_t i = 0; i < dir_entries_.size(); ++i)
                         if (dir_entries_[i] == sel) { dir_cursor_ = (int)i; break; }
                 }
-                // The dir browser has no draw-time scroll invariant (j/k nudge
-                // per-handler), so re-clamp scroll to keep the restored cursor visible.
-                ensureDirCursorVisible();
                 showTrackToast("Drives refreshed", "", "");
                 redraw_needed_.store(true);
             }
@@ -8900,13 +8898,16 @@ void UIManager::toggleFocus() {
     focus_ = (focus_ == Pane::DirBrowser) ? Pane::Playlist : Pane::DirBrowser;
 }
 
+// Both branches are now one cursor assignment each, and the two panes read the same.
+// The browser's used to nudge dir_scroll_ by hand - `++dir_scroll_` past the bottom,
+// `dir_scroll_ = dir_cursor_` past the top. That is not a similar mechanism to the
+// invariant, it is the SAME arithmetic: for a single-step move ensureVisible's
+// `cursor - visible + 1` is exactly one more than the old scroll. Written twice, it
+// was the pattern that let slice 9's defect exist - the paths nobody remembered to
+// write it into were the bug.
 void UIManager::navigateDown() {
     if (focus_ == Pane::DirBrowser) {
-        int v = paneVisibleRows(win_dir_);
-        if (dir_cursor_+1 < (int)dir_entries_.size()) {
-            ++dir_cursor_;
-            if (dir_cursor_ >= dir_scroll_+v) ++dir_scroll_;
-        }
+        if (dir_cursor_+1 < (int)dir_entries_.size()) ++dir_cursor_;   // scroll follows via the invariant
     } else {
         if (pl_cursor_+1 < (int)playlist_.size()) ++pl_cursor_;   // scroll follows via the invariant
     }
@@ -8914,7 +8915,7 @@ void UIManager::navigateDown() {
 
 void UIManager::navigateUp() {
     if (focus_ == Pane::DirBrowser) {
-        if (dir_cursor_ > 0) { --dir_cursor_; if (dir_cursor_ < dir_scroll_) dir_scroll_ = dir_cursor_; }
+        if (dir_cursor_ > 0) --dir_cursor_;   // scroll follows via the invariant
     } else {
         if (pl_cursor_ > 0) --pl_cursor_;   // scroll follows via the invariant
     }
@@ -8929,9 +8930,7 @@ void UIManager::navigatePage(int dir) {
         if (n == 0) return;
         int v = std::max(1, paneVisibleRows(win_dir_) - 1);
         dir_cursor_ = std::clamp(dir_cursor_ + dir * v, 0, n - 1);
-        // No draw-time scroll invariant in the browser (j/k nudge per-handler):
-        // clamp scroll to keep the paged cursor visible ourselves.
-        ensureDirCursorVisible();
+        // scroll follows via the draw-time invariant
     } else {
         int n = (int)playlist_.size();
         if (n == 0) return;
@@ -8947,8 +8946,7 @@ void UIManager::navigateHomeEnd(bool to_end) {
     if (focus_ == Pane::DirBrowser) {
         int n = (int)dir_entries_.size();
         if (n == 0) return;
-        dir_cursor_ = to_end ? n - 1 : 0;
-        ensureDirCursorVisible();
+        dir_cursor_ = to_end ? n - 1 : 0;   // scroll via the invariant
     } else {
         int n = (int)playlist_.size();
         if (n == 0) return;

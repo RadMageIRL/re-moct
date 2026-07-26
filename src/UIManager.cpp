@@ -2954,6 +2954,12 @@ void UIManager::drawDirBrowser() {
                       clip(lib_nav_.album, 16) +
                       " (Enter:play  a:add  q:queue  [Back]/Left:albums) ";
                 break;
+            case libnav::Level::Results:
+                // The COUNT is part of the header, not decoration: results are capped,
+                // and a capped list that does not say so reads as a complete answer.
+                hdr = " [Library] search \"" + clip(lib_nav_.query, 18) + "\" " +
+                      lib_result_count_ + " (Enter:play  a:add  [Back]/Left:back) ";
+                break;
         }
     }
     else {
@@ -5463,6 +5469,9 @@ void UIManager::drawGotoBar() {
         case InputMode::LoadM3U: prompt = " load m3u: ";  break;
         case InputMode::StreamURL: prompt = " radio url: "; break;
         case InputMode::StreamName: prompt = " station name (optional, Enter to skip): "; break;
+        // Slice 7: names the SCOPE, because the whole point of the key is that it is
+        // wider than '\' - the user has to be able to tell which search they opened.
+        case InputMode::LibrarySearch: prompt = " search collection: "; break;
         case InputMode::PodcastAddUrl: prompt = " podcast feed url: "; break;
         case InputMode::PodcastIndexSearch: prompt = " search podcasts: "; break;
         case InputMode::PodcastIndexKey:    prompt = " podcast index API key: "; break;
@@ -7859,6 +7868,32 @@ void UIManager::handleInput(int ch) {
                 openInputBar(InputMode::PlaylistSearch, "");
             }
             break;
+        case '|':   // Shift+\ - search the WHOLE COLLECTION
+            // The pair reads itself: '\' searches what you are looking at, '|' searches
+            // everything you have. Same key, shifted, escalating scope.
+            //
+            // NOT '/': that key already means "find something NEW ONLINE" (station
+            // search, Podcast Index), which is the opposite of searching what you
+            // already own - the codebase draws that distinction explicitly and this
+            // keeps it. And not a bare F-key: '|' is plain printable ASCII, so it
+            // arrives as itself on both wingui and ncursesw with no terminfo involved,
+            // which is exactly what F11 could not promise.
+            //
+            // Works from the folder browser too, not just inside [Library]: finding a
+            // track without knowing where it lives should not require first navigating
+            // to where you do not know it is.
+            if (ui_overlay_ == UIOverlay::None && focus_ == Pane::DirBrowser
+                && config_.library) {
+                if (!in_library_) enterLibrarySection();   // arrive, then search
+                if (lib_scan_running_) {
+                    showTrackToast("Still scanning the library", "Esc to cancel", "");
+                    break;
+                }
+                libnav::beginSearch(lib_nav_, "");         // remembers the level to return to
+                showLibrarySearch();
+                openInputBar(InputMode::LibrarySearch, "");
+            }
+            break;
         case 's':
             audio_.stop(); break;
         case 'S': {
@@ -8513,6 +8548,14 @@ void UIManager::gotoClose(bool commit) {
                 }
                 break;
             }
+            // Slice 7: the results are ALREADY on screen - they narrowed on every
+            // keystroke - so Enter simply closes the bar and hands the pane back with
+            // the cursor on the first result. Nothing to run here; the work happened
+            // while typing. This case exists so the mode is handled explicitly rather
+            // than falling into Goto's path-completion behaviour.
+            case InputMode::LibrarySearch:
+                focus_ = Pane::DirBrowser;
+                break;
             case InputMode::PlaylistSearch: {
                 // Use goto_input_ raw, NOT the separator-stripped `target` - the
                 // stripping above is path-mode behaviour and would mangle a query
@@ -8689,6 +8732,22 @@ void UIManager::handleGotoInput(int ch) {
                 ++goto_cursor_;
             }
             break;
+    }
+    // LIVE SEARCH (slice 7). One hook at the ONE exit point, so it cannot miss a
+    // mutation path - the switch above changes goto_input_ in three separate places.
+    //
+    // The text compare IS the coalescing, and the reason no debouncer was built: a
+    // cursor move, Home, End or Tab leaves the query identical and re-queries nothing.
+    // Only typing or deleting costs anything, and that costs half a millisecond on the
+    // real collection.
+    //
+    // goto_active_ is load-bearing: Esc and Enter both call gotoClose inside the switch,
+    // which clears the bar, and without this guard the hook would then fire on an emptied
+    // query and wipe the results the user just asked for.
+    if (goto_active_ && input_mode_ == InputMode::LibrarySearch
+        && goto_input_ != lib_nav_.query) {
+        lib_nav_.query = goto_input_;
+        showLibrarySearch();
     }
     redraw_needed_.store(true);
 }
@@ -9967,7 +10026,62 @@ void UIManager::populateLevel() {
         case libnav::Level::Artists: showLibraryArtists(); break;
         case libnav::Level::Albums:  showLibraryAlbums();  break;
         case libnav::Level::Tracks:  showLibraryTracks();  break;
+        case libnav::Level::Results: showLibrarySearch();  break;
     }
+}
+
+// Whole-collection search results as a browser level (slice 7).
+//
+// Re-runs the query from lib_nav_.query every time, which is what makes results need no
+// invalidation: an F12 rescan, or anything else that repopulates, produces results
+// against the new index for free. Same property the artist and album levels have had
+// since slice 4, and the reason the query is a STRING and not a saved result set.
+void UIManager::showLibrarySearch() {
+    lib_nav_.level = libnav::Level::Results;
+    dir_entries_.clear(); dir_display_.clear();
+    dir_entries_.push_back("[Back]"); dir_display_.push_back("[Back]");
+    lib_result_count_.clear();
+
+    if (lib_nav_.query.empty()) {          // the bar is open but nothing typed yet
+        dir_entries_.push_back("");
+        dir_display_.push_back("Type to search the collection");
+        dir_cursor_ = 0; dir_scroll_ = 0;
+        return;
+    }
+
+    std::size_t total = 0;
+    const std::vector<libidx::LibraryTrack> rows =
+        libidx::search(library_index_, lib_nav_.query, kLibSearchMax, &total);
+
+    if (rows.empty()) {
+        dir_entries_.push_back("");
+        dir_display_.push_back("No match for \"" + sanitizeForDisplay(lib_nav_.query) + "\"");
+        dir_cursor_ = 0; dir_scroll_ = 0;
+        return;
+    }
+
+    // "N" when complete, "N of M" when the cap bit. The total comes from search() and is
+    // counted BEFORE the cap, so it never understates.
+    lib_result_count_ = (total > rows.size())
+        ? ("(" + std::to_string(rows.size()) + " of " + std::to_string(total) + ")")
+        : ("(" + std::to_string(total) + ")");
+
+    // Width hint for the row builder: the pane's content columns, so it can decide
+    // whether the album still fits. The pane does the actual column-correct clipping.
+    int wrows = 0, wcols = 0;
+    if (win_dir_) getmaxyx(win_dir_, wrows, wcols);
+    const int cols = std::max(20, wcols - 4);     // borders plus the row prefix
+    std::vector<std::string> ident;
+    ident.reserve(rows.size());
+    for (const libidx::LibraryTrack& t : rows) {
+        dir_entries_.push_back(t.path);                  // IDENTITY: the real path
+        dir_display_.push_back(sanitizeForDisplay(libnav::searchRowLabel(t, cols)));
+        ident.push_back(t.path);
+    }
+    const int row = libidx::restoreCursor(lib_nav_.sel_track, ident);
+    dir_cursor_ = (row < 0) ? 0 : row + 1;
+    if (dir_cursor_ >= (int)dir_entries_.size()) dir_cursor_ = 0;
+    dir_scroll_ = 0;
 }
 
 // The ONE ascent path. [Back] and Left both call this, which is what makes them

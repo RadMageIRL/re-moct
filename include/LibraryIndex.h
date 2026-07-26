@@ -232,6 +232,110 @@ inline bool iless(const std::string& a, const std::string& b) {
 // Sort, then collapse case-variant duplicates keeping the first spelling in
 // sorted order — deterministic, and "The Beatles" / "the beatles" become one
 // row rather than two.
+// Filename stem, by BYTES, with no fs::path anywhere - so this header stays free of
+// <filesystem> and therefore of the whole invalid-UTF-8 throw hazard. libnav::pathStem
+// delegates here rather than keeping a second copy.
+inline std::string pathStemOf(const std::string& p) {
+    const std::size_t slash = p.find_last_of("/\\");
+    std::string base = (slash == std::string::npos) ? p : p.substr(slash + 1);
+    const std::size_t dot = base.find_last_of('.');
+    if (dot != std::string::npos && dot != 0) base.erase(dot);
+    return base;
+}
+
+// ── ASCII folding, for SEARCH ONLY (slice 7) ─────────────────────────────────
+// Folds a UTF-8 string to lowercase ASCII, doing case AND DIACRITICS in one pass,
+// which is what lets a typed "bjork" match a tag reading "BJÖRK". Case folding alone
+// would give "björk" and still miss.
+//
+// SCOPE, stated because it is a real limit and not an oversight: Latin-1 Supplement
+// (U+00C0-U+00FF) and Latin Extended-A (U+0100-U+017F), which is the accented Latin a
+// Western music collection actually contains. Anything else - CJK, Cyrillic, Greek,
+// emoji - passes through unchanged and matches byte-exactly. This is a Latin fold, not
+// a Unicode collation, and a full case table is not worth carrying for one feature.
+//
+// Not to be confused with sanitizeForDisplay, which folds a PARTIAL set of accents for
+// DRAWING and is deliberately left alone: display keeps its accents, matching does not.
+inline const char* foldLatin1(uint32_t cp) {
+    switch (cp) {
+        case 0xC0: case 0xC1: case 0xC2: case 0xC3: case 0xC4: case 0xC5:
+        case 0xE0: case 0xE1: case 0xE2: case 0xE3: case 0xE4: case 0xE5: return "a";
+        case 0xC6: case 0xE6: return "ae";
+        case 0xC7: case 0xE7: return "c";
+        case 0xC8: case 0xC9: case 0xCA: case 0xCB:
+        case 0xE8: case 0xE9: case 0xEA: case 0xEB: return "e";
+        case 0xCC: case 0xCD: case 0xCE: case 0xCF:
+        case 0xEC: case 0xED: case 0xEE: case 0xEF: return "i";
+        case 0xD0: case 0xF0: return "d";
+        case 0xD1: case 0xF1: return "n";
+        case 0xD2: case 0xD3: case 0xD4: case 0xD5: case 0xD6: case 0xD8:
+        case 0xF2: case 0xF3: case 0xF4: case 0xF5: case 0xF6: case 0xF8: return "o";
+        case 0xD9: case 0xDA: case 0xDB: case 0xDC:
+        case 0xF9: case 0xFA: case 0xFB: case 0xFC: return "u";
+        case 0xDD: case 0xFD: case 0xFF: return "y";
+        case 0xDE: case 0xFE: return "th";
+        case 0xDF: return "ss";
+        default: return nullptr;      // includes U+00D7 and U+00F7, which are not letters
+    }
+}
+// Latin Extended-A is base-letter RUNS, so it folds by range rather than by 128 cases.
+inline const char* foldLatinExtA(uint32_t cp) {
+    if (cp >= 0x0100 && cp <= 0x0105) return "a";
+    if (cp >= 0x0106 && cp <= 0x010D) return "c";
+    if (cp >= 0x010E && cp <= 0x0111) return "d";
+    if (cp >= 0x0112 && cp <= 0x011B) return "e";
+    if (cp >= 0x011C && cp <= 0x0123) return "g";
+    if (cp >= 0x0124 && cp <= 0x0127) return "h";
+    if (cp >= 0x0128 && cp <= 0x0131) return "i";
+    if (cp == 0x0132 || cp == 0x0133) return "ij";
+    if (cp >= 0x0134 && cp <= 0x0135) return "j";
+    if (cp >= 0x0136 && cp <= 0x0138) return "k";
+    if (cp >= 0x0139 && cp <= 0x0142) return "l";
+    if (cp >= 0x0143 && cp <= 0x014B) return "n";
+    if (cp >= 0x014C && cp <= 0x0151) return "o";
+    if (cp == 0x0152 || cp == 0x0153) return "oe";
+    if (cp >= 0x0154 && cp <= 0x0159) return "r";
+    if (cp >= 0x015A && cp <= 0x0161) return "s";
+    if (cp >= 0x0162 && cp <= 0x0167) return "t";
+    if (cp >= 0x0168 && cp <= 0x0173) return "u";
+    if (cp >= 0x0174 && cp <= 0x0175) return "w";
+    if (cp >= 0x0176 && cp <= 0x0178) return "y";
+    if (cp >= 0x0179 && cp <= 0x017E) return "z";
+    return nullptr;
+}
+
+// Fold into a caller-owned buffer, so a search loop reuses one allocation instead of
+// making one per field per record.
+inline void foldAsciiInto(const std::string& s, std::string& out) {
+    out.clear();
+    out.reserve(s.size());
+    std::size_t i = 0;
+    while (i < s.size()) {
+        const unsigned char c = static_cast<unsigned char>(s[i]);
+        if (c < 0x80) {                                   // ASCII: lowercase in place
+            out += (c >= 'A' && c <= 'Z') ? static_cast<char>(c - 'A' + 'a')
+                                          : static_cast<char>(c);
+            ++i;
+            continue;
+        }
+        uint32_t cp = 0; std::size_t n = 1;
+        if      ((c & 0xE0) == 0xC0) { cp = c & 0x1Fu; n = 2; }
+        else if ((c & 0xF0) == 0xE0) { cp = c & 0x0Fu; n = 3; }
+        else if ((c & 0xF8) == 0xF0) { cp = c & 0x07u; n = 4; }
+        else { out += static_cast<char>(c); ++i; continue; }   // invalid lead: keep byte
+        if (i + n > s.size()) { out += static_cast<char>(c); ++i; continue; }  // truncated
+        for (std::size_t j = 1; j < n; ++j)
+            cp = (cp << 6) | (static_cast<unsigned char>(s[i + j]) & 0x3Fu);
+        const char* f = (cp <= 0xFFu) ? foldLatin1(cp) : foldLatinExtA(cp);
+        if (f) out += f;
+        else   out.append(s, i, n);                       // outside the fold: verbatim
+        i += n;
+    }
+}
+inline std::string foldAscii(const std::string& s) {
+    std::string o; foldAsciiInto(s, o); return o;
+}
+
 inline void sortUniqueCI(std::vector<std::string>& v) {
     std::sort(v.begin(), v.end(), iless);
     v.erase(std::unique(v.begin(), v.end(),
@@ -442,6 +546,114 @@ inline std::vector<std::size_t> tracksForAlbum(const LibraryIndex& idx,
         if (c != 0) return c < 0;
         return x.path < y.path;
     });
+    return out;
+}
+
+// ── Whole-collection search (slice 7) ────────────────────────────────────────
+//
+// The first addition to this query surface since slice 1, and the reason the library
+// exists: finding a track without knowing where it lives. The three queries above all
+// require knowing the artist; this one requires knowing nothing.
+//
+// RETURNS RECORDS BY VALUE. Six slices have held the rule that the UI never holds a
+// subscript into the index, and a results list is the strongest pull yet toward
+// breaking it, so the conversion happens here and nothing else ever sees an index.
+// libnav::albumTracks is the precedent.
+//
+// NO FORMAT CHANGE: this reads fields every shipped index already carries, so no
+// existing library.idx is invalidated.
+//
+// MATCHING. The query is split on spaces and every term must be found in at least one
+// field - AND across terms, OR across fields - which is what makes "beastie sabotage"
+// work, and is how people search. Both sides go through detail::foldAscii, so matching
+// is case- and accent-insensitive for Latin (see that function for the stated limit).
+//
+// FIELDS: title, artist, album, album-artist, genre, and the FILENAME STEM. The stem is
+// included because an untagged rip has nothing else to match on, and those are precisely
+// the tracks that browsing cannot find. Only the stem, never the whole path, so a query
+// cannot match a directory name and drag in every track beneath it.
+//
+// CAP. `limit` bounds the returned rows; `total_out`, when given, receives the TRUE
+// number of matches. The count is taken before the cap, so a capped list can say "500 of
+// 2045" honestly rather than implying it is complete - which matters because a
+// one-character query matches almost everything (measured: 2045 of 2156).
+//
+// ORDER: artist, album, disc, track, path. Deterministic, and it puts the several format
+// copies of one track ADJACENT rather than scattered - measured on the real collection at
+// 84 records for a 12-track album.
+inline std::vector<LibraryTrack> search(const LibraryIndex& idx,
+                                       const std::string& query,
+                                       std::size_t limit = 500,
+                                       std::size_t* total_out = nullptr) {
+    std::vector<LibraryTrack> out;
+    if (total_out) *total_out = 0;
+
+    // Fold the query once, then split it. Empty or whitespace-only matches nothing
+    // rather than everything: an empty search box should not dump the collection.
+    std::vector<std::string> terms;
+    {
+        const std::string f = detail::foldAscii(query);
+        std::string cur;
+        for (char c : f) {
+            if (c == ' ' || c == '\t') { if (!cur.empty()) { terms.push_back(cur); cur.clear(); } }
+            else cur += c;
+        }
+        if (!cur.empty()) terms.push_back(cur);
+    }
+    if (terms.empty()) return out;
+
+    std::vector<std::size_t> hits;
+    std::string fold;              // one buffer, reused for every field of every record
+    for (std::size_t i = 0; i < idx.tracks.size(); ++i) {
+        const LibraryTrack& t = idx.tracks[i];
+        bool all = true;
+        for (const std::string& q : terms) {
+            const std::string* const fields[5] =
+                { &t.title, &t.artist, &t.album, &t.album_artist, &t.genre };
+            bool any = false;
+            for (const std::string* s : fields) {
+                detail::foldAsciiInto(*s, fold);
+                if (fold.find(q) != std::string::npos) { any = true; break; }
+            }
+            if (!any) {                                  // last resort: the filename
+                detail::foldAsciiInto(detail::pathStemOf(t.path), fold);
+                any = fold.find(q) != std::string::npos;
+            }
+            if (!any) { all = false; break; }
+        }
+        if (all) hits.push_back(i);
+    }
+
+    if (total_out) *total_out = hits.size();
+
+    const auto by_place = [&idx](std::size_t a, std::size_t b) {
+        const LibraryTrack& x = idx.tracks[a];
+        const LibraryTrack& y = idx.tracks[b];
+        int c = detail::icmp(groupingArtist(x), groupingArtist(y));
+        if (c != 0) return c < 0;
+        c = detail::icmp(x.album, y.album);
+        if (c != 0) return c < 0;
+        if (x.disc_no  != y.disc_no)  return x.disc_no  < y.disc_no;
+        if (x.track_no != y.track_no) return x.track_no < y.track_no;
+        c = detail::icmp(x.title, y.title);
+        if (c != 0) return c < 0;
+        return x.path < y.path;
+    };
+
+    const std::size_t n = (hits.size() < limit) ? hits.size() : limit;
+
+    // PARTIAL sort when the cap bites, because only the first `n` are ever returned.
+    // This is not a micro-optimisation: the comparator does case-insensitive compares on
+    // artist and album, so a full sort of a near-total match set dominates everything
+    // else. Measured on 100k records where every record matched, full sort against
+    // partial: it is the difference between half a second and tens of milliseconds, and
+    // half a second per keystroke is not a live search.
+    if (n < hits.size()) std::partial_sort(hits.begin(), hits.begin() + (std::ptrdiff_t)n,
+                                           hits.end(), by_place);
+    else                 std::sort(hits.begin(), hits.end(), by_place);
+
+    out.reserve(n);
+    for (std::size_t k = 0; k < n; ++k) out.push_back(idx.tracks[hits[k]]);
     return out;
 }
 

@@ -263,6 +263,149 @@ static void test_untagged_ordering() {
 }
 
 // ── Scale: measured, not promised ──────────────────────────────────────────
+// ── Slice 7: the ASCII fold ─────────────────────────────────────────────────
+// Case AND diacritics in one pass, which is what a typed query needs: folding case
+// alone turns "BJÖRK" into "björk", which a typed "bjork" still misses.
+static void test_fold_ascii() {
+    using libidx::detail::foldAscii;
+    CHECK(foldAscii("BJÖRK") == "bjork", "BJORK-with-umlaut folds to bjork: [%s]",
+          foldAscii("BJÖRK").c_str());
+    CHECK(foldAscii("bjork") == "bjork", "and the typed form folds to the same thing");
+    CHECK(foldAscii("Mötley Crüe") == "motley crue", "[%s]",
+          foldAscii("Mötley Crüe").c_str());
+    CHECK(foldAscii("Sigur Rós") == "sigur ros", "acute");
+    CHECK(foldAscii("Beyoncé") == "beyonce", "e-acute");
+    CHECK(foldAscii("Niño") == "nino", "tilde n");
+    CHECK(foldAscii("Æon") == "aeon", "AE expands to two letters");
+    CHECK(foldAscii("straße") == "strasse", "sharp s expands to ss");
+    CHECK(foldAscii("Łódź") == "lodz", "Latin Extended-A: [%s]",
+          foldAscii("Łódź").c_str());
+    CHECK(foldAscii("Dvořák") == "dvorak", "caron");
+    CHECK(foldAscii("PLAIN Ascii 123") == "plain ascii 123", "ASCII lowercased, digits kept");
+
+    // The STATED LIMIT, pinned so it is documented rather than discovered: this is a
+    // Latin fold, not a Unicode collation. Anything outside Latin-1/Latin Ext-A passes
+    // through byte-exact and matches only itself.
+    CHECK(foldAscii("你好") == "你好", "CJK passes through unchanged");
+    CHECK(foldAscii("Ж") == "Ж", "Cyrillic passes through unchanged");
+
+    // Hostile input must not throw or hang - the index's standing contract.
+    CHECK(foldAscii("") == "", "empty");
+    CHECK(foldAscii("\xff\xfe") == "\xff\xfe", "invalid lead bytes are kept verbatim");
+    CHECK(foldAscii("caf\xc3") == "caf\xc3", "truncated sequence kept, no read past end");
+}
+
+// ── Slice 7: what matches ───────────────────────────────────────────────────
+static libidx::LibraryIndex searchIndex() {
+    libidx::LibraryIndex idx;
+    idx.tracks = {
+        mk("/m/a/01 Sabotage.flac",  "Beastie Boys", "Ill Communication", "Sabotage"),
+        mk("/m/a/02 Sure Shot.flac", "Beastie Boys", "Ill Communication", "Sure Shot"),
+        mk("/m/b/01 Army.flac",      "Ben Folds Five", "Whatever and Ever", "Army"),
+        mk("/m/c/track07.flac",      "", "", ""),                 // untagged: filename only
+        mk("/m/d/01 Joga.flac",      "Björk", "Homogenic", "Jóga"),
+    };
+    idx.tracks[2].genre = "Piano Rock";
+    idx.tracks[4].album_artist = "Björk";
+    return idx;
+}
+
+static void test_search_matching() {
+    const libidx::LibraryIndex idx = searchIndex();
+
+    CHECK(libidx::search(idx, "sabotage").size() == 1, "title match");
+    CHECK(libidx::search(idx, "beastie").size() == 2, "artist match hits both tracks");
+    CHECK(libidx::search(idx, "communication").size() == 2, "album match");
+    CHECK(libidx::search(idx, "piano").size() == 1, "genre match");
+    CHECK(libidx::search(idx, "track07").size() == 1, "FILENAME match - the untagged rip");
+
+    // AND across terms, OR across fields: both terms present, in different fields.
+    CHECK(libidx::search(idx, "beastie sabotage").size() == 1, "two terms, two fields");
+    CHECK(libidx::search(idx, "beastie army").empty(), "one term absent -> no match");
+
+    // Case and accents, both directions.
+    CHECK(libidx::search(idx, "BJORK").size() == 1, "typed ASCII finds the accented tag");
+    CHECK(libidx::search(idx, "björk").size() == 1, "typed accented finds it too");
+    CHECK(libidx::search(idx, "joga").size() == 1, "accented TITLE found by plain typing");
+
+    // Degenerate queries.
+    CHECK(libidx::search(idx, "").empty(), "empty query matches NOTHING, not everything");
+    CHECK(libidx::search(idx, "   ").empty(), "whitespace-only likewise");
+    CHECK(libidx::search(idx, "zzzznope").empty(), "no match is empty, not a crash");
+    CHECK(libidx::search(idx, std::string(500, 'x')).empty(), "query longer than any field");
+
+    // A path must match only by its STEM, or a query would drag in whole directories.
+    CHECK(libidx::search(idx, "/m/a/").empty(), "directory text does not match");
+}
+
+static void test_search_cap_order_and_identity() {
+    libidx::LibraryIndex idx;
+    // Deliberately shuffled, two artists, one album each, plus format duplicates of one
+    // track - the shape LIB-AA measured (84 records for a 12-track album).
+    idx.tracks = {
+        mk("/m/z2.flac", "Zed", "Later",  "Song"),
+        mk("/m/a1.mp3",  "Abe", "Early",  "Tune"),
+        mk("/m/a1.flac", "Abe", "Early",  "Tune"),
+        mk("/m/z1.flac", "Zed", "Later",  "Song"),
+    };
+    idx.tracks[0].track_no = 2;   // Zed, later track
+    idx.tracks[1].track_no = 1;
+    idx.tracks[2].track_no = 1;
+    idx.tracks[3].track_no = 1;   // Zed, first track
+    std::size_t total = 0;
+    // "a" appears in every row (Abe / Early / Later), so all four match.
+    const auto all = libidx::search(idx, "a", 500, &total);
+    CHECK(total == 4, "total counts every match, got %zu", total);
+    CHECK(all.size() == 4, "and all are returned when under the cap");
+    CHECK(all[0].artist == "Abe" && all[3].artist == "Zed", "ordered by artist: [%s..%s]",
+          all[0].artist.c_str(), all[3].artist.c_str());
+    // Format duplicates land ADJACENT, which is the point of the ordering.
+    CHECK(all[0].title == all[1].title, "the two copies of one track are adjacent");
+    CHECK(all[0].path != all[1].path, "and are distinct rows");
+    // Disc/track ordering within an album.
+    CHECK(all[2].track_no == 1 && all[3].track_no == 2, "track order within the album");
+
+    // THE CAP, and that the total still tells the truth.
+    std::size_t t2 = 0;
+    const auto capped = libidx::search(idx, "a", 2, &t2);
+    CHECK(capped.size() == 2, "cap honoured, got %zu", capped.size());
+    CHECK(t2 == 4, "total is counted BEFORE the cap, so it cannot understate: %zu", t2);
+
+    // NO SUBSCRIPT ESCAPES: every returned record is a real indexed path.
+    for (const auto& r : all) {
+        bool found = false;
+        for (const auto& t : idx.tracks) if (t.path == r.path) { found = true; break; }
+        CHECK(found, "result carries a real indexed path: %s", r.path.c_str());
+    }
+
+    // A planted invalid-UTF-8 tag field must be searchable and returnable, not a throw.
+    libidx::LibraryIndex l1;
+    l1.tracks = { mk("/m/x.flac", "Bj\x92rk", "Al\x92um", "T\x92tle") };
+    CHECK(libidx::search(l1, "rk").size() == 1, "raw Latin-1 tag text still matches");
+    CHECK(libidx::search(l1, "rk")[0].artist == "Bj\x92rk", "and round-trips byte-exact");
+}
+
+static void test_search_scale() {
+    libidx::LibraryIndex big;
+    big.tracks.reserve(100000);
+    for (std::size_t i = 0; i < 100000; ++i)
+        big.tracks.push_back(mk("/m/" + std::to_string(i) + "/love song.flac",
+                                "Artist " + std::to_string(i % 900),
+                                "Album " + std::to_string(i % 300), "Love Song"));
+    const auto t0 = std::chrono::steady_clock::now();
+    std::size_t total = 0;
+    const auto rows = libidx::search(big, "love", 500, &total);
+    const double ms = std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - t0).count();
+    CHECK(total == 100000, "all match, got %zu", total);
+    CHECK(rows.size() == 500, "capped to 500, got %zu", rows.size());
+    // Deliberately generous - this is a REGRESSION guard against someone making the
+    // search quadratic, not a benchmark. Measured ~25 ms here; a loaded CI runner gets
+    // an order of magnitude of headroom before this flakes.
+    CHECK(ms < 1500.0, "100k search stayed linear: %.1f ms", ms);
+    std::printf("  [search scale] 100k records, 100k matches, capped 500: %.1f ms\n", ms);
+}
+
 static void test_scale(std::size_t n, const char* label) {
     LibraryIndex idx;
     idx.root = "C:\\Users\\david\\Music";
@@ -360,6 +503,10 @@ int main() {
     test_untagged_ordering();
     test_restore_cursor();
     test_latin1_artist_survives();
+    test_fold_ascii();
+    test_search_matching();
+    test_search_cap_order_and_identity();
+    test_search_scale();
     test_scale(2773,   "real");       // the measured collection: 2155 + 618
     test_scale(100000, "headroom");   // synthetic, an order of magnitude beyond
 

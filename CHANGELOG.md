@@ -36,6 +36,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   If a track has been deleted or moved since the last scan, RE-MOCT now says which
   file is missing instead of doing nothing, because the answer is to rescan and
   there was no way to tell that from silence.
+- **Search your whole collection with `|`.** Type, and the list narrows as you type -
+  across every track you have, not just the folder you happen to be looking at. It
+  matches title, artist, album, album artist, genre and the filename, so a rip that
+  was never tagged is still findable by its name, and a query with several words
+  matches when every word is found somewhere. Press Enter on a result and it plays,
+  exactly as it would from anywhere else in the library; `a`, `q`, `*`, `u`, `x` and
+  `;` all work on a result too. Accents are handled the way you would want: typing
+  `bjork` finds `BJÖRK`, `motley crue` finds `Mötley Crüe`, and `dvorak` finds
+  `Dvořák`. `|` works from inside `[Library]` and from the ordinary folder browser,
+  because finding a track you have lost should not require going somewhere first.
+  `\` is unchanged and still searches the list in front of you - the two sit on the
+  same key, shifted: `\` for what you are looking at, `|` for everything you have.
 - `[Library]` can be turned off, and told where to look. Two new settings in
   `remoct.conf`: `library=0` removes the section entirely - not a row that refuses
   to open, actually absent, from the browser and from `[Drives]` alike - and

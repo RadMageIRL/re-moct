@@ -317,7 +317,10 @@ private:
     void computeVizBins();
 
     // Input bar state (goto dir / save M3U / load M3U)
-    enum class InputMode { Goto, SaveM3U, LoadM3U, StreamURL, StreamName, RadioSearch, LastfmKey, LastfmSecret, ListenBrainzToken, PlaylistSearch, RecDir, RecOffset, PodcastAddUrl, PodcastIndexSearch, PodcastIndexKey, PodcastIndexSecret };
+    // LibrarySearch (slice 7) is the ONE mode that applies on every keystroke rather
+    // than on Enter, because it narrows a list instead of submitting a request. The
+    // difference is one hook at handleGotoInput's single exit point.
+    enum class InputMode { Goto, SaveM3U, LoadM3U, StreamURL, StreamName, RadioSearch, LastfmKey, LastfmSecret, ListenBrainzToken, PlaylistSearch, RecDir, RecOffset, PodcastAddUrl, PodcastIndexSearch, PodcastIndexKey, PodcastIndexSecret, LibrarySearch };
     bool        goto_active_  = false;
     InputMode   input_mode_   = InputMode::Goto;
     std::string goto_input_;
@@ -817,6 +820,12 @@ private:
     void showLibraryArtists();      // (re)populate dir_entries_/dir_display_ at level 1
     void showLibraryAlbums();       // slice 4: level 2 - one artist's albums
     void showLibraryTracks();       // slice 4: level 3 - one album's tracks
+    void showLibrarySearch();       // slice 7: whole-collection results, re-run per keystroke
+    // Cap on rendered results. The true match count is shown alongside when it bites, so
+    // a capped list never reads as a complete answer - a one-character query matches
+    // almost the whole collection (measured: 2045 of 2156).
+    static constexpr std::size_t kLibSearchMax = 500;
+    std::string lib_result_count_;  // "(N)" or "(N of M)" for the header
     // The ONE ascent path, so [Back] and Left are identical at every level by
     // construction rather than by two handlers happening to agree.
     void libraryAscend();

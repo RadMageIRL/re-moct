@@ -366,6 +366,50 @@ static void test_row_is_path() {
     CHECK(!rowIsPath(s.level), "ascending back out of tracks stops being actionable");
 }
 
+// ── 6b. Search results as a fourth level (slice 7) ──────────────────────────
+static void test_search_level() {
+    // rowIsPath must include Results, because a result row's identity is a real path -
+    // that one predicate is what turns on play/append/queue/mark/convert for results.
+    CHECK(rowIsPath(Level::Results), "a result row IS a path");
+    CHECK(!rowIsPath(Level::Artists) && !rowIsPath(Level::Albums),
+          "levels 1-2 are still tag text, still excluded");
+
+    // return_to is captured at entry, so ascending lands where the search started.
+    State s;
+    descend(s, "Muse");                       // -> Albums
+    beginSearch(s, "sabotage");
+    CHECK(s.level == Level::Results, "search enters Results");
+    CHECK(s.return_to == Level::Albums, "and remembers where it came from");
+    CHECK(s.query == "sabotage", "query held as a STRING, so results re-derive");
+    CHECK(ascend(s) == Action::Repopulate, "ascending from Results repopulates");
+    CHECK(s.level == Level::Albums, "and returns to the level the search started at");
+    CHECK(s.query.empty(), "leaving a search drops the query");
+
+    // From level 3.
+    State t;
+    descend(t, "Muse"); descend(t, "Absolution");
+    CHECK(t.level == Level::Tracks, "at tracks");
+    beginSearch(t, "x");
+    CHECK(t.return_to == Level::Tracks, "returns to tracks");
+    ascend(t);
+    CHECK(t.level == Level::Tracks, "landed back at tracks");
+
+    // Re-searching from inside results must not overwrite return_to with Results, or
+    // ascending would loop back into the search it was leaving.
+    State u;
+    beginSearch(u, "one");
+    beginSearch(u, "two");
+    CHECK(u.return_to == Level::Artists, "a second search keeps the original return level");
+    CHECK(u.query == "two", "and takes the new query");
+
+    // Enter on a result is a leaf action, not a descent.
+    State v;
+    beginSearch(v, "q");
+    CHECK(descend(v, "/m/a.flac") == Action::None, "Enter at Results does not descend");
+    CHECK(v.level == Level::Results, "and stays put");
+    CHECK(v.sel_track == "/m/a.flac", "but remembers the row for cursor restore");
+}
+
 // ── 7. The reset trap ───────────────────────────────────────────────────────
 static void test_reset() {
     State s;
@@ -382,6 +426,15 @@ static void test_reset() {
     // Deliberate: sel_artist is a section-level memory and matches shipped
     // slice-3 behaviour, where refreshDir never cleared lib_selected_.
     CHECK(s.sel_artist == "Muse", "reset deliberately KEEPS the artist cursor");
+
+    // Slice 7: a live search must not survive a reset either, or a refresh would leave
+    // the section holding a query it is no longer showing results for.
+    State q;
+    beginSearch(q, "something");
+    reset(q);
+    CHECK(q.query.empty(), "reset clears the query");
+    CHECK(q.return_to == Level::Artists, "and the return level");
+    CHECK(q.level == Level::Artists, "and lands at level 1");
 }
 
 int main() {
@@ -398,6 +451,7 @@ int main() {
     test_album_tracks_untagged_and_duplicate_numbers();
     test_album_tracks_edge_cases();
     test_row_is_path();
+    test_search_level();
     test_reset();
 
     std::printf("library_level_test: %d checks, %d failures\n", g_checks, g_fail);

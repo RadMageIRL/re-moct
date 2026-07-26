@@ -32,7 +32,13 @@
 
 namespace libnav {
 
-enum class Level { Artists, Albums, Tracks };
+// Artists, that artist's albums, that album's tracks - and Results, which is not a
+// depth but a whole-collection search landing (slice 7). It is a Level rather than a
+// separate mode for a concrete reason: as a level its rows are dir_entries_ and
+// dir_display_ in lockstep like every other library level, so every operation slices 5
+// and AA wired - play, append, queue, favourite, mark, convert, chapters - works on a
+// result row by construction rather than by being wired a second time.
+enum class Level { Artists, Albums, Tracks, Results };
 
 // Does a row at this level carry a FILESYSTEM PATH as its identity?
 //
@@ -42,7 +48,10 @@ enum class Level { Artists, Albums, Tracks };
 // is not a cosmetic bug: it would hand artist and album strings - tag text, which
 // may be invalid UTF-8 - to code that builds fs::path, which is the crash the six
 // slice-3 guards exist to prevent.
-inline bool rowIsPath(Level l) { return l == Level::Tracks; }
+// Tracks AND Results: a search result is a track, and its identity is the same
+// absolute OS-origin path. This one line is what turns on every level-3 operation for
+// result rows, which is why slice 7 needed almost no new wiring.
+inline bool rowIsPath(Level l) { return l == Level::Tracks || l == Level::Results; }
 
 struct State {
     Level level = Level::Artists;
@@ -65,6 +74,17 @@ struct State {
     std::string sel_artist;
     std::string sel_album;
     std::string sel_track;
+
+    // ── Whole-collection search (slice 7) ────────────────────────────────────
+    // The live query. A STRING, which is why results need no invalidation: a rescan, or
+    // anything else that repopulates, simply re-runs the search from this. Same property
+    // the artist and album levels have had since slice 4.
+    std::string query;
+    // Where ascending out of Results goes. Set at entry, so search from level 2 returns
+    // to level 2 rather than dumping the user at the top of the section. Entering from
+    // the folder browser enters the section first, so this is Artists and a second Left
+    // leaves - predictable, and no state beyond one enum.
+    Level       return_to = Level::Artists;
 };
 
 // What the caller must do after a transition. Repopulate means re-run the query
@@ -107,9 +127,10 @@ inline Action descend(State& s, const std::string& entry) {
             return Action::Repopulate;
 
         case Level::Tracks:
-            // Enter on a track row does not play in slice 4 - playback and queue
-            // are slice 5, where Enter appends to the playlist. The selection is
-            // still remembered, so the cursor survives a rebuild either way.
+        case Level::Results:
+            // Both are leaves: Enter PLAYS (slice 5) rather than descending, so there is
+            // no deeper level to go to. The selection is still remembered, so the cursor
+            // survives a repopulate either way.
             s.sel_track = entry;
             return Action::None;
     }
@@ -121,6 +142,14 @@ inline Action descend(State& s, const std::string& entry) {
 // every level rather than identical by coincidence.
 inline Action ascend(State& s) {
     switch (s.level) {
+        case Level::Results:
+            // Back to wherever the search was opened from, not to a fixed level. The
+            // query is dropped: leaving a result list is finishing with that search, and
+            // keeping it would make the next repopulate silently re-run it.
+            s.query.clear();
+            s.level = s.return_to;
+            return Action::Repopulate;
+
         case Level::Tracks:
             s.album.clear();
             s.level = Level::Albums;
@@ -153,6 +182,16 @@ inline void reset(State& s) {
     s.album.clear();
     s.sel_album.clear();
     s.sel_track.clear();
+    s.query.clear();               // slice 7: a live search does not survive a reset
+    s.return_to = Level::Artists;
+}
+
+// Open a search. `from` is the level to come back to, captured at entry so ascending
+// returns where the user was rather than to the top of the section.
+inline void beginSearch(State& s, const std::string& q) {
+    if (s.level != Level::Results) s.return_to = s.level;
+    s.query = q;
+    s.level = Level::Results;
 }
 
 // ── One album's tracks, in the order they are shown ─────────────────────────
@@ -195,13 +234,10 @@ inline std::vector<libidx::LibraryTrack> albumTracks(const libidx::LibraryIndex&
 // and would survive fs::path, but there is no reason to pay a throwing
 // construction to find a separator, and keeping this header free of <filesystem>
 // keeps it free of the whole invalid-UTF-8 hazard by construction.
-inline std::string pathStem(const std::string& p) {
-    const std::size_t slash = p.find_last_of("/\\");
-    std::string base = (slash == std::string::npos) ? p : p.substr(slash + 1);
-    const std::size_t dot = base.find_last_of('.');
-    if (dot != std::string::npos && dot != 0) base.erase(dot);
-    return base;
-}
+//
+// Delegates to libidx: slice 7's search needs the same stem to match untagged rips on
+// their filename, and two copies of a rule this small is how they drift.
+inline std::string pathStem(const std::string& p) { return libidx::detail::pathStemOf(p); }
 
 // "NN. Title  (M:SS)", with every part optional because every part is missing on
 // something in a real collection:
@@ -221,6 +257,46 @@ inline std::string trackRowLabel(const libidx::LibraryTrack& t, const std::strin
     out += t.title.empty() ? pathStem(t.path) : t.title;
     if (!dur.empty()) { out += "  ("; out += dur; out += ")"; }
     return out;
+}
+
+// ── Result-row label (slice 7) ──────────────────────────────────────────────
+// "Artist - Title  [Album] (ext)".
+//
+// A result row has to be actionable on its own, because unlike a level-3 row it carries
+// no surrounding context: the pane is not "this album", it is "everything that matched".
+// So artist and album are on the row.
+//
+// THE EXTENSION IS NEVER DROPPED, and that is not tidiness. The real collection holds
+// seven format copies of some tracks (84 records for a 12-track album, measured in
+// LIB-AA), and with artist, title and album all identical the extension is the ONLY
+// thing distinguishing those rows from each other. A list of seven identical lines is
+// not a list.
+//
+// Elision priority when the row will not fit: album first (it is context), then artist,
+// and the title last, because the title is what was searched for.
+inline std::string searchRowLabel(const libidx::LibraryTrack& t, int cols) {
+    const std::string ext = [&] {
+        const std::string base = libidx::detail::pathStemOf(t.path);
+        // Extension = what pathStemOf removed; recover it rather than re-parsing.
+        const std::size_t slash = t.path.find_last_of("/\\");
+        const std::string file = (slash == std::string::npos) ? t.path : t.path.substr(slash + 1);
+        return (file.size() > base.size() + 1) ? file.substr(base.size() + 1) : std::string();
+    }();
+
+    const std::string title  = t.title.empty() ? libidx::detail::pathStemOf(t.path) : t.title;
+    const std::string artist = t.artist.empty() ? groupingArtist(t) : t.artist;
+    const std::string tail   = ext.empty() ? std::string() : ("  (" + ext + ")");
+
+    // Budget in BYTES here deliberately: the caller sanitises and column-clips for the
+    // pane. This only decides what to include, and cols is a hint for that choice.
+    const int budget = (cols > 0) ? cols : 200;
+    std::string row = artist.empty() ? title : (artist + " - " + title);
+    if (!t.album.empty() &&
+        (int)(row.size() + t.album.size() + 4 + tail.size()) <= budget)
+        row += "  [" + t.album + "]";
+    else if (!t.album.empty() && (int)(title.size() + t.album.size() + 4 + tail.size()) <= budget)
+        row = title + "  [" + t.album + "]";      // dropped the artist to keep the album
+    return row + tail;
 }
 
 } // namespace libnav

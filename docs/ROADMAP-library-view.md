@@ -346,13 +346,19 @@ chains are correctness work. This does not reverse the fork - path (a) would hav
 shipped sections at that risk instead of confining it to new code - but slice 4 should
 budget for it rather than expecting bookkeeping.
 
-**Slice 3 inherits one open question from slice 1** (design of record:
+**Slice 3 inherited one open question from slice 1** (design of record:
 `docs/library-index-plan.md` section 8). `tracksForAlbum` returns indices into the index,
-and those are valid only against the index instance that produced them. Once slice 2 can
-rebuild while the UI holds a selection, the UI must either re-query after a rebuild or hold
-the path - the stable identity - rather than the index. Slice 3's design note owns the
-answer; it was deliberately not papered over in slice 1 with a generation counter that
-slice could not test.
+and those are valid only against the index instance that produced them.
+
+**ANSWERED in slice 3, and the answer is that the question dissolves.** The UI holds
+identity STRINGS and never indices. A query result is consumed inside the one populate call
+that asked for it and never survives a frame, so there is nothing to invalidate and no
+generation counter is needed. The cursor is restored by NAME through
+`libidx::restoreCursor`, so a scan completing underneath a live selection re-seats on the
+same artist rather than on whatever row that subscript now denotes.
+
+Slice 4 must keep this true at depth: a track row holding an index into the album's track
+vector would reintroduce precisely the problem three slices avoided.
 | 5 | Playback, queue, `\` search at each level | Wiring over a confirmed-solved path |
 | 6 | Toggle, music-root config, rescan key, first-run UX | Makes it shippable and ignorable |
 | 7 | Album-artist/compilations, genre, stat views, scale pass | Correctness and polish against the real collection |
@@ -370,12 +376,31 @@ back half cannot.
 
 ## Sequencing and status
 
-Post-HTOA. HTOA and CTDB repair remain the 1.5.0 rip-hardening release and are not
-re-sequenced by this document. Library view is a **1.6.0-class candidate**, not scheduled
-work. This roadmap exists so the feature starts from a known position rather than cold.
+**SUPERSEDED 2026-07-26. Library view is CURRENT WORK and ships as 1.5.0.** It is not a
+1.6.0 candidate, it is not post-HTOA, and it is not unscheduled. HTOA and CTDB repair are
+**parked with an undetermined release number**; they do not preempt this campaign.
 
-Anchors in this document were verified against the live tree on 2026-07-25 at tip
-`6d40021`. `dir_entries_`/`dir_display_`, the populate idiom, `browserEntryPath`, the
-podcast drill-down helpers, the async worker idiom, `TrackStats`, and the per-section
-branch-site counts were all re-read rather than quoted. Re-verify before building - this
+The paragraph this replaces said the opposite of all three, and it said so in
+design-of-record. It is recorded here rather than deleted because the correction is the
+point: a wrong premise in a roadmap costs something in every slice that reads it, and this
+document was read at the start of slices 1, 2 and 3.
+
+**Shipped so far, all pushed and hardware-gated:**
+
+| slice | commit | state |
+|---|---|---|
+| 1 - index format + queries | `c6287ee` | CI green |
+| 2 - background scanner | `5152b46` | CI green |
+| 3 - `[Library]` level 1 | `30b8d40` | eyes-on by Dos, passing |
+| 3b - pinned-row consolidation | `30b8d40` | eyes-on by Dos, passing |
+
+`Version.h` reads 1.5.0; the CHANGELOG heading is `## [1.5.0] - Unreleased`. Next is
+slice 4 (levels 2-3).
+
+**Anchor provenance.** The anchors in this document were verified at tip `6d40021` on
+2026-07-25. Re-verified against tip `30b8d40` on 2026-07-26, for slice 4's design note
+only: `dir_entries_`/`dir_display_`, the populate idiom, `browserEntryPath`, `LibLevel`
+and the `lib_*` members, the `libidx` query surface, and every `in_library_` site. The
+async worker idiom, `TrackStats`, and the per-section branch-site counts were **not**
+re-read on 2026-07-26 and still date from `6d40021`. Re-verify before building - this
 document ages the same way every other one does.

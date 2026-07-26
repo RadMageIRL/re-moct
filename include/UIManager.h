@@ -18,6 +18,7 @@
 #include "PodcastClient.h"  // podcasts slice 2: the async feed fetch result type
 #include "PodcastIndex.h"   // podcasts slice 6: Podcast Index byterm search result types
 #include "LibraryScanner.h" // library slice 3: the [Library] index + its off-thread scanner
+#include "LibraryNav.h"     // library slice 4: the pure level state machine (levels 2-3)
 #include <cstdint>          // podcasts slice 3: uint64_t/int32_t download-progress + cancel state
 #include <deque>            // podcasts slice 4: the download queue
 #include "LastFm.h"
@@ -636,8 +637,9 @@ private:
     // ONE flag, because every exclusion chain in this file is a conjunction of
     // !in_X_ and a library section has to appear in them or it inherits
     // file-browser behaviour. The LEVELS are not flags: they live in the
-    // library-only descriptor below, so slice 4 adds depth by extending LibLevel
-    // and one switch rather than by adding in_library_album_ / in_library_track_.
+    // library-only descriptor below, and slice 4 added depth by extending that
+    // descriptor into libnav::State plus one populate switch, exactly as the hedge
+    // promised - no in_library_album_ / in_library_track_ was ever needed.
     //
     // WHY THE EXCLUSION-CHAIN EDITS ARE CORRECTNESS WORK, NOT BOOKKEEPING: rows
     // here are ARTIST STRINGS FROM TAGS, and several existing sites build an
@@ -645,16 +647,19 @@ private:
     // fs::path built from invalid UTF-8 throws on Windows - site 2992 does it in
     // the DRAW LOOP, which is the slice-5 crash exactly. Every such site is
     // guarded with !in_library_.
-    enum class LibLevel { Artists, Albums, Tracks };   // slice 3 uses Artists only
-    bool        in_library_ = false;
-    LibLevel    lib_level_  = LibLevel::Artists;
-    std::string lib_artist_;      // selection that led to the current level (slice 4)
-    std::string lib_album_;       // ditto (slice 4)
-    // The remembered IDENTITY of the selected row - never an index. This is the
-    // staleness answer: query results are consumed inside one populate call and
-    // never survive a frame, so a rebuild cannot leave a stale subscript behind.
-    // libidx::restoreCursor puts the cursor back by name after a repopulate.
-    std::string lib_selected_;
+    bool in_library_ = false;
+    // WHERE the section is, and WHAT THE USER CAME THROUGH. Slice 4 replaced the
+    // slice-3 LibLevel enum and its four loose members (lib_level_, lib_artist_,
+    // lib_album_, lib_selected_) with this one, for two reasons: there is now a
+    // single source of truth, so the level and its remembered cursor cannot
+    // disagree; and the transitions are PURE, so three levels times two directions
+    // is proved by library_level_test rather than by pressing keys.
+    //
+    // Every member is an identity STRING and never an index. That is the staleness
+    // answer carried into depth: libidx::tracksForAlbum returns indices valid only
+    // against the instance that produced them, so they are turned into paths inside
+    // the one populate call that asked for them and never stored. See LibraryNav.h.
+    libnav::State lib_nav_;
     libidx::LibraryIndex  library_index_;
     libidx::LibraryScanner library_scanner_;
     bool        lib_scan_running_   = false;
@@ -774,14 +779,36 @@ private:
     // fetch expires on its own instead of inheriting the pin. Cleared on pickup.
     std::string           podcast_fetch_pin_;
     void startPodcastFetch(const std::string& url, PodcastFetchPurpose purpose);
-    // ── [Library] (slice 3) ──
+    // ── [Library] (slices 3-4) ──
     void enterLibrarySection();     // enter [Library]: load the index, or start the first scan
+    void populateLevel();           // slice 4: dispatch to the populate for lib_nav_.level
     void showLibraryArtists();      // (re)populate dir_entries_/dir_display_ at level 1
+    void showLibraryAlbums();       // slice 4: level 2 - one artist's albums
+    void showLibraryTracks();       // slice 4: level 3 - one album's tracks
+    // The ONE ascent path, so [Back] and Left are identical at every level by
+    // construction rather than by two handlers happening to agree.
+    void libraryAscend();
     void pollLibraryScan();         // UI thread, per-frame: install a finished scan
 
     void pollPodcastFetch();        // UI thread, per-frame: install a finished fetch
     void enterPodcastSection();     // enter [Podcasts]: build the level-1 feed list
     void showPodcastFeedList();     // (re)populate dir_entries_/dir_display_ at level 1
+    void podcastAscend();
+    void showRadioStationList();    // (re)build the saved-station list at level 1
+    void radioAscend();             // search results -> stations -> leave
+
+    // ── THE ONE ASCENT PATH, for every browser section ───────────────────────
+    // [Back] and Left both call this, so the two keys are identical everywhere by
+    // construction rather than by seven pairs of handlers happening to agree.
+    // Returns false when the browser is not in a section at all, which is the
+    // caller's signal to fall through to ordinary directory navigation.
+    //
+    // This is BrowserPins.h's lesson applied to behaviour instead of to order: the
+    // pinned rows were two lists that had to agree and stopped agreeing, and an
+    // ascent duplicated seven times is the same defect waiting to happen. Leaving a
+    // section NEVER moves current_dir_ - refreshDir relists wherever the browser
+    // already was.
+    bool sectionAscend();
 
     // Podcast Index search (slice 6) - find NEW feeds by term, mirroring the radio
     // results sub-mode (in_podcastindex_search_ + pi_results_ rendered through the

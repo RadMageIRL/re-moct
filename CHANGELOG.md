@@ -16,10 +16,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the folder. Opening it the first time reads the tags of everything under your
   music folder, which takes a little while and shows its progress as it goes;
   after that it opens instantly, and it only re-reads files that have actually
-  changed. Choosing an artist does nothing yet - albums and tracks arrive next.
+  changed. Choosing an artist opens their albums, and choosing an album opens
+  its tracks, numbered and with their lengths. The left arrow and the `[Back]`
+  row both step back up one level, and the header always says which artist and
+  album you are inside. Tracks are ordered by disc and track number, falling
+  back to the filename for rips that were never tagged, and albums that share a
+  name between two artists stay separate. Coming back up a level puts the cursor
+  back on the row you came through rather than at the top of the list. Playing a
+  track from here arrives next.
 
 ### Fixed
 
+- The left arrow now does the same thing as the `[Back]` row in every section,
+  and leaving a section no longer moves you to a different folder. Previously the
+  left arrow only really worked in the folder browser: in `[FAVs]`, `[Radio]`,
+  `[Books]` and `[Recently Played]` it dropped you out of the section and, on the
+  way out, moved you up to the parent of the folder you had been browsing - so
+  you came back somewhere you had not been. In `[Podcasts]` it skipped past the
+  show you were inside and left the section entirely, with no way to step back
+  from a show's episodes to your list of shows. Now the left arrow steps back one
+  level where a section has levels, leaves the section where it does not, and
+  always returns you to the folder you were actually browsing. Every section's
+  header also says how to leave it; four of them did not say before.
+- In `[Radio]`, a saved station could stop playing when selected. After using the
+  station search and then leaving `[Radio]` and coming back, the section drew your
+  saved stations while still treating them as search results, so pressing Enter
+  quietly did nothing at all. Two of these leftover search states were not being
+  cleared; both are now.
+- In `[Recently Played]`, the row at the top of the list is now labelled `[Back]`
+  however you got there. Opening it from `[Drives]` labelled that row `[Drives]`,
+  but it has always returned to the folder browser rather than to the drive list,
+  so the label named somewhere it did not go.
 - `[Drives]` now has a `[Back]` row, and the left arrow leaves it, the way every
   other section already worked. It was the one section with no way out: there is
   no parent directory to rise to from a list of drives, so the left arrow did

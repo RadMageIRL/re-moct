@@ -183,6 +183,20 @@ target_include_directories(library_index_test PRIVATE
     ${CMAKE_SOURCE_DIR}/include)
 add_test(NAME library_index_test COMMAND library_index_test)
 
+# library-level (Library slice 4) - the [Library] level state machine: three levels
+# times two directions, the three remembered cursors, and the level-3 row label.
+# Header-only, links nothing, both matrix jobs.
+#
+# It exists because the alternative is a state machine written inside a curses key
+# handler, where the off-by-one that lives in six transitions is reachable only by
+# pressing keys. The central assertions are the staleness rule - no index from
+# libidx::tracksForAlbum may escape as a stored identity - and that descending into
+# a DIFFERENT album does not restore the previous album's track cursor.
+add_executable(library_level_test library_level_test.cpp)
+target_include_directories(library_level_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/include)
+add_test(NAME library_level_test COMMAND library_level_test)
+
 # library-scanner (Library slice 2) - the walk, the TagLib read, the incremental
 # revalidation and the atomic index write, exercised against a REAL temporary
 # directory tree (a scanner not run against a real filesystem is not tested).

@@ -51,6 +51,28 @@ inline int rank(const std::string& e) {
 
 inline bool isPin(const std::string& e) { return rank(e) >= 0; }
 
+// ── Which pins are actually SHOWN (library slice 6) ──────────────────────────
+// [Library] is behind a config toggle, and "off" means the row is absent rather
+// than present-and-inert. That filter has to apply to every reader or the section
+// half-exists: before slice 6 there were THREE lists of these names - refreshDir's
+// pushes, the sort comparator, and enterDriveList's own hand-written reverse-order
+// inserts, which read none of this header. Slice 6 routed enterDriveList here too,
+// so the toggle is one predicate consulted by all of them.
+//
+// Deliberately a plain parameter rather than a stored flag: this header stays pure
+// and dependency-free, so the order AND the filtering are asserted by a unit test
+// instead of by reading the code and hoping.
+inline bool shown(const std::string& e, bool library_enabled) {
+    if (!library_enabled && e == "[Library]") return false;
+    return true;
+}
+
+// Rank within the SHOWN order. -1 for a row that is not pinned or not shown, so a
+// hidden section sorts as ordinary content rather than being pinned invisibly.
+inline int shownRank(const std::string& e, bool library_enabled) {
+    return shown(e, library_enabled) ? rank(e) : -1;
+}
+
 // The comparator's pinned-row rule, as a predicate the sort can call directly.
 // Returns true when `a` must sort before `b` ON ACCOUNT OF PINNING, and reports
 // through `decided` whether pinning settled the question at all.
@@ -61,9 +83,10 @@ inline bool isPin(const std::string& e) { return rank(e) >= 0; }
 // so comparing a pinned row with ITSELF returned true - comp(a, a) == true is
 // undefined behaviour in std::sort, latent in shipped code because duplicate
 // pseudo-entries never actually occur. Ranks make it correct by construction.
-inline bool before(const std::string& a, const std::string& b, bool& decided) {
-    const int ra = rank(a);
-    const int rb = rank(b);
+inline bool before(const std::string& a, const std::string& b, bool& decided,
+                   bool library_enabled = true) {
+    const int ra = shownRank(a, library_enabled);
+    const int rb = shownRank(b, library_enabled);
     if (ra < 0 && rb < 0) { decided = false; return false; }   // neither pinned
     decided = true;
     if (ra < 0) return false;    // only b is pinned -> b first

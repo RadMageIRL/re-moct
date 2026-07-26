@@ -142,12 +142,61 @@ static void test_full_sort_reproduces_order() {
     CHECK(scrambled == at_root, "root listing keeps the order with .. absent");
 }
 
+// ── The [Library] toggle (slice 6) ───────────────────────────────────────────
+// "Off" means the row is ABSENT, not present-and-inert, and that has to hold for
+// EVERY reader or the section half-exists. Before slice 6 there were three lists of
+// these names and enterDriveList's own read none of this header; it now does, so this
+// one predicate is what the toggle turns.
+static void test_library_toggle() {
+    CHECK(shown("[Library]", true),  "toggle on -> [Library] is shown");
+    CHECK(!shown("[Library]", false), "toggle off -> [Library] is absent");
+
+    // Nothing else may be affected by it.
+    for (std::size_t i = 0; i < kCount; ++i) {
+        const std::string nm = kPins[i];
+        if (nm == "[Library]") continue;
+        CHECK(shown(nm, false), "toggle off leaves %s alone", nm.c_str());
+    }
+    // [Bookmarks] is not a pin at all - it exists only in the [Drives] list - so it is
+    // unaffected either way and must not be ranked.
+    CHECK(rank("[Bookmarks]") == -1, "[Bookmarks] is not a pinned row");
+    CHECK(shown("[Bookmarks]", false), "and the toggle does not touch it");
+
+    // A hidden section must rank as -1 so it sorts as ordinary content rather than
+    // being pinned invisibly.
+    CHECK(shownRank("[Library]", false) == -1, "hidden -> not pinned");
+    CHECK(shownRank("[Library]", true) == rank("[Library]"), "shown -> its normal rank");
+
+    // And the comparator honours it: with the toggle off, a real file must not lose to
+    // a row that is not being drawn.
+    bool decided = false;
+    CHECK(!before("[Library]", "song.flac", decided, false) || !decided,
+          "toggle off: [Library] does not outrank ordinary content");
+    decided = false;
+    CHECK(before("[Library]", "song.flac", decided, true) && decided,
+          "toggle on: it does");
+
+    // Sorting the full list with the toggle off reproduces the order minus that row.
+    std::vector<std::string> want;
+    for (std::size_t i = 0; i < kCount; ++i)
+        if (std::string(kPins[i]) != "[Library]") want.push_back(kPins[i]);
+    std::vector<std::string> got(want.rbegin(), want.rend());
+    std::stable_sort(got.begin(), got.end(),
+        [](const std::string& a, const std::string& b) {
+            bool d = false;
+            const bool pinned = before(a, b, d, false);
+            return d ? pinned : a < b;
+        });
+    CHECK(got == want, "sort with the toggle off keeps the remaining order");
+}
+
 int main() {
     test_order_is_exactly_this();
     test_rank();
     test_before();
     test_strict_weak_ordering();
     test_full_sort_reproduces_order();
+    test_library_toggle();
 
     std::printf("browser_pins_test: %d checks, %d failures\n", g_checks, g_fail);
     return g_fail ? 1 : 0;

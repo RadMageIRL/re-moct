@@ -102,6 +102,23 @@ struct DigiConfig {
     // Nerd Font pane-title icons (Ctrl+N). Requires a Nerd Font terminal font.
     bool  nerd_icons = false;
 
+    // ── [Library] (library slice 6) ──────────────────────────────────────────
+    // The section itself. Default ON, which is the opposite of the crossfade key's
+    // ruling and for a stated reason: crossfade defaulted off because it silently
+    // changed how playback SOUNDS, whereas this changes nothing until the section is
+    // opened. The scan trigger is first ENTRY, not startup, so a user who never opens
+    // [Library] pays no scan, no index file and no worker thread - one extra browser
+    // row is the entire cost. Off means the row is ABSENT, not present-and-inert: a
+    // row that refuses to open is a dead end that then needs a message explaining a
+    // feature the user turned off.
+    bool        library = true;
+    // The folder the library indexes. "" = CDRipper::musicRoot(), resolved at scan
+    // start and never written back as a literal - the rec_dir convention exactly.
+    // UNTRUSTED for path purposes: a user types this, so it is not guaranteed valid
+    // UTF-8, and on Windows fs::path() throws on invalid UTF-8 (as does
+    // fs::exists(s, ec), because the conversion runs before the code applies).
+    std::string library_root;
+
     // Follow the playing track: auto-move the playlist cursor to the playing row on
     // track change (F3). false = cursor stays where you left it (browse undisturbed).
     bool  follow_playing = true;

@@ -297,6 +297,31 @@ static void test_bad_root() {
     ScanOutcome out = scanCollection(join(g_root, "does-not-exist"), LibraryIndex{}, p);
     CHECK(!out.completed, "missing root -> incomplete, so nothing commits");
     CHECK(out.index.tracks.empty(), "no tracks invented");
+
+    // Slice 6: an unreadable root must leave a PRE-EXISTING index exactly as it was.
+    // Same obligation as a cancelled scan, and for the same reason - the walk did not
+    // finish, so deletion-on-unseen would read as mass deletion - but reached by a
+    // different route, which is the whole point: ScanOutcome reports only "did not
+    // complete" for both, so both have to be safe.
+    const std::string dir  = join(g_root, "coll");
+    const std::string idxp = join(g_root, "badroot.idx");
+    {
+        ScanProgress q; ScanOutcome good = scanCollection(dir, LibraryIndex{}, q);
+        CHECK(good.completed, "seeded a good index");
+        CHECK(saveIndexFileAtomic(idxp, good.index), "seed written");
+    }
+    const std::string before = readFile(idxp);
+    CHECK(!before.empty(), "seed non-empty");
+
+    // Through the THREADED scanner, which is the path that would actually commit.
+    LibraryScanner sc;
+    sc.start(join(g_root, "does-not-exist-either"), idxp);
+    for (int i = 0; i < 500 && !sc.done(); ++i)
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    CHECK(sc.done(), "worker finished on an unreadable root");
+    ScanOutcome res = sc.take();
+    CHECK(!res.completed, "unreadable root -> incomplete");
+    CHECK(readFile(idxp) == before, "INDEX FILE UNTOUCHED by an unreadable root");
 }
 
 // ── Optional: the real collection, measured ─────────────────────────────────

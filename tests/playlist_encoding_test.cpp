@@ -57,6 +57,41 @@ static void writeBytes(const std::string& path, const std::string& bytes) {
 }
 
 // ── The encoding helpers themselves ─────────────────────────────────────────
+// PlaylistManager::displayTitleFor - the row-label rule, extracted in library slice 6
+// so the tag-reading path and the library's index path cannot format differently.
+// populateMetadata now CALLS this, so the two are the same code rather than two copies
+// that have to agree; these cases pin the rule itself.
+static void test_display_title_for() {
+    using PM = PlaylistManager;
+    CHECK(PM::displayTitleFor("/m/x.flac", "Muse", "Starlight") == "Muse - Starlight",
+          "artist and title -> \"artist - title\"");
+    CHECK(PM::displayTitleFor("/m/x.flac", "", "Starlight") == "Starlight",
+          "title only -> title");
+    CHECK(PM::displayTitleFor("/m/x.flac", "Muse", "") == "x",
+          "artist but no title -> the stem, NOT a dangling \"Muse - \"");
+    CHECK(PM::displayTitleFor("/m/x.flac", "", "") == "x",
+          "neither -> the filename stem");
+    CHECK(PM::displayTitleFor("C:\\m\\y.mp3", "", "") == "y", "windows separator stem");
+    CHECK(PM::displayTitleFor("/m/two.dots.ogg", "", "") == "two.dots",
+          "only the last dot is the extension");
+    // The library passes RAW index text (the index deliberately stores tags
+    // unsanitised, because folding on the way in would be lossy), so the folding has to
+    // happen here - and it does: a smart quote comes back as ASCII whichever caller
+    // supplied it.
+    CHECK(PM::displayTitleFor("/m/x.flac", "", "Don\xE2\x80\x99t") == "Don't",
+          "non-ASCII is folded here, so both callers get the same string");
+
+    // AND the honest limit, pinned rather than left to be discovered: sanitizeForDisplay
+    // folds NON-ASCII and passes every byte below 0x80 through verbatim, so an ASCII
+    // control byte in a tag survives. That is pre-existing behaviour of the tag path -
+    // populateMetadata has always done exactly this - and the point here is that the
+    // library path is IDENTICAL to it rather than better or worse. Stripping controls
+    // would be a change to every row in the program, not a library slice.
+    const std::string ctl = std::string("Ti") + '\t' + "tle";
+    CHECK(PM::displayTitleFor("/m/x.flac", "", ctl) == ctl,
+          "an ASCII control byte passes through - same as the tag path, by design");
+}
+
 static void test_helpers() {
     CHECK(isValidUtf8(""),                          "empty is valid");
     CHECK(isValidUtf8("plain ascii"),               "ascii is valid");
@@ -173,6 +208,7 @@ int main() {
     if (ec) { std::printf("cannot create temp dir\n"); return 1; }
 
     test_helpers();
+    test_display_title_for();
     test_latin1_m3u();
     test_latin1_pls();
     test_latin1_xspf();

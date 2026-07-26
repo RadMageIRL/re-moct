@@ -33,6 +33,31 @@ public:
     static std::string streamLabel(const std::string& url);  // "RADIO: <name>" from a URL
     std::size_t addCDTrack(const std::string& fake_path,
                            const std::string& title, int duration_sec);
+
+    // ── Adding a track whose metadata is ALREADY KNOWN (library slice 6) ──────
+    // Identical to addTrack in every respect - the same http/CD rejections, the same
+    // DEDUP BY PATH, the same shuffle rebuild - except that it does not open the file
+    // to read tags, because the caller already has them.
+    //
+    // For the [Library] section, which holds artist, title and duration in its index.
+    // Re-reading tags it already has in memory was the entire cost of an album append:
+    // measured at 5.5-7.9 ms per track cold against ~0.2 ms warm, so a twenty-track
+    // album cost 125-158 ms of pure file I/O. This makes it near-free.
+    //
+    // The dedup is not optional: the album append reports how many rows it ACTUALLY
+    // added, and that count is only honest because re-adding an owned track is a no-op.
+    //
+    // NOT for the folder browser, [FAVs], [Recent], radio or podcasts - none of them
+    // has metadata in hand, so they keep calling addTrack.
+    std::size_t addIndexedTrack(const std::string& path, const std::string& artist,
+                                const std::string& title, int duration_sec);
+
+    // The display-title rule, extracted so the tag-reading path and the index path
+    // cannot format differently. populateMetadata calls this too; that is the point.
+    // "artist - title" when both are present, else the title, else the filename stem.
+    static std::string displayTitleFor(const std::string& path,
+                                       const std::string& artist,
+                                       const std::string& title);
     template<typename Pred>
     void removeIf(Pred pred) {
         size_t old_current = current_;

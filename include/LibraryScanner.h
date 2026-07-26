@@ -57,8 +57,18 @@ struct ScanCounters {
 struct ScanOutcome {
     LibraryIndex  index;
     ScanCounters  counts;
-    // FALSE means the scan was cancelled and `index` is PARTIAL. Do not commit
-    // it; see the invariant at the top of this file.
+    // FALSE means the walk DID NOT FINISH and `index` is PARTIAL - do not commit it;
+    // see the invariant at the top of this file.
+    //
+    // It does NOT tell you WHY. Two different things produce false: the caller
+    // cancelled, and the root could not be iterated at all. This comment used to claim
+    // only the first, and the consequence shipped: pointing [Library] at a folder that
+    // did not exist reported that the scan had been cancelled - a message wrong about
+    // what happened, produced by the one cause it did not describe.
+    //
+    // Library slice 6 distinguishes them ON THE CALLER'S SIDE (UIManager tracks whether
+    // a cancel was requested, and validates the root before starting at all) rather than
+    // by adding a reason code here, so this type keeps its shape.
     bool          completed = false;
 };
 

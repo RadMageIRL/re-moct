@@ -668,6 +668,13 @@ private:
     // scans. Without it, cancelling a 15.8 s scan and reopening the section would
     // immediately restart it - the section fighting the user.
     bool        lib_scan_cancelled_ = false;
+    // Slice 6: was the in-flight scan cancelled BY THE USER, as opposed to failing
+    // because the root could not be read? ScanOutcome reports only "did not complete"
+    // for both, so without this the two are indistinguishable - and they were, which is
+    // why pointing the library at a folder that does not exist used to report that you
+    // had cancelled it. This is the difference, held on the UI side so LibraryScanner
+    // keeps its shape.
+    bool        lib_cancel_requested_ = false;
     std::string lib_status_;      // honest in-progress / empty / cancelled line
     // Chapter table for the currently playing book (empty if none / not a book).
     std::vector<Mp4Chapter> current_chapters_;
@@ -781,6 +788,24 @@ private:
     void startPodcastFetch(const std::string& url, PodcastFetchPurpose purpose);
     // ── [Library] (slices 3-4) ──
     void enterLibrarySection();     // enter [Library]: load the index, or start the first scan
+    // ── slice 6 ──
+    // The folder the library indexes: config_.library_root if set, else the OS music
+    // folder MEMOIZED (CDRipper::musicRoot is a COM SHGetKnownFolderPath).
+    std::string libraryRoot() const;
+    // Is that folder actually readable? Treats the string as UNTRUSTED - a config root
+    // can be invalid UTF-8, which throws out of fs::path on Windows - so it goes through
+    // utf8Path inside a catch, never a bare fs::exists(std::string).
+    bool libraryRootReadable(const std::string& root) const;
+    // Shared by first enable, a changed root and the F12 rescan, so all three validate
+    // the root and set the same state. `reason` replaces the leading half of the status
+    // line; the "(Esc to cancel)" hint is always appended, because a cancellable
+    // operation that does not say so is not offered.
+    void startLibraryScan(const char* reason = nullptr);
+    void cancelLibraryScan();       // Esc while scanning
+    // The index record for a path, or nullptr. Linear, and called once per KEYPRESS -
+    // never per row and never per frame. Deliberately uncached: a query result that
+    // survives a frame is the staleness rule this campaign has kept for six slices.
+    const libidx::LibraryTrack* libraryTrackFor(const std::string& path) const;
     void populateLevel();           // slice 4: dispatch to the populate for lib_nav_.level
     // Slice 5: the level-3 row under the cursor as an ACTIONABLE path, or empty.
     // One definition, so Enter, 'a', '*' and 'b' cannot disagree about which rows are

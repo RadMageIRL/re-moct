@@ -273,6 +273,10 @@ void DigiConfig::load() {
         // so the migration is one-shot.
         else if (key == "repin_mode")            try { int v = std::clamp(std::stoi(val), 0, 2); repin_mode = (v == 0) ? 0 : 2; } catch (...) {}
         else if (key == "nerd_icons")         nerd_icons         = (val == "1");
+        // Library slice 6. An ABSENT key leaves the default (on), so an existing
+        // config gains the section; "library=0" is how a folder-player user opts out.
+        else if (key == "library")            library            = (val == "1");
+        else if (key == "library_root")       library_root       = val;
         else if (key == "follow_playing")     follow_playing     = (val == "1");
         else if (key == "show_filetype")      show_filetype      = (val == "1");
         else if (key == "rip_formats")        rip_formats        = val;
@@ -486,6 +490,11 @@ void DigiConfig::save() const {
         f << "iheart_probe_minted="   << (iheart_probe_minted ? "1" : "0") << "\n";
         f << "repin_mode2="           << repin_mode << "\n";
         f << "nerd_icons="        << (nerd_icons ? "1" : "0") << "\n";
+        f << "library="           << (library ? "1" : "0") << "\n";
+        // Written only when set, so an unset root stays unset rather than being frozen
+        // to whatever the OS music folder happened to be on the day it was saved. The
+        // rec_dir convention.
+        if (!library_root.empty()) f << "library_root=" << library_root << "\n";
         f << "follow_playing="    << (follow_playing ? "1" : "0") << "\n";
         f << "show_filetype="     << (show_filetype ? "1" : "0") << "\n";
         f << "rip_formats="       << rip_formats << "\n";

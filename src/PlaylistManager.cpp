@@ -66,6 +66,24 @@ bool PlaylistManager::isAudiobook(const std::string& path) {
     return audioext::extensionOf(path) == ".m4b";
 }
 
+// The one display-title rule. Both the tag-reading path (populateMetadata, just below)
+// and the index path (addIndexedTrack) come through here, so a row added from the
+// library and the same file added from the folder browser are formatted by the same
+// code rather than by two copies of it that have to agree.
+//
+// sanitizeForDisplay is applied HERE, which is why the library can pass raw index text:
+// the index deliberately stores tag text unsanitised, because folding on the way in
+// would be lossy.
+std::string PlaylistManager::displayTitleFor(const std::string& path,
+                                            const std::string& artist,
+                                            const std::string& title) {
+    const std::string t = sanitizeForDisplay(title);
+    const std::string a = sanitizeForDisplay(artist);
+    if (!a.empty() && !t.empty()) return a + " - " + t;
+    if (!t.empty())               return t;
+    return path_stem(path);
+}
+
 void PlaylistManager::populateMetadata(PlaylistEntry& entry) {
     entry.display_title = path_stem(entry.path);
 #ifdef _WIN32
@@ -75,16 +93,33 @@ void PlaylistManager::populateMetadata(PlaylistEntry& entry) {
     TagLib::FileRef ref(entry.path.c_str(), true, TagLib::AudioProperties::Fast);
 #endif
     if (ref.isNull()) return;
-    if (auto* tag = ref.tag(); tag) {
-        std::string title  = sanitizeForDisplay(tag->title().to8Bit(true));
-        std::string artist = sanitizeForDisplay(tag->artist().to8Bit(true));
-        if (!artist.empty() && !title.empty())
-            entry.display_title = artist + " - " + title;
-        else if (!title.empty())
-            entry.display_title = title;
-    }
+    if (auto* tag = ref.tag(); tag)
+        entry.display_title = displayTitleFor(entry.path,
+                                              tag->artist().to8Bit(true),
+                                              tag->title().to8Bit(true));
     if (auto* ap = ref.audioProperties(); ap)
         entry.duration_sec = ap->lengthInSeconds();
+}
+
+// addTrack without the tag read. Mirrors it line for line otherwise, deliberately: the
+// http and CD rejections, the dedup-by-path scan, and the shuffle rebuild are all
+// behaviour the callers already depend on.
+std::size_t PlaylistManager::addIndexedTrack(const std::string& path,
+                                            const std::string& artist,
+                                            const std::string& title,
+                                            int duration_sec) {
+    if (path.rfind("http://", 0) == 0 || path.rfind("https://", 0) == 0)
+        return addStream(path, streamLabel(path));
+    if (isCDTrackPath(path)) return std::string::npos;
+    for (std::size_t i = 0; i < entries_.size(); ++i)
+        if (entries_[i].path == path) return i;
+    PlaylistEntry entry;
+    entry.path          = path;
+    entry.display_title = displayTitleFor(path, artist, title);
+    entry.duration_sec  = duration_sec;
+    entries_.push_back(std::move(entry));
+    rebuildShuffleOrder();
+    return entries_.size() - 1;
 }
 
 void PlaylistManager::rebuildShuffleOrder() {

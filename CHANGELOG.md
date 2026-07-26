@@ -36,6 +36,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   If a track has been deleted or moved since the last scan, RE-MOCT now says which
   file is missing instead of doing nothing, because the answer is to rescan and
   there was no way to tell that from silence.
+- `[Library]` can be turned off, and told where to look. Two new settings in
+  `remoct.conf`: `library=0` removes the section entirely - not a row that refuses
+  to open, actually absent, from the browser and from `[Drives]` alike - and
+  `library_root=` points it at a folder other than your system music folder. It
+  defaults to on, because until you open it the section costs nothing: no scan, no
+  index file, no background work, just one row in the browser. Pointed at a folder
+  that does not exist, or one it cannot read, it now says which folder and why
+  instead of claiming the scan was cancelled. Change the folder between runs and it
+  rescans once, says that is what it is doing, and then settles.
+- **F12** rescans the library, the same way F12 already refreshes `[Drives]`. The
+  library never rescans behind your back - that is deliberate, so opening the
+  section is always instant - so this is how you tell it to look again after adding
+  or retagging music. It works from any level, and the list you were looking at is
+  still the list you are looking at afterwards.
+- **Esc** cancels a library scan while it is running, and the section says how to do
+  it while it scans. A cancelled scan changes nothing: whatever index you had before
+  is left exactly as it was, down to the byte, because a half-finished walk cannot
+  tell the difference between a file you deleted and a file it simply has not reached
+  yet. The next time you open `[Library]` it says the scan was cancelled, and the
+  time after that it tries again.
+- Adding tracks from `[Library]` is now instant. It was re-reading the tags of every
+  file as it added it, which it already had in the index from the last scan: adding a
+  seventeen-track album took about a tenth of a second of pure disk reading, and now
+  takes no measurable time at all. The rows that end up in your playlist are
+  identical either way - the index and the playlist read tags exactly the same way -
+  and if you have retagged a file since the last scan, the playlist shows what
+  `[Library]` is showing you, which F12 is there to bring up to date.
 
 ### Fixed
 
@@ -84,6 +111,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Internal
 
+- The browser's section rows are now built from one list everywhere. `[Drives]`
+  had its own hand-written copy of them, so the `[Library]` switch would have had
+  to be applied in two places that must agree - which is the same way `[Library]`
+  once ended up rendering at the bottom of the pane. Same rows, same order, one
+  list.
 - Groundwork for the library view: the metadata index, its on-disk cache format,
   and the artist/album/track queries the browser will read from. Nothing is
   wired to it yet, so there is no user-visible change in this entry - the index

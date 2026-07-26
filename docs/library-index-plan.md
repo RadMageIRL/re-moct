@@ -144,14 +144,30 @@ have to hunt down.
 
 ## 6. Paths are strings, start to finish
 
-Constructing a `std::filesystem::path` from a `std::string` **throws** in this application
-for any byte the ANSI codepage cannot map. RE-MOCT calls `setlocale(LC_ALL, "")`, so the
-narrow-to-wide conversion is CP1252, and even `fs::exists(str, ec)` throws because the
-conversion runs before the error-code applies. This took down the podcast list draw in
-slice 5.
+**CORRECTED 2026-07-26 (LIB-S2), measured on both toolchains.** This section previously
+said the throw happens for any byte CP1252 cannot map, i.e. for non-ASCII. That was
+reasoned rather than measured, and it is wrong. The corrected rule:
 
-It is not a theoretical risk. Measured on the real collection: **137 of 2,773 files (5%)
-have non-ASCII paths.**
+**libstdc++ on Windows treats a narrow `fs::path` string as UTF-8. The trigger is INVALID
+UTF-8, not non-ASCII.**
+
+| input | Windows (UCRT64) | Linux |
+|---|---|---|
+| valid UTF-8 - accents, smart quotes, CJK, 4-byte emoji | no throw, byte-exact round-trip, real files found | fine |
+| **invalid** UTF-8 - a raw `0x92`/`0x81`/`0x9D`/`0xE9`, a lone continuation byte, a truncated sequence | **throws** `Illegal byte sequence`, from `fs::path()` **and** from `fs::exists(s, ec)` | fine, bytes pass through |
+
+The old wording could not explain why `UIManager.cpp`'s `fs::directory_iterator(current_dir_)`
+has always worked over a collection containing 137 non-ASCII paths. The corrected rule
+explains both that and the slice-5 crash: slice 5 built a **path out of feed title text**,
+and feed text carries raw Latin-1 bytes.
+
+**So: paths that come from the OS are safe. Paths built from feed or tag text are not.**
+
+That distinction is load-bearing rather than academic. Under the old rule, LIB-S2 was about
+to hand-roll a `FindFirstFileW`/`opendir` seam purely to avoid `fs::path` - complexity
+generated entirely by a wrong mechanism in this document. `std::filesystem` is usable for
+an OS-origin walk; the scanner keeps a `try`/`catch` only because an index file can carry a
+path written on another platform.
 
 This unit therefore never converts a path to anything - it stores, escapes, compares and
 sorts them as strings. Slice 1 needs no filesystem call at all, which is the confirmation

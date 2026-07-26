@@ -78,20 +78,28 @@ Cache location: beside `remoct.conf` in the config directory (`Config::configPat
 directory - the same idiom `theme.conf` already uses), not in the music root. The music
 root is the user's, and we do not litter it.
 
-**The trap that will bite this slice.** `std::filesystem::path` constructed from a
-`std::string` **throws** in this application for any byte the ANSI codepage cannot map -
-RE-MOCT calls `setlocale(LC_ALL, "")`, so the narrow-to-wide conversion is CP1252, and
-even `fs::exists(str, ec)` throws because the implicit conversion runs before the
-error-code applies. This is not hypothetical: it took down the podcast list draw in slice 5,
-and it was diagnosed only by a headless repro over a real feed. A scanner walking a real
-music collection meets non-ASCII filenames constantly - accented artists, smart
-punctuation, non-Latin scripts.
+**The trap that will bite this slice - CORRECTED 2026-07-26 (LIB-S2).** This paragraph
+used to say `fs::path` throws for any byte CP1252 cannot map, i.e. for non-ASCII. That was
+reasoned, not measured, and it is wrong. Measured on both toolchains:
 
-**Therefore: paths in the index are strings, start to finish.** Build them by string
-append, compare them as strings, persist them as strings. Where a real filesystem
-operation is unavoidable, convert explicitly through `utf8_to_wide` into
-`fs::path(wstring)`. Any slice that quietly does `fs::path(record.path)` reintroduces the
-crash. This belongs in the slice brief, not discovered during the gate.
+**libstdc++ on Windows treats a narrow `fs::path` string as UTF-8, so the trigger is
+INVALID UTF-8, not non-ASCII.** Valid UTF-8 of any kind - accents, smart quotes, CJK,
+4-byte emoji - constructs fine, round-trips byte-exact, and finds real files. A raw
+Latin-1/CP1252 byte, a lone continuation byte or a truncated sequence throws
+`Illegal byte sequence`, from `fs::path()` **and** from `fs::exists(s, ec)` (the
+conversion runs before the error code applies). Linux never throws; bytes pass through.
+
+The old wording could not explain why `UIManager.cpp`'s `fs::directory_iterator(current_dir_)`
+has always worked over a collection with 137 non-ASCII paths. The corrected rule explains
+that **and** the slice-5 crash: slice 5 built a path out of **feed title text**, which
+carries raw Latin-1 bytes.
+
+**Therefore: paths that come from the OS are safe; paths built from feed or tag text are
+not.** Index paths are still strings start to finish - built by string append, compared and
+persisted as strings - and where a real filesystem call is unavoidable, construct
+`fs::path` from `utf8_to_wide(...)` so no narrow-to-wide conversion can run. But an
+OS-origin walk may use `std::filesystem` directly, which is what LIB-S2 does. Full detail
+and the measurement table are in `docs/library-index-plan.md` section 6.
 
 **Proving it.** A unit test over hostile input - truncated file, wrong version header,
 embedded tabs and newlines, non-ASCII throughout, missing fields, absurd durations,

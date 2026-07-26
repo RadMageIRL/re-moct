@@ -1,5 +1,6 @@
 #include "PlaylistManager.h"
 #include "StringUtils.h"
+#include "AudioExts.h"    // the canonical audio-extension list, shared with the library scanner
 
 #include <taglib/fileref.h>
 #include <taglib/tag.h>
@@ -29,15 +30,14 @@ static bool path_exists(const std::string& p) {
     return fs::exists(p, ec);
 }
 
-static const std::vector<std::string> AUDIO_EXTS = {
-    ".mp3", ".flac", ".ogg", ".opus", ".wav", ".aiff", ".aif",
-    ".m4a", ".m4b", ".aac", ".wma", ".mp4", ".wv"
-};
-
+// The list itself now lives in AudioExts.h so the library scanner reads the SAME
+// one. This is a pure delegation - audioext::isSupportedAudio matches
+// fs::path::extension semantics and lowercases identically, so behaviour here is
+// unchanged. It is also strictly safer: the old body built an fs::path from the
+// argument, which throws on Windows for a path that is not valid UTF-8, and this
+// function is reachable from playlist files.
 bool PlaylistManager::isSupportedAudio(const std::string& path) {
-    std::string ext = fs::path(path).extension().string();
-    std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
-    return std::find(AUDIO_EXTS.begin(), AUDIO_EXTS.end(), ext) != AUDIO_EXTS.end();
+    return audioext::isSupportedAudio(path);
 }
 
 bool PlaylistManager::isAudiobook(const std::string& path) {

@@ -14,6 +14,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   wired to it yet, so there is no user-visible change in this entry - the index
   has no scanner to fill it and no screen to draw it. It is recorded here
   because the version now reads 1.5.0, and a build that says so should say why.
+- More library groundwork: the scanner that fills that index. It walks the music
+  folder, reads tags, and refreshes what it already knows by re-reading only the
+  files that actually changed. Still nothing wired to a screen. The list of
+  audio file types the player will open now lives in one place instead of two,
+  which is a change with no visible effect today and one fewer way for the
+  library and the playlist to disagree about what is playable later.
 
 ## [1.4.1] - 2026-07-25
 

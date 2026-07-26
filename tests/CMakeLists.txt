@@ -171,6 +171,29 @@ target_include_directories(library_index_test PRIVATE
     ${CMAKE_SOURCE_DIR}/include)
 add_test(NAME library_index_test COMMAND library_index_test)
 
+# library-scanner (Library slice 2) - the walk, the TagLib read, the incremental
+# revalidation and the atomic index write, exercised against a REAL temporary
+# directory tree (a scanner not run against a real filesystem is not tested).
+# Links PlaylistManager.cpp as well, because the audio-extension list moved into
+# the shared AudioExts.h and both readers have to be proven to agree - that is
+# the playlist-add check, and it is only possible now the list is liftable.
+# The central case is the cancellation invariant: a cancelled scan is marked
+# incomplete AND leaves the index file byte-identical, because deletion-on-unseen
+# would otherwise mass-delete records for files the walk never reached. The
+# real-collection pass is opt-in via REMOCT_LIBRARY_SCAN_ROOT so a CI runner with
+# no music stays green. Both matrix jobs.
+add_executable(library_scanner_test
+    library_scanner_test.cpp
+    ${CMAKE_SOURCE_DIR}/src/LibraryScanner.cpp
+    ${CMAKE_SOURCE_DIR}/src/PlaylistManager.cpp
+)
+target_include_directories(library_scanner_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/lib
+    ${TAGLIB_INCLUDE_DIRS} ${FDKAAC_INCLUDE} ${OPUS_INCLUDE} ${WAVPACK_INCLUDE})
+target_link_libraries(library_scanner_test PRIVATE ${TAGLIB_LIBRARIES})
+add_test(NAME library_scanner_test COMMAND library_scanner_test)
+set_tests_properties(library_scanner_test PROPERTIES TIMEOUT 300)
+
 # podcast-client (Podcasts slice 2) - the fetch-and-parse glue over the core::IHttp
 # seam, proven headless with a FakeHttp (core::setHttp). Asserts the feed-sized
 # request (64 MB cap / 30 s) and the fetched-vs-parsed distinction the honest

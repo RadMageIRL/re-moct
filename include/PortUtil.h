@@ -22,6 +22,8 @@
 #    define WIN32_LEAN_AND_MEAN
 #  endif
 #  include <windows.h>
+#  include <sys/types.h>
+#  include <sys/stat.h>        // _wstat64 (port::statFile)
 #  include "StringUtils.h"     // utf8_to_wide (Windows-only helper)
 #else
 #  include <ctime>
@@ -71,6 +73,32 @@ inline FILE* fopenUtf8(const std::string& path, const char* mode) {
 #else
     return std::fopen(path.c_str(), mode);
 #endif
+}
+
+// Modification time (unix seconds) and size for a UTF-8 path. Same wide-on-
+// Windows shape as fopenUtf8. Returns false if the file cannot be stat'ed,
+// leaving the outputs untouched.
+//
+// WHY stat AND NOT fs::last_write_time. The library index stores mtime as the
+// revalidation key: a file whose path, mtime and size all match its record is
+// not re-read. That key has to encode IDENTICALLY on every run, and
+// fs::last_write_time returns a file_time_type whose epoch is unspecified and
+// needs a clock_cast to become a stable int64. If that conversion ever differed
+// between toolchains or standard-library versions, every file would look
+// modified and the incremental rescan would silently degrade to a full one -
+// slower, but never wrong in a way anyone would notice. stat's time_t is
+// unambiguous, and one call returns both fields.
+inline bool statFile(const std::string& path, int64_t& mtime_out, uint64_t& size_out) {
+#ifdef _WIN32
+    struct __stat64 st {};
+    if (::_wstat64(utf8_to_wide(path).c_str(), &st) != 0) return false;
+#else
+    struct stat st {};
+    if (::stat(path.c_str(), &st) != 0) return false;
+#endif
+    mtime_out = static_cast<int64_t>(st.st_mtime);
+    size_out  = static_cast<uint64_t>(st.st_size);
+    return true;
 }
 
 // Scratch/temp directory WITH trailing separator. Windows: GetTempPathA — the

@@ -178,6 +178,14 @@ add_executable(browser_pins_test browser_pins_test.cpp)
 target_include_directories(browser_pins_test PRIVATE ${CMAKE_SOURCE_DIR}/include)
 add_test(NAME browser_pins_test COMMAND browser_pins_test)
 
+# browser-sections (slice 17) - the virtual-section flag SET, which four separate
+# hand-written copies used to disagree about. The poll's copy tested one flag of
+# ten and so ran refreshDir() from inside a live section. Header-only, pure, both
+# matrix jobs - the same shape and the same reason as browser_pins_test above.
+add_executable(browser_sections_test browser_sections_test.cpp)
+target_include_directories(browser_sections_test PRIVATE ${CMAKE_SOURCE_DIR}/include)
+add_test(NAME browser_sections_test COMMAND browser_sections_test)
+
 # pane-scroll (Library slice 9) - the cursor/scroll rule BOTH list panes share.
 #
 # Same reason browser_pins_test exists: the rule used to live in two places free to

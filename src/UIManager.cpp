@@ -11,6 +11,7 @@
 #include "CoverArt.h"
 #include "PortUtil.h"   // port::exeDir — locate a bundled wingui font beside the exe
 #include "BrowserPins.h" // the one pinned-row order, shared by refreshDir and the sort
+#include "BrowserSections.h" // slice 17: the one virtual-section flag set
 #include "PaneScroll.h"  // the one cursor/scroll rule, shared by both list panes
 #ifdef _WIN32
 #include <shellapi.h>   // ShellExecuteA for Last.fm browser auth
@@ -235,6 +236,25 @@ UIManager::UIManager(PlaylistManager& playlist, AudioManager& audio,
       media_(media),   // default resolved AFTER initscr (SMTC needs a live HWND)
       playlist_(playlist), audio_(audio), config_(config)
 {
+    // ── THE ONE ENUMERATION of the virtual-section flags (slice 17) ─────────
+    //
+    // In the exact order refreshDir() and enterDriveList() used to write out by
+    // hand, so the consolidation is a substitution and not a rewrite. Both of
+    // those functions now call clearSectionFlags() instead, and the main loop's
+    // directory poll asks inVirtualSection() instead of testing one flag of ten.
+    //
+    // Adding an eleventh section means adding it HERE, and only here.
+    section_flags_[0] = &in_drive_list_;
+    section_flags_[1] = &in_recent_;
+    section_flags_[2] = &in_favs_;
+    section_flags_[3] = &in_radio_;
+    section_flags_[4] = &in_books_;
+    section_flags_[5] = &in_podcasts_;
+    section_flags_[6] = &in_podcast_feed_;
+    section_flags_[7] = &in_library_;
+    section_flags_[8] = &in_radio_search_;
+    section_flags_[9] = &in_podcastindex_search_;
+
     // Seed the session rip-format selection from the config default (config
     // is load-once; the modal toggles rip_sel_ and never writes it back).
     rip_sel_ = parseRipFormats(config_.rip_formats);
@@ -1727,8 +1747,22 @@ void UIManager::run() {
                 redraw_needed_.store(true);
         }
 
-        // Periodically check if the current directory changed on disk
-        if (!in_drive_list_ && ++dir_poll_ticks_ >= DIR_POLL_INTERVAL) {
+        // Periodically check if the current directory changed on disk.
+        //
+        // SLICE 17: the guard was `!in_drive_list_` - one flag out of ten, six
+        // sections out of date. In [Library], [Radio], [Podcasts], [FAVs],
+        // [Recent] or [Books] the poll still ran, still stat'd current_dir_ (which
+        // holds wherever the FOLDER BROWSER was, not what is on screen), and on any
+        // difference called refreshDir() - the function that tears every section
+        // down. The section evicted itself and the pane reverted to the last
+        // browsed folder. Reported on Linux under /mnt/hgfs, where the mtime moves
+        // unprompted; measured to fire on Windows NTFS too, as soon as anything
+        // writes into that folder.
+        //
+        // The precondition is "the browser is showing current_dir_", and
+        // inVirtualSection() is how that is known - not a list of sections that
+        // happens to be equivalent today.
+        if (!inVirtualSection() && ++dir_poll_ticks_ >= DIR_POLL_INTERVAL) {
             dir_poll_ticks_ = 0;
             try {
                 auto mtime = fs::last_write_time(current_dir_);
@@ -8977,7 +9011,14 @@ void UIManager::handleGotoInput(int ch) {
     // goto_active_ is load-bearing: Esc and Enter both call gotoClose inside the switch,
     // which clears the bar, and without this guard the hook would then fire on an emptied
     // query and wipe the results the user just asked for.
-    if (goto_active_ && input_mode_ == InputMode::LibrarySearch
+    //
+    // SLICE 17 adds in_library_. Without it, any path that clears the section flags
+    // while this bar is open leaves the bar still bound to LibrarySearch, so the
+    // next keystroke repopulated the pane with library results while in_library_
+    // was false - the pane then alternated between the folder browser and library
+    // rows depending on which ran last. The poll was one such path and is fixed;
+    // this term is what makes the bar's own state agree with the pane's regardless.
+    if (in_library_ && goto_active_ && input_mode_ == InputMode::LibrarySearch
         && goto_input_ != lib_nav_.query) {
         lib_nav_.query = goto_input_;
         showLibrarySearch();
@@ -9486,24 +9527,18 @@ std::vector<std::string> UIManager::listDrives() {
 }
 
 void UIManager::enterDriveList() {
+    // Slice 17: was the same ten hand-written assignments refreshDir() carried,
+    // differing only in in_drive_list_ - which is set true again immediately below,
+    // so the behaviour is identical. The sub-mode flags are part of the set for the
+    // reason this comment used to give at length: in_radio_search_ was reset at
+    // NEITHER site and in_podcastindex_search_ at only one, so searching and then
+    // refreshing left the flag set - re-entering [Radio] drew the saved stations
+    // while Enter still took the search-results branch and indexed radio_results_,
+    // so the station silently did not play. Bounds-guarded, which is why it failed
+    // quietly, which is why nobody found it. The completeness of the list IS the
+    // fix, and it is now impossible for the two sites to disagree about it.
+    clearSectionFlags();
     in_drive_list_ = true;
-    in_recent_     = false;
-    in_favs_       = false;
-    in_radio_      = false;
-    in_books_      = false;
-    in_podcasts_     = false;
-    in_podcast_feed_ = false;
-    in_library_      = false;   // the reset trap: BOTH sites, or a refresh leaks
-    libnav::reset(lib_nav_);    // level AND the path taken AND the deeper cursors
-    // EVERY SUB-MODE FLAG TOO, not just the section flags. in_radio_search_ was
-    // reset at NEITHER site and in_podcastindex_search_ at only one, so searching
-    // and then refreshing left the flag set: re-entering [Radio] drew the saved
-    // stations while Enter still took the search-results branch and indexed
-    // radio_results_, so the station silently did not play. Bounds-guarded, which
-    // is why it failed quietly instead of crashing, which is why nobody found it.
-    // The completeness of this list IS the fix - keep the two sites identical.
-    in_radio_search_        = false;
-    in_podcastindex_search_ = false;
     dir_entries_   = listDrives();
     dir_display_   = dir_entries_;
     // The section rows come from browserpins::kPins - the SAME list refreshDir pushes
@@ -9635,18 +9670,27 @@ void UIManager::activateDrive(const std::string& drive_entry) {
     }
 }
 
-void UIManager::refreshDir() {
-    in_drive_list_ = false;
-    in_recent_     = false;
-    in_favs_       = false;
-    in_radio_      = false;
-    in_books_      = false;
-    in_podcasts_     = false;
-    in_podcast_feed_ = false;
-    in_library_      = false;   // the reset trap: BOTH sites, or a refresh leaks
+// Is the browser showing a virtual section rather than current_dir_'s contents?
+// The set is section_flags_ (the constructor); the operation is browsersec::anySet.
+bool UIManager::inVirtualSection() const {
+    return browsersec::anySet(section_flags_, kSectionFlagCount);
+}
+
+// THE RESET TRAP, in one function. Both sites called this out in comments begging
+// to be kept in step - "BOTH sites, or a refresh leaks", "the completeness of this
+// list IS the fix" - and a third reader, the directory poll, had fallen six
+// sections behind and was calling refreshDir() from inside a live section.
+//
+// libnav::reset stays here, in the same relative position it held at both sites:
+// the level, the path taken through it, and the deeper cursors are as much part of
+// "no section is showing" as the flags are.
+void UIManager::clearSectionFlags() {
+    browsersec::clearAll(section_flags_, kSectionFlagCount);
     libnav::reset(lib_nav_);    // level AND the path taken AND the deeper cursors
-    in_radio_search_        = false;   // see enterDriveList: the same complete list,
-    in_podcastindex_search_ = false;   // and it must stay the same at both sites
+}
+
+void UIManager::refreshDir() {
+    clearSectionFlags();        // slice 17: was ten hand-written assignments here
     dir_entries_.clear();
     dir_display_.clear();
     dir_poll_ticks_ = 0;

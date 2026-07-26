@@ -254,6 +254,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `Folk, World, & Country` is still itself and not filed under `Folk`. Your files are
   not touched, the tags are not rewritten, and a rescan produces exactly the same
   index it did before - this only changes which row a track is listed under.
+- **Sections no longer throw you out when a folder changes on disk.** RE-MOCT
+  watches the folder you are browsing and relists it when something appears there,
+  which is right in the file browser and wrong everywhere else - it was still
+  running while you were inside `[Library]`, `[Radio]`, `[Podcasts]`, `[FAVs]`,
+  `[Recent]` or `[Books]`, and the relist tore the section down and dumped you back
+  in the folder browser. On Linux, with the music on a shared folder from the host,
+  it happened by itself about a second after opening the section, which is where it
+  was found. It was never only a Linux problem: on Windows the same thing happened
+  as soon as anything actually wrote into the folder you had been browsing - a
+  podcast finishing its download into it, or a rip writing a track. Only `[Drives]`
+  had been protected. The file browser still notices changes and still refreshes,
+  which is the part that was always meant to happen.
 - `?` now covers `[Library]`. Sixteen slices of it had gone in without the help pane
   ever mentioning the section existed, so there was no way to find out from inside
   the program that you could browse by artist, search everything you own with `|`,

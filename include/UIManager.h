@@ -1126,6 +1126,34 @@ private:
 
     // Drive browser
     bool in_drive_list_ = false;
+
+    // ── THE set of virtual-section flags, enumerated ONCE (slice 17) ────────
+    //
+    // Every one of the ten flags above, by address, in the order the two reset
+    // sites used to write them out by hand. This array IS the list; nothing else
+    // may carry a second copy of it.
+    //
+    // It exists because four hand-written copies had already drifted apart. The
+    // worst was in the main loop's directory-mtime poll, which tested one flag out
+    // of ten and so ran refreshDir() - the function that tears every section down -
+    // while a section was on screen. [Library] and five other sections evicted
+    // themselves whenever the last-browsed folder changed on disk; on Linux under
+    // /mnt/hgfs that happened unprompted, about a second after entry.
+    //
+    // THE REMAINING HAZARD, named because a header cannot enforce it: an ELEVENTH
+    // section flag has to be added here. That is now ONE place to remember instead
+    // of four, and it sits beside the members themselves - but browser_sections_test
+    // proves the algorithms, not this array's completeness, and no test can.
+    static constexpr std::size_t kSectionFlagCount = 10;
+    bool* section_flags_[kSectionFlagCount] {};      // filled in the constructor
+
+    // Is the browser showing a virtual section rather than current_dir_'s real
+    // contents? Anything keyed on current_dir_ must not run when this is true.
+    bool inVirtualSection() const;
+    // Clear every section flag AND the library navigation state - the whole of
+    // "the reset trap", in one place, called by both reset sites.
+    void clearSectionFlags();
+
     static std::vector<std::string> listDrives();
     void enterDriveList();
     void activateDrive(const std::string& drive_entry);

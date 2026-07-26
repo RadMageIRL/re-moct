@@ -5,9 +5,10 @@ Written 2026-07-25 as a banked candidate; promoted to current work on 2026-07-26
 HTOA does not preempt it, and HTOA's release number is undetermined.
 
 **Current state is the shipped-slice table near the end of this document, not this
-header.** Slices 1 through 9 are built; the remaining work and its numbering are
-tabled there. The stale progress note that used to sit here said "slices 1, 2 and 3",
-which was true for about six hours.
+header.** Slices 1 through 14 are built and hardware-gated; the remaining work and its
+numbering are tabled there. This header has now been stale twice - it said "slices 1, 2
+and 3" for about six hours, then "1 through 9" - which is the argument for keeping the
+state in one table and pointing at it rather than restating it.
 
 Two questions this document raised were **closed by Dos's decisions of 2026-07-25**: the
 fork in section 8 is resolved to (b) with the hedge, and Enter on a library track row
@@ -51,9 +52,16 @@ feature naturally grows toward, and each is excluded deliberately:
 - **No network metadata.** The index is built from local tags only. No MusicBrainz,
   Discogs, or cover-art lookups during scan. Art in the library view reuses the existing
   on-demand paths or shows nothing.
-- **No tag editing from the library view.** The tag editor already exists on the folder
-  side; library rows are read-only. Editing would mean write-back plus index invalidation,
-  which is its own campaign.
+- ~~**No tag editing from the library view.**~~ **REVERSED, and shipped in LIB-S14.** This
+  said library rows are read-only and that editing "would mean write-back plus index
+  invalidation, which is its own campaign". Both halves were wrong, and measurably so:
+  the write-back is the tag editor that already existed, unchanged - not one line of it
+  moved - and index invalidation turned out to be an in-place field update plus a 0.55 ms
+  `rebuildCompilations`, with `mtime`/`size` left stale so the next rescan confirms it.
+  What made it look like a campaign was an inference in a debrief that `TagEditability`,
+  `PlayingLocked` and the playlist-sync loop all assumed a playlist entry. **None of the
+  three did.** Recorded rather than deleted, because the cost of this line was a slice
+  that got briefed as large and turned out to be two lines and a resolver.
 - **No smart playlists, no filters, no saved queries.** Artist/album/track and the two
   free stat views (§7) are the whole surface.
 - **No cross-device or remote libraries.** One local music root.
@@ -406,12 +414,13 @@ document was read at the start of slices 1, 2 and 3.
 | AA - append whole album | `fcadcf9` | CI green, eyes-on passing |
 | 6 - toggle, music root, F12 rescan, Esc cancel | `b955fe6` | CI green, eyes-on passing |
 | 7 - collection-wide search (`\|`) | `bba2c8e` | CI green, eyes-on passing |
-| 8 - compilations + `artists()` scale fix | `fed8658` | CI green, eyes-on OPEN |
-| 9 - browse pane scroll-to-cursor | `23d0f52` | CI green, eyes-on OPEN |
-| 10 - genre, stat views, scale, the stat-join fix | `db9f482` | CI green, eyes-on OPEN |
-| 11 - multi-root library | `f127f78` | CI green, eyes-on OPEN |
-| 12 - remove the per-handler scroll math | `cc56e47` | CI green, eyes-on OPEN |
-| 13 - `Config` stat-key normalisation + migration | this commit | gates green, eyes-on OPEN |
+| 8 - compilations + `artists()` scale fix | `fed8658` | CI green, eyes-on passing |
+| 9 - browse pane scroll-to-cursor | `23d0f52` | CI green, eyes-on passing |
+| 10 - genre, stat views, scale, the stat-join fix | `db9f482` | CI green, eyes-on passing |
+| 11 - multi-root library | `f127f78` | CI green, eyes-on passing (re-gated after the pane-ownership fix) |
+| 12 - remove the per-handler scroll math | `cc56e47` | CI green, eyes-on passing |
+| 13 - `Config` stat-key normalisation + migration | `3b40f50` | CI green, eyes-on passing |
+| 14 - tag editing on browser rows | this commit | gates green, eyes-on passing |
 
 **RENUMBERED 2026-07-26.** A correctness defect found on hardware took the number
 LIB-S9, so what this document previously called slice 9 is now **LIB-S10**. The
@@ -422,9 +431,13 @@ reason it ran past 7: the overruns are things the plan could not see from outsid
 
 | # | Slice | State |
 |---|---|---|
-| **S14** | tag-EDIT a browser row | **narrowed by S10.** The display half shipped in S10: `infoPaneSubject()` makes `i` follow the browser cursor everywhere, and `e` refuses a browser subject rather than writing the wrong file. S14 is the write half - what `TagEditability`, `PlayingLocked` and `saveTagEdits`'s playlist-sync loop mean for a file that is not in the playlist. |
+| **S15** | silent dupe denial from library to playlist | raised outside this document; not yet briefed. |
+| **S16** | library view navigation | raised outside this document; not yet briefed. |
 
 **Then the 1.5.0 ceremony**, which is Dos's call and is not scheduled.
+
+**Every slice from 1 to 14 is now shipped, pushed, CI-green and hardware-gated.** S15 and
+S16 are the only library items left, and neither is briefed.
 
 `Version.h` reads 1.5.0; the CHANGELOG heading is `## [1.5.0] - Unreleased`.
 

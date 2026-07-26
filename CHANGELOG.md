@@ -76,6 +76,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and if you have retagged a file since the last scan, the playlist shows what
   `[Library]` is showing you, which F12 is there to bring up to date.
 
+- **Edit tags on any file you can see, not just ones in the playlist.** Put the cursor
+  on a track anywhere in the browser - a library album, a collection search result, a
+  folder, `[FAVs]`, `[Recent]` or `[Books]` - press `i` for track info and `e` to
+  edit. Before, that only worked on playlist rows and everything else told you to add
+  the track first. Editing a track in the library updates what the library shows
+  straight away, including regrouping an album if you change who it is by, so you do
+  not have to rescan to see your own change. Playing files still refuse until you
+  stop, read-only files say so rather than failing quietly, and podcast episodes are
+  left alone because a re-download would throw the tags away.
 - **The library can now watch more than one folder.** Music kept on a second drive,
   or in a folder outside your music folder, was invisible to the library and to the
   `|` collection search no matter how much of it there was. Put the cursor on a

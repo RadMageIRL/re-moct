@@ -4075,9 +4075,15 @@ bool UIManager::saveTagEdits() {
 
     info_cached_path_.clear();  // invalidate so drawTrackInfo re-reads on next open
 
-    // Update playlist display title so it reflects immediately (only on a real write)
+    // Update playlist display title so it reflects immediately (only on a real write).
+    //
+    // FOLDED, not byte-exact (slice 14). Slice 13 measured that the same file reaches
+    // the playlist under different spellings depending on how it was added, so an
+    // exact compare misses a row that IS this file and leaves it showing the old
+    // title. Fourth use of the one path-identity helper rather than a fifth rule.
+    const std::string edited_key = libidx::detail::foldPathKey(tag_edit_path_);
     for (std::size_t i = 0; i < playlist_.size(); ++i) {
-        if (playlist_.at(i).path == tag_edit_path_) {
+        if (libidx::detail::foldPathKey(playlist_.at(i).path) == edited_key) {
             // Rebuild display title as "Artist - Title"
             std::string dt;
             if (!tag_edit_values_[1].empty())
@@ -4086,6 +4092,41 @@ bool UIManager::saveTagEdits() {
             playlist_.setDisplayTitle(i, dt);
             break;
         }
+    }
+
+    // ── The library index holds a COPY of these tags (slice 14) ──────────────
+    //
+    // Without this the library would keep browsing and searching the OLD values until
+    // a rescan - silently wrong, which is the one outcome not acceptable here.
+    //
+    // mtime and size are DELIBERATELY NOT REFRESHED. The write changed them on disk,
+    // so this record now looks stale to the scanner, and the next rescan re-reads this
+    // one file and confirms what was just written. Leaving the revalidation key stale
+    // is what makes this a fast path rather than a second source of truth.
+    //
+    // The index file is not rewritten: the in-memory index is what the pane reads, and
+    // a rescan persists it. Rewriting a whole index after one tag edit is out of
+    // proportion to the edit.
+    bool touched_index = false;
+    for (libidx::LibraryTrack& t : library_index_.tracks) {
+        if (libidx::detail::foldPathKey(t.path) != edited_key) continue;
+        t.title  = tag_edit_values_[0];
+        t.artist = tag_edit_values_[1];
+        t.album  = tag_edit_values_[2];
+        t.genre  = tag_edit_values_[3];
+        if (!tag_edit_values_[4].empty()) {
+            try { t.year = (int32_t)std::stoi(tag_edit_values_[4]); } catch (...) {}
+        }
+        touched_index = true;
+        break;
+    }
+    if (touched_index) {
+        // artist and album_artist feed groupingArtist, so an edit can change whether
+        // an album is a compilation. 0.55 ms on the real index (slice 8) - not a cost
+        // worth avoiding to leave the browse tree wrong.
+        libidx::rebuildCompilations(library_index_);
+        if (in_library_) populateLevel();   // the open level re-queries from the strings
+                                            // it holds, so the new tags show at once
     }
     return true;
 }
@@ -7138,47 +7179,70 @@ void UIManager::handleInput(int ch) {
                 // copy of drawTrackInfo's idx dance, which is how the two could mean
                 // different files; now they cannot.
                 //
-                // AND EDITING IS PLAYLIST-ONLY. Slice 10 made the pane follow the
-                // browser cursor, so without this gate 'e' would have written tags to
-                // the playlist's current row while the pane displayed a browser row -
-                // a file-writing mismatch, strictly worse than the display bug it
-                // fixes. Refusing is the whole gate: it cannot write the wrong file
-                // because it does not write at all. Editing browser rows properly
-                // needs TagEditability, PlayingLocked and the playlist-sync loop in
-                // saveTagEdits to mean something for a file that is not in the
-                // playlist, which is LIB-S14 and not this slice.
+                // EDITING WORKS ON A BROWSER ROW AS OF SLICE 14, and it is the same
+                // writer it always was pointed at the subject this resolver already
+                // returns. Slice 10 refused browser rows because fixing the display
+                // alone would have shown one file while 'e' wrote another; that gate
+                // was a placeholder, and its stated reason - that tagEditability,
+                // PlayingLocked and saveTagEdits assume a playlist entry - turned out
+                // NOT TO BE TRUE OF ANY OF THE THREE when they were finally read.
+                // tagEditability takes a path, PlayingLocked compares against what is
+                // SOUNDING, and the sync loop simply finds nothing for a file that is
+                // not in the playlist.
                 const InfoSubject subj = infoPaneSubject();
-                if (subj.source == InfoSource::Browser
-                    || subj.source == InfoSource::Podcast) {
-                    warn_msg_ = "Tag editing works on playlist rows - press Enter to add this first";
+                if (subj.source == InfoSource::Podcast) {
+                    // STILL REFUSED, and deliberately. A cached episode belongs to the
+                    // download manager: d/Del deletes it, a re-download replaces it,
+                    // and its identity in podcast_progress is the episode id rather
+                    // than the path - so tags edited into it vanish silently the next
+                    // time any of that happens.
+                    warn_msg_ = "Podcast episodes are managed downloads - tags would be lost";
                     warn_msg_ticks_ = 0;
                     redraw_needed_.store(true);
                     return;
                 }
-                if (subj.source != InfoSource::Playlist) return;   // nothing to edit
-                const std::size_t idx = subj.pl_index;
-                if (idx < playlist_.size()) {
-                    const std::string& path = playlist_.at(idx).path;
-                    switch (tagEditability(path)) {
-                        case TagEditability::NotAFile:      // CD track / radio stream
-                        case TagEditability::Empty:
-                            return;                          // silently ignore, as today
-                        case TagEditability::PlayingLocked:
-                            // Currently playing — warn in the cmdline bar (persists ~5s)
-                            warn_msg_ = "Stop playback first to edit tags  (s = stop)";
-                            warn_msg_ticks_ = 0;
-                            redraw_needed_.store(true);
-                            return;
-                        case TagEditability::Editable:
-                            break;                           // fall through to enter edit mode
-                    }
-                    // All checks passed — enter edit mode
-                    tag_edit_path_ = path;
-                    tag_edit_field_ = 0;
+                if (subj.source != InfoSource::Playlist
+                    && subj.source != InfoSource::Browser) return;   // nothing to edit
+
+                const std::string path = subj.path;
+                switch (tagEditability(path)) {
+                    case TagEditability::NotAFile:      // CD track / radio stream
+                    case TagEditability::Empty:
+                        return;                          // silently ignore, as today
+                    case TagEditability::PlayingLocked:
+                        // Currently playing — warn in the cmdline bar (persists ~5s).
+                        // Applies to a browser row exactly as to a playlist one: the
+                        // check is on the PATH, and the decoder has that file open
+                        // whichever pane the cursor is in.
+                        warn_msg_ = "Stop playback first to edit tags  (s = stop)";
+                        warn_msg_ticks_ = 0;
+                        redraw_needed_.store(true);
+                        return;
+                    case TagEditability::Editable:
+                        break;                           // fall through to enter edit mode
+                }
+                // All checks passed — enter edit mode
+                tag_edit_path_ = path;
+                tag_edit_field_ = 0;
+                {
                     const auto& ct = (path == audio_.currentTrack().path)
                                    ? audio_.currentTrack() : TrackInfo{};
-                    const auto& e = playlist_.at(idx);
-                    tag_edit_values_[0] = ct.title.empty() ? e.display_title : ct.title;
+                    // THE SEED. A playlist row keeps its display_title fallback, which
+                    // is a real "Artist - Title" and is unchanged behaviour.
+                    //
+                    // A BROWSER ROW SEEDS EMPTY. Its subject.display_title is a
+                    // formatted ROW LABEL - "01  Apocalypse Please        3:21" at
+                    // level 3, "Muse - Apocalypse Please  [Absolution]  (flac)" in a
+                    // search result - and the TagLib read below overwrites the seed
+                    // whenever it finds real tags. So the seed only ever SURVIVES for a
+                    // file whose tags cannot be read, which is exactly the case where
+                    // writing a row label into the Title field would be worst. An empty
+                    // field for an untagged file is honest, and untagged is why the
+                    // user is here.
+                    tag_edit_values_[0] = ct.title;
+                    if (tag_edit_values_[0].empty() && subj.source == InfoSource::Playlist
+                        && subj.pl_index < playlist_.size())
+                        tag_edit_values_[0] = playlist_.at(subj.pl_index).display_title;
                     tag_edit_values_[1] = ct.artist;
                     tag_edit_values_[2] = ct.album;
                     tag_edit_values_[3] = ct.genre;
@@ -7201,8 +7265,8 @@ void UIManager::handleInput(int ch) {
                             }
                         } catch (...) {}
                     }
-                    tag_edit_mode_ = true;
                 }
+                tag_edit_mode_ = true;
                 return;
             }
             case 'n': case 'N':

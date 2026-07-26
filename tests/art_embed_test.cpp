@@ -183,6 +183,76 @@ int main() {
               "MP3 -> Opus carries ReplayGain + AccurateRip");
     }
 
+    // ── Slice 14: the tag WRITE round-trip the editor depends on ────────────
+    //
+    // saveTagEdits() writes user-typed text with TagLib::String(std::string, UTF8) and
+    // reads it back with to8Bit(true), through utf8_to_wide on Windows. Slice 14 lets
+    // that run on any browser row, so the encoding path is now reachable from a lot
+    // more of the program.
+    //
+    // Tested on BOTH tag backends because they are different problems: FLAC carries
+    // Vorbis comments, which are UTF-8 by definition, while MP3 uses ID3v2 frames that
+    // have a per-frame encoding byte and a Latin-1 default - the one that silently
+    // mangles anything outside it.
+    {
+        struct { RipFormat fmt; const char* ext; const char* what; } kinds[] = {
+            { RipFormat::Flac, ".flac", "FLAC/Vorbis" },
+            { RipFormat::Mp3,  ".mp3",  "MP3/ID3v2"   },
+        };
+        // Accented Latin, CJK, and a 4-byte emoji - the three shapes that break
+        // differently. 137 of the reference collection's paths are non-ASCII and tag
+        // text is worse.
+        const std::string kTitle  = "J\xC3\xB3ga";                       // Jóga
+        const std::string kArtist = "Bj\xC3\xB6rk";                      // Björk
+        const std::string kAlbum  = "\xE6\x9D\xB1\xE4\xBA\xAC";          // 東京
+        const std::string kGenre  = "Pop \xF0\x9F\x8E\xB5";              // Pop + musical note
+
+        for (const auto& k : kinds) {
+            const std::string p = P(std::string("tagrt") + k.ext);
+            if (!synth(p, k.fmt)) { check(false, "synth for tag round-trip"); continue; }
+            bool wrote = false;
+            {
+#ifdef _WIN32
+                auto wp = utf8_to_wide(p);
+                TagLib::FileRef ref(wp.c_str(), false, TagLib::AudioProperties::Fast);
+#else
+                TagLib::FileRef ref(p.c_str(), false, TagLib::AudioProperties::Fast);
+#endif
+                if (!ref.isNull() && ref.tag()) {
+                    auto* t = ref.tag();
+                    t->setTitle (TagLib::String(kTitle,  TagLib::String::UTF8));
+                    t->setArtist(TagLib::String(kArtist, TagLib::String::UTF8));
+                    t->setAlbum (TagLib::String(kAlbum,  TagLib::String::UTF8));
+                    t->setGenre (TagLib::String(kGenre,  TagLib::String::UTF8));
+                    wrote = ref.save();
+                }
+            }
+            check(wrote, (std::string("non-ASCII tags written to ") + k.what).c_str());
+            if (!wrote) continue;
+            {
+#ifdef _WIN32
+                auto wp = utf8_to_wide(p);
+                TagLib::FileRef ref(wp.c_str(), true, TagLib::AudioProperties::Fast);
+#else
+                TagLib::FileRef ref(p.c_str(), true, TagLib::AudioProperties::Fast);
+#endif
+                bool ok = !ref.isNull() && ref.tag();
+                if (ok) {
+                    auto* t = ref.tag();
+                    // BYTE-EXACT, not "looks right": a lossy encoding round-trip
+                    // produces something readable and wrong, which is the failure mode
+                    // worth catching.
+                    ok = t->title().to8Bit(true)  == kTitle
+                      && t->artist().to8Bit(true) == kArtist
+                      && t->album().to8Bit(true)  == kAlbum
+                      && t->genre().to8Bit(true)  == kGenre;
+                }
+                check(ok, (std::string("non-ASCII tags round-trip BYTE-EXACT through ")
+                           + k.what).c_str());
+            }
+        }
+    }
+
     fs::remove_all(dir, ec);
     std::printf("\n%s (%d failure%s)\n",
                 failures ? "FAILED" : "PASSED", failures, failures == 1 ? "" : "s");

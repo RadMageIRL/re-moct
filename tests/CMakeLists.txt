@@ -325,6 +325,21 @@ add_executable(next_resolver_test
     next_resolver_test.cpp
     ${CMAKE_SOURCE_DIR}/src/PlaylistManager.cpp
 )
+# Playlist membership (library slice 15). PlaylistManager::indexOfPath is the one
+# answer to "is this file already in the playlist": case- and separator-folded on
+# Windows, the identity on Linux, and NEVER extension-folded. Same link set as
+# next_resolver_test - device-free, filesystem-free, both matrix jobs. No new
+# library on the line: foldPathKey lives in LibraryIndex.h, which is pure and
+# std-only, so this is an include and not a dependency.
+add_executable(playlist_dedup_test
+    playlist_dedup_test.cpp
+    ${CMAKE_SOURCE_DIR}/src/PlaylistManager.cpp
+)
+target_include_directories(playlist_dedup_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/lib
+    ${TAGLIB_INCLUDE_DIRS} ${FDKAAC_INCLUDE} ${OPUS_INCLUDE} ${WAVPACK_INCLUDE})
+target_link_libraries(playlist_dedup_test PRIVATE ${TAGLIB_LIBRARIES})
+add_test(NAME playlist_dedup_test COMMAND playlist_dedup_test)
 target_include_directories(next_resolver_test PRIVATE
     ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/lib
     ${TAGLIB_INCLUDE_DIRS} ${FDKAAC_INCLUDE} ${OPUS_INCLUDE} ${WAVPACK_INCLUDE})

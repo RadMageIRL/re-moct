@@ -215,6 +215,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   taking the rest of the playlist down with it. Playlists already written in
   UTF-8, including everything RE-MOCT saves itself, are read exactly as before,
   byte for byte.
+- A track added from the library no longer turns up twice in the playlist when it
+  is already there. RE-MOCT has always refused to add a file the playlist already
+  holds, but on Windows it decided that by comparing the two paths letter for
+  letter, so the same file reached as `C:\Users\...` and as `c:\users\...` looked
+  like two different files and got two rows. It is one file, Windows treats it as
+  one file, and RE-MOCT now does too, quietly, exactly as it always did for a file
+  you added twice from the same place. This was never only a library problem - the
+  folder browser could do it to itself, and a saved playlist could come back with
+  the same track in it twice - so the fix is in one place and every route into the
+  playlist gets it. Playlists that already carry a track under both spellings lose
+  the second copy the next time they load, which is a row that was never a
+  different track.
+  Two things this deliberately does not do. It does not touch different formats of
+  the same song: `song.flac`, `song.opus` and `song.mp3` are three separate files
+  and all three still go in, which is the whole point of keeping them. And on Linux,
+  where two filenames differing only in capitals really are two different files,
+  nothing changes at all - both still add.
+- The play queue is unaffected, and that is on purpose: the queue is an order to
+  play things in rather than a list of what you own, so asking for the same song
+  twice in a row is a reasonable thing to want and still works.
 
 ### Internal
 

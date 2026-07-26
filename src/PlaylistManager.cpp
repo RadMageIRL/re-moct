@@ -1,6 +1,7 @@
 #include "PlaylistManager.h"
 #include "StringUtils.h"
 #include "AudioExts.h"    // the canonical audio-extension list, shared with the library scanner
+#include "LibraryIndex.h" // slice 15: foldPathKey, THE path-identity rule (pure, std-only header)
 
 #include <taglib/fileref.h>
 #include <taglib/tag.h>
@@ -101,6 +102,20 @@ void PlaylistManager::populateMetadata(PlaylistEntry& entry) {
         entry.duration_sec = ap->lengthInSeconds();
 }
 
+// THE membership test. See the header for why it folds and why it must never split a
+// path into stem and extension.
+//
+// The incoming path is folded ONCE, outside the loop; each entry is folded as it is
+// compared. Every caller but the two batch paths runs this against a playlist of a few
+// dozen rows, where that is free. The batch paths are measured rather than assumed -
+// see the debrief.
+std::size_t PlaylistManager::indexOfPath(const std::string& path) const {
+    const std::string key = libidx::detail::foldPathKey(path);
+    for (std::size_t i = 0; i < entries_.size(); ++i)
+        if (libidx::detail::foldPathKey(entries_[i].path) == key) return i;
+    return std::string::npos;
+}
+
 // addTrack without the tag read. Mirrors it line for line otherwise, deliberately: the
 // http and CD rejections, the dedup-by-path scan, and the shuffle rebuild are all
 // behaviour the callers already depend on.
@@ -111,8 +126,7 @@ std::size_t PlaylistManager::addIndexedTrack(const std::string& path,
     if (path.rfind("http://", 0) == 0 || path.rfind("https://", 0) == 0)
         return addStream(path, streamLabel(path));
     if (isCDTrackPath(path)) return std::string::npos;
-    for (std::size_t i = 0; i < entries_.size(); ++i)
-        if (entries_[i].path == path) return i;
+    if (std::size_t at = indexOfPath(path); at != std::string::npos) return at;
     PlaylistEntry entry;
     entry.path          = path;
     entry.display_title = displayTitleFor(path, artist, title);
@@ -173,8 +187,7 @@ std::size_t PlaylistManager::addTrack(const std::string& path) {
         return addStream(path, streamLabel(path));
     // Reject volatile CD track paths — they can't be stored persistently
     if (isCDTrackPath(path)) return std::string::npos;
-    for (std::size_t i = 0; i < entries_.size(); ++i)
-        if (entries_[i].path == path) return i;
+    if (std::size_t at = indexOfPath(path); at != std::string::npos) return at;
     PlaylistEntry entry;
     entry.path = path;
     populateMetadata(entry);
@@ -684,11 +697,10 @@ void PlaylistManager::addDirectoryAsync(const std::string& dir_path) {
         std::lock_guard<std::mutex> lk(work_mutex_);
         for (auto& p : found) {
             // Check against existing entries (UI thread owns entries_ but
-            // we're on UI thread here so this is safe)
-            bool dup = false;
-            for (const auto& e : entries_)
-                if (e.path == p) { dup = true; break; }
-            if (!dup) {
+            // we're on UI thread here so this is safe). Slice 15: through
+            // indexOfPath, so a directory add obeys the same equality rule as
+            // every other add rather than its own byte compare.
+            if (indexOfPath(p) == std::string::npos) {
                 work_queue_.push(std::move(p));
                 pending_count_.fetch_add(1);
             }
@@ -740,11 +752,10 @@ bool PlaylistManager::drainPending() {
     while (!local.empty()) {
         PlaylistEntry e = std::move(local.front());
         local.pop();
-        // Dedup check — skip if path already in playlist
-        bool dup = false;
-        for (const auto& ex : entries_)
-            if (ex.path == e.path) { dup = true; break; }
-        if (!dup) entries_.push_back(std::move(e));
+        // Dedup check — skip if path already in playlist. Slice 15: the same rule
+        // as every other add. This one matters twice over, because the worker
+        // cannot check entries_ and a batch can contain its own duplicates.
+        if (indexOfPath(e.path) == std::string::npos) entries_.push_back(std::move(e));
     }
     rebuildShuffleOrder();
     return true;

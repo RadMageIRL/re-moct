@@ -211,6 +211,31 @@ private:
     void rebuildShuffleOrder();
     static void populateMetadata(PlaylistEntry& entry);
 
+    // ── "Is this file already in the playlist?" - asked in exactly one place ──
+    //
+    // Library slice 15. Four call sites used to answer this with their own copy of
+    // `e.path == p`, and a byte-exact compare is the wrong answer on Windows: the
+    // same file reached through the goto bar as `c:\users\...` and through the
+    // library as `C:\Users\...` produced two rows for one file. Measured in the
+    // live config: five of fifty-nine saved entries were a second spelling of an
+    // entry already present.
+    //
+    // Uses libidx::detail::foldPathKey - THE path-identity rule, and its fifth
+    // user. Case- and separator-folded on Windows because NTFS is
+    // case-insensitive; the IDENTITY on Linux, where two paths differing in case
+    // may genuinely be two files. So this is a no-op on Linux by construction.
+    //
+    // IT FOLDS BYTES AND NEVER SPLITS A PATH. `song.flac`, `song.opus` and
+    // `song.mp3` are three different strings, therefore three different files,
+    // therefore three playlist rows - which is correct, and load-bearing: 349
+    // groups of same-stem multi-format files live in the real collection, 12.6% of
+    // the index. Nothing here may ever compare stems. See playlist_dedup_test
+    // blocks 7 and 8, the second of which is the exact pair of bytes from the live
+    // config that differs in case AND extension at once.
+    //
+    // Returns the existing row's index, or npos.
+    std::size_t indexOfPath(const std::string& path) const;
+
     // Async loader internals
     std::queue<std::string>  work_queue_;    // paths to scan (fed by addDirectoryAsync)
     std::queue<PlaylistEntry> done_queue_;   // completed entries ready to add

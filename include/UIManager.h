@@ -1182,6 +1182,11 @@ private:
     // partial: empty means ALL (addition A), so unmarking the last track puts
     // the modal back in exactly its default shape.
     bool cdSelectionIsPartial() const;
+    // The hidden track is a row but not a disc track, so it needs its own
+    // questions rather than sharing the numbered ones. See the bodies.
+    bool   cdHasHtoaRow() const;
+    bool   cdHtoaMarked() const;
+    size_t cdNumberedMarkCount() const;
     // How many CD rows the playlist holds. One counting implementation, so the
     // predicate above and the modal's summary line cannot disagree about the
     // denominator.

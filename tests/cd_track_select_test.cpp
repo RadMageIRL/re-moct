@@ -132,6 +132,54 @@ static void test_whole_disc_predicate() {
     CHECK(!isWholeDiscSelection(some, 12), "two of twelve is partial");
 }
 
+// ── The hidden track is partitioned off, not counted as a failure ────────────
+//
+// Track 0 has no TOC entry - the table of contents is the list of tracks and the
+// pregap is not one - so the number lookup can never resolve it. Left in the
+// loop it would be counted as a row that "matched no track on this disc", and
+// the user would be told their perfectly good selection had been skipped.
+static void test_htoa_is_partitioned_off() {
+    const std::vector<int> toc = { 1,2,3,4,5,6,7,8,9,10,11,12,13 };  // Factory Showroom
+
+    // The hidden track on its own.
+    auto m = cdsel::toTocIndices({ "G:CD Track 00" }, "G", toc);
+    CHECK(m.htoa, "track 0 must set htoa");
+    CHECK(m.unresolved == 0, "track 0 must NOT count as unresolved, got %d", m.unresolved);
+    CHECK(m.toc_indices.empty(), "track 0 must contribute no TOC index");
+    CHECK(!cdsel::selectsNothing(m), "HTOA alone is a real selection, not nothing");
+
+    // Alongside numbered tracks: both survive, independently.
+    auto m2 = cdsel::toTocIndices({ "G:CD Track 00", "G:CD Track 03", "G:CD Track 07" },
+                                  "G", toc);
+    CHECK(m2.htoa, "htoa must survive alongside numbered tracks");
+    CHECK(m2.toc_indices.size() == 2, "wanted 2 numbered, got %zu", m2.toc_indices.size());
+    CHECK(m2.unresolved == 0, "nothing should be unresolved, got %d", m2.unresolved);
+
+    // Every numbered track PLUS the hidden one is still the whole disc - if this
+    // ever answers false, a full rip silently loses its cue sheet, its album
+    // ReplayGain and its CUETools verdict.
+    std::vector<std::string> all;
+    all.push_back("G:CD Track 00");
+    for (int n = 1; n <= 13; ++n)
+        all.push_back(std::string("G:CD Track ") + (n < 10 ? "0" : "") + std::to_string(n));
+    auto m3 = cdsel::toTocIndices(all, "G", toc);
+    CHECK(m3.htoa, "htoa marked");
+    CHECK((int)m3.toc_indices.size() == 13, "wanted 13, got %zu", m3.toc_indices.size());
+    CHECK(cdsel::isWholeDiscSelection(m3, 13),
+          "ALL 13 + HTOA MUST STILL BE THE WHOLE DISC");
+
+    // No marks at all is the whole disc, and is distinguishable from HTOA-alone.
+    auto m4 = cdsel::toTocIndices({}, "G", toc);
+    CHECK(!m4.htoa, "nothing marked sets no htoa");
+    CHECK(cdsel::selectsNothing(m4), "an empty selection selects nothing explicitly");
+    CHECK(cdsel::isWholeDiscSelection(m4, 13), "empty still means ALL");
+
+    // A track-0 row on a DIFFERENT drive is still a foreign row, not our HTOA.
+    auto m5 = cdsel::toTocIndices({ "F:CD Track 00" }, "G", toc);
+    CHECK(!m5.htoa, "a foreign drive's track 0 must not set htoa");
+    CHECK(m5.unresolved == 1, "it must still be counted, got %d", m5.unresolved);
+}
+
 int main() {
     test_ordinary_disc();
     test_number_is_not_index();
@@ -139,6 +187,7 @@ int main() {
     test_drop_is_counted();
     test_order_and_dedup();
     test_whole_disc_predicate();
+    test_htoa_is_partitioned_off();
     std::printf("cd_track_select_test: %d checks, %d failures\n", g_checks, g_fail);
     return g_fail == 0 ? 0 : 1;
 }

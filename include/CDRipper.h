@@ -49,6 +49,36 @@ struct ARTrackResult {
     uint32_t frame450_local = 0; // sector-450 track-relative CRC (drive offset self-check)
 };
 
+// ─── Read accounting for the hidden-track extraction ─────────────────────────
+// Two numbers that describe two different things and must never be added or
+// conflated. A rip of a numbered track passes nullptr and neither is computed.
+//
+//   filled  - sectors the retry path gave up on and substituted with silence.
+//             This is the ONLY quality signal HTOA has: AccurateRip and CTDB
+//             both begin after the pregap, so nothing verifies this audio and
+//             nothing is asked to. Worse, the one read boundary measured on the
+//             gate disc sits inside a run of digital silence, so a filled sector
+//             is byte-identical to a correct one there - content cannot reveal a
+//             truncation and only this count can. Non-zero means the file is
+//             incomplete and must never be presented as clean.
+//
+//   clamped - sectors of drive-offset correction dropped because the corrected
+//             read address fell below LBA 0. The hidden track starts at the
+//             first addressable sector on the disc, so a drive with a NEGATIVE
+//             read offset (the shipped table goes to -1164 samples, just under
+//             two sectors) would address before the disc begins. Those samples
+//             do not exist to be read. We clamp and extract everything that does
+//             exist rather than refusing the disc over ~26 ms; the first
+//             `clamped` sectors are simply not offset-corrected.
+//
+// Nothing was silence-filled to make the clamp work, so a clamp never touches
+// `filled` - that is the whole reason these are two fields.
+struct ReadAccount {
+    bool     clamp_at_disc_start = false;  // in: allow the LBA 0 clamp
+    uint32_t filled  = 0;                  // out: sectors substituted with silence
+    uint32_t clamped = 0;                  // out: sectors of correction dropped at LBA 0
+};
+
 // ─── ReplayGain result ────────────────────────────────────────────────────────
 struct RGResult {
     double track_gain = 0.0;
@@ -104,6 +134,24 @@ public:
     // `selected_toc` holds TOC INDICES (0-based) to extract. EMPTY MEANS ALL,
     // which is the shipped behaviour byte-for-byte: ripsel::planAll reproduces
     // exactly the arguments this worker passed before a selection existed.
+    // `rip_htoa` is the companion channel CD-S3 designed for the hidden track,
+    // and it is a BOOL rather than a -1 in `selected_toc` on purpose: a sentinel
+    // index would be one value carrying two meanings, which is the defect this
+    // codebase has now closed six times.
+    //
+    // It also disambiguates the one case `selected_toc` cannot express on its
+    // own. Empty means ALL - that is CD-S1's contract and it is what makes the
+    // default path byte-identical - so "the user marked only the hidden track"
+    // and "the user marked nothing" would otherwise be the same argument:
+    //
+    //   selected_toc   rip_htoa   what it means
+    //   -------------  ---------  ----------------------------------------
+    //   empty          false      nothing marked: the whole disc, no HTOA
+    //   empty          true       ONLY the hidden track; no numbered tracks
+    //   {0..n-1}       true       whole disc AND the hidden track, both
+    //   {2,6,8}        true/false a subset, with or without the hidden track
+    //
+    // Nothing marked never sets rip_htoa, so the pair is unambiguous.
     bool start(AudioManager&               audio,
                const std::vector<CDTrack>& tracks,
                const std::string&          out_dir,
@@ -111,7 +159,8 @@ public:
                RipMode                     mode,
                RipOptions                  opt,
                ProgressCb                  cb,
-               const std::vector<int>&     selected_toc = {});
+               const std::vector<int>&     selected_toc = {},
+               bool                        rip_htoa     = false);
 
     void cancel();
     bool     isActive() const { return active_.load(); }
@@ -143,7 +192,8 @@ private:
                 int                  drive_offset,
                 std::string          drive_model,
                 uint32_t             full_leadout_frame = 0,
-                std::vector<uint32_t> data_track_frames = {});
+                std::vector<uint32_t> data_track_frames = {},
+                bool                 rip_htoa = false);
 
     ARTrackResult ripTrack(core::ICdDevice&   dev,
                            const CDTrack&     track,
@@ -163,7 +213,8 @@ private:
                            size_t             ctdb_bytes_in = 0,
                            int                pressing_offset = 0,
                            size_t             ctdb_total_bytes = 0,
-                           ebur128_state**    out_ebur = nullptr);
+                           ebur128_state**    out_ebur = nullptr,
+                           ReadAccount*       account = nullptr);
 
     // ctdb_status / ctdb_disc_id are DISC-scope (CUETools mode only): one verdict
     // and one disc ID for the whole rip, written identically into every track's

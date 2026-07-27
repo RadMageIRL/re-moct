@@ -194,6 +194,17 @@ add_executable(rip_selection_test rip_selection_test.cpp)
 target_include_directories(rip_selection_test PRIVATE ${CMAKE_SOURCE_DIR}/include)
 add_test(NAME rip_selection_test COMMAND rip_selection_test)
 
+# htoa-span - is there a hidden track ahead of track 1, and how far does it run.
+#
+# Detection is TOC-only, so the whole question is arithmetic over track 1's read
+# address and needs no drive. The forbidden change is that Relish - track 1 at
+# LBA 32, the CD-path regression disc - must never qualify: if it ever does,
+# "a disc without HTOA behaves exactly as it did" stops being provable. Pure,
+# header-only, both matrix jobs.
+add_executable(htoa_span_test htoa_span_test.cpp)
+target_include_directories(htoa_span_test PRIVATE ${CMAKE_SOURCE_DIR}/include)
+add_test(NAME htoa_span_test COMMAND htoa_span_test)
+
 # cd-track-select (CD slice 3) - which marked playlist row means which TOC track.
 #
 # A track's NUMBER is not its TOC INDEX. They coincide on an ordinary audio CD, so

@@ -22,6 +22,7 @@
 #include "StringUtils.h"
 #include "NextArm.h"   // XF C3: queue-aware preload (resolver + reconcile core)
 #include "CdTrackSelect.h"  // CD-S3: marked synthetic rows -> TOC indices (the one mapping)
+#include "HtoaSpan.h"       // hidden track one audio: TOC-only detection + span
 #include "EncoderQuality.h"
 #include "AudioManager.h"
 #include "PlaylistManager.h"
@@ -2144,7 +2145,11 @@ void UIManager::drawRipConfirm() {   // slice 6: common (ncurses + portable CDSo
     // and shape it has always been. The modal is already 23 rows in an app that
     // runs to a 9-row terminal, which is why this is one line and not a list.
     const bool cd_partial = cdSelectionIsPartial();
-    const int BOX_H = 17 + kRipFormatCount + (cd_partial ? 1 : 0);
+    // The hidden track gets its own line because it is its own output. It is
+    // never folded into the track count above it - two things marked means two
+    // things produced, and one number cannot say that.
+    const bool cd_htoa    = cdHtoaMarked();
+    const int BOX_H = 17 + kRipFormatCount + (cd_partial ? 1 : 0) + (cd_htoa ? 1 : 0);
     int y0 = (screen_rows_ - BOX_H) / 2;
     int x0 = (screen_cols_ - BOX_W) / 2;
     if (y0 < 0) y0 = 0;
@@ -2267,8 +2272,18 @@ void UIManager::drawRipConfirm() {   // slice 6: common (ncurses + portable CDSo
     // Everything below shifts by the same row, so the block keeps its shape.
     if (cd_partial) {
         wattron(w, A_BOLD);
+        // NUMBERED tracks only - the hidden track has its own line below and
+        // must not inflate either side of this ratio.
         mvwprintw(w, mode_y, 3, "Ripping %d of %d tracks  (u marks, U clears)",
-                  (int)cd_sel_.size(), (int)cdRowCount());
+                  (int)cdNumberedMarkCount(), (int)cdRowCount());
+        wattroff(w, A_BOLD);
+        ++mode_y;
+    }
+    if (cd_htoa) {
+        wattron(w, A_BOLD);
+        mvwaddstr(w, mode_y, 3,
+                  cd_partial ? "Plus the hidden track, as its own file"
+                             : "Plus the hidden track, as its own file (whole disc otherwise)");
         wattroff(w, A_BOLD);
         ++mode_y;
     }
@@ -2486,13 +2501,33 @@ void UIManager::drawRecPanel() {
 // loop drains that flag and calls this with a snapshot taken under mb_mutex_.
 void UIManager::applyReleaseTitles(const MBRelease& rel) {
     // Multi-disc: scope titles to the disc currently in the drive.
+    //
+    // COUNT NUMBERED TRACKS ONLY. pickDiscForTrackCount identifies the medium by
+    // matching this count against each disc's track count, and the hidden track
+    // is not a track - counting its row would make a 13-track disc look like a
+    // 14-track one and select the wrong medium on a multi-disc release, giving
+    // every row the wrong title.
     int n_phys_md = 0;
     for (std::size_t k = 0; k < playlist_.size(); ++k)
-        if (isCDTrackPath(playlist_.at(k).path)) ++n_phys_md;
+        if (cdTrackNumber(playlist_.at(k).path) >= 1) ++n_phys_md;
     const int cur_disc = pickDiscForTrackCount(rel, n_phys_md);
     for (std::size_t i = 0; i < playlist_.size(); ++i) {
         int tnum = cdTrackNumber(playlist_.at(i).path);
         if (tnum < 0) continue;
+        // Track 0 is the hidden track. Its title comes from the release's
+        // pregap, which is a field of its own precisely because it is not in
+        // the tracklist - so the loop below would never find it. When neither
+        // source named one the row keeps saying "CD Track 00", which is honest:
+        // no title was found, and inventing one here would put a guess on
+        // screen and then into the file's tags.
+        if (tnum == 0) {
+            if (!rel.pregap_title.empty()) {
+                std::string dt = rel.artist.empty()
+                    ? rel.pregap_title : rel.artist + " - " + rel.pregap_title;
+                playlist_.setDisplayTitle(i, sanitizeForDisplay(dt));
+            }
+            continue;
+        }
         for (const auto& mt : rel.tracks) {
             if (mt.number == tnum && mt.disc == cur_disc && !mt.title.empty()) {
                 std::string dt = mt.artist.empty()
@@ -2717,7 +2752,7 @@ void UIManager::drawTitleBar() {
     wattron(win_title_, COLOR_PAIR(CP_TITLE) | A_BOLD);
     const auto& track = audio_.currentTrack();
     std::string np;
-    if (audio_.cdMode() && audio_.cdCurrentTrack() > 0) {
+    if (audio_.cdMode() && audio_.cdCurrentTrack() != CDSource::kNoTrack) {
         int t = audio_.cdCurrentTrack();
         // Check if MB has populated the track name in the playlist
         std::string cd_title;
@@ -2776,7 +2811,8 @@ void UIManager::drawTitleBar() {
     }
     std::string badge;
     if (audio_.cdMode()) {
-        badge = audio_.cdSource().paused() ? "| " : (audio_.cdCurrentTrack() > 0 ? "> " : "  ");
+        badge = audio_.cdSource().paused() ? "| "
+              : (audio_.cdCurrentTrack() != CDSource::kNoTrack ? "> " : "  ");
     } else
     switch (audio_.state()) {
         case PlaybackState::Playing: badge = "> "; break;
@@ -3233,7 +3269,9 @@ std::optional<std::size_t> UIManager::nowPlayingRow() const {
     // auto-advance and file->CD returns) like every other source.
     if (audio_.cdMode()) {
         int t = audio_.cdCurrentTrack();
-        if (t <= 0) return std::nullopt;
+        // != kNoTrack, not > 0: track 0 is the hidden track and has a row like
+        // any other, so `<= 0` would leave it unlit while it played.
+        if (t == CDSource::kNoTrack) return std::nullopt;
         for (std::size_t i = 0; i < playlist_.size(); ++i)
             if (cdTrackNumber(playlist_.at(i).path) == t) return i;
         return std::nullopt;   // queue-launched CD track: no row, lights nothing
@@ -3307,13 +3345,36 @@ void UIManager::drawPlaylist() {
     const int  cw = aw ? cols - 2 : cols;
     // [cursor/total], 1-based - "where am I" on a long list. [0] when empty
     // (never [1/0]); cursor clamped so a stale value can't print past the size.
+    // The hidden track is a row in this list but it is not one of the disc's
+    // tracks, so it is subtracted from the total and reported separately. A
+    // thirteen-track disc reads 13 whether or not it hides a fourteenth thing at
+    // the front, because 13 is what the disc says. The "+1" beside it is the
+    // literal one - a disc has at most one pregap and it is always first - and
+    // the two numbers are never added.
+    //
+    // Every other playlist, and every CD without a hidden track, takes the
+    // else-branch of a single bool and is byte-for-byte what it was.
+    const bool   htoa_row  = cdHasHtoaRow();
+    const size_t pl_tracks = playlist_.size() - (htoa_row ? 1u : 0u);
+
     std::string hdr = " Playlist [";
     if (playlist_.size() == 0) {
         hdr += "0]";
+    } else if (htoa_row && pl_cursor_ >= 0 && pl_cursor_ < (int)playlist_.size()
+               && [&]{ std::string d; int n = 0;
+                       return parseCDPath(playlist_.at((size_t)pl_cursor_).path, d, n)
+                              && n == 0; }()) {
+        // Sitting on the hidden track: no numbered track is current, and "0"
+        // would claim the disc has a track numbered zero. It does not.
+        hdr += "-/" + std::to_string(pl_tracks) + "]";
     } else {
-        hdr += std::to_string(std::min(pl_cursor_ + 1, (int)playlist_.size()))
-             + "/" + std::to_string(playlist_.size()) + "]";
+        // Position counts rows the user can be on, minus the hidden one when it
+        // sits above the cursor - so the number still matches the track.
+        int pos = std::min(pl_cursor_ + 1, (int)playlist_.size());
+        if (htoa_row && pos > 0) --pos;
+        hdr += std::to_string(std::max(pos, 1)) + "/" + std::to_string(pl_tracks) + "]";
     }
+    if (htoa_row) hdr += "  +1 HTOA";
     if (playlist_.isLoading()) {
         hdr += "  [loading " + std::to_string(playlist_.pendingCount()) + "...]";
     } else if (!total_str.empty()) {
@@ -5926,7 +5987,7 @@ void UIManager::updateScrobbler() {
         if (dash == std::string::npos) return;         // no parseable now-playing yet
         artist = np.substr(0, dash);
         track  = np.substr(dash + 3);
-    } else if (audio_.cdMode() && audio_.cdCurrentTrack() > 0) {
+    } else if (audio_.cdMode() && audio_.cdCurrentTrack() != CDSource::kNoTrack) {
         // CD: pull raw UTF-8 artist/title from the cached MusicBrainz release.
         // (The playlist's display_title is combined "Artist - Title" AND
         //  ASCII-sanitized for the terminal, so it's unsuitable for scrobbling.)
@@ -5935,16 +5996,32 @@ void UIManager::updateScrobbler() {
         int tnum = audio_.cdCurrentTrack();
         MBRelease rel;
         { std::lock_guard<std::mutex> lk(mb_mutex_); rel = mb_release_; }
+        // NUMBERED rows only: pickDiscForTrackCount identifies the medium by
+        // this count, and the hidden track's row would make a 13-track disc
+        // look like a 14-track one and match the wrong disc of a set.
         int n_phys = 0;
         for (std::size_t k2 = 0; k2 < playlist_.size(); ++k2)
-            if (isCDTrackPath(playlist_.at(k2).path)) ++n_phys;
+            if (cdTrackNumber(playlist_.at(k2).path) >= 1) ++n_phys;
         const int cur_disc = pickDiscForTrackCount(rel, n_phys);
-        const MBTrack* mt = nullptr;
-        for (const auto& m : rel.tracks)
-            if (m.number == tnum && m.disc == cur_disc) { mt = &m; break; }
-        if (mt && !mt->title.empty()) {
-            artist = mt->artist.empty() ? rel.artist : mt->artist;
-            track  = mt->title;
+        // The hidden track's title lives in its own field, not in rel.tracks -
+        // it is not a track of the release. Without this the loop below finds
+        // nothing, artist/track stay empty, and the guard downstream skips the
+        // scrobble entirely: it played and was never counted.
+        std::string cd_title, cd_artist;
+        if (tnum == 0) {
+            cd_title  = rel.pregap_title;
+            cd_artist = rel.artist;
+        } else {
+            for (const auto& m : rel.tracks)
+                if (m.number == tnum && m.disc == cur_disc) {
+                    cd_title  = m.title;
+                    cd_artist = m.artist.empty() ? rel.artist : m.artist;
+                    break;
+                }
+        }
+        if (!cd_title.empty()) {
+            artist = cd_artist;
+            track  = cd_title;
             album  = rel.title;
             pos = (int)audio_.cdPositionSec();
             dur = (int)audio_.cdDurationSec();
@@ -6663,6 +6740,14 @@ void UIManager::handleInput(int ch) {
         toc_numbers.reserve(tracks.size());
         for (const auto& t : tracks) toc_numbers.push_back(t.number);
         const auto sel = cdsel::toTocIndices(cd_sel_.list(), cd_drive_letter_, toc_numbers);
+        // Nothing marked at all is the whole disc; the hidden track marked on
+        // its own is NOT - it means no numbered track was asked for. Both hand
+        // start() an empty toc_indices, so the bool is what tells them apart.
+        if (cdsel::selectsNothing(sel) && cd_sel_.size() > 0) {
+            rip_status_ = "Rip: nothing on this disc was selected";
+            rip_msg_ticks_ = 0;
+            return;
+        }
         if (sel.unresolved > 0) {
             // Expected to be impossible: the rows were marked off this very
             // playlist. Said out loud rather than dropped, because a silent drop
@@ -6677,7 +6762,7 @@ void UIManager::handleInput(int ch) {
                 rip_status_ = p.status_msg;
                 rip_msg_ticks_ = 0;
                 redraw_needed_.store(true);
-            }, sel.toc_indices);
+            }, sel.toc_indices, sel.htoa);
         cd_sel_.clear();   // consumed, mirroring how marked_ is cleared after a convert
         return;
     }
@@ -9712,17 +9797,65 @@ void UIManager::enterDriveList() {
 // no disc access. Marking every row is NOT partial - it is the same rip as
 // marking none, which is why both must answer false or the modal would grow a
 // summary line for a selection that takes the whole disc anyway.
+// How many of the DISC's tracks are on screen. The hidden track is a row but it
+// is not one of them - it has no TOC entry, and the disc's own track count is
+// what "whole disc" has always meant. Counting it here would make marking all
+// thirteen tracks of a thirteen-track disc read as a partial rip, which silently
+// drops the cue sheet, the album ReplayGain and the CUETools verdict.
 size_t UIManager::cdRowCount() const {
     size_t n = 0;
-    for (size_t i = 0; i < playlist_.size(); ++i)
-        if (isCDTrackPath(playlist_.at(i).path)) ++n;
+    for (size_t i = 0; i < playlist_.size(); ++i) {
+        const std::string& p = playlist_.at(i).path;
+        std::string drv; int num = 0;
+        if (parseCDPath(p, drv, num) && num >= 1) ++n;
+    }
     return n;
 }
 
+// Is there a hidden-track row on screen? One at most, and always track 0.
+bool UIManager::cdHasHtoaRow() const {
+    for (size_t i = 0; i < playlist_.size(); ++i) {
+        std::string drv; int num = 0;
+        if (parseCDPath(playlist_.at(i).path, drv, num) && num == 0) return true;
+    }
+    return false;
+}
+
+// Is the hidden-track row marked? Kept apart from the numbered selection on
+// purpose: it is a separate output and it never moves the partial predicate.
+bool UIManager::cdHtoaMarked() const {
+    for (const std::string& p : cd_sel_.list()) {
+        std::string drv; int num = 0;
+        if (parseCDPath(p, drv, num) && num == 0) return true;
+    }
+    return false;
+}
+
+// How many NUMBERED tracks are marked. The hidden track is excluded, so it can
+// never tip this predicate one way or the other.
+size_t UIManager::cdNumberedMarkCount() const {
+    size_t n = 0;
+    for (const std::string& p : cd_sel_.list()) {
+        std::string drv; int num = 0;
+        if (parseCDPath(p, drv, num) && num >= 1) ++n;
+    }
+    return n;
+}
+
+// A rip is partial when some but not all of the DISC's tracks are taken. Reads
+// only the numbered subset, so marking the hidden track alongside every track
+// still counts as the whole disc - which is the ruling, and which keeps the
+// side products a whole-disc rip has always written.
+//
+// On a disc with no hidden-track row this is what it has always been: no row
+// means no track-0 path can be in cd_sel_, so the numbered count IS cd_sel_'s
+// size and cdRowCount() is the row count. Unchanged by construction rather than
+// by test.
 bool UIManager::cdSelectionIsPartial() const {
-    if (cd_sel_.empty()) return false;          // empty means ALL
+    const size_t marked = cdNumberedMarkCount();
+    if (marked == 0) return false;              // empty means ALL
     const size_t rows = cdRowCount();
-    return rows > 0 && cd_sel_.size() < rows;
+    return rows > 0 && marked < rows;
 }
 
 void UIManager::activateDrive(const std::string& drive_entry) {
@@ -9757,6 +9890,25 @@ void UIManager::activateDrive(const std::string& drive_entry) {
             cd_sel_.clear();
             // Populate playlist with CD tracks
             playlist_.clear();
+            // The hidden track goes first, because it is first on the disc.
+            // Detection is the TOC and nothing else - the pregap length is known
+            // the moment the disc is identified, so the row appears instantly
+            // with no read, no spin-up and no wait. The cost of that is a row
+            // that can turn out to be silence, which is accepted and ruled.
+            //
+            // Track number 0, so it reads as not one of the disc's numbered
+            // tracks at a glance, and so the path grammar needs no change:
+            // "G:CD Track 00" already parses and already yields 0.
+            {
+                const auto& ctracks = audio_.cdTracks();
+                if (!ctracks.empty()) {
+                    if (const auto span = htoa::span(ctracks[0].lba())) {
+                        const std::string htitle = "CD Track 00";
+                        playlist_.addCDTrack(letter + ":" + htitle, htitle,
+                                             (int)(span->sectors / htoa::kSectorsPerSecond));
+                    }
+                }
+            }
             for (const auto& t : audio_.cdTracks()) {
                 std::string title = std::string("CD Track ") +
                                     (t.number < 10 ? "0" : "") +

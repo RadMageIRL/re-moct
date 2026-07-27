@@ -363,7 +363,55 @@ reached about identity strings versus subscripts.
 
 ## 10. Open questions for Dos
 
-1. **CTDB under a partial rip** - refuse the mode, or allow it whole-disc-only? (§4, slice 4)
-2. **Album ReplayGain on a partial rip** - omit, or write the selection's? Recommend omit. (§5)
-3. **The `.cue`** - skip on partial (recommended), or write one describing only what was ripped?
+1. ~~**CTDB under a partial rip**~~ - **RULED: refuse. Shipped in CD-S2 (`471f96c`).** See §11.
+2. ~~**Album ReplayGain on a partial rip**~~ - **RULED: omit, keep track gain. Shipped in CD-S2.**
+3. ~~**The `.cue`**~~ - **RULED: skip on partial. Shipped in CD-S2.**
 4. ~~**Where the selection is toggled**~~ - **RULED: the playlist pane. See §9a.**
+
+## 11. Post-CD-S2 rulings (2026-07-27)
+
+**All four §10 questions are closed.** CD-S2 shipped the first three at `471f96c`.
+
+### CTDB `status=4` logging folds into CD-S4 - no new slice number
+
+In CUETools mode every track logs `status=4 (no match)` although AccurateRip was never queried:
+the same NotQueried-versus-NotFound conflation CD-S1 closed in the summary counter. It is
+**pre-existing** (verified character-identical in the 2026-07-16 `modeC` log) and CD-S2's
+byte-identity constraint forbade touching it there.
+
+**It belongs to CD-S4**: it is CUETools-mode logging, and CD-S4 is the CUETools slice. It can only
+occur on a **whole-disc** rip now, because CD-S2 refuses CTDB the moment a selection is partial.
+No separate slice, no new number.
+
+### The `.cue` re-rip concern is CLOSED - measured, not reasoned
+
+The worry was that a partial rip into a directory that already holds a whole-disc rip would leave
+a stale cue. **The test that settles it: does the partial rip remove or overwrite files the cue
+references, such that the cue stops being accurate?**
+
+Measured directly - whole disc ripped, then `sel=3,7,9` run into the same directory:
+
+- **All 12 files the cue references still exist.**
+- The three re-ripped files **are** overwritten, but **tags only**: each shrank by exactly 68
+  bytes, the removed `REPLAYGAIN_ALBUM_*` pair. `pcm_crc32` for tracks 3, 7 and 9 is unchanged
+  (`b905c21e`, `933f3342`, `add1ef7e`), so **the audio is bit-identical**.
+- The cue describes track layout and AccurateRip CRCs. Every one of those facts is still true.
+
+**So the cue is accurate and the concern is closed.** The whole-disc audio is still in the
+directory, which was the stated test.
+
+**Album gain across such a directory is inconsistent but never WRONG**: nine tracks carry the
+correct whole-disc `-6.83 dB`, three carry none. No track carries a false value, and a scanner
+seeing the gaps rescans the album. That is the omission ruling degrading gracefully.
+
+### Raised by the same measurement: the `.m3u8`, not the cue
+
+The artifact that actually narrows is the **`.m3u8`**. It is rewritten on every rip, so the
+partial run replaced a 12-track playlist with a 3-track one **while all 12 tracks of audio remain
+in the directory**. The directory then holds two list artifacts that disagree: a 12-track cue and
+a 3-track m3u8.
+
+This is the inverse of the concern that was raised, and it is **not** a defect in CD-S2's rulings -
+the m3u8 is correct for the run that wrote it. It only reads oddly under **partial re-rip into a
+populated directory**, which is a **fenced cut for this campaign**. Recorded so it is not
+rediscovered as new; not fixed.

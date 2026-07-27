@@ -68,10 +68,20 @@ and a playlist/rip view. The public feature guide is [`docs/index.html`](docs/in
 - Red Book CD playback + MusicBrainz disc lookup (Ctrl+R)
 - Eject from the TUI (Shift+E) and drive-list refresh for hot-plugged drives (F12)
 - **Rips are byte-exact.** A RE-MOCT rip of a disc is byte-for-byte identical to the same
-  disc ripped by dBpoweramp - verified across three albums, forty tracks, zero differing
-  samples. The AccurateRip checksum is computed over the audio actually written to the
-  file, not over a separate read, so a verification pass and the file it verifies cannot
-  disagree
+  disc ripped by dBpoweramp - verified across four albums, fifty-four tracks, zero
+  differing samples. The AccurateRip checksum is computed over the audio actually written
+  to the file, not over a separate read, so a verification pass and the file it verifies
+  cannot disagree
+- **Hidden tracks in front of track 1 are found, played and ripped.** Some records put a
+  song in the gap before track 1, where no table-of-contents entry describes it and
+  software that walks the track list cannot see it. RE-MOCT shows it as a row numbered
+  `00` above track 1, counted separately in the header as `+1 HTOA` so the disc's own
+  track count stays what the disc says it is. It plays like any other row and scrobbles
+  under its own title. Ripping it is a separate action producing its own file - mark it
+  with `u` and it is written alongside whatever else you marked. Nothing verifies this
+  audio (AccurateRip and CUETools both begin at track 1), so no verification tag is
+  written, and the log, `disc.json` and status line report any sector that could not be
+  read rather than handing over an incomplete file as though it were whole
 - **Rip only the tracks you want**: with a CD open, mark tracks in the playlist with `u`
   (`U` clears). Mark nothing and the whole disc is ripped exactly as before. Artifacts that
   describe the disc as a whole rather than the tracks you took - the cue sheet, album

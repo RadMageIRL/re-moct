@@ -21,6 +21,7 @@
 #endif
 #include "StringUtils.h"
 #include "NextArm.h"   // XF C3: queue-aware preload (resolver + reconcile core)
+#include "CdTrackSelect.h"  // CD-S3: marked synthetic rows -> TOC indices (the one mapping)
 #include "EncoderQuality.h"
 #include "AudioManager.h"
 #include "PlaylistManager.h"
@@ -1671,10 +1672,19 @@ void UIManager::run() {
             redraw_needed_.store(true);
         }
         // Expire the cmdline status line (same cadence as rip_status_).
-        if (!status_msg_.empty() && ++status_msg_ticks_ > 60) {
-            status_msg_.clear();
-            status_msg_ticks_ = 0;
-            redraw_needed_.store(true);
+        // CD-S3: ~2s for a message that pinned itself as short-lived, ~5s for
+        // everything else. The pin is compared by TEXT, so the short life cannot
+        // outlive its own message and land on the next one.
+        {
+            const int ttl = (!status_short_pin_.empty() && status_msg_ == status_short_pin_)
+                          ? 25    // ~2s at the 80ms loop tick
+                          : 60;   // ~5s, unchanged for every existing caller
+            if (!status_msg_.empty() && ++status_msg_ticks_ > ttl) {
+                status_msg_.clear();
+                status_msg_ticks_ = 0;
+                status_short_pin_.clear();
+                redraw_needed_.store(true);
+            }
         }
         {
             int cur = (int)playlist_.current();
@@ -2129,7 +2139,12 @@ void UIManager::drawRipConfirm() {   // slice 6: common (ncurses + portable CDSo
     const int BOX_W = 68;
     // rip-format-select: the format block is data-driven, so the box and
     // everything below it grow with the table (2 rows -> 19, 3 -> 20, ...).
-    const int BOX_H = 17 + kRipFormatCount;
+    // CD-S3: one extra row for the selection summary, and ONLY when the
+    // selection is partial - with nothing marked the modal is exactly the size
+    // and shape it has always been. The modal is already 23 rows in an app that
+    // runs to a 9-row terminal, which is why this is one line and not a list.
+    const bool cd_partial = cdSelectionIsPartial();
+    const int BOX_H = 17 + kRipFormatCount + (cd_partial ? 1 : 0);
     int y0 = (screen_rows_ - BOX_H) / 2;
     int x0 = (screen_cols_ - BOX_W) / 2;
     if (y0 < 0) y0 = 0;
@@ -2247,7 +2262,16 @@ void UIManager::drawRipConfirm() {   // slice 6: common (ncurses + portable CDSo
     // Mode options — plain text; dimmed while nothing is selected (commit
     // keys are inert then; N stays live). Cancel row never dims. Rows below
     // the format block are table-size-relative.
-    const int mode_y = 8 + kRipFormatCount;
+    int mode_y = 8 + kRipFormatCount;
+    // CD-S3: the summary line, hidden when the whole disc is going to be ripped.
+    // Everything below shifts by the same row, so the block keeps its shape.
+    if (cd_partial) {
+        wattron(w, A_BOLD);
+        mvwprintw(w, mode_y, 3, "Ripping %d of %d tracks  (u marks, U clears)",
+                  (int)cd_sel_.size(), (int)cdRowCount());
+        wattroff(w, A_BOLD);
+        ++mode_y;
+    }
     mvwaddstr(w, mode_y, 3, "Select ripping mode");
     struct { const char* key; const char* label; const char* desc; } opts[] = {
         { "[A]", "AccurateRip ", "Network CRC verify + offset correction" },
@@ -2258,10 +2282,16 @@ void UIManager::drawRipConfirm() {   // slice 6: common (ncurses + portable CDSo
     };
     for (int i = 0; i < 5; ++i) {
         bool dim = none_selected && i < 4;
-        if (dim) wattron(w, A_DIM);
+        // CD-S3, CD-S2's deferred debt: [C] (i == 1) is unavailable while the
+        // selection is partial, and the line says why. CTDB is one CRC32 over the
+        // whole disc's audio; there is no partial form of it. The key is inert to
+        // match, so start()'s refusal is a backstop nobody meets.
+        const bool c_blocked = cd_partial && i == 1;
+        if (dim || c_blocked) wattron(w, A_DIM);
         mvwprintw(w, mode_y + 1 + i, 3, "%s %-12s  %s",
-                  opts[i].key, opts[i].label, opts[i].desc);
-        if (dim) wattroff(w, A_DIM);
+                  opts[i].key, opts[i].label,
+                  c_blocked ? "Unavailable - whole disc only" : opts[i].desc);
+        if (dim || c_blocked) wattroff(w, A_DIM);
     }
 
     // Footer divider + output path
@@ -3326,6 +3356,13 @@ void UIManager::drawPlaylist() {
         wattron(win_playlist_, COLOR_PAIR(rpair) | rattr);
         const bool ico = config_.nerd_icons;
         std::string mark = (playing && !ico) ? "> " : "  ";
+        // CD-S3: a CD row marked for ripping shows the SAME "* " the browser uses
+        // for convert marks - one visual language for one concept, rather than a
+        // second CD-specific glyph. The playing marker still wins the cell, and
+        // the lookup is skipped entirely when nothing is marked (the common case),
+        // mirroring the browser's guard.
+        if (!cd_sel_.empty() && mark != "> " && cd_sel_.contains(e.path))
+            mark = "* ";
         // Optional filetype column (F11): a fixed 4-char field + 1 space between
         // title and duration. Blank tag (CD/stream/unknown) = zero width for
         // that row, title reclaims the space.
@@ -6567,6 +6604,17 @@ void UIManager::handleInput(int ch) {
             redraw_needed_.store(true);
             return;
         }
+        // CD-S3, paying CD-S2's deferred debt: [C] is unavailable while the
+        // selection is partial. CTDB is ONE CRC32 over the whole disc's audio and
+        // has no partial form. CD-S2 already refuses the combination inside
+        // start(); this makes it UNSELECTABLE, so that refusal stays a backstop
+        // rather than something a user ever meets. Inert exactly like the
+        // zero-format case above - the row is drawn unavailable, so a keypress
+        // that cannot work simply does nothing.
+        if (chosen == RipMode::CUETools && cdSelectionIsPartial()) {
+            redraw_needed_.store(true);
+            return;
+        }
         ui_overlay_ = UIOverlay::None;
         if (!audio_.cdMode()) return;
         const auto& cd = audio_.cdSource();
@@ -6602,12 +6650,35 @@ void UIManager::handleInput(int ch) {
         opt.aac_vbr      = config_.aac_vbr;
         opt.aac_vbr_level = std::clamp(config_.aac_vbr_level, 1, 5);
         opt.aac_cbr_bitrate = std::clamp(config_.aac_cbr_bitrate, 6000, 510000);
+        // CD-S3: hand the marked rows to the engine as TOC INDICES. `tracks` is
+        // always the FULL TOC - CD-S1's whole point - and the selection rides
+        // alongside it. An empty set maps to an empty vector, which is byte-for-byte
+        // today's call.
+        //
+        // The mapping LOOKS THE NUMBER UP in the TOC; it never computes num-1.
+        // A track's number is not its index on a disc with a data track or
+        // non-contiguous numbering, and that is the same class as CD-S1's finding
+        // (5) - correct on the common disc, silently wrong on the one that matters.
+        std::vector<int> toc_numbers;
+        toc_numbers.reserve(tracks.size());
+        for (const auto& t : tracks) toc_numbers.push_back(t.number);
+        const auto sel = cdsel::toTocIndices(cd_sel_.list(), cd_drive_letter_, toc_numbers);
+        if (sel.unresolved > 0) {
+            // Expected to be impossible: the rows were marked off this very
+            // playlist. Said out loud rather than dropped, because a silent drop
+            // here throws away tracks somebody asked for. It is also where an
+            // HTOA row would land once one exists.
+            rip_status_ = "Rip: " + std::to_string(sel.unresolved)
+                        + " marked row(s) matched no track on this disc and were skipped";
+            rip_msg_ticks_ = 0;
+        }
         cd_ripper_.start(audio_, tracks, out_dir, rel, chosen, std::move(opt),
             [this](const RipProgress& p) {
                 rip_status_ = p.status_msg;
                 rip_msg_ticks_ = 0;
                 redraw_needed_.store(true);
-            });
+            }, sel.toc_indices);
+        cd_sel_.clear();   // consumed, mirroring how marked_ is cleared after a convert
         return;
     }
 
@@ -8213,16 +8284,60 @@ void UIManager::handleInput(int ch) {
                 std::string p = browserEntryPath(dir_cursor_);
                 if (!p.empty() && convertSupportedInput(p)) {
                     bool now = marked_.toggle(p);
-                    showTrackToast(now ? "Marked" : "Unmarked",
-                                   fs::path(p).filename().string(), "");
+                    // Status row, yellow, ~2s - the same treatment as the CD rip
+                    // marking below, and for the same reason: marking is in-place
+                    // state you watch while working down a list, not a
+                    // notification. sanitizeForDisplay because this one is a real
+                    // filename rather than a synthetic row label.
+                    status_msg_ = (now ? "Marked " : "Unmarked ")
+                                + sanitizeForDisplay(fs::path(p).filename().string());
+                    status_msg_ticks_  = 0;
+                    status_msg_yellow_ = true;
+                    status_short_pin_  = status_msg_;
                     redraw_needed_.store(true);
+                }
+            } else if (focus_ == Pane::Playlist) {
+                // CD-S3: the same key, in the pane where CD tracks actually live.
+                // `u` was a no-op here, so this costs no new binding. Only CD rows
+                // respond; every other playlist row stays inert exactly as before.
+                if (pl_cursor_ >= 0 && pl_cursor_ < (int)playlist_.size()) {
+                    const std::string& p = playlist_.at((size_t)pl_cursor_).path;
+                    if (isCDTrackPath(p)) {
+                        bool now = cd_sel_.toggle(p);
+                        // Lower-left status row, yellow, ~2s - NOT a toast. This
+                        // is in-place state the user is looking straight at while
+                        // they work down the list, the same reason F6 and Ctrl+K
+                        // confirm on the status row instead of notifying.
+                        status_msg_ = (now ? "Marked " : "Unmarked ")
+                                    + p.substr(p.find(':') + 1);
+                        status_msg_ticks_  = 0;
+                        status_msg_yellow_ = true;
+                        status_short_pin_  = status_msg_;
+                        redraw_needed_.store(true);
+                    }
                 }
             }
             break;
-        case 'U':   // convert-core: clear all marks
-            if (!marked_.empty()) {
+        case 'U':
+            // CD-S3: `U` already means "clear marks"; it now clears the marks of
+            // the pane you are LOOKING AT. Previously it cleared the browser's set
+            // from any pane, which after the change above would have cleared the
+            // convert marks while leaving the CD selection standing - the opposite
+            // of what the user just asked for.
+            if (focus_ == Pane::Playlist && !cd_sel_.empty()) {
+                cd_sel_.clear();
+                // Same treatment as the toggle above: it confirms the same state.
+                status_msg_        = "Rip selection cleared";
+                status_msg_ticks_  = 0;
+                status_msg_yellow_ = true;
+                status_short_pin_  = status_msg_;
+                redraw_needed_.store(true);
+            } else if (focus_ != Pane::Playlist && !marked_.empty()) {
                 marked_.clear();
-                showTrackToast("Marks cleared", "", "");
+                status_msg_        = "Marks cleared";
+                status_msg_ticks_  = 0;
+                status_msg_yellow_ = true;
+                status_short_pin_  = status_msg_;
                 redraw_needed_.store(true);
             }
             break;
@@ -9592,6 +9707,24 @@ void UIManager::enterDriveList() {
     }
 }
 
+// CD-S3: the one answer to "is this a partial rip?". Counted off the playlist's
+// CD rows rather than the device, so it costs nothing on the draw path and needs
+// no disc access. Marking every row is NOT partial - it is the same rip as
+// marking none, which is why both must answer false or the modal would grow a
+// summary line for a selection that takes the whole disc anyway.
+size_t UIManager::cdRowCount() const {
+    size_t n = 0;
+    for (size_t i = 0; i < playlist_.size(); ++i)
+        if (isCDTrackPath(playlist_.at(i).path)) ++n;
+    return n;
+}
+
+bool UIManager::cdSelectionIsPartial() const {
+    if (cd_sel_.empty()) return false;          // empty means ALL
+    const size_t rows = cdRowCount();
+    return rows > 0 && cd_sel_.size() < rows;
+}
+
 void UIManager::activateDrive(const std::string& drive_entry) {
 #ifdef _WIN32
     // Check if this is a CD-ROM drive
@@ -9614,6 +9747,14 @@ void UIManager::activateDrive(const std::string& drive_entry) {
             cd_drive_letter_ = letter;
             cd_poll_ticks_   = 0;
             cd_fail_count_   = 0;
+            // CD-S3: drop any rip selection from the previous disc. The synthetic
+            // paths are disc-INDEPENDENT ("G:CD Track 05" matches track 5 of
+            // whatever is in G:), so carrying them across a swap would silently
+            // select tracks on a disc the user never marked. The failure
+            // directions are not symmetric: clearing costs a redone selection,
+            // not clearing rips the wrong thing. This runs on every open, which
+            // is also the path the CD poll re-enters on media change.
+            cd_sel_.clear();
             // Populate playlist with CD tracks
             playlist_.clear();
             for (const auto& t : audio_.cdTracks()) {

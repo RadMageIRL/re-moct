@@ -596,6 +596,17 @@ private:
     // convert-core: the marked-file set (path-keyed, survives re-sort/refresh/
     // dir-change), the batch convert engine, and the convert overlay state.
     MarkSet    marked_;
+    // CD-S3: which CD tracks to rip, keyed on the SYNTHETIC PLAYLIST PATH
+    // ("G:CD Track 05") so it survives activateDrive's clear-and-repopulate.
+    // EMPTY MEANS ALL, mirroring CDRipper::start's selected_toc contract - a user
+    // who never marks gets today's whole-disc rip with no new state, and
+    // unmarking the last track returns to ripping everything, not to ripping
+    // nothing. A SEPARATE INSTANCE from marked_: that one is the convert domain's,
+    // and convertSupportedInput denies isCDTrackPath, so a CD row can never be in
+    // it. Same type, different set. Cleared on media change - the paths are
+    // disc-INDEPENDENT, so a stale one would silently select a track on a disc the
+    // user never saw.
+    MarkSet    cd_sel_;
     ConvertJob convert_job_;
     int        convert_scope_ = 0;             // 1 file, 2 folder, 3 marked, 4 pane, 5 playlist file
     std::string convert_pl_file_;              // [5]: the focused playlist file whose entries transcode
@@ -652,6 +663,14 @@ private:
     std::string status_msg_;
     int         status_msg_ticks_ = 0;
     bool        status_msg_yellow_ = false;
+    // CD-S3: a status line that should live ~2s instead of the usual ~5s, pinned
+    // BY ITS TEXT rather than by a mutable timeout field. Thirteen sites set
+    // status_msg_ and none of them would know to reset a timeout, so a field
+    // would silently shorten whichever message happened to come next. Matching
+    // the text instead means the short life belongs to this message and expires
+    // with it: any other setter replaces status_msg_, the pin stops matching, and
+    // the default applies again. Same idiom as podcast_fetch_pin_ above.
+    std::string status_short_pin_;
 
     // Transient warning on the cmdline bar (both platforms), e.g. "stop playback
     // first to edit tags". Rendered red in drawCmdLine() and expired after ~5s in
@@ -1157,6 +1176,16 @@ private:
     static std::vector<std::string> listDrives();
     void enterDriveList();
     void activateDrive(const std::string& drive_entry);
+    // CD-S3: is the rip selection partial? ONE predicate, read by the modal's
+    // [C] row, its summary line, its height and the commit keys - rather than
+    // four places free to disagree about what "partial" means. Empty is NOT
+    // partial: empty means ALL (addition A), so unmarking the last track puts
+    // the modal back in exactly its default shape.
+    bool cdSelectionIsPartial() const;
+    // How many CD rows the playlist holds. One counting implementation, so the
+    // predicate above and the modal's summary line cannot disagree about the
+    // denominator.
+    size_t cdRowCount() const;
 
     static constexpr short CP_TITLE      = 1;
     static constexpr short CP_FOCUSED    = 2;

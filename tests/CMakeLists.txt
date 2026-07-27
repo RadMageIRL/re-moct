@@ -194,6 +194,18 @@ add_executable(rip_selection_test rip_selection_test.cpp)
 target_include_directories(rip_selection_test PRIVATE ${CMAKE_SOURCE_DIR}/include)
 add_test(NAME rip_selection_test COMMAND rip_selection_test)
 
+# cd-track-select (CD slice 3) - which marked playlist row means which TOC track.
+#
+# A track's NUMBER is not its TOC INDEX. They coincide on an ordinary audio CD, so
+# `num - 1` passes every test written against one and then selects the wrong track
+# on a disc with a data track or non-contiguous numbering. Same class as CD-S1's
+# finding (5). The drop count is asserted too: it is the slot a future HTOA row
+# lands in, and a silent drop there would throw away something a user marked.
+# Pure, header-only, both matrix jobs.
+add_executable(cd_track_select_test cd_track_select_test.cpp)
+target_include_directories(cd_track_select_test PRIVATE ${CMAKE_SOURCE_DIR}/include)
+add_test(NAME cd_track_select_test COMMAND cd_track_select_test)
+
 # pane-scroll (Library slice 9) - the cursor/scroll rule BOTH list panes share.
 #
 # Same reason browser_pins_test exists: the rule used to live in two places free to

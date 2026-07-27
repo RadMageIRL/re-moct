@@ -9,6 +9,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Rip only the tracks you want.** With a CD open, mark tracks in the playlist
+  with `u` and RE-MOCT rips just those; `U` clears the marks again. Marking
+  nothing rips the whole disc exactly as it always has, so if you never press
+  `u` nothing about ripping has changed for you. Unmarking the last track goes
+  back to ripping everything rather than to ripping nothing, and the rip window
+  shows how many of the disc's tracks it is about to take, appearing only when
+  that is fewer than all of them.
+  Some of what a rip writes describes the disc as a whole rather than the tracks
+  you took, so a partial rip leaves those out and says which and why in its log.
+  There is no cue sheet, because a cue sheet over part of a disc describes a
+  disc that does not exist and cannot be burned back. There is no album volume
+  level either, because it cannot honestly be measured from part of an album -
+  rip half now and half later and you would end up with two different album
+  levels for one album. Per-track volume levels are still written as usual, and
+  the disc's table of contents is still saved, since it stays true and records
+  what you did not take as much as what you did. CUETools verification checks
+  the whole disc's audio as a single number and has no partial form, so it is
+  shown as unavailable while only some tracks are marked, rather than quietly
+  ripping the whole disc behind your back. Your marks survive opening and
+  closing the rip window, and are cleared when you change discs.
 - A `[Library]` section in the browser, listing every artist in your music
   folder regardless of how the folders are arranged. RE-MOCT stays a folder
   player - the directory browser is unchanged and still where everything
@@ -113,6 +133,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   collection, so it shows the first 500 with the true total beside it. These are not
   `[Recent]`, which is the short list of what you played last; these are the whole
   collection sorted two ways.
+
+### Changed
+
+- Marking a file with `u`, and clearing marks with `U`, now confirm on the status
+  line at the bottom left in yellow for a couple of seconds, rather than raising a
+  notification. Marking is something you watch while working down a list, so the
+  confirmation belongs where you are already looking instead of in a popup.
 
 ### Fixed
 

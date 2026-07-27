@@ -52,6 +52,14 @@ struct RGResult {
     double album_gain = 0.0;
     double album_peak = 0.0;
     bool   valid      = false;
+    // CD-S2: is there an ALBUM figure at all? 0.0 dB is a legitimate gain, so
+    // the numbers above cannot say "absent" by themselves - the same conflation
+    // CD-S1 closed in the summary counter, one layer out. False on a partial
+    // rip, where an album value measured over a subset would silently claim to
+    // describe the album; the tag pair is then omitted entirely rather than
+    // written as a sentinel, because ReplayGain has no absent value and every
+    // scanner reads a MISSING album tag as "not scanned yet".
+    bool   album_valid = false;
 };
 
 // ─── Rip state ────────────────────────────────────────────────────────────────

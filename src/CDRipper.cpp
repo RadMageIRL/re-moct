@@ -761,8 +761,10 @@ void CDRipper::tagFile(const std::string&         path,
             if (rg.valid) {
                 addUserTxt("REPLAYGAIN_TRACK_GAIN", rg_str(rg.track_gain));
                 addUserTxt("REPLAYGAIN_TRACK_PEAK", rg_peak_str(rg.track_peak));
-                addUserTxt("REPLAYGAIN_ALBUM_GAIN", rg_str(rg.album_gain));
-                addUserTxt("REPLAYGAIN_ALBUM_PEAK", rg_peak_str(rg.album_peak));
+                if (rg.album_valid) {   // CD-S2: no album figure on a partial rip
+                    addUserTxt("REPLAYGAIN_ALBUM_GAIN", rg_str(rg.album_gain));
+                    addUserTxt("REPLAYGAIN_ALBUM_PEAK", rg_peak_str(rg.album_peak));
+                }
             }
             if (!art.empty()) {
                 auto* ap = new TagLib::ID3v2::AttachedPictureFrame();
@@ -795,8 +797,10 @@ void CDRipper::tagFile(const std::string&         path,
             if (rg.valid) {
                 tag->addField("REPLAYGAIN_TRACK_GAIN",TagLib::String(rg_str(rg.track_gain),TagLib::String::UTF8),true);
                 tag->addField("REPLAYGAIN_TRACK_PEAK",TagLib::String(rg_peak_str(rg.track_peak),TagLib::String::UTF8),true);
-                tag->addField("REPLAYGAIN_ALBUM_GAIN",TagLib::String(rg_str(rg.album_gain),TagLib::String::UTF8),true);
-                tag->addField("REPLAYGAIN_ALBUM_PEAK",TagLib::String(rg_peak_str(rg.album_peak),TagLib::String::UTF8),true);
+                if (rg.album_valid) {   // CD-S2: no album figure on a partial rip
+                    tag->addField("REPLAYGAIN_ALBUM_GAIN",TagLib::String(rg_str(rg.album_gain),TagLib::String::UTF8),true);
+                    tag->addField("REPLAYGAIN_ALBUM_PEAK",TagLib::String(rg_peak_str(rg.album_peak),TagLib::String::UTF8),true);
+                }
             }
             if (!art.empty()) {
                 auto* pic = new TagLib::FLAC::Picture();
@@ -837,8 +841,11 @@ void CDRipper::tagFile(const std::string&         path,
             if (rg.valid) {
                 tag->addField("R128_TRACK_GAIN",
                     TagLib::String(std::to_string(r128FromDb(rg.track_gain)),TagLib::String::UTF8),true);
-                tag->addField("R128_ALBUM_GAIN",
-                    TagLib::String(std::to_string(r128FromDb(rg.album_gain)),TagLib::String::UTF8),true);
+                // CD-S2: the R128 dialect carries an album value too - a fifth
+                // album surface, and the one most easily missed. Same rule.
+                if (rg.album_valid)
+                    tag->addField("R128_ALBUM_GAIN",
+                        TagLib::String(std::to_string(r128FromDb(rg.album_gain)),TagLib::String::UTF8),true);
             }
             if (!art.empty()) {
                 auto* pic = new TagLib::FLAC::Picture();
@@ -877,8 +884,10 @@ void CDRipper::tagFile(const std::string&         path,
             if (rg.valid) {
                 tag->addValue("REPLAYGAIN_TRACK_GAIN",TagLib::String(rg_str(rg.track_gain),TagLib::String::UTF8),true);
                 tag->addValue("REPLAYGAIN_TRACK_PEAK",TagLib::String(rg_peak_str(rg.track_peak),TagLib::String::UTF8),true);
-                tag->addValue("REPLAYGAIN_ALBUM_GAIN",TagLib::String(rg_str(rg.album_gain),TagLib::String::UTF8),true);
-                tag->addValue("REPLAYGAIN_ALBUM_PEAK",TagLib::String(rg_peak_str(rg.album_peak),TagLib::String::UTF8),true);
+                if (rg.album_valid) {   // CD-S2: no album figure on a partial rip
+                    tag->addValue("REPLAYGAIN_ALBUM_GAIN",TagLib::String(rg_str(rg.album_gain),TagLib::String::UTF8),true);
+                    tag->addValue("REPLAYGAIN_ALBUM_PEAK",TagLib::String(rg_peak_str(rg.album_peak),TagLib::String::UTF8),true);
+                }
             }
             if (!art.empty()) {
                 TagLib::ByteVector payload("cover.jpg");
@@ -920,8 +929,10 @@ void CDRipper::tagFile(const std::string&         path,
             if (rg.valid) {
                 setFree("REPLAYGAIN_TRACK_GAIN", rg_str(rg.track_gain));
                 setFree("REPLAYGAIN_TRACK_PEAK", rg_peak_str(rg.track_peak));
-                setFree("REPLAYGAIN_ALBUM_GAIN", rg_str(rg.album_gain));
-                setFree("REPLAYGAIN_ALBUM_PEAK", rg_peak_str(rg.album_peak));
+                if (rg.album_valid) {   // CD-S2: no album figure on a partial rip
+                    setFree("REPLAYGAIN_ALBUM_GAIN", rg_str(rg.album_gain));
+                    setFree("REPLAYGAIN_ALBUM_PEAK", rg_peak_str(rg.album_peak));
+                }
             }
             if (!art.empty()) {
                 TagLib::MP4::CoverArtList covers;
@@ -1673,6 +1684,10 @@ void CDRipper::worker(std::string          drive_letter,
     // both until a selection existed.
     const int disc_total = (int)tracks.size();
     const int sel_count  = (int)plan.size();
+    // CD-S2: ONE predicate for "is this the whole disc", consulted by every
+    // side-product decision below. Not re-derived by comparing counts at each
+    // site - that is the defect class this codebase has closed six times now.
+    const bool whole_disc = ripsel::isWholeDisc(disc_total, plan);
 
     // CTDB end-trim needs the disc audio total up front. The byte stream CTDB
     // accumulates is exactly each track's length_lba*SECTOR_BYTES in order, so
@@ -2149,9 +2164,15 @@ void CDRipper::worker(std::string          drive_letter,
     // States are no longer needed once the album figure is computed.
     for (auto*& st : album_states) if (st) { ebur128_destroy(&st); st = nullptr; }
 
+    // CD-S2: the album figure describes the ALBUM, so it only exists when the
+    // whole disc was ripped. Measured over a subset it is a different number
+    // that still claims to be the album's - rip 8 now and 4 later and one album
+    // silently carries two album gains. Omitted on a partial so a later scan can
+    // compute the real thing; TRACK gain is per-track and stays correct either way.
     for (auto& rg : rg_results) {
-        rg.album_gain = album_gain;
-        rg.album_peak = album_peak;
+        rg.album_gain  = album_gain;
+        rg.album_peak  = album_peak;
+        rg.album_valid = whole_disc;
     }
 
     // ── Tag all files ─────────────────────────────────────────────────────
@@ -2192,7 +2213,12 @@ void CDRipper::worker(std::string          drive_letter,
     // ── Write CUE sheet ───────────────────────────────────────────────────
     // Standard Red Book CUE sheet for FLAC rip — compatible with foobar2000,
     // EAC, whipper and any player that supports gapless via cue index points.
-    if (!cancel_.load()) {
+    // CD-S2: a cue sheet reconstructs the DISC's layout. Over a subset it either
+    // references files that do not exist or describes a disc that never existed -
+    // measured: a 3-track cue still carrying the full disc's DISCID. It cannot be
+    // burned back and cannot drive gapless reconstruction, so it is not a partial
+    // cue, it is a broken one. Skipped outright; the log says so.
+    if (!cancel_.load() && whole_disc) {
         std::string cue_path = out_dir + kSep + sanitizePath(
             rel.artist.empty() ? rel.title
             : rel.artist + " - " + rel.title) + ".cue";
@@ -2323,7 +2349,9 @@ void CDRipper::worker(std::string          drive_letter,
             id2 += rel_lo * (uint32_t)(disc_total + 1);
 
             json j;
-            j["schema_version"] = 1;
+            // CD-S2: 2 = ReplayGain values may be null (unmeasured), and a
+            // partial rip carries a "selection" block.
+            j["schema_version"] = 2;
             j["disc"] = {
                 {"artist", rel.artist}, {"album", rel.title},
                 {"date", rel.date},     {"mb_id", rel.mb_id}
@@ -2355,6 +2383,28 @@ void CDRipper::worker(std::string          drive_letter,
             }
             j["toc"] = toc;
 
+            // CD-S2: say the selection outright. Until now a partial rip could
+            // only be INFERRED, by noticing that some AccurateRip slots read
+            // "not_queried" - an implication spread over twelve entries, not a
+            // record. This is why the file was kept on a partial rip, so it
+            // should state it.
+            //
+            // Written ONLY when partial. On a whole-disc rip the TOC already is
+            // the record, and omitting the block keeps disc.json identical to
+            // today apart from schema_version, which keeps the gate's stop
+            // condition sharp. Absence here is not the zero-means-unmeasured
+            // defect repeated: schema_version 2 guarantees this writer would
+            // have emitted the block had the rip been partial, so absent is a
+            // discriminated encoding, not a value collision.
+            if (!whole_disc) {
+                json sel;
+                sel["partial"]    = true;
+                sel["disc_total"] = disc_total;
+                for (const ripsel::Item& item : plan)
+                    sel["ripped"].push_back(tracks[(size_t)item.toc_index].number);
+                j["selection"] = sel;
+            }
+
             auto arStr = [](ARStatus s) -> const char* {
                 switch (s) {
                     case ARStatus::Matched_v2:   return "matched_v2";
@@ -2377,14 +2427,25 @@ void CDRipper::worker(std::string          drive_letter,
             }
             j["accuraterip"] = ar;
 
+            // CD-S2: an unmeasured value must be representable as ABSENT, not as
+            // zero - 0.0 dB is a legitimate gain and 0.0 a legitimate peak, so the
+            // number alone cannot say "we never looked". null covers both ways a
+            // track can be unmeasured: never ripped, or ripped with the loudness
+            // measurement failing. The album pair goes null on a partial for the
+            // same reason its tag is omitted. Same conflation CD-S1 closed in the
+            // summary counter, one layer out, in the file tooling actually reads.
             json rgj;
-            rgj["album_gain"] = rg_results.empty() ? 0.0 : rg_results[0].album_gain;
-            rgj["album_peak"] = rg_results.empty() ? 0.0 : rg_results[0].album_peak;
-            for (int i = 0; i < (int)rg_results.size(); ++i)
+            const bool have_album = !rg_results.empty() && rg_results[0].album_valid;
+            rgj["album_gain"] = have_album ? json(rg_results[0].album_gain) : json(nullptr);
+            rgj["album_peak"] = have_album ? json(rg_results[0].album_peak) : json(nullptr);
+            for (int i = 0; i < (int)rg_results.size(); ++i) {
+                const RGResult& r = rg_results[i];
                 rgj["tracks"].push_back({
-                    {"n", i + 1}, {"gain", rg_results[i].track_gain},
-                    {"peak", rg_results[i].track_peak}
+                    {"n",    i + 1},
+                    {"gain", r.valid ? json(r.track_gain) : json(nullptr)},
+                    {"peak", r.valid ? json(r.track_peak) : json(nullptr)}
                 });
+            }
             j["replaygain"] = rgj;
 
             std::string json_path = out_dir + kSep + "disc.json";
@@ -2416,9 +2477,22 @@ void CDRipper::worker(std::string          drive_letter,
             fprintf(lf, "\n=== Summary ===\n");
             fprintf(lf, "AR: %d v2 + %d v1 matched, %d not found / %d total\n",
                     ar_v2, ar_v1, ar_none, sel_count);
-            fprintf(lf, "ReplayGain: album gain=%.2f dB peak=%.6f\n",
-                    rg_results.empty() ? 0.0 : rg_results[0].album_gain,
-                    rg_results.empty() ? 0.0 : rg_results[0].album_peak);
+            // CD-S2: on a whole-disc rip this block is unchanged, character for
+            // character. On a partial one it names every disc-level artifact that
+            // was omitted and why, so nothing is missing silently.
+            if (whole_disc) {
+                fprintf(lf, "ReplayGain: album gain=%.2f dB peak=%.6f\n",
+                        rg_results.empty() ? 0.0 : rg_results[0].album_gain,
+                        rg_results.empty() ? 0.0 : rg_results[0].album_peak);
+            } else {
+                fprintf(lf, "Partial rip: %d of %d tracks selected\n", sel_count, disc_total);
+                fprintf(lf, "ReplayGain: album gain OMITTED (measured over a subset it would not\n");
+                fprintf(lf, "            describe the album). Track gain written as usual.\n");
+                fprintf(lf, "CUE sheet : SKIPPED (it reconstructs the disc's layout; over a subset\n");
+                fprintf(lf, "            it describes a disc that does not exist).\n");
+                fprintf(lf, "disc.toc, disc.json: written. They record the disc as it is, which stays\n");
+                fprintf(lf, "            true, and disc.json now names the selection outright.\n");
+            }
             // Only the ripped tracks are listed: an unripped slot is NotQueried,
             // and the fall-through label below would render that as "not found".
             for (const ripsel::Item& item : plan) {
@@ -2500,6 +2574,19 @@ bool CDRipper::start(AudioManager&               audio,
                                    : ripsel::plan(disc_total, selected_toc);
     if (plan.empty()) return false;   // nothing selected: refuse, as the format
                                       // picker already does at zero formats
+    // CD-S2: CTDB is ONE CRC32 over the whole disc's audio and has no partial
+    // form. Run over a subset it is wrong two independent ways: ctdb_total_bytes
+    // is summed over the full TOC while only selected tracks feed bytes, so the
+    // end-trim boundary is never reached and never fires; and the CRC covers the
+    // selected audio in selection order rather than the disc. The result is a
+    // well-formed 8-hex-digit ID that is wrong twice over and would be reported
+    // as a verdict, with nothing in the output to explain it - the shape of
+    // CD-S1's finding (5). Refuse here, before the worker starts and before
+    // anything at all is written. CD-S3 makes the combination unselectable by
+    // showing [C] unavailable while the selection is partial; this makes it
+    // unexecutable. Neither half assumes the other has been done.
+    if (mode == RipMode::CUETools && !ripsel::isWholeDisc(disc_total, plan))
+        return false;
     thread_ = std::thread(&CDRipper::worker, this,
                           dl, tracks, std::move(plan), out_dir, rel, mode, std::move(opt), cb,
                           std::move(dev), drv_offset, drv_model,

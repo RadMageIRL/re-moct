@@ -5,7 +5,7 @@ All notable changes to RE-MOCT are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.5.0] - Unreleased
+## [1.5.0] - 2026-07-27
 
 ### Added
 
@@ -168,7 +168,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   **If you have ripped CDs with RE-MOCT and want them right, they need re-ripping.**
   The two seconds missing from the start of each track are not lost - they sit at
   the end of the previous track's file - but the first track's opening two seconds
-  and the last track's closing two seconds were never written at all.
+  and the last track's closing two seconds were never written at all. There is no
+  tool to correct an existing rip in place, and none is planned: the audio that was
+  never read cannot be recovered from the files, so re-ripping from the disc is the
+  only way to get a correct copy.
 - **Rips that never consult AccurateRip no longer claim it failed.** AccurateRip is
   only queried in `[A]` mode. The other three - `[C]` CUETools, `[Y]` Local and `[B]`
   Local 2-pass - never ask it, but they were recording the answer as though the

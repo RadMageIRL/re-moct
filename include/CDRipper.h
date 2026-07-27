@@ -142,8 +142,8 @@ private:
                 std::unique_ptr<core::ICdDevice> dev,
                 int                  drive_offset,
                 std::string          drive_model,
-                uint32_t             full_leadout_lba = 0,
-                std::vector<uint32_t> data_track_lbas = {});
+                uint32_t             full_leadout_frame = 0,
+                std::vector<uint32_t> data_track_frames = {});
 
     ARTrackResult ripTrack(core::ICdDevice&   dev,
                            const CDTrack&     track,
@@ -182,8 +182,8 @@ private:
 
     // AccurateRip
     static uint32_t computeCDDB(const std::vector<CDTrack>& tracks,
-                                uint32_t full_leadout_lba = 0,
-                                const std::vector<uint32_t>& data_track_lbas = {});
+                                uint32_t full_leadout_frame = 0,
+                                const std::vector<uint32_t>& data_track_frames = {});
 
     // Fetch AR binary, save .bin and manifest to ar_cache_dir.
     // Returns true even on 404 (disc not found); returns false on network error.
@@ -192,8 +192,8 @@ private:
                             const std::string&                                  ar_cache_dir,
                             std::vector<std::vector<std::pair<uint32_t,int>>>&  out_v1,
                             std::vector<std::vector<std::pair<uint32_t,int>>>&  out_v2,
-                            uint32_t                                            full_leadout_lba = 0,
-                            const std::vector<uint32_t>&                        data_track_lbas = {});
+                            uint32_t                                            full_leadout_frame = 0,
+                            const std::vector<uint32_t>&                        data_track_frames = {});
 
     // CTDB (CUETools Database) — global CRC32 verification
     // Returns CTDB ID string and whether disc is verified

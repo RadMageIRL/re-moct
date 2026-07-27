@@ -226,16 +226,29 @@ static bool waitFor(int timeout_ms, bool (*pred)(CDSource&), CDSource& cd) {
 }
 
 int main() {
-    // Disc: T1 @ LBA 182 (Relish homage — non-standard pregap), 150 sectors (2s);
+    // Disc: T1 @ ATIME 182 (Relish homage — non-standard pregap), 150 sectors (2s);
     // T2 @ 332, 150 sectors; lead-out 482.
     constexpr uint32_t T1 = 182, T2 = 332, LEN = 150;
+
+    // F0-S1: the fake serves pat(lba * 1176 + i) keyed on the LBA it is HANDED,
+    // so every expectation below must be in LBA space. Before the fix these read
+    // `T1 * SLOTS_PER_SECTOR` and passed — because the read origin and the
+    // expectation were both the ATIME, so the test agreed with itself while the
+    // product read 150 sectors late. That is precisely why this suite never
+    // caught the defect. Naming both spaces is the fix to the TEST.
+    constexpr uint32_t T1_LBA = T1 - kMsfLeadIn;   // 32
+    constexpr uint32_t T2_LBA = T2 - kMsfLeadIn;   // 182
 
     FakeCdIo io;
     buildToc(io.st->toc, {T1, T2}, T2 + LEN);
     CDSource cd(&io);
     CHECK(cd.open("F"));
     CHECK(cd.tracks().size() == 2);
-    CHECK(cd.tracks()[0].start_lba == T1 && cd.tracks()[0].length_lba == LEN);
+    // F0-S1: was `start_lba == T1` — a round trip that passed whether or not the
+    // Red Book lead-in was accounted for, because the fake TOC is built with
+    // setMsf(e, T1). Both spaces are now named, so the relation is pinned.
+    CHECK(cd.tracks()[0].start_frame == T1 && cd.tracks()[0].length_lba == LEN);
+    CHECK(cd.tracks()[0].lba() == T1 - 150);   // MMC-3 Table 333
 
     // ── 0. The core::ISource contract surface (slice A) ──────────────────────
     core::ISource& s = cd;
@@ -255,7 +268,7 @@ int main() {
         port::sleepMs(100);                                       // let the reader prefill the ring
         std::vector<int16_t> v;
         drainAll(cd, v);
-        matchStream(v, {{false, (uint64_t)T1 * SLOTS_PER_SECTOR, (uint64_t)LEN * SLOTS_PER_SECTOR}},
+        matchStream(v, {{false, (uint64_t)T1_LBA * SLOTS_PER_SECTOR, (uint64_t)LEN * SLOTS_PER_SECTOR}},
                     "fidelity");
         // AudioManager's CD track-end predicate, exactly:
         CHECK(cd.currentTrack() == 1);
@@ -273,16 +286,16 @@ int main() {
         CHECK(s.seekTo(1.0));                             // via the interface -> LBA 182 + 75 = 257
         std::vector<int16_t> v;
         drainAll(cd, v);
-        const uint32_t tgt = T1 + 75;
+        const uint32_t tgt = T1_LBA + 75;
         matchStream(v, {{false, (uint64_t)tgt * SLOTS_PER_SECTOR,
-                         (uint64_t)(T1 + LEN - tgt) * SLOTS_PER_SECTOR}}, "seek");
+                         (uint64_t)(T1_LBA + LEN - tgt) * SLOTS_PER_SECTOR}}, "seek");
     }
 
     // ── 3+4. Pause continuity, then consumer-stall backpressure ──────────────
     {
         CHECK(cd.playTrack(2));
         port::sleepMs(100);
-        Cursor cur{ (uint64_t)T2 * SLOTS_PER_SECTOR };
+        Cursor cur{ (uint64_t)T2_LBA * SLOTS_PER_SECTOR };
         std::vector<int16_t> chunk;
         for (int i = 0; i < 20; ++i) {                    // steady consumption
             chunk.clear(); readChunk(cd, chunk); feed(cur, chunk, "pause-pre"); port::sleepMs(1);
@@ -309,18 +322,20 @@ int main() {
 
     // ── 5. Transient read error: exact silence-fill, LBA advances past batch ──
     {
-        // Batches start at 182 and advance 20: the batch at LBA 282 fails once ->
-        // 20 sectors of silence in-stream, data resumes at 302.
-        io.st->fail_at_lba.store(282);
+        // Batches start at T1_LBA (32) and advance 20: the batch at LBA 132 fails
+        // once -> 20 sectors of silence in-stream, data resumes at 152.
+        // F0-S1: was 182/282/302 — those were batch positions in the OLD, ATIME-
+        // based read origin. Same scenario, restated in LBA space.
+        io.st->fail_at_lba.store(132);
         io.st->fail_budget.store(1);
         CHECK(cd.playTrack(1));
         port::sleepMs(100);
         std::vector<int16_t> v;
         drainAll(cd, v);
         matchStream(v, {
-            {false, (uint64_t)T1  * SLOTS_PER_SECTOR, (uint64_t)(282 - T1) * SLOTS_PER_SECTOR},
-            {true,  0,                                (uint64_t)20 * SLOTS_PER_SECTOR},
-            {false, (uint64_t)302 * SLOTS_PER_SECTOR, (uint64_t)(T1 + LEN - 302) * SLOTS_PER_SECTOR},
+            {false, (uint64_t)T1_LBA * SLOTS_PER_SECTOR, (uint64_t)(132 - T1_LBA) * SLOTS_PER_SECTOR},
+            {true,  0,                                   (uint64_t)20 * SLOTS_PER_SECTOR},
+            {false, (uint64_t)152 * SLOTS_PER_SECTOR, (uint64_t)(T1_LBA + LEN - 152) * SLOTS_PER_SECTOR},
         }, "silence-fill");
         io.st->fail_at_lba.store(0xFFFFFFFFu);
         io.st->fail_budget.store(0);
@@ -328,7 +343,10 @@ int main() {
 
     // ── 6. Media removal: hard stop, flush, latch ─────────────────────────────
     {
-        io.st->fail_at_lba.store(282);
+        // F0-S1: was 282 — a batch position in the old ATIME-based read origin.
+        // Reads now run 32..181, so 282 was never reached and the read never
+        // failed, so removal was never detected. Must be an LBA inside track 1.
+        io.st->fail_at_lba.store(132);
         io.st->fail_budget.store(1 << 20);
         io.st->media.store(false);
         CHECK(cd.playTrack(1));
@@ -358,7 +376,7 @@ int main() {
         CHECK(cd.playTrack(2));                           // switch mid-play
         std::vector<int16_t> v;
         drainAll(cd, v);
-        matchStream(v, {{false, (uint64_t)T2 * SLOTS_PER_SECTOR,
+        matchStream(v, {{false, (uint64_t)T2_LBA * SLOTS_PER_SECTOR,
                          (uint64_t)LEN * SLOTS_PER_SECTOR}}, "switch");
     }
 

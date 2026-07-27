@@ -143,6 +143,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Every ripped track started two seconds late. It no longer does.** RE-MOCT read
+  each track from a position 150 sectors - exactly 2.00 seconds - past where the
+  track actually begins. Every rip the program has ever produced is affected: each
+  track is missing its first two seconds, carries the first two seconds of the next
+  track on the end instead, and the final track of a disc ends in two seconds of
+  digital silence where the music should be. CD playback started two seconds into
+  each track for the same reason.
+  The cause was a disc address used in the wrong units. A drive reports where a
+  track starts as a running time from the beginning of the disc, which includes a
+  standard two-second lead-in; a read command wants that same position counted
+  without the lead-in. RE-MOCT took the first number and handed it straight to the
+  second, so every read landed 150 sectors late.
+  AccurateRip did not catch it, and could not have. The checksum was being built
+  from a separate, correctly positioned read rather than from the audio actually
+  written to disk, so a rip could verify at the highest confidence the database
+  offers while the file on disk was shifted. Verification now runs over the same
+  audio that lands in the file, which is how the reference rippers do it, so the
+  two can no longer disagree.
+  A rip of the same disc is now byte-for-byte identical to the same disc ripped by
+  dBpoweramp, all twelve tracks, with AccurateRip confirming every one at
+  confidence 200. Disc identification is untouched: the AccurateRip, CUETools,
+  CDDB and MusicBrainz disc IDs are computed exactly as before and are unchanged.
+  **If you have ripped CDs with RE-MOCT and want them right, they need re-ripping.**
+  The two seconds missing from the start of each track are not lost - they sit at
+  the end of the previous track's file - but the first track's opening two seconds
+  and the last track's closing two seconds were never written at all.
 - **Rips that never consult AccurateRip no longer claim it failed.** AccurateRip is
   only queried in `[A]` mode. The other three - `[C]` CUETools, `[Y]` Local and `[B]`
   Local 2-pass - never ask it, but they were recording the answer as though the

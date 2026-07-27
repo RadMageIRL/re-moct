@@ -14,12 +14,35 @@
 #include <atomic>
 #include <mutex>
 
+// ─── The MSF/LBA origin ───────────────────────────────────────────────────────
+// MMC-3 Table 333 (p.282):  LBA = (M x 60 + S) x 75 + F - 150
+// i.e. LBA 0 IS MSF 00:02:00. A drive's READ TOC (MSF=1) reports ATIME - the
+// ABSOLUTE frame, which includes this 150-frame lead-in - while every read
+// command (READ CD 0xBE Starting LBA, and Windows' RAW_READ DiskOffset/2048)
+// addresses the disc in LBA. The two differ by exactly this constant, always.
+//
+// THIS IS NOT THE SAME 150 AS `AR_PREGAP` (CDRipper.cpp). That one is
+// AccurateRip's disc-ID origin - AR offsets are LSNs - and is settled
+// (HydrogenAudio 97603). Two different transforms that happen to share a
+// number, and that coincidence is exactly what hid the read-addressing defect
+// for the project's entire life. Say which one you mean at every site.
+inline constexpr uint32_t kMsfLeadIn = 150;
+
 // ─── CD Track info ────────────────────────────────────────────────────────────
 struct CDTrack {
     int      number;       // 1-based track number
-    uint32_t start_lba;    // logical block address of track start
-    uint32_t length_lba;   // length in sectors
+    // ATIME: the ABSOLUTE frame, straight from the drive's MSF TOC, INCLUDING
+    // the 150-frame lead-in. This is what the CDDB and MusicBrainz disc IDs are
+    // built from. It is NOT an address you can hand to a read command - use
+    // lba(). The field was called `start_lba` while holding this value, which is
+    // the one-value-two-meanings shape that produced a 2-second read offset on
+    // every rip and every playback.
+    uint32_t start_frame;
+    uint32_t length_lba;   // length in sectors - a DIFFERENCE, identical in both spaces
     int      duration_sec; // approximate duration
+
+    // The Red Book LBA: what every device read must address (MMC-3 Table 333).
+    uint32_t lba() const { return start_frame - kMsfLeadIn; }
 };
 
 // ─── CDSource ─────────────────────────────────────────────────────────────────
@@ -66,18 +89,23 @@ public:
     // TOC
     const std::vector<CDTrack>& tracks() const { return tracks_; }
     std::string driveLetter()    const { return drive_letter_; }
-    uint32_t    fullLeadoutLba()   const { return full_leadout_lba_; }
-    const std::vector<uint32_t>& dataTrackLbas() const { return data_track_lbas_; }
+    // ABSOLUTE frames (ATIME), like CDTrack::start_frame - not read addresses.
+    uint32_t    fullLeadoutFrame() const { return full_leadout_frame_; }
+    const std::vector<uint32_t>& dataTrackFrames() const { return data_track_frames_; }
 
     // Returns sector offsets suitable for DiscID computation:
     // [track1_start, track2_start, ..., trackN_start, lead_out]
+    //
+    // IDENTITY, NOT ADDRESSES: the MusicBrainz DiscID algorithm is defined over
+    // ABSOLUTE frames (its "offset" is LBA + 150), so these stay start_frame and
+    // must NOT become lba(). Changing them moves every MusicBrainz DiscID.
     std::vector<uint32_t> tocOffsets() const {
         std::vector<uint32_t> offs;
         offs.reserve(tracks_.size() + 1);
-        for (const auto& t : tracks_) offs.push_back(t.start_lba);
+        for (const auto& t : tracks_) offs.push_back(t.start_frame);
         // Lead-out = last track start + length
         if (!tracks_.empty())
-            offs.push_back(tracks_.back().start_lba + tracks_.back().length_lba);
+            offs.push_back(tracks_.back().start_frame + tracks_.back().length_lba);
         return offs;
     }
 
@@ -139,8 +167,8 @@ private:
     std::string             drive_letter_;
     std::string             drive_model_;
     int                     drive_offset_samples_ = 0;
-    uint32_t                full_leadout_lba_     = 0;  // includes all sessions
-    std::vector<uint32_t>   data_track_lbas_;              // data tracks for CDDB
+    uint32_t                full_leadout_frame_     = 0;  // includes all sessions
+    std::vector<uint32_t>   data_track_frames_;              // data tracks for CDDB
     bool                    offset_known_         = false;
     OpenFail                last_open_fail_       = OpenFail::None;
     std::vector<CDTrack>    tracks_;

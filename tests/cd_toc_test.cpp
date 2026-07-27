@@ -113,9 +113,19 @@ static void buildToc(core::CdToc& toc, const std::vector<uint32_t>& starts,
 }
 
 int main() {
-    // ── 1. Relish-shaped disc: 12 tracks, T1 at LBA 182 (non-standard pregap) ──
-    // The pregap must SURVIVE into start_lba (msf_to_lba adds no ±150 — the
-    // "do NOT subtract 150" contract that the AR disc-ID math depends on).
+    // ── 1. Relish-shaped disc: 12 tracks, T1 at ATIME 182 (non-standard pregap) ──
+    // THE MMC-3 TABLE 333 RELATION, which is what F0-S1 exists to pin:
+    //     LBA = (M*60 + S)*75 + F - 150,  i.e. LBA 0 IS MSF 00:02:00.
+    // start_frame keeps the drive's ATIME (the pregap survives into it, which the
+    // AR/CDDB/MusicBrainz disc-ID math depends on) and lba() is the READ address.
+    // Both halves are asserted: pinning only the first is exactly how a 2-second
+    // read offset survived on every rip and every playback.
+    //
+    // The pre-F0-S1 assertion here read:
+    //     CHECK(cd.tracks()[0].start_lba == 182);   // "pregap intact"
+    // and its comment said "msf_to_lba adds no +/-150". That was true and was NOT
+    // the whole contract - nothing asserted what a read should address. Changed
+    // deliberately, kept above so this reads as a decision and not as drift.
     {
         FakeCdIo io;
         std::vector<uint32_t> starts;
@@ -126,11 +136,13 @@ int main() {
         CHECK(io.opened_spec == "G");
         CHECK(cd.isOpen());
         CHECK(cd.tracks().size() == 12);
-        CHECK(cd.tracks()[0].start_lba == 182);          // pregap intact
-        CHECK(cd.tracks()[0].length_lba == 15000);
-        CHECK(cd.tracks()[11].start_lba == 182 + 11 * 15000);
-        CHECK(cd.fullLeadoutLba() == 182 + 12 * 15000);
-        CHECK(cd.dataTrackLbas().empty());
+        CHECK(cd.tracks()[0].start_frame == 182);        // ATIME: pregap intact
+        CHECK(cd.tracks()[0].lba() == 32);               // READ address: 182 - 150
+        CHECK(cd.tracks()[0].length_lba == 15000);       // a DIFFERENCE: unchanged
+        CHECK(cd.tracks()[11].start_frame == 182 + 11 * 15000);
+        CHECK(cd.tracks()[11].lba() == 182 + 11 * 15000 - 150);
+        CHECK(cd.fullLeadoutFrame() == 182 + 12 * 15000);
+        CHECK(cd.dataTrackFrames().empty());
         auto offs = cd.tocOffsets();                     // DiscID shape
         CHECK(offs.size() == 13);
         CHECK(offs[0] == 182);
@@ -155,9 +167,9 @@ int main() {
         CDSource cd(&io);
         CHECK(cd.open("D"));
         CHECK(cd.tracks().size() == 3);                  // data track excluded
-        CHECK(cd.dataTrackLbas().size() == 1);
-        CHECK(cd.dataTrackLbas()[0] == 60000);
-        CHECK(cd.fullLeadoutLba() == 95000);             // session-2 leadout wins
+        CHECK(cd.dataTrackFrames().size() == 1);
+        CHECK(cd.dataTrackFrames()[0] == 60000);
+        CHECK(cd.fullLeadoutFrame() == 95000);             // session-2 leadout wins
         CHECK(io.st->toc_reads == 2);                    // second READ_TOC issued
         // Audio track 3 length still runs to the data track start (TOC end);
         // the Enhanced-CD cap happens lazily in CDRipper at rip time.
@@ -172,7 +184,7 @@ int main() {
         CDSource cd(&io);
         CHECK(cd.open("D"));
         CHECK(io.st->toc_reads == 1);
-        CHECK(cd.fullLeadoutLba() == 40000);
+        CHECK(cd.fullLeadoutFrame() == 40000);
     }
 
     // ── 4. Malformed TOC guards (baseline clamps) ─────────────────────────────

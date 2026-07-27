@@ -300,10 +300,13 @@ static void flushDriveCache(core::ICdDevice& dev, uint32_t target_lba, uint32_t 
     }
 }
 
-// CDDB disc ID — start_lba is already absolute (includes 150-sector pre-gap)
+// CDDB disc ID — IDENTITY, NOT ADDRESSES. The CDDB/FreeDB algorithm is defined
+// over ABSOLUTE frames (offset/75 with track 1 at 150 on a standard disc), so
+// every value here stays start_frame and must NOT become lba(). Unchanged by
+// F0-S1 by design: moving it would move every CDDB ID this project has computed.
 uint32_t CDRipper::computeCDDB(const std::vector<CDTrack>& tracks,
-                               uint32_t full_leadout_lba,
-                               const std::vector<uint32_t>& data_track_lbas) {
+                               uint32_t full_leadout_frame,
+                               const std::vector<uint32_t>& data_track_frames) {
     auto digit_sum = [](uint32_t n) {
         uint32_t s = 0;
         while (n > 0) { s += n % 10; n /= 10; }
@@ -311,13 +314,13 @@ uint32_t CDRipper::computeCDDB(const std::vector<CDTrack>& tracks,
     };
     uint32_t checksum = 0;
     for (const auto& t : tracks)
-        checksum += digit_sum(t.start_lba / 75);
-    for (uint32_t lba : data_track_lbas)
+        checksum += digit_sum(t.start_frame / 75);
+    for (uint32_t lba : data_track_frames)
         checksum += digit_sum(lba / 75);
-    uint32_t leadout   = full_leadout_lba ? full_leadout_lba
-                       : tracks.back().start_lba + tracks.back().length_lba;
-    uint32_t total_sec = (leadout / 75) - (tracks.front().start_lba / 75);
-    uint32_t ntracks   = (uint32_t)(tracks.size() + data_track_lbas.size());
+    uint32_t leadout   = full_leadout_frame ? full_leadout_frame
+                       : tracks.back().start_frame + tracks.back().length_lba;
+    uint32_t total_sec = (leadout / 75) - (tracks.front().start_frame / 75);
+    uint32_t ntracks   = (uint32_t)(tracks.size() + data_track_frames.size());
     return ((checksum % 0xFF) << 24) | (total_sec << 8) | ntracks;
 }
 
@@ -361,7 +364,11 @@ static bool detectPressingOffsetFrame450(
 
     std::vector<uint8_t> raw((size_t)read_count * SECTOR_BYTES);
     int c2e = 0;
-    if (!readSectorsWithRetry(dev, track1.start_lba + (uint32_t)read_start_sec,
+    // READ ADDRESS: track1.lba(), not start_frame. Before F0-S1 this read landed
+    // 150 sectors late, so the "frame 450" window was really track-relative
+    // sector ~600 and could never match the DB's OffsetFindCRC - see
+    // kFrame450DetectEnabled at the call site.
+    if (!readSectorsWithRetry(dev, track1.lba() + (uint32_t)read_start_sec,
                               read_count, raw.data(), use_c2, &c2e))
         return false;
 
@@ -405,15 +412,15 @@ bool CDRipper::fetchARData(
         const std::string&                                  ar_cache_dir,
         std::vector<std::vector<std::pair<uint32_t,int>>>& out_v1,
         std::vector<std::vector<std::pair<uint32_t,int>>>& out_v2,
-        uint32_t                                           full_leadout_lba,
-        const std::vector<uint32_t>&                       data_track_lbas) {
+        uint32_t                                           full_leadout_frame,
+        const std::vector<uint32_t>&                       data_track_frames) {
 
     if (tracks.empty()) return false;
     int ntracks = (int)tracks.size();
 
     // AccurateRip disc ID formula (definitively confirmed against live AR database):
     //
-    //   LBAs stored in CDTrack::start_lba are absolute (include the 150-sector
+    //   LBAs stored in CDTrack::start_frame are absolute (include the 150-sector
     //   lead-in pregap that the drive adds).  The AR formula expects RELATIVE
     //   LBAs — i.e. the pregap stripped — so we subtract 150 from every value.
     //
@@ -426,13 +433,21 @@ bool CDRipper::fetchARData(
     // zeroes the pregap and 404s on non-standard-pregap discs (e.g. Relish, T1
     // at LBA 182 -> rel 32, which must remain in the ID). Verified against the
     // live AR DB: Relish + enhanced CDs both hit with fixed-150.
+    //
+    // F0-S1: this stays `- AR_PREGAP` and must NOT be rewritten as `.lba()`,
+    // even though the two are numerically identical. AR_PREGAP names WHY
+    // AccurateRip wants this origin (its offsets are LSNs); kMsfLeadIn names the
+    // MSF->LBA conversion. They are two different transforms that share a number,
+    // and treating them as one is what hid the read-addressing defect. Nothing in
+    // this function changed in F0-S1 - that is deliberate, and it is what makes
+    // "disc IDs byte-identical" a structural guarantee rather than a test result.
     static constexpr uint32_t AR_PREGAP = 150;
-    uint32_t disc_leadout = full_leadout_lba ? full_leadout_lba
-                       : tracks.back().start_lba + tracks.back().length_lba;
+    uint32_t disc_leadout = full_leadout_frame ? full_leadout_frame
+                       : tracks.back().start_frame + tracks.back().length_lba;
     uint32_t rel_leadout = disc_leadout - AR_PREGAP;
     uint32_t disc_id1 = 0, disc_id2 = 0;
     for (int i = 0; i < ntracks; ++i) {
-        uint32_t rel_lba = tracks[i].start_lba - AR_PREGAP;
+        uint32_t rel_lba = tracks[i].start_frame - AR_PREGAP;
         disc_id1 += rel_lba;
         disc_id2 += std::max(rel_lba, 1u) * (uint32_t)(i + 1);
     }
@@ -442,7 +457,7 @@ bool CDRipper::fetchARData(
     struct ARVariant { uint32_t id1, id2; };
     std::vector<ARVariant> variants = {{ disc_id1, disc_id2 }};
 
-    uint32_t cddb_id = computeCDDB(tracks, full_leadout_lba, data_track_lbas);
+    uint32_t cddb_id = computeCDDB(tracks, full_leadout_frame, data_track_frames);
 
     // Open log — append to the per-rip log file
     FILE* dbg = port::fopenUtf8(log_path, "a");
@@ -452,10 +467,10 @@ bool CDRipper::fetchARData(
                 ntracks, cddb_id, disc_id1, disc_id2);
         for (int i=0;i<ntracks;++i)
             fprintf(dbg,"  track[%02d] lba=%lu  rel=%lu\n",
-                i+1, (unsigned long)tracks[i].start_lba,
-                (unsigned long)(tracks[i].start_lba - AR_PREGAP));
+                i+1, (unsigned long)tracks[i].start_frame,
+                (unsigned long)(tracks[i].start_frame - AR_PREGAP));
         fprintf(dbg,"  t1_lba=%lu  leadout_rel=%lu\n",
-                (unsigned long)tracks[0].start_lba, (unsigned long)rel_leadout);
+                (unsigned long)tracks[0].start_frame, (unsigned long)rel_leadout);
     }
 
     std::vector<uint8_t> ar_data;
@@ -1036,7 +1051,7 @@ ARTrackResult CDRipper::ripTrack(core::ICdDevice&   dev,
     static constexpr uint32_t AR_SKIP = 5u * 588u;  // 2940 samples to skip front/back
     const uint32_t total_samples = (uint32_t)track.length_lba * SECTOR_SAMPLES;
     // AR uses disc-absolute mul_by (pregap-inclusive, 150 sectors before our track start).
-    // mul_by starts at track.start_lba*588+1 for our first audio sample.
+    // mul_by starts at track.start_frame*588+1 for our first audio sample.
     // ar_check_from = 2940 for track 1 (disc-absolute, well before our audio start).
     // ar_check_to   = total_samples (= dBpoweramp DataDWORDSize); with our offset mul_by
     //   this naturally excludes the last 150 sectors of our rip (which belong to the
@@ -1049,11 +1064,10 @@ ARTrackResult CDRipper::ripTrack(core::ICdDevice&   dev,
         : total_samples;
 
     // AccurateRip uses disc-absolute positions. Each track's CRC starts mul_by=1 at
-    // the disc-relative track start (= track.start_lba - 150 sectors from disc LBA 0).
-    // We read from track.start_lba so must first feed the 150 preceding sectors as a
-    // "preamble" with mul_by 1..88200.  For track 1 this area contains real disc data
-    // (not silence) that contributes to the CRC.
-    static constexpr uint32_t PREGAP_SAMPLES = 150u * 588u;  // 88200
+    // the disc-relative track start (= track.start_frame - 150). The preamble below
+    // feeds those 150 sectors with mul_by 1..88200. LOCKED - see the preamble block.
+    // (PREGAP_SAMPLES went with the preamble - F0-S1. mul_by 1 is now the
+    //  track's first sample, exactly as in whipper's accuraterip-checksum.c.)
     // Pure AR CRC accumulator (see ar_crc.h); fed at the three sites below.
     ar::TrackCrc arc(ar_check_from, ar_check_to, is_first, !isLocal(mode));
 
@@ -1107,7 +1121,7 @@ ARTrackResult CDRipper::ripTrack(core::ICdDevice&   dev,
     // remaining = track.length_lba: always produce exactly track.length_lba * SECTOR_SAMPLES:
     //   (track.length_lba sectors × 588) - corr_sub_skip [loop] + corr_sub_skip [tail]
     //
-    // The tail reads from LBA (track.start_lba + corr_lba_adv + track.length_lba).
+    // The tail reads from LBA (track.start_frame + corr_lba_adv + track.length_lba).
     // The drive delivers that sector starting corr_sub_skip samples before the
     // disc position we need — NO additional skip within the sector is needed.
     // (The lba advance already accounts for the drive's early-read margin.)
@@ -1121,65 +1135,41 @@ ARTrackResult CDRipper::ripTrack(core::ICdDevice&   dev,
     const int corr_sub_skip = skip.sub_skip;
     bool corr_first_done    = false;
 
-    uint32_t lba       = (uint32_t)((long long)track.start_lba + corr_lba_adv);  // signed: adv may be < 0
+    // THE READ ADDRESS. track.lba(), never track.start_frame: the TOC reports
+    // ATIME (absolute frames, lead-in included) and every read command addresses
+    // the disc in LBA (MMC-3 Table 333). Handing start_frame here read every
+    // track 150 sectors - 2.00 s - late, on every disc, for the project's whole
+    // life. See docs/RECON-finding0-addressing.md.
+    uint32_t lba       = (uint32_t)((long long)track.lba() + corr_lba_adv);  // signed: adv may be < 0
     uint32_t remaining = (uint32_t)track.length_lba;   // always full track length
     bool  ok        = true;
     uint32_t done_secs = 0;
     int   total_c2_errors = 0;
     auto  rip_start = std::chrono::steady_clock::now();
 
-    // ── AccurateRip preamble ───────────────────────────────────────────────
-    // AccurateRip CRCs start mul_by=1 at (track.start_lba - 150) = track.rel_lba.
-    // We read from track.start_lba, so must first feed the 150 preceding sectors
-    // through the AR CRC accumulator (not FLAC/LAME).  These sectors contain real
-    // disc data (including any disc lead-in content before the nominal track start).
-    // Apply the same total_skip offset correction used for the main rip.
-    // Set true if the AR preamble can't be read — its CRC contribution would be
-    // silent zeros, so we mark the whole track's AR result indeterminate downstream
-    // rather than letting a poisoned checksum masquerade as a real AR mismatch.
-    bool preamble_failed = false;
+    // ── One read, one buffer, two consumers (F0-S1, matching whipper) ──────
+    // The reference implementation computes the AccurateRip checksum over the
+    // WRITTEN TRACK: whipper/common/accurip.py calls accuraterip_checksum(path,
+    // i+1, track_count) on the ripped file, and src/accuraterip-checksum.c walks
+    // that file with MulBy starting at 1 on its first sample. The 150-sector
+    // lead-in never appears in the checksum path at all - the only trims are
+    // 5 * 2352 bytes at each end, expressed as sample positions INSIDE the track
+    // (which is what ar_check_from / ar_check_to already are, in the same units).
+    //
+    // A 150-sector "preamble" read used to sit here, feeding the accumulator but
+    // never the encoder. It existed solely because the main read started 150
+    // sectors late: it supplied the head the file was missing, so the CRC came
+    // out right over bytes that were NOT the bytes on disk. That is why the rip
+    // matched at confidence 200 for weeks while every track was shifted 2.00 s.
+    //
+    // The main read above now starts at track.lba(), so there is nothing to
+    // compensate for, and the encoder and arc consume the SAME buffer below -
+    // the divergence is structurally impossible, as it is in the reference.
+    //
+    // UNTOUCHED by this slice: ar_crc.* (ar::TrackCrc, ar::normalizeSkip,
+    // ar::arPreambleReadable - now simply unused), AR_PREGAP, and the disc-ID
+    // math in computeCDDB / fetchARData / tocOffsets / CTDB.
 
-    if (!isLocal(mode) && !cancel_.load() &&
-        ar::arPreambleReadable(track.start_lba, corr_lba_adv)) {
-        // preamble_lba: 150 sectors before our effective read start (signed: adv may be < 0)
-        const uint32_t preamble_lba =
-            (uint32_t)((long long)track.start_lba - 150 + corr_lba_adv);
-        // Need enough sectors to produce PREGAP_SAMPLES after the sub-sector skip.
-        // ceil((PREGAP_SAMPLES + corr_sub_skip) / SECTOR_SAMPLES) + 1 for safety.
-        const int preamble_secs = (int)((PREGAP_SAMPLES + corr_sub_skip + SECTOR_SAMPLES - 1)
-                                        / SECTOR_SAMPLES) + 1;
-        std::vector<int16_t> pbuf((size_t)preamble_secs * SECTOR_SAMPLES * 2);
-        {
-            std::vector<uint8_t> raw((size_t)preamble_secs * SECTOR_BYTES);
-            int c2d = 0;
-            if (readSectorsWithRetry(dev, preamble_lba, preamble_secs,
-                                     raw.data(), use_c2, &c2d)) {
-                std::memcpy(pbuf.data(), raw.data(),
-                            (size_t)preamble_secs * SECTOR_SAMPLES * 2 * sizeof(int16_t));
-            } else {
-                // Read failed: pbuf stays zero. Feeding those zeros into the AR
-                // accumulator would yield a checksum that silently never matches
-                // (a good rip reported as "not in database"). Flag it instead.
-                preamble_failed = true;
-                FILE* lf = port::fopenUtf8(log_path, "a");
-                if (lf) {
-                    fprintf(lf, "  WARNING T%d: AR preamble read FAILED at LBA %lu "
-                                "(%d sectors). AR CRC marked indeterminate; "
-                                "audio still ripped and kept.\n",
-                            track.number, (unsigned long)preamble_lba, preamble_secs);
-                    fclose(lf);
-                }
-            }
-        }
-        // Skip corr_sub_skip frames (same sub-sector offset as main rip)
-        const int16_t* ps = pbuf.data() + corr_sub_skip * 2;
-        for (uint32_t pi = 0; pi < PREGAP_SAMPLES && !cancel_.load(); ++pi) {
-            arc.sample(ps[pi * 2], ps[pi * 2 + 1]);
-        }
-    } else {
-        // Preamble is before disc start (shouldn't happen on normal CDs) — advance mul_by
-        arc.skip(PREGAP_SAMPLES);
-    }
 
     while (remaining > 0 && !cancel_.load()) {
         uint32_t this_read = std::min((uint32_t)BUF_SECTORS, remaining);
@@ -1395,22 +1385,19 @@ ARTrackResult CDRipper::ripTrack(core::ICdDevice&   dev,
     // mark AR inconclusive so verification + Pass 2 are skipped and the user sees
     // it in the log. frame450 (sector 450 of the main rip) is unaffected, so the
     // drive-offset self-check below remains valid.
-    if (preamble_failed) ar_result.status = ARStatus::ReadError;
+    // (The preamble-read-failure branch went with the preamble. A failed read
+    //  inside the track is already handled by the main loop's `ok = false`.)
 
     // Log diagnostic directly here (before returning)
     if (!isLocal(mode) && !log_path.empty()) {
         FILE* lf = port::fopenUtf8(log_path, "a");
         if (lf) {
-            // expected_n: preamble samples in range + main rip samples in range
-            const uint32_t preamble_from = std::max(ar_check_from, 1u);
-            const uint32_t preamble_to   = std::min((uint32_t)PREGAP_SAMPLES, ar_check_to);
-            const uint32_t main_from     = std::max(ar_check_from,
-                                                     (uint32_t)(PREGAP_SAMPLES + 1u));
+            // expected_n: one contiguous run now (mul_by 1 = the track's first
+            // sample), so the count is just the check window - matching the
+            // reference's single pass over the written track.
             uint64_t expected_n = 0;
-            if (preamble_to >= preamble_from)
-                expected_n += preamble_to - preamble_from + 1;
-            if (ar_check_to >= main_from)
-                expected_n += ar_check_to - main_from + 1;
+            if (ar_check_to >= ar_check_from)
+                expected_n = (uint64_t)ar_check_to - ar_check_from + 1;
             fprintf(lf, "  AR diag T%d: csum_lo=%08x csum_hi=%08x n_accum=%llu expected=%llu %s\n",
                 track.number,
                 arc.csumLo(), arc.csumHi(),
@@ -1444,8 +1431,8 @@ void CDRipper::worker(std::string          drive_letter,
                       std::unique_ptr<core::ICdDevice> dev,
                       int                  drive_offset,
                       std::string          drive_model,
-                      uint32_t             full_leadout_lba,
-                      std::vector<uint32_t> data_track_lbas) {
+                      uint32_t             full_leadout_frame,
+                      std::vector<uint32_t> data_track_frames) {
 
     state_.store(RipState::Ripping);
 
@@ -1605,7 +1592,7 @@ void CDRipper::worker(std::string          drive_letter,
     if (mode == RipMode::AccurateRip) {
         if (cb) { RipProgress p; p.state=RipState::Ripping;
                   p.status_msg="Fetching AccurateRip database..."; cb(p); }
-        ar_db_loaded = fetchARData(tracks, log_path, ar_cache_dir, ar_db_v1, ar_db_v2, full_leadout_lba, data_track_lbas);
+        ar_db_loaded = fetchARData(tracks, log_path, ar_cache_dir, ar_db_v1, ar_db_v2, full_leadout_frame, data_track_frames);
         if (!ar_db_loaded && cb) {
             RipProgress p; p.state=RipState::Ripping;
             p.status_msg="AccurateRip: network error -- AR verification skipped";
@@ -1627,9 +1614,15 @@ void CDRipper::worker(std::string          drive_letter,
     // For Enhanced CDs the last audio track's TOC end points to the data
     // track start which includes silence + hidden content in its pregap.
     // We find the first silent sector and cap the last track's length_lba.
-    if (!data_track_lbas.empty() && !tracks.empty()) {
-        uint32_t data_start  = data_track_lbas[0];
-        uint32_t track_start = tracks.back().start_lba;
+    if (!data_track_frames.empty() && !tracks.empty()) {
+        // EVERYTHING IN THIS BLOCK IS LBA: search_lo/search_hi/mid go straight to
+        // dev->readRaw, and audio_end becomes a track length. data_track_frames
+        // holds ATIME, so convert once here (F0-S1). Before the fix this search
+        // probed 150 sectors late and its +174 track-end landed 150 sectors off
+        // on any Enhanced CD. NOTE: no Enhanced CD is in the gate set, so this
+        // correction is reasoned, not measured - see f0-slice1-plan.md 8(ii).
+        uint32_t data_start  = data_track_frames[0] - kMsfLeadIn;
+        uint32_t track_start = tracks.back().lba();
         // Clamp search range to within the last audio track
         // so we never accidentally find silence in a previous track.
         uint32_t search_lo = std::max(track_start,
@@ -1665,9 +1658,9 @@ void CDRipper::worker(std::string          drive_letter,
             uint32_t audio_end = std::min(search_hi + 174, data_start);
             // Apply to last audio track
             auto& last_trk = tracks.back();
-            uint32_t toc_end = last_trk.start_lba + last_trk.length_lba;
+            uint32_t toc_end = last_trk.lba() + last_trk.length_lba;   // LBA, as above
             if (toc_end > audio_end) {
-                last_trk.length_lba   = audio_end - last_trk.start_lba;
+                last_trk.length_lba   = audio_end - last_trk.lba();
                 last_trk.duration_sec = (int)(last_trk.length_lba / 75);
             }
         }
@@ -1882,10 +1875,30 @@ void CDRipper::worker(std::string          drive_letter,
             if (i == 0 && !pressing_offset_detected) {
                 pressing_offset_detected = true;
 
-                // (1) PRIMARY — frame450 sweep.
+                // (1) PRIMARY — frame450 sweep. DISABLED, DELIBERATELY (F0-S1).
+                //
+                // This detector read at `start_frame + read_start_sec`, i.e. 150
+                // sectors late, so its "frame 450" window was really track-
+                // relative sector ~600 and could never match the DB's
+                // OffsetFindCRC. It has NEVER meaningfully executed. F0-S1 fixed
+                // the read address, which would silently ACTIVATE a path with no
+                // evidence behind it, inside a correctness fix, on exactly the
+                // discs where a wrong offset is costliest and least visible.
+                //
+                // So it stays off. The fallback below is not a degraded path: the
+                // candidate probe RIPS FULL TRACKS and keeps the first that
+                // verifies against AccurateRip - it tests rather than guesses. Off
+                // costs time on a disc needing a pressing offset, not correctness.
+                //
+                // KNOWN-DISABLED CAPABILITY, not backlog: enabling it needs a gate
+                // on a disc that actually requires a pressing offset, and no such
+                // disc is available here. RE-MOCT's pressing-offset detection is
+                // currently PROBE-ONLY. See docs/f0-slice1-plan.md 8A.
+                static constexpr bool kFrame450DetectEnabled = false;
+
                 int  fr450_pressing = 0;
                 bool fr450_found    = false;
-                if (!ar_db_v2.empty())
+                if (kFrame450DetectEnabled && !ar_db_v2.empty())
                     fr450_found = detectPressingOffsetFrame450(
                         *dev, trk, drive_offset, use_c2,
                         ar_db_v2[0], log_path, fr450_pressing);
@@ -1965,8 +1978,8 @@ void CDRipper::worker(std::string          drive_letter,
             // Step 2: Evict the read-ahead cache with a far multi-MB read so
             //   Pass 2 reads the platter, not RAM. A single-sector read can't
             //   flush a 512KB-2MB cache; flushDriveCache reads >4MB from a
-            //   region far from the target. full_leadout_lba is in worker scope.
-            flushDriveCache(*dev, trk.start_lba, full_leadout_lba, use_c2);
+            //   region far from the target. full_leadout_frame is in worker scope.
+            flushDriveCache(*dev, trk.lba(), full_leadout_frame - kMsfLeadIn, use_c2);  // LBA: both are read bounds (F0-S1)
             //
             // Step 3: Give the spindle 500 ms to fully settle at the new speed
             //   before we start reading again.
@@ -2038,7 +2051,7 @@ void CDRipper::worker(std::string          drive_letter,
         // bytes from RAM and make a damaged rip look clean. Doubles rip time --
         // which is why it's a separate mode from fast best-effort [Y].
         else if (mode == RipMode::LocalVerify) {
-            flushDriveCache(*dev, trk.start_lba, full_leadout_lba, use_c2);
+            flushDriveCache(*dev, trk.lba(), full_leadout_frame - kMsfLeadIn, use_c2);  // LBA: both are read bounds (F0-S1)
             const auto det_outs = withSuffix(outs, ".det");
             RGResult      rgd;
             ARTrackResult ard = ripTrack(*dev, trk, i, disc_total, item.is_first, item.is_last,
@@ -2244,7 +2257,7 @@ void CDRipper::worker(std::string          drive_letter,
             if (!rel.artist.empty()) fprintf(cf, "PERFORMER \"%s\"\r\n", rel.artist.c_str());
             if (!rel.title.empty())  fprintf(cf, "TITLE \"%s\"\r\n",     rel.title.c_str());
             if (rel.date.size() >= 4) fprintf(cf, "REM DATE %s\r\n", rel.date.substr(0,4).c_str());
-            fprintf(cf, "REM DISCID %08x\r\n", computeCDDB(tracks, full_leadout_lba, data_track_lbas));
+            fprintf(cf, "REM DISCID %08x\r\n", computeCDDB(tracks, full_leadout_frame, data_track_frames));
             fprintf(cf, "REM COMMENT \"RE-MOCT v" REMOCT_VERSION "\"\r\n");
 
             for (const ripsel::Item& item : plan) {
@@ -2320,24 +2333,24 @@ void CDRipper::worker(std::string          drive_letter,
             fprintf(tf, "# RE-MOCT disc TOC\r\n");
             fprintf(tf, "# Drive     : %s:\r\n", drive_letter.c_str());
             fprintf(tf, "# Drive off : %+d samples\r\n", drive_offset);
-            fprintf(tf, "# CDDB ID   : %08x\r\n", computeCDDB(tracks, full_leadout_lba, data_track_lbas));
+            fprintf(tf, "# CDDB ID   : %08x\r\n", computeCDDB(tracks, full_leadout_frame, data_track_frames));
             if (!rel.mb_id.empty())
                 fprintf(tf, "# MB ID     : %s\r\n", rel.mb_id.c_str());
             fprintf(tf, "#\r\n");
             fprintf(tf, "# Track  Start-LBA  Length-LBA  Start-MSF    Duration\r\n");
             for (int i = 0; i < disc_total; ++i) {
                 const CDTrack& t = tracks[i];
-                uint32_t m = t.start_lba / 75 / 60;
-                uint32_t s = (t.start_lba / 75) % 60;
-                uint32_t f = t.start_lba % 75;
+                uint32_t m = t.start_frame / 75 / 60;
+                uint32_t s = (t.start_frame / 75) % 60;
+                uint32_t f = t.start_frame % 75;
                 int dur_s = t.length_lba / 75;
                 fprintf(tf, "  %02d     %-10lu %-11lu %02u:%02u:%02u     %d:%02d\r\n",
-                    t.number, (unsigned long)t.start_lba, (unsigned long)t.length_lba,
+                    t.number, (unsigned long)t.start_frame, (unsigned long)t.length_lba,
                     m, s, f, dur_s/60, dur_s%60);
             }
             // Lead-out
-            uint32_t lo = full_leadout_lba ? (uint32_t)full_leadout_lba
-                         : tracks.back().start_lba + tracks.back().length_lba;
+            uint32_t lo = full_leadout_frame ? (uint32_t)full_leadout_frame
+                         : tracks.back().start_frame + tracks.back().length_lba;
             fprintf(tf, "  AA     %-10lu (lead-out)\r\n", (unsigned long)lo);
             fclose(tf);
         }
@@ -2350,11 +2363,11 @@ void CDRipper::worker(std::string          drive_letter,
             // Recompute AR disc IDs here (same fixed-150 formula as fetchARData)
             // so the sidecar is self-contained. Non-standard pregap survives.
             const uint32_t AR_PREGAP = 150;
-            uint32_t lo_j = full_leadout_lba ? (uint32_t)full_leadout_lba
-                          : tracks.back().start_lba + tracks.back().length_lba;
+            uint32_t lo_j = full_leadout_frame ? (uint32_t)full_leadout_frame
+                          : tracks.back().start_frame + tracks.back().length_lba;
             uint32_t id1 = 0, id2 = 0, rel_lo = lo_j - AR_PREGAP;
             for (int i = 0; i < disc_total; ++i) {
-                uint32_t rel = tracks[i].start_lba - AR_PREGAP;
+                uint32_t rel = tracks[i].start_frame - AR_PREGAP;
                 id1 += rel;
                 id2 += std::max(rel, 1u) * (uint32_t)(i + 1);
             }
@@ -2364,7 +2377,12 @@ void CDRipper::worker(std::string          drive_letter,
             json j;
             // CD-S2: 2 = ReplayGain values may be null (unmeasured), and a
             // partial rip carries a "selection" block.
-            j["schema_version"] = 2;
+            // F0-S1: 3 = the per-track key is "start_frame", not "start_lba".
+            // The VALUE is unchanged - it always held the absolute frame - but
+            // the old name said LBA while holding ATIME, which is the confusion
+            // that produced the read-addressing defect. "leadout_lba" likewise
+            // holds a frame; both are ATIME and neither is a read address.
+            j["schema_version"] = 3;
             j["disc"] = {
                 {"artist", rel.artist}, {"album", rel.title},
                 {"date", rel.date},     {"mb_id", rel.mb_id}
@@ -2374,22 +2392,25 @@ void CDRipper::worker(std::string          drive_letter,
                 {"read_offset_samples", drive_offset}
             };
             j["ids"] = {
-                {"cddb", hx(computeCDDB(tracks, full_leadout_lba, data_track_lbas))},
+                {"cddb", hx(computeCDDB(tracks, full_leadout_frame, data_track_frames))},
                 {"ar_disc_id1", hx(id1)}, {"ar_disc_id2", hx(id2)}
             };
 
             json toc;
-            toc["pregap_frames"] = (int)tracks[0].start_lba - (int)AR_PREGAP; // 0 if standard
-            toc["leadout_lba"]   = (uint32_t)lo_j;
-            toc["data_tracks"]   = data_track_lbas;
+            // Pregap length in frames = track 1's LBA. Written as
+            // start_frame - AR_PREGAP to stay byte-identical to schema 2; it is
+            // the same number tracks[0].lba() would give.
+            toc["pregap_frames"] = (int)tracks[0].start_frame - (int)AR_PREGAP; // 0 if standard
+            toc["leadout_frame"] = (uint32_t)lo_j;   // ATIME, renamed with schema 3
+            toc["data_tracks"]   = data_track_frames;
             for (int i = 0; i < disc_total; ++i) {
                 const CDTrack& t = tracks[i];
                 char msf[16];
                 snprintf(msf, sizeof msf, "%02u:%02u:%02u",
-                         (unsigned)(t.start_lba/75/60), (unsigned)((t.start_lba/75)%60),
-                         (unsigned)(t.start_lba%75));
+                         (unsigned)(t.start_frame/75/60), (unsigned)((t.start_frame/75)%60),
+                         (unsigned)(t.start_frame%75));
                 toc["tracks"].push_back({
-                    {"number", t.number}, {"start_lba", t.start_lba},
+                    {"number", t.number}, {"start_frame", t.start_frame},
                     {"length_lba", t.length_lba}, {"start_msf", msf},
                     {"duration_sec", (int)(t.length_lba/75)}
                 });
@@ -2584,8 +2605,8 @@ bool CDRipper::start(AudioManager&               audio,
     std::string        dl            = audio.cdSource().driveLetter();
     int                drv_offset    = audio.cdSource().driveOffset();
     std::string        drv_model     = audio.cdSource().driveModel();
-    uint32_t              full_leadout  = audio.cdSource().fullLeadoutLba();
-    std::vector<uint32_t> data_trk_lbas = audio.cdSource().dataTrackLbas();
+    uint32_t              full_leadout  = audio.cdSource().fullLeadoutFrame();
+    std::vector<uint32_t> data_trk_frames = audio.cdSource().dataTrackFrames();
     auto dev = openDrive(dl);   // may be null — worker reports the error (as baseline)
     // CD-S1: build the extraction plan HERE, so the worker never sees a bare
     // index again. Empty selection == the whole disc, and planAll reproduces
@@ -2612,7 +2633,7 @@ bool CDRipper::start(AudioManager&               audio,
     thread_ = std::thread(&CDRipper::worker, this,
                           dl, tracks, std::move(plan), out_dir, rel, mode, std::move(opt), cb,
                           std::move(dev), drv_offset, drv_model,
-                          full_leadout, data_trk_lbas);
+                          full_leadout, data_trk_frames);
     return true;
 }
 

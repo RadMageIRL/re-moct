@@ -2,6 +2,16 @@
 #include "StringUtils.h"
 #include "AwesomeThemes.h"   // kNumAwesomeThemes for clamping awesome_theme on load
 #include "SecretStore.h"     // secret-at-rest: protect()/unprotect() the sensitive fields
+// libidx::detail::foldPathKey - THE path-identity rule, and its third user after the
+// slice-10 play-stat join and the slice-11 root comparison. A third path-equality
+// rule is the defect class BrowserPins.h and PaneScroll.h both exist to end.
+//
+// HEADER-ONLY AND DEPENDENCY-FREE, which is why this include is safe here. The
+// secret-at-rest slice broke every test linking Config.cpp by giving this TU a new
+// dependency with a .cpp behind it; LibraryIndex.h has no .cpp and no library, so it
+// cannot repeat that. The test targets are built as part of the gate rather than
+// assumed to be fine.
+#include "LibraryIndex.h"
 
 #include <fstream>
 #include <algorithm>
@@ -220,9 +230,49 @@ double DigiConfig::bookPos(const std::string& path) const {
 void DigiConfig::recordPlay(const std::string& path) {
     if (path.empty()) return;
     if (isCDTrackPath(path)) return;  // CD tracks are volatile — never record stats
-    auto& s = track_stats[path];
+    // NORMALISED (slice 13). Keying on the raw path is what split 17 files' counts
+    // across two entries: the same file reached from the browser and from a loaded
+    // .m3u produced differently-cased keys, and each accumulated separately.
+    auto& s = track_stats[libidx::detail::foldPathKey(path)];
     ++s.play_count;
     s.last_played = std::time(nullptr);
+}
+
+// Merge stat entries whose keys name the same file. Returns how many entries merged
+// away - 0 when there was nothing to do, which is also the Linux answer always.
+//
+// play_count SUMS: a merge that picked one entry would silently lose plays, and on
+// the reference config the totals are 3901 before and 3901 after, measured.
+// last_played takes the MAXIMUM, because it is not additive - the file was last
+// played at the later of the two times.
+//
+// IDEMPOTENT. Folding an already-folded key returns it unchanged and a group of one
+// sums to itself, so a second run is a no-op.
+//
+// NOTHING IS DROPPED. Not keys naming files that no longer exist, not keys outside
+// any library root. This is a RENAME of the key, not a garbage collection: a stats
+// file records what the user played, and deciding on their behalf that some of it no
+// longer counts is not a thing they could undo.
+std::size_t DigiConfig::mergeStatKeys() {
+    stats_keys_rewritten = false;
+    if (track_stats.empty()) return 0;
+
+    std::unordered_map<std::string, TrackStats> merged;
+    merged.reserve(track_stats.size());
+    for (const auto& kv : track_stats) {
+        const std::string key = libidx::detail::foldPathKey(kv.first);
+        // MERGING AND RENAMING ARE DIFFERENT EVENTS. 54 uppercase keys folding to
+        // lowercase with no collision merges nothing, but every one of them is
+        // rewritten and the saved file changes - so the backup has to be keyed on
+        // this, not on the merge count.
+        if (key != kv.first) stats_keys_rewritten = true;
+        TrackStats& t = merged[key];
+        t.play_count += kv.second.play_count;
+        if (kv.second.last_played > t.last_played) t.last_played = kv.second.last_played;
+    }
+    const std::size_t removed = track_stats.size() - merged.size();
+    track_stats = std::move(merged);
+    return removed;
 }
 
 void DigiConfig::load() {
@@ -233,6 +283,7 @@ void DigiConfig::load() {
     fav_tracks.clear();
     radio_stations.clear();
     radio_station_names.clear();
+    library_roots.clear();      // repeated key: appends on parse, so it must start empty
     podcast_feeds.clear();
     podcast_feed_titles.clear();
     podcast_feed_art.clear();
@@ -273,6 +324,12 @@ void DigiConfig::load() {
         // so the migration is one-shot.
         else if (key == "repin_mode")            try { int v = std::clamp(std::stoi(val), 0, 2); repin_mode = (v == 0) ? 0 : 2; } catch (...) {}
         else if (key == "nerd_icons")         nerd_icons         = (val == "1");
+        // Library slice 6. An ABSENT key leaves the default (on), so an existing
+        // config gains the section; "library=0" is how a folder-player user opts out.
+        else if (key == "library")            library            = (val == "1");
+        // Repeated: each line APPENDS. An empty value is ignored rather than stored,
+        // so a stray "library_root=" cannot become a root that resolves to nothing.
+        else if (key == "library_root")     { if (!val.empty()) library_roots.push_back(val); }
         else if (key == "follow_playing")     follow_playing     = (val == "1");
         else if (key == "show_filetype")      show_filetype      = (val == "1");
         else if (key == "rip_formats")        rip_formats        = val;
@@ -447,6 +504,30 @@ void DigiConfig::load() {
         playlist_current = 0;
     if ((int)recent_tracks.size() > RECENT_MAX)
         recent_tracks.resize((size_t)RECENT_MAX);
+
+    // ── Stat-key migration (slice 13), and its backup ────────────────────────
+    //
+    // Runs here, at the end of load(), for a reason that is the whole safety
+    // argument: at this instant the file on disk is still ENTIRELY pre-migration -
+    // it has been read and nothing has written - so the copy taken below is an exact
+    // snapshot with no window in which a partial write could exist.
+    stats_merged = mergeStatKeys();
+
+    if (stats_keys_rewritten) {
+        const std::string bak = configPath() + ".statbak";
+        std::error_code ec;
+        // SKIP IF IT ALREADY EXISTS - an EXPLICIT file-level test, not a consequence
+        // of the migration being a no-op the second time. The two coincide today, but
+        // they are different guarantees and the one that protects the user is this.
+        //
+        // The failure mode is a user running the new build, finding something wrong,
+        // running it again, and having the good pre-migration backup overwritten with
+        // the bad state. A backup that the thing it protects against can overwrite is
+        // not a backup.
+        if (!fs::exists(bak, ec))
+            fs::copy_file(configPath(), bak, ec);   // best effort: a failed copy must
+                                                    // not stop the program starting
+    }
 }
 
 void DigiConfig::save() const {
@@ -486,6 +567,12 @@ void DigiConfig::save() const {
         f << "iheart_probe_minted="   << (iheart_probe_minted ? "1" : "0") << "\n";
         f << "repin_mode2="           << repin_mode << "\n";
         f << "nerd_icons="        << (nerd_icons ? "1" : "0") << "\n";
+        f << "library="           << (library ? "1" : "0") << "\n";
+        // Written only when set, so an unset root stays unset rather than being frozen
+        // to whatever the OS music folder happened to be on the day it was saved. The
+        // rec_dir convention.
+        for (const std::string& r : library_roots)
+            if (!r.empty()) f << "library_root=" << r << "\n";
         f << "follow_playing="    << (follow_playing ? "1" : "0") << "\n";
         f << "show_filetype="     << (show_filetype ? "1" : "0") << "\n";
         f << "rip_formats="       << rip_formats << "\n";

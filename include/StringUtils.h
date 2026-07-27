@@ -242,6 +242,78 @@ inline uint32_t utf8_next(const std::string& s, size_t& i) {
     return cp;
 }
 
+// ─── Legacy 8-bit text rescue ────────────────────────────────────────────────
+// A .m3u or .pls written by an older tool on Windows is CP1252, not UTF-8, so an
+// accented filename inside it is a raw high byte. That matters far beyond
+// display: std::filesystem::path built from a narrow string is decoded as UTF-8
+// on Windows, and INVALID UTF-8 makes it THROW ("Illegal byte sequence") — from
+// the plain constructor and from fs::exists(s, ec) alike, because the conversion
+// runs before the error code applies. A single legacy playlist line was enough
+// to throw straight out of the loaders. Valid UTF-8 is never touched by these,
+// so a modern playlist round-trips byte-for-byte.
+
+// True when every byte participates in a well-formed UTF-8 sequence. Rejects
+// overlong forms, surrogates and out-of-range codepoints as well as bad framing,
+// because those are exactly what a mislabelled 8-bit file produces.
+inline bool isValidUtf8(const std::string& s) {
+    for (size_t i = 0; i < s.size(); ) {
+        unsigned char c = (unsigned char)s[i];
+        if (c < 0x80) { ++i; continue; }
+        size_t n; uint32_t cp; uint32_t min_cp;
+        if      ((c & 0xE0) == 0xC0) { n = 2; cp = c & 0x1F; min_cp = 0x80; }
+        else if ((c & 0xF0) == 0xE0) { n = 3; cp = c & 0x0F; min_cp = 0x800; }
+        else if ((c & 0xF8) == 0xF0) { n = 4; cp = c & 0x07; min_cp = 0x10000; }
+        else return false;                                   // stray continuation / invalid lead
+        if (i + n > s.size()) return false;                  // truncated
+        for (size_t j = 1; j < n; ++j) {
+            unsigned char cc = (unsigned char)s[i + j];
+            if ((cc & 0xC0) != 0x80) return false;
+            cp = (cp << 6) | (cc & 0x3F);
+        }
+        if (cp < min_cp) return false;                       // overlong
+        if (cp > 0x10FFFF) return false;                     // out of range
+        if (cp >= 0xD800 && cp <= 0xDFFF) return false;      // surrogate half
+        ++i; i += n - 1;
+    }
+    return true;
+}
+
+// CP1252 -> UTF-8. Bytes 0x00-0x7F and 0xA0-0xFF map to the same codepoint
+// (the latter being Latin-1); 0x80-0x9F is the Windows-specific block that holds
+// the smart quotes and dashes legacy files are full of. The five positions
+// CP1252 leaves undefined map to U+FFFD rather than vanishing, so the result is
+// always valid UTF-8 and never silently shortens a filename.
+inline std::string cp1252_to_utf8(const std::string& s) {
+    static const uint16_t k80_9F[32] = {
+        0x20AC, 0xFFFD, 0x201A, 0x0192, 0x201E, 0x2026, 0x2020, 0x2021,
+        0x02C6, 0x2030, 0x0160, 0x2039, 0x0152, 0xFFFD, 0x017D, 0xFFFD,
+        0xFFFD, 0x2018, 0x2019, 0x201C, 0x201D, 0x2022, 0x2013, 0x2014,
+        0x02DC, 0x2122, 0x0161, 0x203A, 0x0153, 0xFFFD, 0x017E, 0x0178
+    };
+    std::string out;
+    out.reserve(s.size() + s.size() / 4);
+    for (unsigned char c : s) {
+        uint32_t cp = (c < 0x80) ? c : (c < 0xA0 ? k80_9F[c - 0x80] : c);
+        if (cp < 0x80) { out += (char)cp; }
+        else if (cp < 0x800) {
+            out += (char)(0xC0 | (cp >> 6));
+            out += (char)(0x80 | (cp & 0x3F));
+        } else {
+            out += (char)(0xE0 | (cp >> 12));
+            out += (char)(0x80 | ((cp >> 6) & 0x3F));
+            out += (char)(0x80 | (cp & 0x3F));
+        }
+    }
+    return out;
+}
+
+// The one call sites use: leave valid UTF-8 exactly as it is, rescue the rest.
+// Deliberately not a guess between encodings — CP1252 is the ANSI codepage these
+// files come from, and a wrong-but-valid glyph beats a crash or a dropped track.
+inline std::string ensure_utf8(const std::string& s) {
+    return isValidUtf8(s) ? s : cp1252_to_utf8(s);
+}
+
 // Linux twin of utf8_to_wide (see the Windows version above): wchar_t is
 // UTF-32 here, so one decoded codepoint per wchar_t — the ncursesw wide-draw
 // path gets whole glyphs with no surrogate handling needed.

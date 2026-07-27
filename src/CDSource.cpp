@@ -37,8 +37,8 @@ bool CDSource::open(const std::string& drive_letter) {
     }
 
     tracks_.clear();
-    data_track_lbas_.clear();
-    full_leadout_lba_ = 0;
+    data_track_frames_.clear();
+    full_leadout_frame_ = 0;
     int first = toc.first;
     int last  = toc.last;
 
@@ -70,7 +70,7 @@ bool CDSource::open(const std::string& drive_letter) {
     for (int t = first; t <= last; ++t) {
         auto& te = toc.entries[t - 1];
         if ((te.control & 0x04) != 0)
-            data_track_lbas_.push_back(msf_to_lba(te.msf));
+            data_track_frames_.push_back(msf_to_lba(te.msf));
     }
 
     for (int t = first; t <= last; ++t) {
@@ -85,7 +85,7 @@ bool CDSource::open(const std::string& drive_letter) {
 
         CDTrack ct;
         ct.number       = t;
-        ct.start_lba    = start;
+        ct.start_frame    = start;
         ct.length_lba   = len;
         ct.duration_sec = (int)(len / 75);
         tracks_.push_back(ct);
@@ -100,7 +100,7 @@ bool CDSource::open(const std::string& drive_letter) {
 
 
     // Standard TOC leadout = toc.entries[last] (first track after last)
-    full_leadout_lba_ = msf_to_lba(toc.entries[last].msf);
+    full_leadout_frame_ = msf_to_lba(toc.entries[last].msf);
 
     // For multi-session discs (Enhanced CD / CD Extra), get the last session
     // leadout via the seam's last-session query — more reliable than FULL_TOC.
@@ -112,8 +112,8 @@ bool CDSource::open(const std::string& drive_letter) {
             // toc2 may return same as toc1 on some drives; take the larger leadout
             int last2 = toc2.last;
             uint32_t lo2 = msf_to_lba(toc2.entries[last2].msf);
-            if (lo2 > full_leadout_lba_)
-                full_leadout_lba_ = lo2;
+            if (lo2 > full_leadout_frame_)
+                full_leadout_frame_ = lo2;
             // Also capture any data tracks from session 2 not in session 1
             for (int t = toc2.first; t <= last2; ++t) {
                 auto& te2 = toc2.entries[t - 1];
@@ -121,8 +121,8 @@ bool CDSource::open(const std::string& drive_letter) {
                 if ((te2.control & 0x04) != 0) {
                     // Only add if not already in list
                     bool already = false;
-                    for (uint32_t d : data_track_lbas_) if (d == lba2) { already = true; break; }
-                    if (!already) data_track_lbas_.push_back(lba2);
+                    for (uint32_t d : data_track_frames_) if (d == lba2) { already = true; break; }
+                    if (!already) data_track_frames_.push_back(lba2);
                 }
             }
         }
@@ -146,8 +146,8 @@ bool CDSource::open(const std::string& drive_letter) {
 }
 
 void CDSource::close() {
-    data_track_lbas_.clear();
-    full_leadout_lba_ = 0;
+    data_track_frames_.clear();
+    full_leadout_frame_ = 0;
     stop();
     dev_.reset();
     tracks_.clear();
@@ -176,8 +176,11 @@ bool CDSource::playTrack(int track_number) {
 
     // Set new track params
     current_track_.store(track_number);
-    current_lba_.store(ct->start_lba);
-    track_end_lba_.store(ct->start_lba + ct->length_lba);
+    // READ ADDRESSES: current_lba_/track_end_lba_ feed readSectors, so they are
+    // LBA, not ATIME. Storing start_frame here is what made CD playback begin
+    // 2.00 s into every track (F0-S1).
+    current_lba_.store(ct->lba());
+    track_end_lba_.store(ct->lba() + ct->length_lba);
 
     // Start fresh
     playing_.store(true);
@@ -257,7 +260,8 @@ bool CDSource::seekTo(double seconds) {
     // Find track start LBA
     uint32_t track_start = 0;
     for (auto& t : tracks_)
-        if (t.number == current_track_.load()) { track_start = t.start_lba; break; }
+        // LBA: target_lba below becomes current_lba_, a read address (F0-S1).
+        if (t.number == current_track_.load()) { track_start = t.lba(); break; }
 
     // Calculate target LBA: 75 sectors per second (truncation == the old int form)
     uint32_t target_lba = track_start + (uint32_t)(seconds * 75);
@@ -310,7 +314,9 @@ double CDSource::positionSec() const {
     if (!current_track_.load()) return 0.0;
     for (auto& t : tracks_)
         if (t.number == current_track_.load()) {
-            uint32_t played = current_lba_.load() - t.start_lba;
+            // Both operands must be LBA: current_lba_ is a read cursor. Mixing
+            // it with start_frame would report a position 2.00 s too high.
+            uint32_t played = current_lba_.load() - t.lba();
             return (double)(played / 75);    // whole seconds (integer division), widened
         }
     return 0.0;

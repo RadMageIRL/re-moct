@@ -102,6 +102,27 @@ struct DigiConfig {
     // Nerd Font pane-title icons (Ctrl+N). Requires a Nerd Font terminal font.
     bool  nerd_icons = false;
 
+    // ── [Library] (library slice 6) ──────────────────────────────────────────
+    // The section itself. Default ON, which is the opposite of the crossfade key's
+    // ruling and for a stated reason: crossfade defaulted off because it silently
+    // changed how playback SOUNDS, whereas this changes nothing until the section is
+    // opened. The scan trigger is first ENTRY, not startup, so a user who never opens
+    // [Library] pays no scan, no index file and no worker thread - one extra browser
+    // row is the entire cost. Off means the row is ABSENT, not present-and-inert: a
+    // row that refuses to open is a dead end that then needs a message explaining a
+    // feature the user turned off.
+    bool        library = true;
+    // The folder the library indexes. "" = CDRipper::musicRoot(), resolved at scan
+    // start and never written back as a literal - the rec_dir convention exactly.
+    // UNTRUSTED for path purposes: a user types this, so it is not guaranteed valid
+    // UTF-8, and on Windows fs::path() throws on invalid UTF-8 (as does
+    // fs::exists(s, ec), because the conversion runs before the code applies).
+    // Slice 11: SEVERAL roots, persisted as repeated `library_root=` lines - the
+    // idiom `podcast=` and `pod_ep=` already use for lists. Empty still means the OS
+    // music folder, so an untouched config behaves exactly as it did, and a config
+    // with one line yields a vector of one.
+    std::vector<std::string> library_roots;
+
     // Follow the playing track: auto-move the playlist cursor to the playing row on
     // track change (F3). false = cursor stays where you left it (browse undisturbed).
     bool  follow_playing = true;
@@ -199,6 +220,31 @@ struct DigiConfig {
 
     void addRecentTrack(const std::string& path);
     void recordPlay(const std::string& path);   // increment count + timestamp
+
+    // ── Stat-key normalisation (library slice 13) ────────────────────────────
+    //
+    // recordPlay used to key on whatever path the playlist entry happened to hold,
+    // and those disagree on case depending on how the file was added - browser,
+    // loaded .m3u, favourite, bookmark, [Recent]. MEASURED on the reference config:
+    // 241 of 295 keys had a lowercase drive letter and 54 an uppercase one, and 17
+    // files held TWO entries with their play counts split between them.
+    //
+    // recordPlay now normalises on write so new plays cannot re-split, and load()
+    // merges what is already stored so the existing pairs are repaired. They are
+    // different jobs and neither alone is sufficient - one prevents, one fixes.
+    //
+    // Returns the number of entries that merged away, so the caller can say so once.
+    // ZERO on Linux by construction, not by an #ifdef: the fold is the identity
+    // there, so it groups only byte-identical keys, and those cannot be duplicates
+    // in a map. Two paths differing in case on Linux are two different files.
+    std::size_t mergeStatKeys();
+    // Set by load() when a merge actually changed something, so the UI can report it
+    // once. Not persisted.
+    std::size_t stats_merged = 0;
+    // Whether ANY stat key changed shape, which is a broader condition than merging:
+    // a key folding from uppercase to lowercase with no collision merges nothing and
+    // still rewrites the file. The BACKUP is keyed on this.
+    bool stats_keys_rewritten = false;
 
     static std::string configPath();
     static std::string themePath();

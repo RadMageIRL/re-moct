@@ -1,5 +1,7 @@
 #include "PlaylistManager.h"
 #include "StringUtils.h"
+#include "AudioExts.h"    // the canonical audio-extension list, shared with the library scanner
+#include "LibraryIndex.h" // slice 15: foldPathKey, THE path-identity rule (pure, std-only header)
 
 #include <taglib/fileref.h>
 #include <taglib/tag.h>
@@ -20,34 +22,71 @@
 
 namespace fs = std::filesystem;
 
-// Non-throwing existence check: the throwing fs::exists overload can raise
-// filesystem_error on a malformed path from a crafted playlist, which would
-// propagate out of the loaders below. The error_code overload returns false
-// on any error instead.
+// Genuinely non-throwing existence check.
+//
+// The error_code overload is NOT sufficient on its own, which this comment used
+// to claim: on Windows a narrow path is decoded as UTF-8, and for invalid UTF-8
+// the conversion throws BEFORE the error code can be set, so fs::exists(p, ec)
+// raises filesystem_error just like the throwing overload. Measured on UCRT64.
+// Every caller here is fed paths that came out of a playlist file, so the catch
+// is the part that actually holds. Loaders now also run their lines through
+// ensure_utf8, which removes the usual cause rather than only surviving it.
 static bool path_exists(const std::string& p) {
-    std::error_code ec;
-    return fs::exists(p, ec);
+    try {
+        std::error_code ec;
+        return fs::exists(p, ec);
+    } catch (...) {
+        return false;
+    }
 }
 
-static const std::vector<std::string> AUDIO_EXTS = {
-    ".mp3", ".flac", ".ogg", ".opus", ".wav", ".aiff", ".aif",
-    ".m4a", ".m4b", ".aac", ".wma", ".mp4", ".wv"
-};
+// fs::path::stem() on a path that is not valid UTF-8 throws on Windows for the
+// same reason, and entries can arrive from places that never saw a playlist
+// file. Pure string form, no filesystem involved: last component, minus a final
+// extension, with a leading dot not counting as one (fs::path's own rule).
+static std::string path_stem(const std::string& p) {
+    const size_t sep = p.find_last_of("/\\");
+    std::string name = (sep == std::string::npos) ? p : p.substr(sep + 1);
+    if (name == "." || name == "..") return name;
+    const size_t dot = name.find_last_of('.');
+    if (dot != std::string::npos && dot != 0) name.resize(dot);
+    return name;
+}
 
+// The list itself now lives in AudioExts.h so the library scanner reads the SAME
+// one. This is a pure delegation - audioext::isSupportedAudio matches
+// fs::path::extension semantics and lowercases identically, so behaviour here is
+// unchanged. It is also strictly safer: the old body built an fs::path from the
+// argument, which throws on Windows for a path that is not valid UTF-8, and this
+// function is reachable from playlist files.
 bool PlaylistManager::isSupportedAudio(const std::string& path) {
-    std::string ext = fs::path(path).extension().string();
-    std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
-    return std::find(AUDIO_EXTS.begin(), AUDIO_EXTS.end(), ext) != AUDIO_EXTS.end();
+    return audioext::isSupportedAudio(path);
 }
 
 bool PlaylistManager::isAudiobook(const std::string& path) {
-    std::string ext = fs::path(path).extension().string();
-    std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
-    return ext == ".m4b";
+    return audioext::extensionOf(path) == ".m4b";
+}
+
+// The one display-title rule. Both the tag-reading path (populateMetadata, just below)
+// and the index path (addIndexedTrack) come through here, so a row added from the
+// library and the same file added from the folder browser are formatted by the same
+// code rather than by two copies of it that have to agree.
+//
+// sanitizeForDisplay is applied HERE, which is why the library can pass raw index text:
+// the index deliberately stores tag text unsanitised, because folding on the way in
+// would be lossy.
+std::string PlaylistManager::displayTitleFor(const std::string& path,
+                                            const std::string& artist,
+                                            const std::string& title) {
+    const std::string t = sanitizeForDisplay(title);
+    const std::string a = sanitizeForDisplay(artist);
+    if (!a.empty() && !t.empty()) return a + " - " + t;
+    if (!t.empty())               return t;
+    return path_stem(path);
 }
 
 void PlaylistManager::populateMetadata(PlaylistEntry& entry) {
-    entry.display_title = fs::path(entry.path).stem().string();
+    entry.display_title = path_stem(entry.path);
 #ifdef _WIN32
     TagLib::FileRef ref(utf8_to_wide(entry.path).c_str(), true,
                         TagLib::AudioProperties::Fast);
@@ -55,16 +94,46 @@ void PlaylistManager::populateMetadata(PlaylistEntry& entry) {
     TagLib::FileRef ref(entry.path.c_str(), true, TagLib::AudioProperties::Fast);
 #endif
     if (ref.isNull()) return;
-    if (auto* tag = ref.tag(); tag) {
-        std::string title  = sanitizeForDisplay(tag->title().to8Bit(true));
-        std::string artist = sanitizeForDisplay(tag->artist().to8Bit(true));
-        if (!artist.empty() && !title.empty())
-            entry.display_title = artist + " - " + title;
-        else if (!title.empty())
-            entry.display_title = title;
-    }
+    if (auto* tag = ref.tag(); tag)
+        entry.display_title = displayTitleFor(entry.path,
+                                              tag->artist().to8Bit(true),
+                                              tag->title().to8Bit(true));
     if (auto* ap = ref.audioProperties(); ap)
         entry.duration_sec = ap->lengthInSeconds();
+}
+
+// THE membership test. See the header for why it folds and why it must never split a
+// path into stem and extension.
+//
+// The incoming path is folded ONCE, outside the loop; each entry is folded as it is
+// compared. Every caller but the two batch paths runs this against a playlist of a few
+// dozen rows, where that is free. The batch paths are measured rather than assumed -
+// see the debrief.
+std::size_t PlaylistManager::indexOfPath(const std::string& path) const {
+    const std::string key = libidx::detail::foldPathKey(path);
+    for (std::size_t i = 0; i < entries_.size(); ++i)
+        if (libidx::detail::foldPathKey(entries_[i].path) == key) return i;
+    return std::string::npos;
+}
+
+// addTrack without the tag read. Mirrors it line for line otherwise, deliberately: the
+// http and CD rejections, the dedup-by-path scan, and the shuffle rebuild are all
+// behaviour the callers already depend on.
+std::size_t PlaylistManager::addIndexedTrack(const std::string& path,
+                                            const std::string& artist,
+                                            const std::string& title,
+                                            int duration_sec) {
+    if (path.rfind("http://", 0) == 0 || path.rfind("https://", 0) == 0)
+        return addStream(path, streamLabel(path));
+    if (isCDTrackPath(path)) return std::string::npos;
+    if (std::size_t at = indexOfPath(path); at != std::string::npos) return at;
+    PlaylistEntry entry;
+    entry.path          = path;
+    entry.display_title = displayTitleFor(path, artist, title);
+    entry.duration_sec  = duration_sec;
+    entries_.push_back(std::move(entry));
+    rebuildShuffleOrder();
+    return entries_.size() - 1;
 }
 
 void PlaylistManager::rebuildShuffleOrder() {
@@ -118,8 +187,7 @@ std::size_t PlaylistManager::addTrack(const std::string& path) {
         return addStream(path, streamLabel(path));
     // Reject volatile CD track paths — they can't be stored persistently
     if (isCDTrackPath(path)) return std::string::npos;
-    for (std::size_t i = 0; i < entries_.size(); ++i)
-        if (entries_[i].path == path) return i;
+    if (std::size_t at = indexOfPath(path); at != std::string::npos) return at;
     PlaylistEntry entry;
     entry.path = path;
     populateMetadata(entry);
@@ -334,17 +402,28 @@ int PlaylistManager::loadM3U(const std::string& path) {
             ++added;
             continue;
         }
-        // Could be absolute or relative path
-        fs::path p(line);
-        if (p.is_relative())
-            p = fs::path(path).parent_path() / p;
-        std::string abs = p.string();
-        if (path_exists(abs) && isSupportedAudio(abs)) {
-            addTrack(abs);
-            ++added;
-        } else if (isSupportedAudio(abs)) {
-            ++last_load_missing_;   // audio entry whose file is not on disk
-        }
+        // A .m3u from an older tool is CP1252, so an accented filename arrives as
+        // raw high bytes. Rescue it to UTF-8 BEFORE it reaches fs::path, which
+        // decodes narrow strings as UTF-8 on Windows and throws on anything else.
+        // Valid UTF-8 (a .m3u8, or anything modern) passes through untouched.
+        line = ensure_utf8(line);
+
+        // Belt and braces: ensure_utf8 removes the known cause, and this makes a
+        // malformed entry skip rather than abandon the rest of the playlist,
+        // whatever the cause turns out to be next time.
+        try {
+            // Could be absolute or relative path
+            fs::path p(line);
+            if (p.is_relative())
+                p = fs::path(path).parent_path() / p;
+            std::string abs = p.string();
+            if (path_exists(abs) && isSupportedAudio(abs)) {
+                addTrack(abs);
+                ++added;
+            } else if (isSupportedAudio(abs)) {
+                ++last_load_missing_;   // audio entry whose file is not on disk
+            }
+        } catch (...) { ++last_load_missing_; }
     }
     return added;
 }
@@ -389,16 +468,18 @@ int PlaylistManager::loadPLS(const std::string& path) {
         std::string file_key  = "File"  + std::to_string(i);
         std::string title_key = "Title" + std::to_string(i);
         if (!kv.count(file_key)) continue;
-        std::string p = kv[file_key];
-        fs::path fp(p);
-        if (fp.is_relative()) fp = fs::path(path).parent_path() / fp;
-        std::string abs = fp.string();
-        if (path_exists(abs) && isSupportedAudio(abs)) {
-            addTrack(abs);
-            ++added;
-        } else if (isSupportedAudio(abs)) {
-            ++last_load_missing_;   // audio entry whose file is not on disk
-        }
+        std::string p = ensure_utf8(kv[file_key]);   // legacy CP1252 .pls, see loadM3U
+        try {
+            fs::path fp(p);
+            if (fp.is_relative()) fp = fs::path(path).parent_path() / fp;
+            std::string abs = fp.string();
+            if (path_exists(abs) && isSupportedAudio(abs)) {
+                addTrack(abs);
+                ++added;
+            } else if (isSupportedAudio(abs)) {
+                ++last_load_missing_;   // audio entry whose file is not on disk
+            }
+        } catch (...) { ++last_load_missing_; }
     }
     return added;
 }
@@ -499,22 +580,26 @@ int PlaylistManager::loadXSPF(const std::string& path) {
         extract_tags("location", track_block, locations);
         if (locations.empty()) continue;
 
-        std::string uri = xml_unescape(locations[0]);
+        // XSPF is nominally UTF-8, but a file written by a tool that ignored that
+        // still has to load rather than throw. See loadM3U.
+        std::string uri = ensure_utf8(xml_unescape(locations[0]));
         // Strip file:/// prefix
         if (uri.substr(0, 8) == "file:///") uri = uri.substr(8);
         // Convert forward slashes back to backslashes on Windows
 #ifdef _WIN32
         for (char& c : uri) if (c == '/') c = '\\';
 #endif
-        fs::path fp(uri);
-        if (fp.is_relative()) fp = fs::path(path).parent_path() / fp;
-        std::string abs = fp.string();
-        if (path_exists(abs) && isSupportedAudio(abs)) {
-            addTrack(abs);
-            ++added;
-        } else if (isSupportedAudio(abs)) {
-            ++last_load_missing_;   // audio entry whose file is not on disk
-        }
+        try {
+            fs::path fp(uri);
+            if (fp.is_relative()) fp = fs::path(path).parent_path() / fp;
+            std::string abs = fp.string();
+            if (path_exists(abs) && isSupportedAudio(abs)) {
+                addTrack(abs);
+                ++added;
+            } else if (isSupportedAudio(abs)) {
+                ++last_load_missing_;   // audio entry whose file is not on disk
+            }
+        } catch (...) { ++last_load_missing_; }
     }
     return added;
 }
@@ -522,9 +607,7 @@ int PlaylistManager::loadXSPF(const std::string& path) {
 // ─── Unified save/load ────────────────────────────────────────────────────────
 
 static std::string playlist_ext(const std::string& path) {
-    std::string ext = fs::path(path).extension().string();
-    for (char& c : ext) c = (char)std::tolower((unsigned char)c);
-    return ext;
+    return audioext::extensionOf(path);   // pure, lowercased, and cannot throw
 }
 
 bool PlaylistManager::savePlaylist(const std::string& path) const {
@@ -614,11 +697,10 @@ void PlaylistManager::addDirectoryAsync(const std::string& dir_path) {
         std::lock_guard<std::mutex> lk(work_mutex_);
         for (auto& p : found) {
             // Check against existing entries (UI thread owns entries_ but
-            // we're on UI thread here so this is safe)
-            bool dup = false;
-            for (const auto& e : entries_)
-                if (e.path == p) { dup = true; break; }
-            if (!dup) {
+            // we're on UI thread here so this is safe). Slice 15: through
+            // indexOfPath, so a directory add obeys the same equality rule as
+            // every other add rather than its own byte compare.
+            if (indexOfPath(p) == std::string::npos) {
                 work_queue_.push(std::move(p));
                 pending_count_.fetch_add(1);
             }
@@ -650,7 +732,7 @@ void PlaylistManager::loaderWorker() {
         }
         PlaylistEntry entry;
         entry.path = path;
-        entry.display_title = fs::path(path).stem().string();
+        entry.display_title = path_stem(path);
         populateMetadata(entry);
         pending_count_.fetch_sub(1);
         {
@@ -670,11 +752,10 @@ bool PlaylistManager::drainPending() {
     while (!local.empty()) {
         PlaylistEntry e = std::move(local.front());
         local.pop();
-        // Dedup check — skip if path already in playlist
-        bool dup = false;
-        for (const auto& ex : entries_)
-            if (ex.path == e.path) { dup = true; break; }
-        if (!dup) entries_.push_back(std::move(e));
+        // Dedup check — skip if path already in playlist. Slice 15: the same rule
+        // as every other add. This one matters twice over, because the worker
+        // cannot check entries_ and a batch can contain its own duplicates.
+        if (indexOfPath(e.path) == std::string::npos) entries_.push_back(std::move(e));
     }
     rebuildShuffleOrder();
     return true;

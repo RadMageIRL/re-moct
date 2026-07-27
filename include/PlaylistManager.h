@@ -33,6 +33,31 @@ public:
     static std::string streamLabel(const std::string& url);  // "RADIO: <name>" from a URL
     std::size_t addCDTrack(const std::string& fake_path,
                            const std::string& title, int duration_sec);
+
+    // ── Adding a track whose metadata is ALREADY KNOWN (library slice 6) ──────
+    // Identical to addTrack in every respect - the same http/CD rejections, the same
+    // DEDUP BY PATH, the same shuffle rebuild - except that it does not open the file
+    // to read tags, because the caller already has them.
+    //
+    // For the [Library] section, which holds artist, title and duration in its index.
+    // Re-reading tags it already has in memory was the entire cost of an album append:
+    // measured at 5.5-7.9 ms per track cold against ~0.2 ms warm, so a twenty-track
+    // album cost 125-158 ms of pure file I/O. This makes it near-free.
+    //
+    // The dedup is not optional: the album append reports how many rows it ACTUALLY
+    // added, and that count is only honest because re-adding an owned track is a no-op.
+    //
+    // NOT for the folder browser, [FAVs], [Recent], radio or podcasts - none of them
+    // has metadata in hand, so they keep calling addTrack.
+    std::size_t addIndexedTrack(const std::string& path, const std::string& artist,
+                                const std::string& title, int duration_sec);
+
+    // The display-title rule, extracted so the tag-reading path and the index path
+    // cannot format differently. populateMetadata calls this too; that is the point.
+    // "artist - title" when both are present, else the title, else the filename stem.
+    static std::string displayTitleFor(const std::string& path,
+                                       const std::string& artist,
+                                       const std::string& title);
     template<typename Pred>
     void removeIf(Pred pred) {
         size_t old_current = current_;
@@ -185,6 +210,31 @@ private:
 
     void rebuildShuffleOrder();
     static void populateMetadata(PlaylistEntry& entry);
+
+    // ── "Is this file already in the playlist?" - asked in exactly one place ──
+    //
+    // Library slice 15. Four call sites used to answer this with their own copy of
+    // `e.path == p`, and a byte-exact compare is the wrong answer on Windows: the
+    // same file reached through the goto bar as `c:\users\...` and through the
+    // library as `C:\Users\...` produced two rows for one file. Measured in the
+    // live config: five of fifty-nine saved entries were a second spelling of an
+    // entry already present.
+    //
+    // Uses libidx::detail::foldPathKey - THE path-identity rule, and its fifth
+    // user. Case- and separator-folded on Windows because NTFS is
+    // case-insensitive; the IDENTITY on Linux, where two paths differing in case
+    // may genuinely be two files. So this is a no-op on Linux by construction.
+    //
+    // IT FOLDS BYTES AND NEVER SPLITS A PATH. `song.flac`, `song.opus` and
+    // `song.mp3` are three different strings, therefore three different files,
+    // therefore three playlist rows - which is correct, and load-bearing: 349
+    // groups of same-stem multi-format files live in the real collection, 12.6% of
+    // the index. Nothing here may ever compare stems. See playlist_dedup_test
+    // blocks 7 and 8, the second of which is the exact pair of bytes from the live
+    // config that differs in case AND extension at once.
+    //
+    // Returns the existing row's index, or npos.
+    std::size_t indexOfPath(const std::string& path) const;
 
     // Async loader internals
     std::queue<std::string>  work_queue_;    // paths to scan (fed by addDirectoryAsync)

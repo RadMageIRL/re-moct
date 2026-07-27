@@ -301,7 +301,7 @@
 
 <!-- ── Sidebar ── -->
 <nav>
-  <div class="logo">RE-MOCT<span>v1.4.0</span></div>
+  <div class="logo">RE-MOCT<span>v1.5.0</span></div>
   <div class="nav-section">Overview</div>
   <a href="#intro">Introduction</a>
   <a href="#formats">Formats</a>
@@ -330,10 +330,11 @@
 <!-- ── Main ── -->
 <main>
 
-<h1>RE-MOCT <span class="version">v1.4.0</span></h1>
+<h1>RE-MOCT <span class="version">v1.5.0</span></h1>
 
 <div class="note" style="margin-bottom:24px">
-  <strong>1.4.0 released - podcasts, chapters, and configurable crossfade.</strong>
+  <strong>1.5.0 released - a library view, per-track ripping, and a read-addressing fix that
+  affects every rip made before it.</strong>
   RE-MOCT runs on <strong>Windows</strong> and <strong>Linux</strong>. Grab a build from the
   <a href="https://github.com/RadMageIRL/re-moct/releases">GitHub Releases page</a>, or build
   from source - see <a href="#build">Build</a>. Its streaming source ships as a loadable
@@ -352,7 +353,7 @@
 <div class="hero">
   <div class="hero-line">
     <span class="left hl">CD Track 02 [F:]</span>
-    <span class="right">[REPEAT ALL] [SHUFFLE] [CD] [New Miserable Experience (1992)] [EQ] RE-MOCT v1.4.0</span>
+    <span class="right">[REPEAT ALL] [SHUFFLE] [CD] [New Miserable Experience (1992)] [EQ] RE-MOCT v1.5.0</span>
   </div>
   <div class="hero-line" style="margin-top:2px">
     <span class="left dim">Playlist [12]&nbsp;&nbsp;46m 8s</span>
@@ -410,7 +411,7 @@
 <h2 id="layout" class="section-anchor">Interface Layout</h2>
 
 <pre>┌─ RE-MOCT ─────────────────────────────────────────────────────────────────┐
-│  ► Artist - Title        [REPEAT ALL] [SHUFFLE] [CD] Album (Year)  v1.4.0 │
+│  ► Artist - Title        [REPEAT ALL] [SHUFFLE] [CD] Album (Year)  v1.5.0 │
 ├─ File Browser ───────────────────┬─ Playlist ─────────────────────────────┤
 │  [Drives]                        │  Playlist [14]  39m 40s                │
 │  [Recent]                        │  ► Green Day - Burnout           2:08  │
@@ -597,7 +598,11 @@
   </div>
 </div>
 
-<div class="note"><strong>AccurateRip technical detail:</strong> CRCs are computed disc-absolutely - <code>mul_by=1</code> starts at the 150-sector lead-in before each track's nominal LBA. The 150-sector preamble is physically read from disc because it contains real data (not silence) that affects the checksum. Drive offset is applied as a combined sample shift split into whole-sector LBA advance plus sub-sector skip.</div>
+<div class="note"><strong>AccurateRip technical detail:</strong> a track's CRC runs over that track's own audio, with <code>mul_by=1</code> on its first sample. The only exclusions are five sectors at the very start of the disc's first track and five at the very end of its last - expressed as sample positions inside the track, not as a separate read. Drive offset is applied as a combined sample shift split into whole-sector LBA advance plus sub-sector skip.</div>
+
+<div class="note"><strong>Addressing - the rule behind all of it:</strong> a drive's table of contents reports each track's position as an <em>absolute frame</em> (ATIME), counted from the start of the disc and <em>including</em> the standard two-second lead-in. Every read command addresses the disc by <em>LBA</em>, which is the same position counted without it: <code>LBA = frame - 150</code> (MMC-3 Table 333 - LBA 0 <em>is</em> MSF 00:02:00). The 150 stripped here is the MSF/LBA origin; it is <strong>not</strong> the same 150 that AccurateRip's disc ID uses, which converts to LSN for identity purposes only. Two different transforms that happen to share a number. <em>Naming trap:</em> libcdio calls the absolute frame "LBA" and calls MMC's LBA "LSN" - the opposite of the spec's vocabulary.</div>
+
+<div class="note" style="border-left-color:#c0392b"><strong>A verification pass does not validate your files.</strong> This is worth stating plainly because it is documented almost nowhere. An AccurateRip match proves that <em>the stream you checksummed</em> matches what other people got. It says nothing about the audio actually written to disk <em>unless the checksum and the file come from the same read</em>. RE-MOCT learned this the hard way: until v1.5.0 it read each track 150 sectors late and fed the checksum a separate, correctly-positioned read, so every rip it had ever produced was shifted two seconds while verifying at full confidence. Measured: the same disc ripped under the old build is fifteen of fifteen tracks shifted by exactly 150 sectors, with the final track's last two seconds replaced by digital silence - and it reported <em>the same AccurateRip confidence 123</em> as the corrected rip, which is byte-for-byte identical to dBpoweramp's. RE-MOCT now feeds one read to both the encoder and the checksum, so the two cannot disagree. If you are evaluating any ripper, that is the property to check for.</div>
 
 <div class="kb-group">Rip mode selection (after Ctrl+Y)</div>
 <div class="kb">
@@ -831,7 +836,7 @@ ctest --test-dir build --output-on-failure</pre>
 <p>The single-header dependencies (miniaudio, nlohmann/json) and the vendored MD5 are checked into the repo - no separate download step. Binary output: <code>build/bin/remoct</code> (or <code>remoct.exe</code>), with the streaming plugin beside it in <code>build/bin/plugins/</code>.</p>
 
 <hr>
-<p style="font-size:11px; color:var(--muted); text-align:center">RE-MOCT v1.4.0 &nbsp;·&nbsp; C++20 &nbsp;·&nbsp; Built with ncurses, miniaudio, TagLib &nbsp;·&nbsp; <a href="https://github.com/RadMageIRL/re-moct" style="color:var(--accent)">github.com/RadMageIRL/re-moct</a></p>
+<p style="font-size:11px; color:var(--muted); text-align:center">RE-MOCT v1.5.0 &nbsp;·&nbsp; C++20 &nbsp;·&nbsp; Built with ncurses, miniaudio, TagLib &nbsp;·&nbsp; <a href="https://github.com/RadMageIRL/re-moct" style="color:var(--accent)">github.com/RadMageIRL/re-moct</a></p>
 
 </main>
 </div>

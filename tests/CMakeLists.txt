@@ -155,6 +155,140 @@ target_include_directories(podcast_chapters_test PRIVATE
     ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/lib)
 add_test(NAME podcast_chapters_test COMMAND podcast_chapters_test)
 
+# library-index (Library slice 1) - LibraryIndex.h proven in ISOLATION before any
+# caller exists: the record model, the on-disk FORMAT, and the hierarchy queries
+# the [Library] pane will consume. Header-only with NO dependency beyond the
+# standard library, so there is nothing to link and no lib/ include - the scanner
+# (TagLib, directory walk) is slice 2 and deliberately absent here. The format's
+# first field is a path, i.e. identity, so the central assertion is EXACT
+# round-trip through tabs, newlines, backslashes, NULs and non-ASCII; the config
+# file's lossy tab-fold would have produced an index that parses clean and
+# resolves to nothing. Includes a MEASURED scale pass (real 2773, synthetic
+# 100k), printed rather than asserted as a promised number. Device-free, both
+# matrix jobs.
+# browser-pins - the browser's pinned-row order, asserted rather than read. The
+# order used to live in two hand-maintained lists (refreshDir's pushes and the
+# sort comparator) that had to agree; [Library] was added to one and not the
+# other, sorted as an ordinary file, and rendered at the bottom of the pane -
+# a hardware-gate failure whose insert had been correct all along. One list now,
+# and this is what keeps it one: the exact rendered sequence, the strict-weak-
+# ordering contract the old chain violated, and a full sort reproducing it.
+# Header-only, pure, both matrix jobs.
+add_executable(browser_pins_test browser_pins_test.cpp)
+target_include_directories(browser_pins_test PRIVATE ${CMAKE_SOURCE_DIR}/include)
+add_test(NAME browser_pins_test COMMAND browser_pins_test)
+
+# browser-sections (slice 17) - the virtual-section flag SET, which four separate
+# hand-written copies used to disagree about. The poll's copy tested one flag of
+# ten and so ran refreshDir() from inside a live section. Header-only, pure, both
+# matrix jobs - the same shape and the same reason as browser_pins_test above.
+add_executable(browser_sections_test browser_sections_test.cpp)
+target_include_directories(browser_sections_test PRIVATE ${CMAKE_SOURCE_DIR}/include)
+add_test(NAME browser_sections_test COMMAND browser_sections_test)
+
+# rip-selection (CD-S1) - which tracks to rip, and which track each one IS on
+# the disc. is_first/is_last choose the AccurateRip CRC skip window, so deriving
+# them from loop position instead of TOC position produces a WRONG checksum
+# rather than a failed lookup. Pure, header-only, both matrix jobs.
+add_executable(rip_selection_test rip_selection_test.cpp)
+target_include_directories(rip_selection_test PRIVATE ${CMAKE_SOURCE_DIR}/include)
+add_test(NAME rip_selection_test COMMAND rip_selection_test)
+
+# cd-track-select (CD slice 3) - which marked playlist row means which TOC track.
+#
+# A track's NUMBER is not its TOC INDEX. They coincide on an ordinary audio CD, so
+# `num - 1` passes every test written against one and then selects the wrong track
+# on a disc with a data track or non-contiguous numbering. Same class as CD-S1's
+# finding (5). The drop count is asserted too: it is the slot a future HTOA row
+# lands in, and a silent drop there would throw away something a user marked.
+# Pure, header-only, both matrix jobs.
+add_executable(cd_track_select_test cd_track_select_test.cpp)
+target_include_directories(cd_track_select_test PRIVATE ${CMAKE_SOURCE_DIR}/include)
+add_test(NAME cd_track_select_test COMMAND cd_track_select_test)
+
+# ar-status-label (CD slice 4) - every AccurateRip status has its own words.
+#
+# Seven readers consume ARStatus and the wrong ones were wrong for one shared
+# reason: a fall-through absorbed a value nobody listed, so "never asked" printed
+# as "no match" and, in CUETools mode, stamped ACCURATERIP=AR: network error into
+# the user's files permanently. Asserts every status maps to its own non-empty
+# label and none lands on the sentinel, so deleting a case fails the test.
+# Pure, header-only, both matrix jobs.
+add_executable(ar_status_label_test ar_status_label_test.cpp)
+target_include_directories(ar_status_label_test PRIVATE ${CMAKE_SOURCE_DIR}/include)
+add_test(NAME ar_status_label_test COMMAND ar_status_label_test)
+
+# pane-scroll (Library slice 9) - the cursor/scroll rule BOTH list panes share.
+#
+# Same reason browser_pins_test exists: the rule used to live in two places free to
+# disagree. The playlist reconciled at draw time; the browser had a partial copy
+# called from four handlers and never from the draw, so a repopulate, a delete, a
+# resize or a by-name cursor restore each left the cursor off-pane. The central
+# assertions are the reported bug as a single case, and that the landing policy is
+# MINIMAL movement - a visible cursor must not move the view at all.
+# Header-only, links nothing, both matrix jobs.
+add_executable(pane_scroll_test pane_scroll_test.cpp)
+target_include_directories(pane_scroll_test PRIVATE ${CMAKE_SOURCE_DIR}/include)
+add_test(NAME pane_scroll_test COMMAND pane_scroll_test)
+
+add_executable(library_index_test library_index_test.cpp)
+target_include_directories(library_index_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/include)
+add_test(NAME library_index_test COMMAND library_index_test)
+
+# library-level (Library slice 4) - the [Library] level state machine: three levels
+# times two directions, the three remembered cursors, and the level-3 row label.
+# Header-only, links nothing, both matrix jobs.
+#
+# It exists because the alternative is a state machine written inside a curses key
+# handler, where the off-by-one that lives in six transitions is reachable only by
+# pressing keys. The central assertions are the staleness rule - no index from
+# libidx::tracksForAlbum may escape as a stored identity - and that descending into
+# a DIFFERENT album does not restore the previous album's track cursor.
+add_executable(library_level_test library_level_test.cpp)
+target_include_directories(library_level_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/include)
+add_test(NAME library_level_test COMMAND library_level_test)
+
+# library-scanner (Library slice 2) - the walk, the TagLib read, the incremental
+# revalidation and the atomic index write, exercised against a REAL temporary
+# directory tree (a scanner not run against a real filesystem is not tested).
+# Links PlaylistManager.cpp as well, because the audio-extension list moved into
+# the shared AudioExts.h and both readers have to be proven to agree - that is
+# the playlist-add check, and it is only possible now the list is liftable.
+# The central case is the cancellation invariant: a cancelled scan is marked
+# incomplete AND leaves the index file byte-identical, because deletion-on-unseen
+# would otherwise mass-delete records for files the walk never reached. The
+# real-collection pass is opt-in via REMOCT_LIBRARY_SCAN_ROOT so a CI runner with
+# no music stays green. Both matrix jobs.
+# playlist-encoding - a legacy CP1252 .m3u/.pls/.xspf must LOAD, not crash. On
+# Windows std::filesystem decodes a narrow path as UTF-8 and throws on anything
+# else, from fs::path AND from fs::exists(p, ec), so one ordinary legacy playlist
+# used to terminate the application (nothing in UIManager catches). Pins both
+# halves: the loaders no longer throw, and the named track actually loads because
+# the line is rescued to UTF-8 rather than skipped. Both matrix jobs.
+add_executable(playlist_encoding_test
+    playlist_encoding_test.cpp
+    ${CMAKE_SOURCE_DIR}/src/PlaylistManager.cpp
+)
+target_include_directories(playlist_encoding_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/lib
+    ${TAGLIB_INCLUDE_DIRS} ${FDKAAC_INCLUDE} ${OPUS_INCLUDE} ${WAVPACK_INCLUDE})
+target_link_libraries(playlist_encoding_test PRIVATE ${TAGLIB_LIBRARIES})
+add_test(NAME playlist_encoding_test COMMAND playlist_encoding_test)
+
+add_executable(library_scanner_test
+    library_scanner_test.cpp
+    ${CMAKE_SOURCE_DIR}/src/LibraryScanner.cpp
+    ${CMAKE_SOURCE_DIR}/src/PlaylistManager.cpp
+)
+target_include_directories(library_scanner_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/lib
+    ${TAGLIB_INCLUDE_DIRS} ${FDKAAC_INCLUDE} ${OPUS_INCLUDE} ${WAVPACK_INCLUDE})
+target_link_libraries(library_scanner_test PRIVATE ${TAGLIB_LIBRARIES})
+add_test(NAME library_scanner_test COMMAND library_scanner_test)
+set_tests_properties(library_scanner_test PROPERTIES TIMEOUT 300)
+
 # podcast-client (Podcasts slice 2) - the fetch-and-parse glue over the core::IHttp
 # seam, proven headless with a FakeHttp (core::setHttp). Asserts the feed-sized
 # request (64 MB cap / 30 s) and the fetched-vs-parsed distinction the honest
@@ -191,6 +325,25 @@ add_test(NAME podcastindex_parse_test COMMAND podcastindex_parse_test)
 # + the DigiConfig podcast_progress round-trip (resume pos + played flag). Links
 # Config.cpp (+ the secret backend it now depends on), redirects the config dir to a
 # temp. Pure, both matrix jobs.
+# config-stats (Library slice 13) - play-count key normalisation and the migration
+# that repairs configs written before it. The ONLY slice in the campaign that rewrites
+# persisted user data, so this asserts the things a rollback would otherwise have to:
+# no count is lost (sum in == sum out), nothing is dropped, the merge is idempotent,
+# the platform split holds, and THE BACKUP IS NEVER CLOBBERED.
+#
+# Links Config.cpp + the secret backend, same as podcast_state_test. Config.cpp gained
+# an include of LibraryIndex.h in this slice; that header is pure and library-free, so
+# it adds no link dependency - which this target existing and building proves.
+add_executable(config_stats_test
+    config_stats_test.cpp
+    ${CMAKE_SOURCE_DIR}/src/Config.cpp
+    ${SECRET_IMPL}   # Config.cpp -> secret::protect/unprotect
+)
+target_include_directories(config_stats_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/lib)
+target_link_libraries(config_stats_test PRIVATE ${SECRET_LIBS})
+add_test(NAME config_stats_test COMMAND config_stats_test)
+
 add_executable(podcast_state_test
     podcast_state_test.cpp
     ${CMAKE_SOURCE_DIR}/src/Config.cpp
@@ -212,6 +365,21 @@ add_executable(next_resolver_test
     next_resolver_test.cpp
     ${CMAKE_SOURCE_DIR}/src/PlaylistManager.cpp
 )
+# Playlist membership (library slice 15). PlaylistManager::indexOfPath is the one
+# answer to "is this file already in the playlist": case- and separator-folded on
+# Windows, the identity on Linux, and NEVER extension-folded. Same link set as
+# next_resolver_test - device-free, filesystem-free, both matrix jobs. No new
+# library on the line: foldPathKey lives in LibraryIndex.h, which is pure and
+# std-only, so this is an include and not a dependency.
+add_executable(playlist_dedup_test
+    playlist_dedup_test.cpp
+    ${CMAKE_SOURCE_DIR}/src/PlaylistManager.cpp
+)
+target_include_directories(playlist_dedup_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/lib
+    ${TAGLIB_INCLUDE_DIRS} ${FDKAAC_INCLUDE} ${OPUS_INCLUDE} ${WAVPACK_INCLUDE})
+target_link_libraries(playlist_dedup_test PRIVATE ${TAGLIB_LIBRARIES})
+add_test(NAME playlist_dedup_test COMMAND playlist_dedup_test)
 target_include_directories(next_resolver_test PRIVATE
     ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/lib
     ${TAGLIB_INCLUDE_DIRS} ${FDKAAC_INCLUDE} ${OPUS_INCLUDE} ${WAVPACK_INCLUDE})

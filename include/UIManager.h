@@ -17,6 +17,8 @@
 #include "PodcastFeed.h"    // podcasts slice 2: PodcastEpisode/PodcastFeed for the [Podcasts] section
 #include "PodcastClient.h"  // podcasts slice 2: the async feed fetch result type
 #include "PodcastIndex.h"   // podcasts slice 6: Podcast Index byterm search result types
+#include "LibraryScanner.h" // library slice 3: the [Library] index + its off-thread scanner
+#include "LibraryNav.h"     // library slice 4: the pure level state machine (levels 2-3)
 #include <cstdint>          // podcasts slice 3: uint64_t/int32_t download-progress + cancel state
 #include <deque>            // podcasts slice 4: the download queue
 #include "LastFm.h"
@@ -46,7 +48,7 @@ enum class RightPane { Playlist, Visualizer, Help, TrackInfo, Bookmarks, Lyrics,
 enum class SearchSource { Playlist, Browser };   // which list \-search targets (from focus_)
 
 // Modal overlays drawn on top of the normal layout
-enum class UIOverlay { None, RipConfirm, MBSearch, RecPanel, ConvertScope, ConvertConfirm, PlaylistFormat, PodcastPlayConflict, PodcastIndexCreds };
+enum class UIOverlay { None, RipConfirm, MBSearch, RecPanel, ConvertScope, ConvertConfirm, PlaylistFormat, PodcastPlayConflict, PodcastIndexCreds, LibraryRoot };
 
 class UIManager {
 public:
@@ -189,6 +191,35 @@ private:
     // recent entries are already absolute; normal-dir entries join current_dir_).
     // "" for pseudo-entries ("..", "[Drives]", ...) and drive/radio modes.
     std::string browserEntryPath(int idx) const;
+
+    // ── The info pane's subject: ONE resolver, two readers (slice 10) ─────────
+    //
+    // Before this, drawTrackInfo and the 'e' tag-edit handler each computed the
+    // subject with their own VERBATIM COPY of the same three-branch idx dance, and
+    // neither looked at the browser at all except for the one [Podcasts] case wired
+    // during the podcast campaign. So pressing 'i' on any browser row - a library
+    // track, a search result, a [FAVs] entry, a plain file - showed whatever the
+    // playlist cursor happened to be on. Two copies of one rule is the defect class
+    // BrowserPins.h and PaneScroll.h both exist to end; this is the third.
+    //
+    // WHERE the subject came from is part of the answer, not a detail: tag editing
+    // WRITES the file, so 'e' must refuse anything that did not come from the
+    // playlist. Fixing the display without that gate would have made the pane show
+    // one file while 'e' wrote another, which is worse than the bug it fixes.
+    // Editing browser rows properly is LIB-S14.
+    enum class InfoSource { None, Playlist, Podcast, Browser };
+    struct InfoSubject {
+        InfoSource  source = InfoSource::None;
+        std::string path;
+        std::string display_title;
+        int         duration_sec = 0;
+        std::size_t pl_index     = 0;   // meaningful only when source == Playlist
+    };
+    InfoSubject infoPaneSubject() const;
+    // Does this browser row name a real FILE? A section pin, "..", "[Back]", an
+    // artist/album/genre row and a directory all answer no - none of them has track
+    // metadata to show.
+    bool browserRowIsFile(int idx) const;
     // rec-cover-art: the radio-art machinery's identity/pickup/trigger halves,
     // extracted from refreshRadioArt so the recording wiring can drive the
     // SAME fetch path (same guard, caches, providers) with the pane closed.
@@ -210,8 +241,16 @@ private:
     void navigateDown();
     void navigateUp();
     // Page / Home / End for the focused list pane (playlist or browser).
-    // Cursor-movement only: playlist scroll = the slice-5 draw-time invariant;
-    // the browser has NO invariant, so these clamp dir_scroll_ themselves.
+    //
+    // CURSOR MOVEMENT ONLY. Both panes reconcile scroll at DRAW TIME - the playlist
+    // since slice 5, the browser since library slice 9 - so every one of these just
+    // moves a cursor and lets the next draw reveal it.
+    //
+    // Per-handler scroll math is the defect slice 9 removed, and slice 12 deleted the
+    // last six copies of it. It is not a second way of doing the same thing: for a
+    // single-step move the inline `++dir_scroll_` and the helper's
+    // `cursor - visible + 1` compute the SAME value. Writing it here as well as there
+    // is what let paths exist that nobody remembered to write it into. Do not add it back.
     void navigatePage(int dir);          // +1 = PgDn, -1 = PgUp; page = visible-1
     void navigateHomeEnd(bool to_end);   // false = Home (row 0), true = End (last)
     void activateSelection();
@@ -281,13 +320,15 @@ private:
     // stream has no TrackInfo; callers show stream metadata separately). File/CD only.
     const TrackInfo* nowPlayingTrack() const;
 
-    // The single owner of pl_scroll_'s relationship to pl_cursor_: clamps the cursor
-    // into range, then scrolls the minimum needed to bring it inside the visible
-    // window. Enforced once at the top of drawPlaylist(); every path that moves the
-    // cursor just lets the next draw reveal it. Idempotent. See lessons.md - do NOT
-    // reintroduce per-handler "if cursor < scroll then nudge" math.
-    void ensurePlaylistCursorVisible();
-    void ensureDirCursorVisible();   // browser twin: clamp dir_scroll_ to keep dir_cursor_ shown
+    // The single owner of each pane's scroll/cursor relationship: clamp the cursor
+    // into range, scroll the minimum needed to bring it inside the visible window,
+    // and never leave the view past the end of the list. Both are wrappers over
+    // panescroll::ensureVisible (PaneScroll.h) - ONE rule, so the two panes cannot
+    // disagree. Each is enforced once at the top of its pane's draw; every path that
+    // moves a cursor just lets the next draw reveal it. Idempotent. See lessons.md -
+    // do NOT reintroduce per-handler "if cursor < scroll then nudge" math.
+    void ensurePlaylistCursorVisible();   // enforced at the top of drawPlaylist()
+    void ensureDirCursorVisible();        // enforced at the top of drawDirBrowser()
     std::string browserSectionLabel() const;   // display-only: names the current browser list
                                                // (dir leaf / feed title / section) for messages
 
@@ -315,7 +356,10 @@ private:
     void computeVizBins();
 
     // Input bar state (goto dir / save M3U / load M3U)
-    enum class InputMode { Goto, SaveM3U, LoadM3U, StreamURL, StreamName, RadioSearch, LastfmKey, LastfmSecret, ListenBrainzToken, PlaylistSearch, RecDir, RecOffset, PodcastAddUrl, PodcastIndexSearch, PodcastIndexKey, PodcastIndexSecret };
+    // LibrarySearch (slice 7) is the ONE mode that applies on every keystroke rather
+    // than on Enter, because it narrows a list instead of submitting a request. The
+    // difference is one hook at handleGotoInput's single exit point.
+    enum class InputMode { Goto, SaveM3U, LoadM3U, StreamURL, StreamName, RadioSearch, LastfmKey, LastfmSecret, ListenBrainzToken, PlaylistSearch, RecDir, RecOffset, PodcastAddUrl, PodcastIndexSearch, PodcastIndexKey, PodcastIndexSecret, LibrarySearch };
     bool        goto_active_  = false;
     InputMode   input_mode_   = InputMode::Goto;
     std::string goto_input_;
@@ -552,6 +596,17 @@ private:
     // convert-core: the marked-file set (path-keyed, survives re-sort/refresh/
     // dir-change), the batch convert engine, and the convert overlay state.
     MarkSet    marked_;
+    // CD-S3: which CD tracks to rip, keyed on the SYNTHETIC PLAYLIST PATH
+    // ("G:CD Track 05") so it survives activateDrive's clear-and-repopulate.
+    // EMPTY MEANS ALL, mirroring CDRipper::start's selected_toc contract - a user
+    // who never marks gets today's whole-disc rip with no new state, and
+    // unmarking the last track returns to ripping everything, not to ripping
+    // nothing. A SEPARATE INSTANCE from marked_: that one is the convert domain's,
+    // and convertSupportedInput denies isCDTrackPath, so a CD row can never be in
+    // it. Same type, different set. Cleared on media change - the paths are
+    // disc-INDEPENDENT, so a stale one would silently select a track on a disc the
+    // user never saw.
+    MarkSet    cd_sel_;
     ConvertJob convert_job_;
     int        convert_scope_ = 0;             // 1 file, 2 folder, 3 marked, 4 pane, 5 playlist file
     std::string convert_pl_file_;              // [5]: the focused playlist file whose entries transcode
@@ -608,6 +663,14 @@ private:
     std::string status_msg_;
     int         status_msg_ticks_ = 0;
     bool        status_msg_yellow_ = false;
+    // CD-S3: a status line that should live ~2s instead of the usual ~5s, pinned
+    // BY ITS TEXT rather than by a mutable timeout field. Thirteen sites set
+    // status_msg_ and none of them would know to reset a timeout, so a field
+    // would silently shorten whichever message happened to come next. Matching
+    // the text instead means the short life belongs to this message and expires
+    // with it: any other setter replaces status_msg_, the pin stops matching, and
+    // the default applies again. Same idiom as podcast_fetch_pin_ above.
+    std::string status_short_pin_;
 
     // Transient warning on the cmdline bar (both platforms), e.g. "stop playback
     // first to edit tags". Rendered red in drawCmdLine() and expired after ~5s in
@@ -630,6 +693,50 @@ private:
     bool in_podcast_feed_ = false;
     bool in_podcastindex_search_ = false;  // slice 6: showing Podcast Index results at level 1
     std::string podcast_feed_url_;       // the feed whose episodes are shown at level 2
+
+    // ── [Library] (library slice 3) ─────────────────────────────────────────
+    // ONE flag, because every exclusion chain in this file is a conjunction of
+    // !in_X_ and a library section has to appear in them or it inherits
+    // file-browser behaviour. The LEVELS are not flags: they live in the
+    // library-only descriptor below, and slice 4 added depth by extending that
+    // descriptor into libnav::State plus one populate switch, exactly as the hedge
+    // promised - no in_library_album_ / in_library_track_ was ever needed.
+    //
+    // WHY THE EXCLUSION-CHAIN EDITS ARE CORRECTNESS WORK, NOT BOOKKEEPING: rows
+    // here are ARTIST STRINGS FROM TAGS, and several existing sites build an
+    // fs::path out of a dir_entries_ value. Tag text may be raw Latin-1, and an
+    // fs::path built from invalid UTF-8 throws on Windows - site 2992 does it in
+    // the DRAW LOOP, which is the slice-5 crash exactly. Every such site is
+    // guarded with !in_library_.
+    bool in_library_ = false;
+    // WHERE the section is, and WHAT THE USER CAME THROUGH. Slice 4 replaced the
+    // slice-3 LibLevel enum and its four loose members (lib_level_, lib_artist_,
+    // lib_album_, lib_selected_) with this one, for two reasons: there is now a
+    // single source of truth, so the level and its remembered cursor cannot
+    // disagree; and the transitions are PURE, so three levels times two directions
+    // is proved by library_level_test rather than by pressing keys.
+    //
+    // Every member is an identity STRING and never an index. That is the staleness
+    // answer carried into depth: libidx::tracksForAlbum returns indices valid only
+    // against the instance that produced them, so they are turned into paths inside
+    // the one populate call that asked for them and never stored. See LibraryNav.h.
+    libnav::State lib_nav_;
+    libidx::LibraryIndex  library_index_;
+    libidx::LibraryScanner library_scanner_;
+    bool        lib_scan_running_   = false;
+    // Set when the user cancels a scan. The NEXT entry into [Library] shows the
+    // cancelled state and clears this, arming a retry; the entry after that
+    // scans. Without it, cancelling a 15.8 s scan and reopening the section would
+    // immediately restart it - the section fighting the user.
+    bool        lib_scan_cancelled_ = false;
+    // Slice 6: was the in-flight scan cancelled BY THE USER, as opposed to failing
+    // because the root could not be read? ScanOutcome reports only "did not complete"
+    // for both, so without this the two are indistinguishable - and they were, which is
+    // why pointing the library at a folder that does not exist used to report that you
+    // had cancelled it. This is the difference, held on the UI side so LibraryScanner
+    // keeps its shape.
+    bool        lib_cancel_requested_ = false;
+    std::string lib_status_;      // honest in-progress / empty / cancelled line
     // Chapter table for the currently playing book (empty if none / not a book).
     std::vector<Mp4Chapter> current_chapters_;
     std::string             chapters_for_path_;   // path current_chapters_ reflects
@@ -740,9 +847,88 @@ private:
     // fetch expires on its own instead of inheriting the pin. Cleared on pickup.
     std::string           podcast_fetch_pin_;
     void startPodcastFetch(const std::string& url, PodcastFetchPurpose purpose);
+    // ── [Library] (slices 3-4) ──
+    void enterLibrarySection();     // enter [Library]: load the index, or start the first scan
+    // ── slice 6 ──
+    // The folder the library indexes: config_.library_root if set, else the OS music
+    // folder MEMOIZED (CDRipper::musicRoot is a COM SHGetKnownFolderPath).
+    std::vector<std::string> libraryRoots() const;   // slice 11: configured roots, or the OS music folder
+    std::string rootsSummary() const;                // all roots on one line, for messages
+    void addLibraryRoot(const std::string& raw);     // with the three dedupe rejections
+    void removeLibraryRoot(const std::string& raw);  // records leave immediately, no rescan
+    void libRootReject(const std::string& msg);      // yellow bottom-left, ~5s (NOT lib_status_)
+    bool isLibraryRoot(const std::string& path) const;
+    // Is that folder actually readable? Treats the string as UNTRUSTED - a config root
+    // can be invalid UTF-8, which throws out of fs::path on Windows - so it goes through
+    // utf8Path inside a catch, never a bare fs::exists(std::string).
+    bool libraryRootReadable(const std::string& root) const;
+    // Shared by first enable, a changed root and the F12 rescan, so all three validate
+    // the root and set the same state. `reason` replaces the leading half of the status
+    // line; the "(Esc to cancel)" hint is always appended, because a cancellable
+    // operation that does not say so is not offered.
+    void startLibraryScan(const char* reason = nullptr);
+    void cancelLibraryScan();       // Esc while scanning
+    // The index record for a path, or nullptr. Linear, and called once per KEYPRESS -
+    // never per row and never per frame. Deliberately uncached: a query result that
+    // survives a frame is the staleness rule this campaign has kept for six slices.
+    const libidx::LibraryTrack* libraryTrackFor(const std::string& path) const;
+    void populateLevel();           // slice 4: dispatch to the populate for lib_nav_.level
+    // Slice 5: the level-3 row under the cursor as an ACTIONABLE path, or empty.
+    // One definition, so Enter, 'a', '*' and 'b' cannot disagree about which rows are
+    // actionable or about what to say when the index is out of date.
+    std::string libraryRowPath();
+    // LIB-AA: 'a' on a level-2 row appends that album's tracks, in the order level 3
+    // draws them. Reports rows ACTUALLY added, which is not the track count.
+    void appendAlbumUnderCursor();
+    void showLibraryArtists();      // (re)populate dir_entries_/dir_display_ at level 1
+    void showLibraryAlbums();       // slice 4: level 2 - one artist's albums
+    void showLibraryTracks();       // slice 4: level 3 - one album's tracks
+    void showLibrarySearch();       // slice 7: whole-collection results, re-run per keystroke
+    void showLibraryGenres();       // slice 10: the genre list, one level above artists
+    void showLibraryStats();        // slice 10: most-played / never-played, one level, two views
+
+    // The folded play-stat map, built lazily and reused (slice 10).
+    //
+    // Config::track_stats is keyed on whatever path the playlist entry held at play
+    // time, so its keys disagree on case; libidx::buildPlayStats folds and SUMS them.
+    // Cached rather than rebuilt per call because BOTH the stat views and the info
+    // pane's "Times Played" read it, and the info pane reads it on every draw - a
+    // per-frame rebuild over the stat map is work with a constant answer.
+    // Invalidated by recordPlay, which is the only thing that changes the source.
+    const std::unordered_map<std::string, libidx::PlayStat>& playStats();
+    void invalidatePlayStats() { play_stats_dirty_ = true; }
+    std::unordered_map<std::string, libidx::PlayStat> play_stats_;
+    bool play_stats_dirty_ = true;
+    // Cap on rendered results, and on the stat views for the same reason: never-played
+    // is ~89% of the collection (1,921 rows measured). The true count is shown alongside
+    // when it bites, so a capped list never reads as a complete answer - a one-character
+    // query matches almost the whole collection (measured: 2045 of 2156).
+    static constexpr std::size_t kLibSearchMax = 500;
+    std::string lib_result_count_;  // "(N)" or "(N of M)" for the header
+    // The ONE ascent path, so [Back] and Left are identical at every level by
+    // construction rather than by two handlers happening to agree.
+    void libraryAscend();
+    void pollLibraryScan();         // UI thread, per-frame: install a finished scan
+
     void pollPodcastFetch();        // UI thread, per-frame: install a finished fetch
     void enterPodcastSection();     // enter [Podcasts]: build the level-1 feed list
     void showPodcastFeedList();     // (re)populate dir_entries_/dir_display_ at level 1
+    void podcastAscend();
+    void showRadioStationList();    // (re)build the saved-station list at level 1
+    void radioAscend();             // search results -> stations -> leave
+
+    // ── THE ONE ASCENT PATH, for every browser section ───────────────────────
+    // [Back] and Left both call this, so the two keys are identical everywhere by
+    // construction rather than by seven pairs of handlers happening to agree.
+    // Returns false when the browser is not in a section at all, which is the
+    // caller's signal to fall through to ordinary directory navigation.
+    //
+    // This is BrowserPins.h's lesson applied to behaviour instead of to order: the
+    // pinned rows were two lists that had to agree and stopped agreeing, and an
+    // ascent duplicated seven times is the same defect waiting to happen. Leaving a
+    // section NEVER moves current_dir_ - refreshDir relists wherever the browser
+    // already was.
+    bool sectionAscend();
 
     // Podcast Index search (slice 6) - find NEW feeds by term, mirroring the radio
     // results sub-mode (in_podcastindex_search_ + pi_results_ rendered through the
@@ -802,6 +988,12 @@ private:
     bool episodeQueued(const std::string& id) const;         // in the pending queue?
     std::string episodeCacheFile(const std::string& feed_url, const PodcastEpisode& ep) const;  // pure, no mkdir
     void drawPodcastPlayConflict();             // the [W]ait / [P]lay-now / [Esc] popup
+    // Slice 11: the add/remove-a-library-root confirm. A popup rather than a silent
+    // toggle because adding a root starts a scan (15.8 s for 2,155 files, measured),
+    // and something that costs that much should say so before it happens.
+    void drawLibraryRootConfirm();
+    std::string lib_root_candidate_;   // the folder the popup is about
+    bool        lib_root_removing_ = false;   // true = it is already a root, so this removes
 
     // The podcast episode currently playing (resume latch + played-on-finish).
     std::string  podcast_playing_id_;          // episode id of the playing local file
@@ -953,9 +1145,47 @@ private:
 
     // Drive browser
     bool in_drive_list_ = false;
+
+    // ── THE set of virtual-section flags, enumerated ONCE (slice 17) ────────
+    //
+    // Every one of the ten flags above, by address, in the order the two reset
+    // sites used to write them out by hand. This array IS the list; nothing else
+    // may carry a second copy of it.
+    //
+    // It exists because four hand-written copies had already drifted apart. The
+    // worst was in the main loop's directory-mtime poll, which tested one flag out
+    // of ten and so ran refreshDir() - the function that tears every section down -
+    // while a section was on screen. [Library] and five other sections evicted
+    // themselves whenever the last-browsed folder changed on disk; on Linux under
+    // /mnt/hgfs that happened unprompted, about a second after entry.
+    //
+    // THE REMAINING HAZARD, named because a header cannot enforce it: an ELEVENTH
+    // section flag has to be added here. That is now ONE place to remember instead
+    // of four, and it sits beside the members themselves - but browser_sections_test
+    // proves the algorithms, not this array's completeness, and no test can.
+    static constexpr std::size_t kSectionFlagCount = 10;
+    bool* section_flags_[kSectionFlagCount] {};      // filled in the constructor
+
+    // Is the browser showing a virtual section rather than current_dir_'s real
+    // contents? Anything keyed on current_dir_ must not run when this is true.
+    bool inVirtualSection() const;
+    // Clear every section flag AND the library navigation state - the whole of
+    // "the reset trap", in one place, called by both reset sites.
+    void clearSectionFlags();
+
     static std::vector<std::string> listDrives();
     void enterDriveList();
     void activateDrive(const std::string& drive_entry);
+    // CD-S3: is the rip selection partial? ONE predicate, read by the modal's
+    // [C] row, its summary line, its height and the commit keys - rather than
+    // four places free to disagree about what "partial" means. Empty is NOT
+    // partial: empty means ALL (addition A), so unmarking the last track puts
+    // the modal back in exactly its default shape.
+    bool cdSelectionIsPartial() const;
+    // How many CD rows the playlist holds. One counting implementation, so the
+    // predicate above and the modal's summary line cannot disagree about the
+    // denominator.
+    size_t cdRowCount() const;
 
     static constexpr short CP_TITLE      = 1;
     static constexpr short CP_FOCUSED    = 2;

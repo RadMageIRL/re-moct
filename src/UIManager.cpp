@@ -10,6 +10,9 @@
 #include "UIManager.h"
 #include "CoverArt.h"
 #include "PortUtil.h"   // port::exeDir — locate a bundled wingui font beside the exe
+#include "BrowserPins.h" // the one pinned-row order, shared by refreshDir and the sort
+#include "BrowserSections.h" // slice 17: the one virtual-section flag set
+#include "PaneScroll.h"  // the one cursor/scroll rule, shared by both list panes
 #ifdef _WIN32
 #include <shellapi.h>   // ShellExecuteA for Last.fm browser auth
 #else
@@ -18,6 +21,7 @@
 #endif
 #include "StringUtils.h"
 #include "NextArm.h"   // XF C3: queue-aware preload (resolver + reconcile core)
+#include "CdTrackSelect.h"  // CD-S3: marked synthetic rows -> TOC indices (the one mapping)
 #include "EncoderQuality.h"
 #include "AudioManager.h"
 #include "PlaylistManager.h"
@@ -233,6 +237,25 @@ UIManager::UIManager(PlaylistManager& playlist, AudioManager& audio,
       media_(media),   // default resolved AFTER initscr (SMTC needs a live HWND)
       playlist_(playlist), audio_(audio), config_(config)
 {
+    // ── THE ONE ENUMERATION of the virtual-section flags (slice 17) ─────────
+    //
+    // In the exact order refreshDir() and enterDriveList() used to write out by
+    // hand, so the consolidation is a substitution and not a rewrite. Both of
+    // those functions now call clearSectionFlags() instead, and the main loop's
+    // directory poll asks inVirtualSection() instead of testing one flag of ten.
+    //
+    // Adding an eleventh section means adding it HERE, and only here.
+    section_flags_[0] = &in_drive_list_;
+    section_flags_[1] = &in_recent_;
+    section_flags_[2] = &in_favs_;
+    section_flags_[3] = &in_radio_;
+    section_flags_[4] = &in_books_;
+    section_flags_[5] = &in_podcasts_;
+    section_flags_[6] = &in_podcast_feed_;
+    section_flags_[7] = &in_library_;
+    section_flags_[8] = &in_radio_search_;
+    section_flags_[9] = &in_podcastindex_search_;
+
     // Seed the session rip-format selection from the config default (config
     // is load-once; the modal toggles rip_sel_ and never writes it back).
     rip_sel_ = parseRipFormats(config_.rip_formats);
@@ -340,6 +363,17 @@ UIManager::UIManager(PlaylistManager& playlist, AudioManager& audio,
     if (!media_) media_ = &core::mediaControl();
     wireMediaControl();
 
+    // Slice 13: say ONCE that play counts were merged, and where the backup is.
+    // A migration the user did not ask for should say so and get out of the way -
+    // so the bottom-left yellow line, which is the mechanism for reporting without
+    // taking a pane, and not a toast or a popup.
+    if (config_.stats_merged > 0) {
+        status_msg_ = "Merged " + std::to_string(config_.stats_merged) +
+                      " duplicate play counts - backup in remoct.conf.statbak";
+        status_msg_ticks_  = 0;
+        status_msg_yellow_ = true;
+    }
+
     running_ = true;
 }
 
@@ -375,6 +409,8 @@ UIManager::~UIManager() {
     if (radio_art_thread_.joinable())   radio_art_thread_.join();
     if (info_art_thread_.joinable())    info_art_thread_.join();
     if (podcast_fetch_thread_.joinable()) podcast_fetch_thread_.join();  // podcasts: never terminate on a joinable thread
+    library_scanner_.cancel();   // library: a 15.8 s scan must not hold up a quit
+                                 // (the scanner destructor also cancels+joins)
     if (pi_search_thread_.joinable())   pi_search_thread_.join();        // slice 6: byterm search worker
     std::atomic_ref<std::int32_t>(podcast_dl_cancel_).store(1);          // abort a mid-download fast
     if (podcast_dl_thread_.joinable()) podcast_dl_thread_.join();
@@ -1303,6 +1339,7 @@ void UIManager::run() {
             flushPendingSeek();
         updateScrobbler();   // publishes now-playing to the OS on change (publishMedia)
         pollPodcastFetch();  // podcasts: install a finished feed fetch off the worker thread
+        pollLibraryScan();   // library: install a finished scan off the worker thread
         pollPodcastIndexSearch(); // podcasts slice 6: install finished byterm search results
         pollPodcastDownload(); // podcasts: refresh download %, play the episode when it lands
         pollPodcastChapters(); // podcasts: open the chapter pane when a fetched document lands
@@ -1635,10 +1672,19 @@ void UIManager::run() {
             redraw_needed_.store(true);
         }
         // Expire the cmdline status line (same cadence as rip_status_).
-        if (!status_msg_.empty() && ++status_msg_ticks_ > 60) {
-            status_msg_.clear();
-            status_msg_ticks_ = 0;
-            redraw_needed_.store(true);
+        // CD-S3: ~2s for a message that pinned itself as short-lived, ~5s for
+        // everything else. The pin is compared by TEXT, so the short life cannot
+        // outlive its own message and land on the next one.
+        {
+            const int ttl = (!status_short_pin_.empty() && status_msg_ == status_short_pin_)
+                          ? 25    // ~2s at the 80ms loop tick
+                          : 60;   // ~5s, unchanged for every existing caller
+            if (!status_msg_.empty() && ++status_msg_ticks_ > ttl) {
+                status_msg_.clear();
+                status_msg_ticks_ = 0;
+                status_short_pin_.clear();
+                redraw_needed_.store(true);
+            }
         }
         {
             int cur = (int)playlist_.current();
@@ -1654,6 +1700,7 @@ void UIManager::run() {
                 const auto& track = audio_.currentTrack();
                 if (!curIsStream && !track.path.empty()) {
                     config_.recordPlay(track.path);
+                    invalidatePlayStats();   // the one thing that changes the source
                     if (config_.toast_enabled)
                         showTrackToast(track.title, track.artist, track.album);
                 }
@@ -1710,8 +1757,22 @@ void UIManager::run() {
                 redraw_needed_.store(true);
         }
 
-        // Periodically check if the current directory changed on disk
-        if (!in_drive_list_ && ++dir_poll_ticks_ >= DIR_POLL_INTERVAL) {
+        // Periodically check if the current directory changed on disk.
+        //
+        // SLICE 17: the guard was `!in_drive_list_` - one flag out of ten, six
+        // sections out of date. In [Library], [Radio], [Podcasts], [FAVs],
+        // [Recent] or [Books] the poll still ran, still stat'd current_dir_ (which
+        // holds wherever the FOLDER BROWSER was, not what is on screen), and on any
+        // difference called refreshDir() - the function that tears every section
+        // down. The section evicted itself and the pane reverted to the last
+        // browsed folder. Reported on Linux under /mnt/hgfs, where the mtime moves
+        // unprompted; measured to fire on Windows NTFS too, as soon as anything
+        // writes into that folder.
+        //
+        // The precondition is "the browser is showing current_dir_", and
+        // inVirtualSection() is how that is known - not a list of sections that
+        // happens to be equivalent today.
+        if (!inVirtualSection() && ++dir_poll_ticks_ >= DIR_POLL_INTERVAL) {
             dir_poll_ticks_ = 0;
             try {
                 auto mtime = fs::last_write_time(current_dir_);
@@ -1875,6 +1936,7 @@ void UIManager::drawOverlay() {
     else if (ui_overlay_ == UIOverlay::ConvertConfirm) drawConvertConfirm();
     else if (ui_overlay_ == UIOverlay::PlaylistFormat) drawPlaylistFormat();
     else if (ui_overlay_ == UIOverlay::PodcastPlayConflict) drawPodcastPlayConflict();
+    else if (ui_overlay_ == UIOverlay::LibraryRoot)         drawLibraryRootConfirm();
     else if (ui_overlay_ == UIOverlay::PodcastIndexCreds)   drawPodcastIndexCreds();
 }
 
@@ -2077,7 +2139,12 @@ void UIManager::drawRipConfirm() {   // slice 6: common (ncurses + portable CDSo
     const int BOX_W = 68;
     // rip-format-select: the format block is data-driven, so the box and
     // everything below it grow with the table (2 rows -> 19, 3 -> 20, ...).
-    const int BOX_H = 17 + kRipFormatCount;
+    // CD-S3: one extra row for the selection summary, and ONLY when the
+    // selection is partial - with nothing marked the modal is exactly the size
+    // and shape it has always been. The modal is already 23 rows in an app that
+    // runs to a 9-row terminal, which is why this is one line and not a list.
+    const bool cd_partial = cdSelectionIsPartial();
+    const int BOX_H = 17 + kRipFormatCount + (cd_partial ? 1 : 0);
     int y0 = (screen_rows_ - BOX_H) / 2;
     int x0 = (screen_cols_ - BOX_W) / 2;
     if (y0 < 0) y0 = 0;
@@ -2195,7 +2262,16 @@ void UIManager::drawRipConfirm() {   // slice 6: common (ncurses + portable CDSo
     // Mode options — plain text; dimmed while nothing is selected (commit
     // keys are inert then; N stays live). Cancel row never dims. Rows below
     // the format block are table-size-relative.
-    const int mode_y = 8 + kRipFormatCount;
+    int mode_y = 8 + kRipFormatCount;
+    // CD-S3: the summary line, hidden when the whole disc is going to be ripped.
+    // Everything below shifts by the same row, so the block keeps its shape.
+    if (cd_partial) {
+        wattron(w, A_BOLD);
+        mvwprintw(w, mode_y, 3, "Ripping %d of %d tracks  (u marks, U clears)",
+                  (int)cd_sel_.size(), (int)cdRowCount());
+        wattroff(w, A_BOLD);
+        ++mode_y;
+    }
     mvwaddstr(w, mode_y, 3, "Select ripping mode");
     struct { const char* key; const char* label; const char* desc; } opts[] = {
         { "[A]", "AccurateRip ", "Network CRC verify + offset correction" },
@@ -2206,10 +2282,16 @@ void UIManager::drawRipConfirm() {   // slice 6: common (ncurses + portable CDSo
     };
     for (int i = 0; i < 5; ++i) {
         bool dim = none_selected && i < 4;
-        if (dim) wattron(w, A_DIM);
+        // CD-S3, CD-S2's deferred debt: [C] (i == 1) is unavailable while the
+        // selection is partial, and the line says why. CTDB is one CRC32 over the
+        // whole disc's audio; there is no partial form of it. The key is inert to
+        // match, so start()'s refusal is a backstop nobody meets.
+        const bool c_blocked = cd_partial && i == 1;
+        if (dim || c_blocked) wattron(w, A_DIM);
         mvwprintw(w, mode_y + 1 + i, 3, "%s %-12s  %s",
-                  opts[i].key, opts[i].label, opts[i].desc);
-        if (dim) wattroff(w, A_DIM);
+                  opts[i].key, opts[i].label,
+                  c_blocked ? "Unavailable - whole disc only" : opts[i].desc);
+        if (dim || c_blocked) wattroff(w, A_DIM);
     }
 
     // Footer divider + output path
@@ -2892,6 +2974,11 @@ void UIManager::drawCwd() {
 
 void UIManager::drawDirBrowser() {
     werase(win_dir_);
+    // The invariant, mirroring drawPlaylist(): every path that leaves the cursor
+    // off-pane self-heals here. Before this the browser clamped per-handler, so a
+    // repopulate, a delete, a resize or a by-name cursor restore could each leave
+    // the pane drawing rows the cursor was not among. See PaneScroll.h.
+    ensureDirCursorVisible();
     int rows, cols;
     getmaxyx(win_dir_, rows, cols);
     (void)rows;
@@ -2900,16 +2987,87 @@ void UIManager::drawDirBrowser() {
     const int  cx = aw ? 1 : 0;             // content left column (inside frame)
     const int  cw = aw ? cols - 2 : cols;   // content width
     std::string hdr;
-    if (in_drive_list_)   hdr = " [Drives] (Enter:open  F12:refresh  E:eject) ";
-    else if (in_recent_)  hdr = " [Recently Played] ";
-    else if (in_favs_)    hdr = " [FAVs] (f:fav/unfav  Enter:play  Del:remove) ";
-    else if (in_radio_)   hdr = " [Radio] (Enter:play  d/Del:remove) ";
-    else if (in_podcasts_) {
-        if (in_podcastindex_search_) hdr = " [Podcasts] search results (Enter:subscribe  [Back]:feeds) ";
-        else if (in_podcast_feed_)   hdr = " [Podcasts] (Enter:play  D:download  d/Del:delete dl  y:played  [Back]:feeds) ";
-        else                         hdr = " [Podcasts] (Enter:open  /:search  a:add feed  d/Del:remove) ";
+    // Every section now states how to get OUT, and states it the same way, because
+    // [Back] and Left now do the same thing in all of them. Four of these advertised
+    // no way out at all, which was survivable only while Left happened to exit as a
+    // side effect of walking the browser up a directory.
+    if (in_drive_list_)   hdr = " [Drives] (Enter:open  F12:refresh  E:eject  [Back]/Left:back) ";
+    else if (in_recent_)  hdr = " [Recently Played] (Enter:play  [Back]/Left:leave) ";
+    // "*:fav/unfav", not "f". This said f for as long as it has existed, but f is the
+    // ReplayGain toggle (case 'f') and the favourite toggle is case '*' - so the one
+    // section whose whole purpose is favourites named the wrong key for managing them.
+    else if (in_favs_)    hdr = " [FAVs] (*:fav/unfav  Enter:play  Del:remove  [Back]/Left:leave) ";
+    else if (in_radio_) {
+        // Level-aware, so the search sub-mode says where Left actually goes - it
+        // returns to the saved stations, it does not leave the section.
+        if (in_radio_search_) hdr = " [Radio] search results (Enter:play  [Back]/Left:stations) ";
+        else                  hdr = " [Radio] (Enter:play  d/Del:remove  [Back]/Left:leave) ";
     }
-    else if (in_books_)   hdr = " [Books] (Enter:play  Del:remove) ";
+    else if (in_podcasts_) {
+        if (in_podcastindex_search_) hdr = " [Podcasts] search results (Enter:subscribe  [Back]/Left:feeds) ";
+        else if (in_podcast_feed_)   hdr = " [Podcasts] (Enter:play  D:download  d/Del:delete dl  y:played  [Back]/Left:feeds) ";
+        else                         hdr = " [Podcasts] (Enter:open  /:search  a:add feed  d/Del:remove  [Back]/Left:leave) ";
+    }
+    else if (in_books_)   hdr = " [Books] (Enter:play  Del:remove  [Back]/Left:leave) ";
+    else if (in_library_) {
+        // Level-aware, extending the nested-if [Podcasts] uses just above. The
+        // artist and album names are ELIDED to a budget rather than allowed to push
+        // the hint text off the pane: the header is one fixed-width row, and a long
+        // album title would otherwise hide the only stated way out.
+        // Column-aware and codepoint-aligned, via the shared helpers. A byte-wise
+        // substr would cut a multi-byte name mid-sequence and render as a broken
+        // glyph - and artist and album names are exactly where the non-ASCII is.
+        auto clip = [](const std::string& s, int cols) {
+            const std::string d = sanitizeForDisplay(s.empty() ? std::string("(none)") : s);
+            if (dispWidth(d) <= cols) return d;
+            return truncateToWidth(d, cols - 1) + "\xE2\x80\xA6";   // U+2026, one column
+        };
+        switch (lib_nav_.level) {
+            case libnav::Level::Genres:
+                // Slice 16: "back", not "leave" - because that is what it now does.
+                // The header stating where Left goes is the thing LIB-S4 fixed in
+                // four sections at once, so it has to keep pace when the answer
+                // changes.
+                hdr = " [Library] genres (Enter:artists  g:back  %:stats  [Back]/Left:back) ";
+                break;
+            case libnav::Level::Stats:
+                // Says WHICH view and how many, for the same reason Results does: both
+                // are capped, and a capped list that does not say so reads as complete.
+                // It also names itself so nobody reads it as [Recent].
+                hdr = std::string(" [Library] ") +
+                      (lib_nav_.stat_view == libnav::StatView::MostPlayed
+                           ? "most played " : "never played ") +
+                      lib_result_count_ + " (Enter:play  a:add  %:next/out  [Back]/Left:back) ";
+                break;
+            case libnav::Level::Artists:
+                // Inside a genre the header says so, and says Left goes back to the
+                // genre list rather than out of the section - because that is what it
+                // now does, and a header that lied about the way out was the thing
+                // slice 4 fixed in four sections at once.
+                hdr = lib_nav_.genre.empty()
+                    ? " [Library] (Enter:albums  g:genres  %:stats  F12:rescan  [Back]/Left:leave) "
+                    : " [Library] " + clip(lib_nav_.genre, 20) +
+                      " (Enter:albums  [Back]/Left:genres) ";
+                break;
+            case libnav::Level::Albums:
+                hdr = " [Library] " + clip(lib_nav_.artist, 24) +
+                      " (Enter:tracks  a:add album  [Back]/Left:artists) ";
+                break;
+            case libnav::Level::Tracks:
+                // Enter gained a verb in slice 5. The name budgets shrink to pay for
+                // it, because the keys are the part a user cannot guess.
+                hdr = " [Library] " + clip(lib_nav_.artist, 16) + " - " +
+                      clip(lib_nav_.album, 16) +
+                      " (Enter:play  a:add  q:queue  [Back]/Left:albums) ";
+                break;
+            case libnav::Level::Results:
+                // The COUNT is part of the header, not decoration: results are capped,
+                // and a capped list that does not say so reads as a complete answer.
+                hdr = " [Library] search \"" + clip(lib_nav_.query, 18) + "\" " +
+                      lib_result_count_ + " (Enter:play  a:add  [Back]/Left:back) ";
+                break;
+        }
+    }
     else {
         std::string leaf = fs::path(current_dir_).filename().string();
         if (leaf.empty()) leaf = current_dir_;
@@ -2989,7 +3147,12 @@ void UIManager::drawDirBrowser() {
                     || name == ".." || name == "[Drives]" || name == "[Recent]"
                     || name == "[FAVs]" || name == "[Bookmarks]" || name == "[Back]"
                     || name == "[Radio]" || name == "[Books]" || name == "[Podcasts]"
-                    || (!in_recent_ && !in_favs_ && !in_radio_ && !in_podcasts_ && !in_books_ && fs::is_directory(fs::path(current_dir_) / name));
+                    || name == "[Library]"
+                    // !in_library_ is LOAD-BEARING, not tidiness: a library row is
+                    // an artist string from a tag, which may be raw Latin-1, and
+                    // fs::path from invalid UTF-8 THROWS on Windows. Without the
+                    // guard this line throws every frame - the slice-5 crash.
+                    || (!in_recent_ && !in_favs_ && !in_radio_ && !in_podcasts_ && !in_books_ && !in_library_ && fs::is_directory(fs::path(current_dir_) / name));
 
         // Dead path check for FAVs — grey out missing files
         bool dead_path = false;
@@ -3090,15 +3253,13 @@ const TrackInfo* UIManager::nowPlayingTrack() const {
     return &audio_.currentTrack();
 }
 
+// Both panes' cursor/scroll reconciliation is panescroll::ensureVisible - the same
+// three steps in the same order, so the two panes cannot land on different rules.
+// The math moved to PaneScroll.h unchanged when the browser pane got the same
+// invariant (slice 9); this body is a wrapper over what it always did.
 void UIManager::ensurePlaylistCursorVisible() {
-    const int n = (int)playlist_.size();
-    if (n == 0) { pl_cursor_ = 0; pl_scroll_ = 0; return; }
-    pl_cursor_ = std::clamp(pl_cursor_, 0, n - 1);
-    const int visible = win_playlist_ ? paneVisibleRows(win_playlist_) : 0;
-    if (visible <= 0) return;                       // pane not built yet
-    if (pl_cursor_ < pl_scroll_)                    pl_scroll_ = pl_cursor_;
-    else if (pl_cursor_ >= pl_scroll_ + visible)    pl_scroll_ = pl_cursor_ - visible + 1;
-    pl_scroll_ = std::clamp(pl_scroll_, 0, std::max(0, n - visible));
+    panescroll::ensureVisible(pl_cursor_, pl_scroll_, (int)playlist_.size(),
+                              win_playlist_ ? paneVisibleRows(win_playlist_) : 0);
 }
 
 // Short uppercase type tag for the optional F11 filetype column (MOC parity).
@@ -3195,6 +3356,13 @@ void UIManager::drawPlaylist() {
         wattron(win_playlist_, COLOR_PAIR(rpair) | rattr);
         const bool ico = config_.nerd_icons;
         std::string mark = (playing && !ico) ? "> " : "  ";
+        // CD-S3: a CD row marked for ripping shows the SAME "* " the browser uses
+        // for convert marks - one visual language for one concept, rather than a
+        // second CD-specific glyph. The playing marker still wins the cell, and
+        // the lookup is skipped entirely when nothing is marked (the common case),
+        // mirroring the browser's guard.
+        if (!cd_sel_.empty() && mark != "> " && cd_sel_.contains(e.path))
+            mark = "* ";
         // Optional filetype column (F11): a fixed 4-char field + 1 space between
         // title and duration. Blank tag (CD/stream/unknown) = zero width for
         // that row, title reclaims the space.
@@ -3403,7 +3571,7 @@ void UIManager::drawHelp() {
         { "PgDn / PgUp",    "Navigate down / up one page"         },
         { "Home / End",     "Jump to first / last row"            },
         { "Left arrow",     "Go to parent directory"              },
-        { "g",              "Goto directory  (Tab = complete)"    },
+        { "g",              "Goto directory  (in [Library]: genres - see below)" },
         { "Playlist",       "",                             true  },
         { "a",              "Add selection to playlist (recursive)"},
         { "d",              "Delete selected track"               },
@@ -3426,7 +3594,8 @@ void UIManager::drawHelp() {
         { "L  (Shift+L)",   "Toggle lyrics  (needs .lrc file)"   },
         { "A  (Shift+A)",   "About RE-MOCT"                      },
         { "X  (Shift+X)",   "Output device picker"               },
-        { "i",              "Track info popup"                    },
+        { "i",              "Track info - follows the cursor in either pane"  },
+        { "e  (in info)",   "Edit tags of the track the info pane is showing" },
         { "Ctrl+L",         "Force redraw / fix layout after resize" },
         { "?",              "Toggle this help  (j/k, PgUp/PgDn, Home/End scroll)"  },
         { "q",              "Add track to play queue"             },
@@ -3440,10 +3609,27 @@ void UIManager::drawHelp() {
         { "F6",             "iHeart re-pin: off / ad-escape / hybrid / timed / live-edge" },
         { "F7  /  F8",      "Awesome theme: previous / next" },
         { "F  (Shift+F)",   "Toggle file-type column (FLAC/MP3/...) in the playlist" },
-        { "F12",            "Refresh the [Drives] list (pick up hot-plugged drives)" },
+        { "F12",            "Refresh [Drives], or rescan [Library]" },
         { "E  (Shift+E)",   "Eject highlighted CD drive (in [Drives])" },
         { "\\",             "Search the focused list - playlist or browser (jump to a row)" },
         { "/",              "Find new online: stations in [Radio], podcasts in [Podcasts]" },
+        // ── [Library] ────────────────────────────────────────────────────────
+        // Sixteen slices of capability that a user could not previously discover
+        // from this pane at all. DISCOVERY ONLY: what exists and which key reaches
+        // it. The per-level "[Back]/Left goes here" detail deliberately stays in the
+        // browser header, where it is already correct and level-aware - putting it
+        // here too would be a second list that has to agree with the first, which is
+        // the BrowserPins failure LIB-S3b existed to fix.
+        { "[Library]",      "",                             true  },
+        { "(about)",        "Browse by artist / album / track, however the folders are arranged" },
+        { "(setup)",        "Off by default: library=1 in remoct.conf, library_root=<folder>" },
+        { "@",              "Add or remove a library folder (on a folder in the browser)" },
+        { "Enter",          "Open artist, then album; on a track, add it and play it" },
+        { "a",              "Add without playing - on an album row, adds the whole album" },
+        { "|  (Shift+\\)",  "Search your WHOLE collection  (\\ searches just this list)" },
+        { "g",              "Genres  (press again to go back)"    },
+        { "%",              "Most played / never played  (again for next, again to leave)" },
+        { "F12  /  Esc",    "Rescan the library / cancel a running scan" },
 #ifdef PDCURSES
         { "Alt+Enter",      "Toggle fullscreen (borderless)"      },
 #endif
@@ -3696,27 +3882,35 @@ void UIManager::jumpToPlaylistIndex(std::size_t idx) {
 }
 
 // Browser twin of jumpToPlaylistIndex. Unlike the playlist jump, focus STAYS on the
-// browser (the user searched the left pane and wants to land there), and the browser
-// has no draw-time scroll invariant, so we clamp dir_scroll_ ourselves. Closing the
+// browser (the user searched the left pane and wants to land there). Closing the
 // results overlay (right_pane_ -> Playlist) returns the right pane to its normal view.
+//
+// One cursor assignment is the whole jump, exactly as in jumpToPlaylistIndex:
+// scroll-to-visible is drawDirBrowser's invariant since slice 9.
 void UIManager::jumpToBrowserIndex(std::size_t idx) {
     if (idx >= dir_entries_.size()) return;
     dir_cursor_ = (int)idx;
-    ensureDirCursorVisible();
     focus_ = Pane::DirBrowser;
     right_pane_ = RightPane::Playlist;
     redraw_needed_.store(true);
 }
 
-// The browser has no draw-time cursor-visible invariant (j/k nudge per-handler), so
-// several sites clamp dir_scroll_ by hand after a cursor move; this is that clamp,
-// factored. NOT idempotent scroll math like ensurePlaylistCursorVisible - it only
-// pulls the view to cover dir_cursor_ (never re-centres), matching the prior inline.
+// The browser twin, and as of slice 9 it is the SAME function as the playlist's -
+// panescroll::ensureVisible, not a second implementation of the same idea.
+//
+// It used to be step 2 of three: it pulled the view to cover dir_cursor_ but never
+// clamped the cursor into range and never clamped the scroll off the tail, and it
+// ran only where a handler remembered to call it. It is now enforced at the top of
+// drawDirBrowser(), so the four surviving handler calls are redundant rather than
+// load-bearing - they are left in place because the function is idempotent and
+// deleting working call sites buys nothing.
+//
+// win_dir_ is null-checked here where the old body was not. Not reachable today
+// (every caller runs after the windows exist), but the draw-time call makes this
+// the pane's one reconciliation point and it should not depend on that staying true.
 void UIManager::ensureDirCursorVisible() {
-    int vis = paneVisibleRows(win_dir_);
-    if (dir_cursor_ < dir_scroll_) dir_scroll_ = dir_cursor_;
-    else if (vis > 0 && dir_cursor_ >= dir_scroll_ + vis)
-        dir_scroll_ = dir_cursor_ - vis + 1;
+    panescroll::ensureVisible(dir_cursor_, dir_scroll_, (int)dir_entries_.size(),
+                              win_dir_ ? paneVisibleRows(win_dir_) : 0);
 }
 
 // Display-only: names the browser list the user is looking at, for the \-search
@@ -3729,6 +3923,7 @@ std::string UIManager::browserSectionLabel() const {
     if (in_favs_)       return "FAVs";
     if (in_radio_)      return "Radio";
     if (in_books_)      return "Books";
+    if (in_library_)    return "Library";
     if (in_podcasts_) {
         if (in_podcast_feed_) {
             std::string t = config_.podcastFeedTitle(podcast_feed_url_);
@@ -3973,9 +4168,15 @@ bool UIManager::saveTagEdits() {
 
     info_cached_path_.clear();  // invalidate so drawTrackInfo re-reads on next open
 
-    // Update playlist display title so it reflects immediately (only on a real write)
+    // Update playlist display title so it reflects immediately (only on a real write).
+    //
+    // FOLDED, not byte-exact (slice 14). Slice 13 measured that the same file reaches
+    // the playlist under different spellings depending on how it was added, so an
+    // exact compare misses a row that IS this file and leaves it showing the old
+    // title. Fourth use of the one path-identity helper rather than a fifth rule.
+    const std::string edited_key = libidx::detail::foldPathKey(tag_edit_path_);
     for (std::size_t i = 0; i < playlist_.size(); ++i) {
-        if (playlist_.at(i).path == tag_edit_path_) {
+        if (libidx::detail::foldPathKey(playlist_.at(i).path) == edited_key) {
             // Rebuild display title as "Artist - Title"
             std::string dt;
             if (!tag_edit_values_[1].empty())
@@ -3984,6 +4185,41 @@ bool UIManager::saveTagEdits() {
             playlist_.setDisplayTitle(i, dt);
             break;
         }
+    }
+
+    // ── The library index holds a COPY of these tags (slice 14) ──────────────
+    //
+    // Without this the library would keep browsing and searching the OLD values until
+    // a rescan - silently wrong, which is the one outcome not acceptable here.
+    //
+    // mtime and size are DELIBERATELY NOT REFRESHED. The write changed them on disk,
+    // so this record now looks stale to the scanner, and the next rescan re-reads this
+    // one file and confirms what was just written. Leaving the revalidation key stale
+    // is what makes this a fast path rather than a second source of truth.
+    //
+    // The index file is not rewritten: the in-memory index is what the pane reads, and
+    // a rescan persists it. Rewriting a whole index after one tag edit is out of
+    // proportion to the edit.
+    bool touched_index = false;
+    for (libidx::LibraryTrack& t : library_index_.tracks) {
+        if (libidx::detail::foldPathKey(t.path) != edited_key) continue;
+        t.title  = tag_edit_values_[0];
+        t.artist = tag_edit_values_[1];
+        t.album  = tag_edit_values_[2];
+        t.genre  = tag_edit_values_[3];
+        if (!tag_edit_values_[4].empty()) {
+            try { t.year = (int32_t)std::stoi(tag_edit_values_[4]); } catch (...) {}
+        }
+        touched_index = true;
+        break;
+    }
+    if (touched_index) {
+        // artist and album_artist feed groupingArtist, so an edit can change whether
+        // an album is a compilation. 0.55 ms on the real index (slice 8) - not a cost
+        // worth avoiding to leave the browse tree wrong.
+        libidx::rebuildCompilations(library_index_);
+        if (in_library_) populateLevel();   // the open level re-queries from the strings
+                                            // it holds, so the new tags show at once
     }
     return true;
 }
@@ -4722,49 +4958,44 @@ void UIManager::drawTrackInfo() {
     int rows, cols;
     getmaxyx(w, rows, cols);
 
-    // Which track to show: cursored row if browsing the playlist, else the playing
-    // row (stream-aware), else the last-known index for the nothing-playing floor.
-    std::size_t idx;
-    if (focus_ == Pane::Playlist && pl_cursor_ < (int)playlist_.size()) {
-        idx = (std::size_t)pl_cursor_;
-    } else if (auto r = nowPlayingRow()) {
-        idx = *r;
-    } else {
-        idx = playlist_.current();   // nothing playing / queue-launched stream: last-known index
-    }
+    // WHAT the pane is looking at is infoPaneSubject()'s decision, not this
+    // function's - the 'e' handler reads the same answer, so the pane and the tag
+    // editor cannot disagree about which file they mean. That mattered: before
+    // slice 10 each computed it separately and neither consulted the browser.
+    const InfoSubject subj = infoPaneSubject();
+    const std::size_t idx  = subj.pl_index;
 
-    // Header
+    // Header. It advertises 'e' only when 'e' will actually do something - editing is
+    // playlist-only until LIB-S14, and a header offering an action that then refuses
+    // is how a user learns to distrust the header.
     std::string hdr = tag_edit_mode_
         ? " Track Info  [Enter:save  Esc:cancel  Up/Dn:field] "
-        : " Track Info  [i:close  e:edit tags] ";
+        : (subj.source == InfoSource::Playlist ? " Track Info  [i:close  e:edit tags] "
+                                               : " Track Info  [i:close] ");
     hdr.resize((size_t)cols, ' ');
     wattron(w, COLOR_PAIR(CP_FOCUSED) | A_BOLD);
     mvwaddnstr(w, 0, 0, hdr.c_str(), cols);
     wattroff(w, COLOR_PAIR(CP_FOCUSED) | A_BOLD);
 
-    PlaylistEntry pod_entry;
     // Browsing the [Podcasts] section: the HIGHLIGHTED row drives the pane - show ITS
     // title + RSS art, playing or not (Dos's "normal behavior": the info pane follows
-    // the cursor here, never a stale/unrelated playlist track). The highlighted row
-    // WINS over the playing episode below, so scrolling always previews what's under
-    // the cursor. Feed rows preview the show art; episode rows prefer the episode
-    // image, falling back to show art (resolveEpisodeArt).
+    // the cursor here, never a stale/unrelated playlist track). Feed rows preview the
+    // show art; episode rows prefer the episode image, falling back to show art.
+    //
+    // ONLY THE ART is decided here as of slice 10. The subject - which row, and what
+    // its title and duration are - is infoPaneSubject()'s, and this block used to
+    // compute a second copy of it. The two agreeing was maintenance rather than
+    // structure, and that is precisely what let the pane and 'e' drift apart.
     std::string browse_art_url, browse_art_disk;
     bool browse_art_feed = false;
     bool podcast_browse  = false;
     if (in_podcasts_ && focus_ == Pane::DirBrowser && dir_cursor_ >= 1) {
         if (in_podcast_feed_ && dir_cursor_ - 1 < (int)podcast_episodes_.size()) {
             const PodcastEpisode& ep = podcast_episodes_[(size_t)(dir_cursor_ - 1)];
-            pod_entry.path          = episodeCacheFile(podcast_feed_url_, ep);   // ASCII-safe
-            pod_entry.display_title = sanitizeForDisplay(ep.title);
-            pod_entry.duration_sec  = (int)ep.duration_sec;
             resolveEpisodeArt(ep, browse_art_url, browse_art_feed, browse_art_disk);
             podcast_browse = true;
         } else if (!in_podcast_feed_ && dir_cursor_ - 1 < (int)config_.podcast_feeds.size()) {
             const std::string& furl = config_.podcast_feeds[(size_t)(dir_cursor_ - 1)];
-            std::string title = config_.podcastFeedTitle(furl);
-            pod_entry.path          = pathSafeAscii(furl);   // pseudo-path; never a real file
-            pod_entry.display_title = sanitizeForDisplay(title.empty() ? furl : title);
             browse_art_url  = config_.podcastFeedArt(furl);
             browse_art_feed = true;
             browse_art_disk = browse_art_url.empty() ? std::string()
@@ -4772,28 +5003,28 @@ void UIManager::drawTrackInfo() {
             podcast_browse = true;
         }
     }
-    // A playing episode is standalone (not in the playlist). When we're NOT browsing
-    // the podcast pane (e.g. focused the playlist, or off in another view), still show
-    // IT - its own tags + art - so the info pane follows now-playing like radio/music,
-    // instead of the last (unrelated) playlist track. Yields to podcast_browse above.
-    const bool show_podcast = !podcast_browse
-        && isPlayingPodcast()
-        && audio_.state() != PlaybackState::Stopped
-        && !(focus_ == Pane::Playlist && pl_cursor_ < (int)playlist_.size());
-    if (show_podcast) {
-        pod_entry.path          = podcast_playing_path_;
-        pod_entry.display_title = audio_.currentTrack().title;
-        pod_entry.duration_sec  = audio_.currentTrack().duration_sec;
-    }
-    const bool pod_pane = show_podcast || podcast_browse;
-    if (!pod_pane && playlist_.empty()) {
+
+    if (subj.source == InfoSource::None) {
+        // Nothing to show, said honestly rather than by falling back to an unrelated
+        // track. Reachable two ways: an empty playlist with nothing playing, and a
+        // browser row that is not a file - an artist, album or genre row, a section
+        // pin, "..", or a directory. None of those has track metadata, and showing
+        // the playlist's current row for them is exactly the bug this slice fixed.
         wattron(w, COLOR_PAIR(CP_DIM));
-        mvwaddstr(w, rows/2, 2, "No track selected");
+        mvwaddstr(w, rows/2, 2,
+                  (focus_ == Pane::DirBrowser) ? "No track info for this row"
+                                               : "No track selected");
         wattroff(w, COLOR_PAIR(CP_DIM));
     } else {
-        if (idx >= playlist_.size())            // defensive: a stale current() must never throw
-            idx = playlist_.empty() ? 0 : playlist_.size() - 1;
-        const PlaylistEntry& entry = pod_pane ? pod_entry : playlist_.at(idx);
+        // One synthetic entry so the rest of the function reads the subject and only
+        // the subject. A playlist subject still resolves to its real row, so nothing
+        // about the playlist path changes.
+        PlaylistEntry subj_entry;
+        subj_entry.path          = subj.path;
+        subj_entry.display_title = subj.display_title;
+        subj_entry.duration_sec  = subj.duration_sec;
+        const PlaylistEntry& entry = (subj.source == InfoSource::Playlist)
+                                   ? playlist_.at(idx) : subj_entry;
         const std::string& path = entry.path;
 
         // Use cached metadata from PlaylistManager — no file open needed
@@ -4914,13 +5145,22 @@ void UIManager::drawTrackInfo() {
         add("Path", sanitizeForDisplay(path));
 
         // Play statistics — not applicable for CD tracks (volatile, not saved)
+        //
+        // SLICE 10: through the SAME folded, aggregating lookup the most-played view
+        // ranks on, so the number here and the number there cannot disagree. The old
+        // byte-exact track_stats.find(path) was wrong on real data and visibly so:
+        // Config keys stats on whatever path the playlist entry held at play time, and
+        // those disagree on case, so 17 files on Dos's machine hold TWO entries with
+        // their counts split. `One of Us` is 73 + 22 and this pane showed one of them,
+        // and files whose only entry differed in case from the path they were opened by
+        // read "never". Fixed here; normalising the STORED keys is LIB-S13.
         if (!isCDTrackPath(path)) {
-            auto it = config_.track_stats.find(path);
-            if (it != config_.track_stats.end()) {
-                addInt("Times Played", it->second.play_count);
-                if (it->second.last_played > 0) {
+            const libidx::PlayStat st = libidx::lookupPlayStat(playStats(), path);
+            if (st.play_count > 0) {
+                addInt("Times Played", (int)st.play_count);
+                if (st.last_played > 0) {
                     char tsbuf[32];
-                    std::tm tmbuf{}; localtimeSafe(it->second.last_played, tmbuf); std::tm* tm = &tmbuf;
+                    std::tm tmbuf{}; localtimeSafe((std::time_t)st.last_played, tmbuf); std::tm* tm = &tmbuf;
                     std::strftime(tsbuf, sizeof(tsbuf), "%Y-%m-%d %H:%M", tm);
                     add("Last Played", tsbuf);
                 }
@@ -5411,6 +5651,9 @@ void UIManager::drawGotoBar() {
         case InputMode::LoadM3U: prompt = " load m3u: ";  break;
         case InputMode::StreamURL: prompt = " radio url: "; break;
         case InputMode::StreamName: prompt = " station name (optional, Enter to skip): "; break;
+        // Slice 7: names the SCOPE, because the whole point of the key is that it is
+        // wider than '\' - the user has to be able to tell which search they opened.
+        case InputMode::LibrarySearch: prompt = " search collection: "; break;
         case InputMode::PodcastAddUrl: prompt = " podcast feed url: "; break;
         case InputMode::PodcastIndexSearch: prompt = " search podcasts: "; break;
         case InputMode::PodcastIndexKey:    prompt = " podcast index API key: "; break;
@@ -6069,6 +6312,23 @@ void UIManager::handleInput(int ch) {
     // ── Podcast play-conflict popup: a DIFFERENT episode is downloading and the user
     // pressed play. [W] wait (queue it to play next) / [P] play now (interrupt the
     // active download, which restarts later) / [Esc] cancel.
+    if (ui_overlay_ == UIOverlay::LibraryRoot) {
+        if (ch == 'y' || ch == 'Y') {
+            ui_overlay_ = UIOverlay::None;
+            if (lib_root_removing_) removeLibraryRoot(lib_root_candidate_);
+            else                    addLibraryRoot(lib_root_candidate_);
+            lib_root_candidate_.clear();
+            redraw_needed_.store(true);
+            return;
+        }
+        if (ch == 27 || ch == 'n' || ch == 'N') {
+            ui_overlay_ = UIOverlay::None;
+            lib_root_candidate_.clear();
+            redraw_needed_.store(true);
+            return;
+        }
+        return;                              // modal: swallow everything else
+    }
     if (ui_overlay_ == UIOverlay::PodcastPlayConflict) {
         int idx = podcast_conflict_index_;
         if (ch == 'w' || ch == 'W') {
@@ -6344,6 +6604,17 @@ void UIManager::handleInput(int ch) {
             redraw_needed_.store(true);
             return;
         }
+        // CD-S3, paying CD-S2's deferred debt: [C] is unavailable while the
+        // selection is partial. CTDB is ONE CRC32 over the whole disc's audio and
+        // has no partial form. CD-S2 already refuses the combination inside
+        // start(); this makes it UNSELECTABLE, so that refusal stays a backstop
+        // rather than something a user ever meets. Inert exactly like the
+        // zero-format case above - the row is drawn unavailable, so a keypress
+        // that cannot work simply does nothing.
+        if (chosen == RipMode::CUETools && cdSelectionIsPartial()) {
+            redraw_needed_.store(true);
+            return;
+        }
         ui_overlay_ = UIOverlay::None;
         if (!audio_.cdMode()) return;
         const auto& cd = audio_.cdSource();
@@ -6379,12 +6650,35 @@ void UIManager::handleInput(int ch) {
         opt.aac_vbr      = config_.aac_vbr;
         opt.aac_vbr_level = std::clamp(config_.aac_vbr_level, 1, 5);
         opt.aac_cbr_bitrate = std::clamp(config_.aac_cbr_bitrate, 6000, 510000);
+        // CD-S3: hand the marked rows to the engine as TOC INDICES. `tracks` is
+        // always the FULL TOC - CD-S1's whole point - and the selection rides
+        // alongside it. An empty set maps to an empty vector, which is byte-for-byte
+        // today's call.
+        //
+        // The mapping LOOKS THE NUMBER UP in the TOC; it never computes num-1.
+        // A track's number is not its index on a disc with a data track or
+        // non-contiguous numbering, and that is the same class as CD-S1's finding
+        // (5) - correct on the common disc, silently wrong on the one that matters.
+        std::vector<int> toc_numbers;
+        toc_numbers.reserve(tracks.size());
+        for (const auto& t : tracks) toc_numbers.push_back(t.number);
+        const auto sel = cdsel::toTocIndices(cd_sel_.list(), cd_drive_letter_, toc_numbers);
+        if (sel.unresolved > 0) {
+            // Expected to be impossible: the rows were marked off this very
+            // playlist. Said out loud rather than dropped, because a silent drop
+            // here throws away tracks somebody asked for. It is also where an
+            // HTOA row would land once one exists.
+            rip_status_ = "Rip: " + std::to_string(sel.unresolved)
+                        + " marked row(s) matched no track on this disc and were skipped";
+            rip_msg_ticks_ = 0;
+        }
         cd_ripper_.start(audio_, tracks, out_dir, rel, chosen, std::move(opt),
             [this](const RipProgress& p) {
                 rip_status_ = p.status_msg;
                 rip_msg_ticks_ = 0;
                 redraw_needed_.store(true);
-            });
+            }, sel.toc_indices);
+        cd_sel_.clear();   // consumed, mirroring how marked_ is cleared after a convert
         return;
     }
 
@@ -7007,36 +7301,75 @@ void UIManager::handleInput(int ch) {
                 return;
             case 'e': {   // E freed for eject (was a pure dupe of e)
                 // Enter edit mode — only for real files, not CD tracks, not currently playing
-                std::size_t idx;
-                if (focus_ == Pane::Playlist && pl_cursor_ < (int)playlist_.size()) {
-                    idx = (std::size_t)pl_cursor_;
-                } else if (auto r = nowPlayingRow()) {
-                    idx = *r;
-                } else {
-                    idx = playlist_.current();   // nothing playing / queue-launched stream: last-known index
+                //
+                // THE SAME RESOLVER THE PANE DRAWS FROM. This used to be a verbatim
+                // copy of drawTrackInfo's idx dance, which is how the two could mean
+                // different files; now they cannot.
+                //
+                // EDITING WORKS ON A BROWSER ROW AS OF SLICE 14, and it is the same
+                // writer it always was pointed at the subject this resolver already
+                // returns. Slice 10 refused browser rows because fixing the display
+                // alone would have shown one file while 'e' wrote another; that gate
+                // was a placeholder, and its stated reason - that tagEditability,
+                // PlayingLocked and saveTagEdits assume a playlist entry - turned out
+                // NOT TO BE TRUE OF ANY OF THE THREE when they were finally read.
+                // tagEditability takes a path, PlayingLocked compares against what is
+                // SOUNDING, and the sync loop simply finds nothing for a file that is
+                // not in the playlist.
+                const InfoSubject subj = infoPaneSubject();
+                if (subj.source == InfoSource::Podcast) {
+                    // STILL REFUSED, and deliberately. A cached episode belongs to the
+                    // download manager: d/Del deletes it, a re-download replaces it,
+                    // and its identity in podcast_progress is the episode id rather
+                    // than the path - so tags edited into it vanish silently the next
+                    // time any of that happens.
+                    warn_msg_ = "Podcast episodes are managed downloads - tags would be lost";
+                    warn_msg_ticks_ = 0;
+                    redraw_needed_.store(true);
+                    return;
                 }
-                if (idx < playlist_.size()) {
-                    const std::string& path = playlist_.at(idx).path;
-                    switch (tagEditability(path)) {
-                        case TagEditability::NotAFile:      // CD track / radio stream
-                        case TagEditability::Empty:
-                            return;                          // silently ignore, as today
-                        case TagEditability::PlayingLocked:
-                            // Currently playing — warn in the cmdline bar (persists ~5s)
-                            warn_msg_ = "Stop playback first to edit tags  (s = stop)";
-                            warn_msg_ticks_ = 0;
-                            redraw_needed_.store(true);
-                            return;
-                        case TagEditability::Editable:
-                            break;                           // fall through to enter edit mode
-                    }
-                    // All checks passed — enter edit mode
-                    tag_edit_path_ = path;
-                    tag_edit_field_ = 0;
+                if (subj.source != InfoSource::Playlist
+                    && subj.source != InfoSource::Browser) return;   // nothing to edit
+
+                const std::string path = subj.path;
+                switch (tagEditability(path)) {
+                    case TagEditability::NotAFile:      // CD track / radio stream
+                    case TagEditability::Empty:
+                        return;                          // silently ignore, as today
+                    case TagEditability::PlayingLocked:
+                        // Currently playing — warn in the cmdline bar (persists ~5s).
+                        // Applies to a browser row exactly as to a playlist one: the
+                        // check is on the PATH, and the decoder has that file open
+                        // whichever pane the cursor is in.
+                        warn_msg_ = "Stop playback first to edit tags  (s = stop)";
+                        warn_msg_ticks_ = 0;
+                        redraw_needed_.store(true);
+                        return;
+                    case TagEditability::Editable:
+                        break;                           // fall through to enter edit mode
+                }
+                // All checks passed — enter edit mode
+                tag_edit_path_ = path;
+                tag_edit_field_ = 0;
+                {
                     const auto& ct = (path == audio_.currentTrack().path)
                                    ? audio_.currentTrack() : TrackInfo{};
-                    const auto& e = playlist_.at(idx);
-                    tag_edit_values_[0] = ct.title.empty() ? e.display_title : ct.title;
+                    // THE SEED. A playlist row keeps its display_title fallback, which
+                    // is a real "Artist - Title" and is unchanged behaviour.
+                    //
+                    // A BROWSER ROW SEEDS EMPTY. Its subject.display_title is a
+                    // formatted ROW LABEL - "01  Apocalypse Please        3:21" at
+                    // level 3, "Muse - Apocalypse Please  [Absolution]  (flac)" in a
+                    // search result - and the TagLib read below overwrites the seed
+                    // whenever it finds real tags. So the seed only ever SURVIVES for a
+                    // file whose tags cannot be read, which is exactly the case where
+                    // writing a row label into the Title field would be worst. An empty
+                    // field for an untagged file is honest, and untagged is why the
+                    // user is here.
+                    tag_edit_values_[0] = ct.title;
+                    if (tag_edit_values_[0].empty() && subj.source == InfoSource::Playlist
+                        && subj.pl_index < playlist_.size())
+                        tag_edit_values_[0] = playlist_.at(subj.pl_index).display_title;
                     tag_edit_values_[1] = ct.artist;
                     tag_edit_values_[2] = ct.album;
                     tag_edit_values_[3] = ct.genre;
@@ -7059,8 +7392,8 @@ void UIManager::handleInput(int ch) {
                             }
                         } catch (...) {}
                     }
-                    tag_edit_mode_ = true;
                 }
+                tag_edit_mode_ = true;
                 return;
             }
             case 'n': case 'N':
@@ -7255,11 +7588,26 @@ void UIManager::handleInput(int ch) {
             config_.save();
             redraw_needed_.store(true);
             break;
-        case KEY_F(12):   // refresh the drive list (pick up hot-plugged drives)
-            // Hot-plug isn't auto-detected ([Drives] only rebuilds on entry, and
-            // the periodic dir re-scan skips the drive list); F12 is the manual
-            // trigger, re-running the same enterDriveList() rebuild. No-op
-            // outside [Drives].
+        case KEY_F(12):   // manual refresh of the section under the cursor
+            // F12 means "this section deliberately does not auto-detect changes, so
+            // here is the manual trigger". [Drives] has meant that since it shipped;
+            // slice 6 gives [Library] the same key for the same reason - the library
+            // never rescans implicitly (scan-on-entry is a regression this project has
+            // already paid for), so a rescan has to be asked for.
+            //
+            // Works at ALL THREE library levels. LIB-S4 routed scan completion through
+            // populateLevel() precisely so a rescan finishing at level 3 relists level 3
+            // rather than yanking the user to the artist list, and noted it was
+            // untestable then. This is what makes it reachable.
+            if (in_library_) {
+                if (lib_scan_running_) {
+                    showTrackToast("Already scanning", "Esc to cancel", "");
+                } else {
+                    startLibraryScan();
+                    redraw_needed_.store(true);
+                }
+                break;
+            }
             if (in_drive_list_) {
                 // enterDriveList() resets the cursor to the top; restore it onto
                 // the previously-selected entry if it still exists so a refresh
@@ -7272,10 +7620,25 @@ void UIManager::handleInput(int ch) {
                     for (std::size_t i = 0; i < dir_entries_.size(); ++i)
                         if (dir_entries_[i] == sel) { dir_cursor_ = (int)i; break; }
                 }
-                // The dir browser has no draw-time scroll invariant (j/k nudge
-                // per-handler), so re-clamp scroll to keep the restored cursor visible.
-                ensureDirCursorVisible();
                 showTrackToast("Drives refreshed", "", "");
+                redraw_needed_.store(true);
+            }
+            break;
+        case 27:    // Esc — cancel a running library scan
+            // Scoped by a condition that is only true DURING a scan, so Esc keeps
+            // meaning nothing here the rest of the time. Popups and the input bar
+            // intercept Esc before this switch is reached, so neither is affected.
+            //
+            // This is the key that makes shipped code reachable: LibraryScanner::cancel()
+            // had exactly one caller, the destructor, so slice 3's cancelled-and-retry
+            // state could only be entered by quitting mid-scan - which destroyed the flag
+            // before its message could render.
+            // NOT gated on in_library_ any more (slice 11): '@' can start a scan from
+            // the folder browser, so cancel has to be reachable from there too, or the
+            // user is told "Esc to cancel" by a key that does nothing. lib_scan_running_
+            // alone still scopes it to exactly the moments a scan is in flight.
+            if (lib_scan_running_) {
+                cancelLibraryScan();
                 redraw_needed_.store(true);
             }
             break;
@@ -7487,12 +7850,28 @@ void UIManager::handleInput(int ch) {
             PlaylistEntry qe;
             if (focus_ == Pane::Playlist && pl_cursor_ < (int)playlist_.size()) {
                 qe = playlist_.at((size_t)pl_cursor_);
+            } else if (focus_ == Pane::DirBrowser && in_library_
+                       && !libnav::rowIsPath(lib_nav_.level)) {
+                // Levels 1-2 are artist and album NAMES - nothing queueable, and
+                // treating one as a path would reach fs::is_directory /
+                // fs::path::stem below, both of which throw on tag text that is not
+                // valid UTF-8. LEVEL 3 FALLS THROUGH to the branch below, where the
+                // explicit in_library_ term resolves the row without rebuilding it.
+                break;
             } else if (focus_ == Pane::DirBrowser && dir_cursor_ < (int)dir_entries_.size()) {
                 const std::string& nm = dir_entries_[(size_t)dir_cursor_];
                 // Build full path — dir_entries_ stores names, not full paths
                 std::string p;
-                if (in_recent_ || in_favs_ || in_radio_ || in_podcasts_ || fs::path(nm).is_absolute()) {
-                    p = nm;  // recent/fav/radio/podcast entries are already full paths or URLs
+                // in_library_ is listed EXPLICITLY rather than left to the
+                // is_absolute() fallback. Relying on that fallback would make levels
+                // 1-2's safety depend on a tag string happening not to look like an
+                // absolute path, which is not a property tag text has - and reaching
+                // is_absolute() at all means fs::path() has already been constructed
+                // from it, which is the throw. Only level 3 gets here (see above), and
+                // its identity is already the full path.
+                if (in_recent_ || in_favs_ || in_radio_ || in_podcasts_ || in_library_
+                    || fs::path(nm).is_absolute()) {
+                    p = nm;  // recent/fav/radio/podcast/library rows are already full paths or URLs
                 } else {
                     p = (fs::path(current_dir_) / nm).string();
                 }
@@ -7598,9 +7977,14 @@ void UIManager::handleInput(int ch) {
             } else if (focus_ == Pane::DirBrowser && in_favs_
                        && dir_cursor_ < (int)dir_entries_.size()) {
                 fav_path = dir_entries_[(size_t)dir_cursor_];
+            } else if (focus_ == Pane::DirBrowser && in_library_) {
+                // A level-3 library row is a path, so favouriting it is the obvious
+                // motion once you have found something by artist. Empty above level 3,
+                // where the row is tag text. The shared checks below still apply.
+                fav_path = libraryRowPath();
             } else if (focus_ == Pane::DirBrowser
                        && dir_cursor_ < (int)dir_entries_.size()
-                       && !in_drive_list_ && !in_recent_ && !in_favs_ && !in_radio_ && !in_podcasts_ && !in_books_) {
+                       && !in_drive_list_ && !in_recent_ && !in_favs_ && !in_radio_ && !in_podcasts_ && !in_books_ && !in_library_) {
                 const std::string& nm = dir_entries_[(size_t)dir_cursor_];
                 std::string full = (fs::path(nm).is_absolute()) ? nm
                                  : (fs::path(current_dir_) / nm).string();
@@ -7699,11 +8083,17 @@ void UIManager::handleInput(int ch) {
             // Cursor on an audiobook file in the normal browser -> toggle in [Books].
             if (focus_ == Pane::DirBrowser
                 && !in_drive_list_ && !in_recent_ && !in_favs_ && !in_radio_ && !in_podcasts_ && !in_books_
+                && (!in_library_ || libnav::rowIsPath(lib_nav_.level))
                 && dir_cursor_ < (int)dir_entries_.size()) {
                 const std::string& nm = dir_entries_[(size_t)dir_cursor_];
-                std::string full = fs::path(nm).is_absolute() ? nm
-                                 : (fs::path(current_dir_) / nm).string();
-                if (PlaylistManager::isAudiobook(full) && fs::exists(full)) {
+                // A library row is ALREADY absolute, so it is resolved rather than
+                // joined to current_dir_. Levels 1-2 never reach here (the term above),
+                // which matters because the join would construct fs::path from tag text.
+                std::string full = in_library_
+                                 ? libraryRowPath()
+                                 : (fs::path(nm).is_absolute() ? nm
+                                    : (fs::path(current_dir_) / nm).string());
+                if (!full.empty() && PlaylistManager::isAudiobook(full) && fs::exists(full)) {
                     if (config_.isSavedBook(full)) {
                         config_.removeAudiobook(full);
                         showTrackToast("Removed from Books", "", "");
@@ -7716,7 +8106,7 @@ void UIManager::handleInput(int ch) {
                 }
             }
             // Add current directory to bookmarks (not available from [Drives] list)
-            if (!in_drive_list_ && !in_recent_ && !in_radio_ && !in_podcasts_ && !current_dir_.empty()) {
+            if (!in_drive_list_ && !in_recent_ && !in_radio_ && !in_podcasts_ && !in_library_ && !current_dir_.empty()) {
                 // Don't bookmark CD drive roots — physical drives are volatile
 #ifdef _WIN32
                 std::string dp = current_dir_;
@@ -7739,6 +8129,25 @@ void UIManager::handleInput(int ch) {
             }
             break;
         case 'g': case 'G':
+            // Inside [Library] this is the genre list; everywhere else it stays
+            // goto-directory. The d/D-in-[Podcasts] pattern: a key that means something
+            // else where it has nothing to do, since a library section has no
+            // directories to go to.
+            //
+            // The g/G ALIAS IS KEPT INTACT rather than split. Most letter pairs in this
+            // handler are aliases, and taking a Shift+letter means splitting one - which
+            // would leave G doing goto-directory inside a section where that is exactly
+            // as meaningless as it is for g.
+            if (ui_overlay_ == UIOverlay::None && focus_ == Pane::DirBrowser
+                && in_library_ && !lib_scan_running_) {
+                // Slice 16: a TOGGLE, through libnav, exactly as '%' goes through
+                // cycleStats. This used to assign the level directly, which is what
+                // made it the one view key with no way back.
+                libnav::toggleGenres(lib_nav_);
+                populateLevel();
+                redraw_needed_.store(true);
+                break;
+            }
             gotoOpen(); break;
         case '\\':   // focus-aware list search - pick-to-jump (never a filter)
             // Same modal guard as the other input-bar keys; the goto machinery
@@ -7749,6 +8158,78 @@ void UIManager::handleInput(int ch) {
                 search_source_ = (focus_ == Pane::DirBrowser)
                     ? SearchSource::Browser : SearchSource::Playlist;
                 openInputBar(InputMode::PlaylistSearch, "");
+            }
+            break;
+        case '|':   // Shift+\ - search the WHOLE COLLECTION
+            // The pair reads itself: '\' searches what you are looking at, '|' searches
+            // everything you have. Same key, shifted, escalating scope.
+            //
+            // NOT '/': that key already means "find something NEW ONLINE" (station
+            // search, Podcast Index), which is the opposite of searching what you
+            // already own - the codebase draws that distinction explicitly and this
+            // keeps it. And not a bare F-key: '|' is plain printable ASCII, so it
+            // arrives as itself on both wingui and ncursesw with no terminfo involved,
+            // which is exactly what F11 could not promise.
+            //
+            // Works from the folder browser too, not just inside [Library]: finding a
+            // track without knowing where it lives should not require first navigating
+            // to where you do not know it is.
+            if (ui_overlay_ == UIOverlay::None && focus_ == Pane::DirBrowser
+                && config_.library) {
+                if (!in_library_) enterLibrarySection();   // arrive, then search
+                if (lib_scan_running_) {
+                    showTrackToast("Still scanning the library", "Esc to cancel", "");
+                    break;
+                }
+                libnav::beginSearch(lib_nav_, "");         // remembers the level to return to
+                showLibrarySearch();
+                openInputBar(InputMode::LibrarySearch, "");
+            }
+            break;
+        case '@': {  // make this folder a library folder, or stop it being one
+            // '@' reads as "this location", it is plain printable ASCII so it needs no
+            // cross-platform proof (the '|' precedent), and the sweep confirmed it
+            // unbound - re-run against the tree rather than trusting the survey, since
+            // the last one handed over said '?' was free and '?' is the Help pane.
+            //
+            // FOLDER BROWSER ONLY, on a directory row. The mirror of 'g': a key that
+            // means something where it has something to do. Inside [Library] there are
+            // no directories to make a root of.
+            if (ui_overlay_ != UIOverlay::None || focus_ != Pane::DirBrowser) break;
+            if (!config_.library) { libRootReject("The library is switched off"); break; }
+            if (in_library_ || in_drive_list_ || in_recent_ || in_favs_
+                || in_radio_ || in_podcasts_ || in_books_) break;
+            if (lib_scan_running_) { libRootReject("A library scan is already running"); break; }
+            if (dir_cursor_ < 0 || dir_cursor_ >= (int)dir_entries_.size()) break;
+            const std::string& nm = dir_entries_[(size_t)dir_cursor_];
+            if (nm.empty() || nm == ".." || nm == "[Back]" || nm.front() == '[') break;
+            namespace fsx = std::filesystem;
+            std::string cand = fsx::path(nm).is_absolute()
+                             ? nm : (fsx::path(current_dir_) / nm).string();
+            std::error_code dec;
+            if (!fsx::is_directory(fsx::path(cand), dec) || dec) {
+                libRootReject("Only a folder can be a library folder");
+                break;
+            }
+            lib_root_candidate_ = libidx::detail::normaliseRoot(cand);
+            lib_root_removing_  = isLibraryRoot(lib_root_candidate_);
+            ui_overlay_ = UIOverlay::LibraryRoot;
+            redraw_needed_.store(true);
+            break;
+        }
+        case '%':   // cycle the stat views: most played -> never played -> back out
+            // SECTION-SCOPED, and it has to be. 'p' was rejected for this: previous-track
+            // is a transport control, music playing while browsing is the normal state,
+            // and [Library] is precisely where someone reaches for it. '%' is unbound
+            // (swept: every case label AND every pre-switch if - which is how '?' turned
+            // out to be the Help pane and not free at all), it reads as statistics, and
+            // it is plain printable ASCII so it needs no cross-platform proof. The '|'
+            // precedent exactly.
+            if (ui_overlay_ == UIOverlay::None && focus_ == Pane::DirBrowser
+                && in_library_ && !lib_scan_running_) {
+                libnav::cycleStats(lib_nav_);
+                populateLevel();
+                redraw_needed_.store(true);
             }
             break;
         case 's':
@@ -7803,16 +8284,60 @@ void UIManager::handleInput(int ch) {
                 std::string p = browserEntryPath(dir_cursor_);
                 if (!p.empty() && convertSupportedInput(p)) {
                     bool now = marked_.toggle(p);
-                    showTrackToast(now ? "Marked" : "Unmarked",
-                                   fs::path(p).filename().string(), "");
+                    // Status row, yellow, ~2s - the same treatment as the CD rip
+                    // marking below, and for the same reason: marking is in-place
+                    // state you watch while working down a list, not a
+                    // notification. sanitizeForDisplay because this one is a real
+                    // filename rather than a synthetic row label.
+                    status_msg_ = (now ? "Marked " : "Unmarked ")
+                                + sanitizeForDisplay(fs::path(p).filename().string());
+                    status_msg_ticks_  = 0;
+                    status_msg_yellow_ = true;
+                    status_short_pin_  = status_msg_;
                     redraw_needed_.store(true);
+                }
+            } else if (focus_ == Pane::Playlist) {
+                // CD-S3: the same key, in the pane where CD tracks actually live.
+                // `u` was a no-op here, so this costs no new binding. Only CD rows
+                // respond; every other playlist row stays inert exactly as before.
+                if (pl_cursor_ >= 0 && pl_cursor_ < (int)playlist_.size()) {
+                    const std::string& p = playlist_.at((size_t)pl_cursor_).path;
+                    if (isCDTrackPath(p)) {
+                        bool now = cd_sel_.toggle(p);
+                        // Lower-left status row, yellow, ~2s - NOT a toast. This
+                        // is in-place state the user is looking straight at while
+                        // they work down the list, the same reason F6 and Ctrl+K
+                        // confirm on the status row instead of notifying.
+                        status_msg_ = (now ? "Marked " : "Unmarked ")
+                                    + p.substr(p.find(':') + 1);
+                        status_msg_ticks_  = 0;
+                        status_msg_yellow_ = true;
+                        status_short_pin_  = status_msg_;
+                        redraw_needed_.store(true);
+                    }
                 }
             }
             break;
-        case 'U':   // convert-core: clear all marks
-            if (!marked_.empty()) {
+        case 'U':
+            // CD-S3: `U` already means "clear marks"; it now clears the marks of
+            // the pane you are LOOKING AT. Previously it cleared the browser's set
+            // from any pane, which after the change above would have cleared the
+            // convert marks while leaving the CD selection standing - the opposite
+            // of what the user just asked for.
+            if (focus_ == Pane::Playlist && !cd_sel_.empty()) {
+                cd_sel_.clear();
+                // Same treatment as the toggle above: it confirms the same state.
+                status_msg_        = "Rip selection cleared";
+                status_msg_ticks_  = 0;
+                status_msg_yellow_ = true;
+                status_short_pin_  = status_msg_;
+                redraw_needed_.store(true);
+            } else if (focus_ != Pane::Playlist && !marked_.empty()) {
                 marked_.clear();
-                showTrackToast("Marks cleared", "", "");
+                status_msg_        = "Marks cleared";
+                status_msg_ticks_  = 0;
+                status_msg_yellow_ = true;
+                status_short_pin_  = status_msg_;
                 redraw_needed_.store(true);
             }
             break;
@@ -7834,7 +8359,7 @@ void UIManager::handleInput(int ch) {
                     if (e == ".m3u" || e == ".m3u8" || e == ".pls" || e == ".xspf")
                         convert_pl_file_ = p;
                 }
-                if (!in_drive_list_ && !in_radio_ && !in_podcasts_ && !in_favs_ && !in_recent_ && !in_books_)
+                if (!in_drive_list_ && !in_radio_ && !in_podcasts_ && !in_favs_ && !in_recent_ && !in_books_ && !in_library_)
                     convert_src_dir_ = current_dir_;
             }
             if (convert_single_.empty() && convert_src_dir_.empty() && marked_.empty()
@@ -8068,6 +8593,32 @@ void UIManager::handleInput(int ch) {
                 // the very trap that made 'a' look "unbound" here).
                 if (!in_podcast_feed_)
                     openInputBar(InputMode::PodcastAddUrl, "");
+            } else if (focus_ == Pane::DirBrowser && in_library_) {
+                // At levels 1-2 this stays an explicit no-op, for the same reason the
+                // podcast branch above is explicit: falling through would build
+                // current_dir_/<artist>, which is not a file and - worse than the
+                // podcast case - THROWS if the tag text is not valid UTF-8.
+                //
+                // 'a' means the SAME thing at every depth - add what the cursor is on -
+                // and only the cursor's subject changes. Level 3 is a track; level 2 is
+                // a whole album (LIB-AA); level 1 stays the no-op it was, because an
+                // artist is unbounded and appending 400 tracks from one keypress wants a
+                // confirmation, which is new UI and its own slice.
+                //
+                // At level 3 this APPENDS WITHOUT PLAYING, which is the single
+                // difference between 'a' and Enter. libraryRowPath() returns empty and
+                // silent at level 1, so that case needs no branch of its own.
+                if (lib_nav_.level == libnav::Level::Albums) {
+                    appendAlbumUnderCursor();
+                } else {
+                    const std::string p = libraryRowPath();
+                    if (!p.empty() && PlaylistManager::isSupportedAudio(p)) {
+                        if (const libidx::LibraryTrack* t = libraryTrackFor(p))
+                            playlist_.addIndexedTrack(p, t->artist, t->title, t->duration_sec);
+                        else
+                            playlist_.addTrack(p);
+                    }
+                }
             } else if (focus_ == Pane::DirBrowser && dir_cursor_ < (int)dir_entries_.size()) {
                 fs::path full = fs::path(current_dir_) / dir_entries_[(size_t)dir_cursor_];
                 if (PlaylistManager::isSupportedAudio(full.string()))
@@ -8087,7 +8638,11 @@ void UIManager::handleInput(int ch) {
         case KEY_END:   navigateHomeEnd(true);   break;
         case KEY_LEFT:
             if (focus_ == Pane::DirBrowser) {
-                if (in_drive_list_) break;
+                // In ANY virtual section, Left ascends: one level where the section
+                // has levels, out of the section otherwise, and never a move of
+                // current_dir_. Exactly what [Back] does, because it is the same
+                // function. Only a real directory falls through to the parent below.
+                if (sectionAscend()) break;
                 fs::path p(current_dir_);
                 if (p.parent_path() == p) {
                     enterDriveList();
@@ -8375,6 +8930,14 @@ void UIManager::gotoClose(bool commit) {
                 }
                 break;
             }
+            // Slice 7: the results are ALREADY on screen - they narrowed on every
+            // keystroke - so Enter simply closes the bar and hands the pane back with
+            // the cursor on the first result. Nothing to run here; the work happened
+            // while typing. This case exists so the mode is handled explicitly rather
+            // than falling into Goto's path-completion behaviour.
+            case InputMode::LibrarySearch:
+                focus_ = Pane::DirBrowser;
+                break;
             case InputMode::PlaylistSearch: {
                 // Use goto_input_ raw, NOT the separator-stripped `target` - the
                 // stripping above is path-mode behaviour and would mangle a query
@@ -8552,6 +9115,29 @@ void UIManager::handleGotoInput(int ch) {
             }
             break;
     }
+    // LIVE SEARCH (slice 7). One hook at the ONE exit point, so it cannot miss a
+    // mutation path - the switch above changes goto_input_ in three separate places.
+    //
+    // The text compare IS the coalescing, and the reason no debouncer was built: a
+    // cursor move, Home, End or Tab leaves the query identical and re-queries nothing.
+    // Only typing or deleting costs anything, and that costs half a millisecond on the
+    // real collection.
+    //
+    // goto_active_ is load-bearing: Esc and Enter both call gotoClose inside the switch,
+    // which clears the bar, and without this guard the hook would then fire on an emptied
+    // query and wipe the results the user just asked for.
+    //
+    // SLICE 17 adds in_library_. Without it, any path that clears the section flags
+    // while this bar is open leaves the bar still bound to LibrarySearch, so the
+    // next keystroke repopulated the pane with library results while in_library_
+    // was false - the pane then alternated between the folder browser and library
+    // rows depending on which ran last. The poll was one such path and is fixed;
+    // this term is what makes the bar's own state agree with the pane's regardless.
+    if (in_library_ && goto_active_ && input_mode_ == InputMode::LibrarySearch
+        && goto_input_ != lib_nav_.query) {
+        lib_nav_.query = goto_input_;
+        showLibrarySearch();
+    }
     redraw_needed_.store(true);
 }
 
@@ -8568,13 +9154,16 @@ void UIManager::toggleFocus() {
     focus_ = (focus_ == Pane::DirBrowser) ? Pane::Playlist : Pane::DirBrowser;
 }
 
+// Both branches are now one cursor assignment each, and the two panes read the same.
+// The browser's used to nudge dir_scroll_ by hand - `++dir_scroll_` past the bottom,
+// `dir_scroll_ = dir_cursor_` past the top. That is not a similar mechanism to the
+// invariant, it is the SAME arithmetic: for a single-step move ensureVisible's
+// `cursor - visible + 1` is exactly one more than the old scroll. Written twice, it
+// was the pattern that let slice 9's defect exist - the paths nobody remembered to
+// write it into were the bug.
 void UIManager::navigateDown() {
     if (focus_ == Pane::DirBrowser) {
-        int v = paneVisibleRows(win_dir_);
-        if (dir_cursor_+1 < (int)dir_entries_.size()) {
-            ++dir_cursor_;
-            if (dir_cursor_ >= dir_scroll_+v) ++dir_scroll_;
-        }
+        if (dir_cursor_+1 < (int)dir_entries_.size()) ++dir_cursor_;   // scroll follows via the invariant
     } else {
         if (pl_cursor_+1 < (int)playlist_.size()) ++pl_cursor_;   // scroll follows via the invariant
     }
@@ -8582,7 +9171,7 @@ void UIManager::navigateDown() {
 
 void UIManager::navigateUp() {
     if (focus_ == Pane::DirBrowser) {
-        if (dir_cursor_ > 0) { --dir_cursor_; if (dir_cursor_ < dir_scroll_) dir_scroll_ = dir_cursor_; }
+        if (dir_cursor_ > 0) --dir_cursor_;   // scroll follows via the invariant
     } else {
         if (pl_cursor_ > 0) --pl_cursor_;   // scroll follows via the invariant
     }
@@ -8597,9 +9186,7 @@ void UIManager::navigatePage(int dir) {
         if (n == 0) return;
         int v = std::max(1, paneVisibleRows(win_dir_) - 1);
         dir_cursor_ = std::clamp(dir_cursor_ + dir * v, 0, n - 1);
-        // No draw-time scroll invariant in the browser (j/k nudge per-handler):
-        // clamp scroll to keep the paged cursor visible ourselves.
-        ensureDirCursorVisible();
+        // scroll follows via the draw-time invariant
     } else {
         int n = (int)playlist_.size();
         if (n == 0) return;
@@ -8615,8 +9202,7 @@ void UIManager::navigateHomeEnd(bool to_end) {
     if (focus_ == Pane::DirBrowser) {
         int n = (int)dir_entries_.size();
         if (n == 0) return;
-        dir_cursor_ = to_end ? n - 1 : 0;
-        ensureDirCursorVisible();
+        dir_cursor_ = to_end ? n - 1 : 0;   // scroll via the invariant
     } else {
         int n = (int)playlist_.size();
         if (n == 0) return;
@@ -8630,14 +9216,26 @@ void UIManager::activateSelection() {
         if (dir_cursor_ >= (int)dir_entries_.size()) return;
         const auto& name = dir_entries_[(size_t)dir_cursor_];
         if (in_drive_list_) {
+            if (name == "[Back]") {
+                // Back to the directory we were browsing. enterDriveList never
+                // touches current_dir_, so refreshDir lands exactly where the
+                // user left - same behaviour [Back] has in every other section.
+                sectionAscend();
+                return;
+            }
             if (name == "[Recent]") {
                 // Show recently played as virtual dir
                 in_drive_list_ = false;
                 in_recent_     = true;
                 dir_entries_.clear();
                 dir_display_.clear();
-                dir_entries_.push_back("[Drives]");
-                dir_display_.push_back("[Drives]");
+                // "[Back]", not "[Drives]". This row has always called refreshDir,
+                // which lands in the DIRECTORY BROWSER and not in the drive list, so
+                // the old label promised somewhere it never went - and [Recent]'s
+                // other entry path pushed "[Back]" for the identical behaviour. One
+                // label for one behaviour, and it is now the honest one.
+                dir_entries_.push_back("[Back]");
+                dir_display_.push_back("[Back]");
                 for (const auto& p : config_.recent_tracks) {
                     dir_entries_.push_back(p);
                     std::string disp = fs::path(p).filename().string();
@@ -8662,16 +9260,11 @@ void UIManager::activateSelection() {
             if (name == "[Radio]") {
                 in_drive_list_ = false;
                 in_radio_      = true;
-                dir_entries_.clear(); dir_display_.clear();
-                dir_entries_.push_back("[Back]"); dir_display_.push_back("[Back]");
-                for (const auto& st : config_.radio_stations) {
-                    dir_entries_.push_back(st);
-                    dir_display_.push_back(sanitizeForDisplay(stationLabel(st)));
-                }
-                dir_cursor_ = 0; dir_scroll_ = 0;
+                showRadioStationList();
                 return;
             }
             if (name == "[Podcasts]") { enterPodcastSection(); return; }
+            if (name == "[Library]")  { enterLibrarySection(); return; }
             if (name == "[Books]") {
                 in_drive_list_ = false;
                 in_books_      = true;
@@ -8695,9 +9288,11 @@ void UIManager::activateSelection() {
         }
 
         if (in_recent_) {
+            // "[Drives]" is kept alongside "[Back]" deliberately: no [Recent] entry
+            // path pushes that row any more, but a config carrying a recent track
+            // literally named "[Drives]" would otherwise be treated as a path.
             if (name == "[Drives]" || name == "[Back]") {
-                in_recent_ = false;
-                refreshDir();
+                sectionAscend();
                 return;
             }
             // Play the selected recent track
@@ -8712,20 +9307,7 @@ void UIManager::activateSelection() {
         }
         if (in_radio_) {
             if (name == "[Back]") {
-                if (in_radio_search_) {
-                    // Return from search results to the saved-station list.
-                    in_radio_search_ = false;
-                    dir_entries_.clear(); dir_display_.clear();
-                    dir_entries_.push_back("[Back]"); dir_display_.push_back("[Back]");
-                    for (const auto& st : config_.radio_stations) {
-                        dir_entries_.push_back(st);
-                        dir_display_.push_back(sanitizeForDisplay(stationLabel(st)));
-                    }
-                    dir_cursor_ = 0; dir_scroll_ = 0;
-                    return;
-                }
-                in_radio_ = false;
-                refreshDir();
+                sectionAscend();      // the SAME path Left takes, at every level
                 return;
             }
             // Resolve the station. Search results carry the real station name +
@@ -8758,14 +9340,65 @@ void UIManager::activateSelection() {
             showTrackToast("Negotiating Radio Stream...", label, "");
             return;
         }
+        if (in_library_) {
+            if (name == "[Back]") {
+                sectionAscend();      // the SAME path Left takes, at every level
+                return;
+            }
+            if (dir_cursor_ < 1 || dir_cursor_ >= (int)dir_entries_.size()) return;
+            const std::string& e = dir_entries_[(size_t)dir_cursor_];
+            // The status and empty-state rows push "" as identity and are not
+            // selectable. An artist or album genuinely CAN be the empty string
+            // (untagged files), and those rows are real, so they are told apart by
+            // what the display says rather than by the identity being empty.
+            if (e.empty()) {
+                const std::string& d = dir_display_[(size_t)dir_cursor_];
+                if (d != "(no artist)" && d != "(no album)") return;
+            }
+            switch (libnav::descend(lib_nav_, e)) {
+                case libnav::Action::Repopulate:
+                    populateLevel();
+                    break;
+                case libnav::Action::None: {
+                    // Level 3: THE FOLDER-BROWSER PRECEDENT, all four steps of it -
+                    // append, select, play, record as recently played. Identical to
+                    // pressing Enter on this same file in the directory browser, which
+                    // is the point: the same file behaves the same way whichever route
+                    // reached it, and the track becomes a playlist MEMBER so it saves
+                    // and loads with the rest.
+                    //
+                    // The contrast is the PODCAST path, where an episode plays
+                    // standalone and never joins the playlist at all - which is why
+                    // that path needs its own scrobble guard and its own resume
+                    // bookkeeping and this one needs neither.
+                    //
+                    // 'a' is the same thing WITHOUT playing, for walking an album
+                    // adding tracks. That is the only difference between the two keys.
+                    const std::string p = libraryRowPath();
+                    if (p.empty()) break;      // not actionable; already reported if it mattered
+                    // Index metadata when we have it (slice 6) - identical fields from an
+                    // identical read, so the row is indistinguishable from a browser-added
+                    // one, without opening the file again. Falls back to addTrack if the
+                    // path somehow is not in the index.
+                    const libidx::LibraryTrack* t = libraryTrackFor(p);
+                    const std::size_t pi = t
+                        ? playlist_.addIndexedTrack(p, t->artist, t->title, t->duration_sec)
+                        : playlist_.addTrack(p);
+                    playlist_.selectAt(pi);
+                    if (auto cp = playlist_.currentPath(); cp.has_value()) {
+                        audio_.play(cp.value());
+                        config_.addRecentTrack(cp.value());
+                    }
+                    break;
+                }
+                case libnav::Action::LeaveSection:
+                    break;            // descend never leaves; here for exhaustiveness
+            }
+            return;
+        }
         if (in_podcasts_) {
             if (name == "[Back]") {
-                if (in_podcastindex_search_ || in_podcast_feed_) {  // results/episodes -> feed list
-                    showPodcastFeedList();
-                    return;
-                }
-                in_podcasts_ = false;            // level 1 -> leave the section
-                refreshDir();
+                sectionAscend();      // the SAME path Left takes, at every level
                 return;
             }
             if (in_podcastindex_search_) {
@@ -8794,8 +9427,7 @@ void UIManager::activateSelection() {
         }
         if (in_favs_) {
             if (name == "[Back]") {
-                in_favs_ = false;
-                refreshDir();
+                sectionAscend();
                 return;
             }
             if (!fs::exists(name)) return;  // dead path — ignore
@@ -8819,8 +9451,7 @@ void UIManager::activateSelection() {
         }
         if (in_books_) {
             if (name == "[Back]") {
-                in_books_ = false;
-                refreshDir();
+                sectionAscend();
                 return;
             }
             if (!fs::exists(name)) return;            // dead path — ignore
@@ -8841,16 +9472,11 @@ void UIManager::activateSelection() {
             in_recent_ = false;
             in_favs_   = false;
             in_drive_list_ = false;
-            dir_entries_.clear(); dir_display_.clear();
-            dir_entries_.push_back("[Back]"); dir_display_.push_back("[Back]");
-            for (const auto& st : config_.radio_stations) {
-                dir_entries_.push_back(st);
-                dir_display_.push_back(sanitizeForDisplay(stationLabel(st)));
-            }
-            dir_cursor_ = 0; dir_scroll_ = 0;
+            showRadioStationList();
             return;
         }
         if (name == "[Podcasts]") { enterPodcastSection(); return; }
+        if (name == "[Library]")  { enterLibrarySection(); return; }
         if (name == "[Recent]") {
             in_recent_ = true;
             in_favs_   = false;
@@ -9016,28 +9642,46 @@ std::vector<std::string> UIManager::listDrives() {
 }
 
 void UIManager::enterDriveList() {
+    // Slice 17: was the same ten hand-written assignments refreshDir() carried,
+    // differing only in in_drive_list_ - which is set true again immediately below,
+    // so the behaviour is identical. The sub-mode flags are part of the set for the
+    // reason this comment used to give at length: in_radio_search_ was reset at
+    // NEITHER site and in_podcastindex_search_ at only one, so searching and then
+    // refreshing left the flag set - re-entering [Radio] drew the saved stations
+    // while Enter still took the search-results branch and indexed radio_results_,
+    // so the station silently did not play. Bounds-guarded, which is why it failed
+    // quietly, which is why nobody found it. The completeness of the list IS the
+    // fix, and it is now impossible for the two sites to disagree about it.
+    clearSectionFlags();
     in_drive_list_ = true;
-    in_recent_     = false;
-    in_favs_       = false;
-    in_radio_      = false;
-    in_books_      = false;
-    in_podcasts_     = false;
-    in_podcast_feed_ = false;
     dir_entries_   = listDrives();
     dir_display_   = dir_entries_;
-    // Prepend virtual entries at top
-    dir_entries_.insert(dir_entries_.begin(), "[Bookmarks]");
-    dir_display_.insert(dir_display_.begin(), "[Bookmarks]");
-    dir_entries_.insert(dir_entries_.begin(), "[Books]");
-    dir_display_.insert(dir_display_.begin(), "[Books]");
-    dir_entries_.insert(dir_entries_.begin(), "[Podcasts]");
-    dir_display_.insert(dir_display_.begin(), "[Podcasts]");
-    dir_entries_.insert(dir_entries_.begin(), "[Radio]");
-    dir_display_.insert(dir_display_.begin(), "[Radio]");
-    dir_entries_.insert(dir_entries_.begin(), "[FAVs]");
-    dir_display_.insert(dir_display_.begin(), "[FAVs]");
-    dir_entries_.insert(dir_entries_.begin(), "[Recent]");
-    dir_display_.insert(dir_display_.begin(), "[Recent]");
+    // The section rows come from browserpins::kPins - the SAME list refreshDir pushes
+    // and the comparator ranks. Before slice 6 these were literal reverse-order
+    // inserts written out here: a THIRD hand-maintained copy of the section names,
+    // reading none of that header, and the copy that gets forgotten - which is exactly
+    // the failure BrowserPins.h was written to end. Routing it here is what lets the
+    // [Library] toggle be one predicate instead of two filters that must agree.
+    //
+    // Rendered order is preserved exactly: [Back] leads the way it does in every other
+    // section, then the kPins order minus [Drives] itself (we are inside it) and minus
+    // ".." (a drive list has no parent to rise to), then [Bookmarks] - which is
+    // deliberately NOT a pin, because it exists only in this list.
+    //
+    // Built forwards into one vector and inserted once, rather than reverse-inserted
+    // at begin() seven times, so the code reads in the order the pane draws.
+    std::vector<std::string> pre;
+    pre.reserve(browserpins::kCount + 2);
+    pre.push_back("[Back]");
+    for (std::size_t i = 0; i < browserpins::kCount; ++i) {
+        const std::string nm = browserpins::kPins[i];
+        if (nm == "[Drives]" || nm == "..") continue;
+        if (!browserpins::shown(nm, config_.library)) continue;
+        pre.push_back(nm);
+    }
+    pre.push_back("[Bookmarks]");
+    dir_entries_.insert(dir_entries_.begin(), pre.begin(), pre.end());
+    dir_display_.insert(dir_display_.begin(), pre.begin(), pre.end());
     dir_cursor_    = 0;
     dir_scroll_    = 0;
 
@@ -9063,6 +9707,24 @@ void UIManager::enterDriveList() {
     }
 }
 
+// CD-S3: the one answer to "is this a partial rip?". Counted off the playlist's
+// CD rows rather than the device, so it costs nothing on the draw path and needs
+// no disc access. Marking every row is NOT partial - it is the same rip as
+// marking none, which is why both must answer false or the modal would grow a
+// summary line for a selection that takes the whole disc anyway.
+size_t UIManager::cdRowCount() const {
+    size_t n = 0;
+    for (size_t i = 0; i < playlist_.size(); ++i)
+        if (isCDTrackPath(playlist_.at(i).path)) ++n;
+    return n;
+}
+
+bool UIManager::cdSelectionIsPartial() const {
+    if (cd_sel_.empty()) return false;          // empty means ALL
+    const size_t rows = cdRowCount();
+    return rows > 0 && cd_sel_.size() < rows;
+}
+
 void UIManager::activateDrive(const std::string& drive_entry) {
 #ifdef _WIN32
     // Check if this is a CD-ROM drive
@@ -9085,6 +9747,14 @@ void UIManager::activateDrive(const std::string& drive_entry) {
             cd_drive_letter_ = letter;
             cd_poll_ticks_   = 0;
             cd_fail_count_   = 0;
+            // CD-S3: drop any rip selection from the previous disc. The synthetic
+            // paths are disc-INDEPENDENT ("G:CD Track 05" matches track 5 of
+            // whatever is in G:), so carrying them across a swap would silently
+            // select tracks on a disc the user never marked. The failure
+            // directions are not symmetric: clearing costs a redone selection,
+            // not clearing rips the wrong thing. This runs on every open, which
+            // is also the path the CD poll re-enters on media change.
+            cd_sel_.clear();
             // Populate playlist with CD tracks
             playlist_.clear();
             for (const auto& t : audio_.cdTracks()) {
@@ -9141,15 +9811,27 @@ void UIManager::activateDrive(const std::string& drive_entry) {
     }
 }
 
+// Is the browser showing a virtual section rather than current_dir_'s contents?
+// The set is section_flags_ (the constructor); the operation is browsersec::anySet.
+bool UIManager::inVirtualSection() const {
+    return browsersec::anySet(section_flags_, kSectionFlagCount);
+}
+
+// THE RESET TRAP, in one function. Both sites called this out in comments begging
+// to be kept in step - "BOTH sites, or a refresh leaks", "the completeness of this
+// list IS the fix" - and a third reader, the directory poll, had fallen six
+// sections behind and was calling refreshDir() from inside a live section.
+//
+// libnav::reset stays here, in the same relative position it held at both sites:
+// the level, the path taken through it, and the deeper cursors are as much part of
+// "no section is showing" as the flags are.
+void UIManager::clearSectionFlags() {
+    browsersec::clearAll(section_flags_, kSectionFlagCount);
+    libnav::reset(lib_nav_);    // level AND the path taken AND the deeper cursors
+}
+
 void UIManager::refreshDir() {
-    in_drive_list_ = false;
-    in_recent_     = false;
-    in_favs_       = false;
-    in_radio_      = false;
-    in_books_      = false;
-    in_podcasts_     = false;
-    in_podcast_feed_ = false;
-    in_podcastindex_search_ = false;
+    clearSectionFlags();        // slice 17: was ten hand-written assignments here
     dir_entries_.clear();
     dir_display_.clear();
     dir_poll_ticks_ = 0;
@@ -9157,24 +9839,20 @@ void UIManager::refreshDir() {
     try {
         fs::path p(current_dir_);
         bool at_root = (p.parent_path() == p);
-        std::string nav = at_root ? "[Drives]" : "..";
 
-        // Always pin [Drives], [Recent], [FAVs] at top
-        dir_entries_.push_back("[Drives]");
-        dir_display_.push_back("[Drives]");
-        dir_entries_.push_back("[Recent]");
-        dir_display_.push_back("[Recent]");
-        dir_entries_.push_back("[FAVs]");
-        dir_display_.push_back("[FAVs]");
-        dir_entries_.push_back("[Radio]");
-        dir_display_.push_back("[Radio]");
-        dir_entries_.push_back("[Podcasts]");
-        dir_display_.push_back("[Podcasts]");
-        dir_entries_.push_back("[Books]");
-        dir_display_.push_back("[Books]");
-        if (!at_root) {
-            dir_entries_.push_back("..");
-            dir_display_.push_back("..");
+        // The pinned rows, pushed straight from browserpins::kPins - the SAME list
+        // the sort comparator ranks against, so a row cannot be pushed here and
+        // forgotten there (which is exactly how [Library] ended up at the bottom
+        // of the pane). ".." is the one conditional entry: a filesystem root has
+        // no parent to go up to.
+        for (std::size_t i = 0; i < browserpins::kCount; ++i) {
+            const std::string nm = browserpins::kPins[i];
+            if (nm == ".." && at_root) continue;
+            // Slice 6: [Library] is absent when the toggle is off, and the SAME
+            // predicate gates the comparator below and enterDriveList's list.
+            if (!browserpins::shown(nm, config_.library)) continue;
+            dir_entries_.push_back(nm);
+            dir_display_.push_back(nm);
         }
 
         for (const auto& de : fs::directory_iterator(current_dir_)) {
@@ -9205,21 +9883,13 @@ void UIManager::refreshDir() {
             [&](std::size_t a, std::size_t b) {
                 const auto& ea = dir_entries_[a];
                 const auto& eb = dir_entries_[b];
-                // Virtual entries always first
-                if (ea == "[Drives]")               return true;
-                if (eb == "[Drives]")               return false;
-                if (ea == "[Recent]")               return true;
-                if (eb == "[Recent]")               return false;
-                if (ea == "[FAVs]")                 return true;
-                if (eb == "[FAVs]")                 return false;
-                if (ea == "[Radio]")                return true;
-                if (eb == "[Radio]")                return false;
-                if (ea == "[Podcasts]")             return true;
-                if (eb == "[Podcasts]")             return false;
-                if (ea == "[Books]")                return true;
-                if (eb == "[Books]")                return false;
-                if (ea == "..")                     return true;
-                if (eb == "..")                     return false;
+                // Pinned rows first, in browserpins order - the same list
+                // refreshDir pushes from, so the two cannot drift apart. Equal
+                // ranks compare false, which the old open-coded chain got wrong
+                // (comp(a, a) == true is undefined behaviour in std::sort).
+                bool decided = false;
+                const bool pinned = browserpins::before(ea, eb, decided, config_.library);
+                if (decided) return pinned;
 
                 bool ad = fs::is_directory(fs::path(current_dir_)/ea);
                 bool bd = fs::is_directory(fs::path(current_dir_)/eb);
@@ -9281,9 +9951,111 @@ std::string UIManager::browserEntryPath(int idx) const {
     if (idx < 0 || idx >= (int)dir_entries_.size()) return {};
     const std::string& nm = dir_entries_[(size_t)idx];
     if (nm.empty() || nm == ".." || nm == "[Back]" || nm.front() == '[') return {};
+    // in_library_ - and this is THE seam, so the decision is stated in full.
+    //
+    // Levels 1-2 are artist and album NAMES from tags. Building a path from them is
+    // exactly what the library guards exist to prevent: invalid UTF-8 throws out of
+    // fs::path() and out of fs::exists(s, ec) too, ec included, because the
+    // conversion runs before ec applies.
+    //
+    // Level 3 rows DO carry a real, OS-origin path - the scanner's own directory walk
+    // produced it - so as of slice 5 they resolve here like any [FAVs] row. That one
+    // narrowing is what turns on playback, queueing, marking, converting and chapters
+    // for library tracks, because this function is the single definition of "what path
+    // is this row" that all of them consult. Slices 3 and 4 deliberately held it shut
+    // so depth could ship without those five call sites changing behaviour unwatched.
     if (in_drive_list_ || in_radio_ || in_podcasts_) return {};
+    if (in_library_ && !libnav::rowIsPath(lib_nav_.level)) return {};
     namespace fs = std::filesystem;
     return fs::path(nm).is_absolute() ? nm : (fs::path(current_dir_) / nm).string();
+}
+
+// Does this browser row name a real file, i.e. something with track metadata?
+//
+// browserEntryPath already rejects the pseudo-rows (section pins, "..", "[Back]",
+// empty identities) and every level whose identity is tag text. What it does NOT
+// reject is a DIRECTORY in the plain folder browser, which resolves to a perfectly
+// good path with no tags behind it.
+//
+// The fs::is_directory guard mirrors the draw loop's own at drawDirBrowser: it runs
+// ONLY outside the virtual sections, because a library or feed row is tag text and
+// fs::path over invalid UTF-8 throws on Windows. Cost is one call for the cursor
+// row; the draw loop already makes the same call for every VISIBLE row.
+bool UIManager::browserRowIsFile(int idx) const {
+    const std::string p = browserEntryPath(idx);
+    if (p.empty()) return false;
+    if (in_recent_ || in_favs_ || in_books_ || in_library_) return true;   // always files
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    const bool dir = fs::is_directory(fs::path(p), ec);
+    return !ec && !dir;
+}
+
+// The ONE place that decides what the info pane is looking at. See UIManager.h.
+//
+// Order matters and each step earns its place:
+//   1. a [Podcasts] row under the cursor - the podcast campaign's behaviour, kept
+//   2. any other browser row - THE SLICE-10 FIX
+//   3. a standalone playing episode - so the pane follows it from the playlist side
+//   4. the playlist: cursored row, else the playing row, else the last-known index
+//
+// THE RULE, in one sentence: when the browser has focus the pane shows the row under
+// the cursor, or says it has nothing. No exceptions, because "sometimes follows the
+// cursor and sometimes shows the playing track" is the behaviour that reads as broken.
+UIManager::InfoSubject UIManager::infoPaneSubject() const {
+    InfoSubject s;
+
+    if (in_podcasts_ && focus_ == Pane::DirBrowser && dir_cursor_ >= 1) {
+        if (in_podcast_feed_ && dir_cursor_ - 1 < (int)podcast_episodes_.size()) {
+            const PodcastEpisode& ep = podcast_episodes_[(size_t)(dir_cursor_ - 1)];
+            s.source        = InfoSource::Podcast;
+            s.path          = episodeCacheFile(podcast_feed_url_, ep);   // ASCII-safe
+            s.display_title = sanitizeForDisplay(ep.title);
+            s.duration_sec  = (int)ep.duration_sec;
+            return s;
+        }
+        if (!in_podcast_feed_ && dir_cursor_ - 1 < (int)config_.podcast_feeds.size()) {
+            const std::string& furl = config_.podcast_feeds[(size_t)(dir_cursor_ - 1)];
+            const std::string title = config_.podcastFeedTitle(furl);
+            s.source        = InfoSource::Podcast;
+            s.path          = pathSafeAscii(furl);   // pseudo-path; never a real file
+            s.display_title = sanitizeForDisplay(title.empty() ? furl : title);
+            return s;                                // a feed row: art and title, no file
+        }
+    }
+
+    if (focus_ == Pane::DirBrowser) {
+        if (browserRowIsFile(dir_cursor_)) {
+            s.source = InfoSource::Browser;
+            s.path   = browserEntryPath(dir_cursor_);
+            s.display_title = (dir_cursor_ >= 0 && dir_cursor_ < (int)dir_display_.size())
+                            ? dir_display_[(size_t)dir_cursor_] : s.path;
+            return s;
+        }
+        return s;                           // source stays None: an honest empty state
+    }
+
+    if (isPlayingPodcast() && audio_.state() != PlaybackState::Stopped
+        && !(focus_ == Pane::Playlist && pl_cursor_ < (int)playlist_.size())) {
+        s.source        = InfoSource::Podcast;
+        s.path          = podcast_playing_path_;
+        s.display_title = audio_.currentTrack().title;
+        s.duration_sec  = audio_.currentTrack().duration_sec;
+        return s;
+    }
+
+    if (playlist_.empty()) return s;
+    std::size_t idx;
+    if (focus_ == Pane::Playlist && pl_cursor_ < (int)playlist_.size()) idx = (std::size_t)pl_cursor_;
+    else if (auto r = nowPlayingRow())                                  idx = *r;
+    else                                                                idx = playlist_.current();
+    if (idx >= playlist_.size()) idx = playlist_.size() - 1;   // defensive, as before
+    s.source        = InfoSource::Playlist;
+    s.pl_index      = idx;
+    s.path          = playlist_.at(idx).path;
+    s.display_title = playlist_.at(idx).display_title;
+    s.duration_sec  = playlist_.at(idx).duration_sec;
+    return s;
 }
 
 // ─── [Podcasts] section (slice 2) ────────────────────────────────────────────
@@ -9348,6 +10120,907 @@ void UIManager::showPodcastFeedList() {
         dir_display_.push_back(sanitizeForDisplay(title.empty() ? url : title));
     }
     dir_cursor_ = 0; dir_scroll_ = 0;
+}
+
+// ─── [Library] section (library slice 3) ─────────────────────────────────────
+
+// Enter [Library] (level 1). Clears the sibling section flags, then decides what
+// the section should be showing:
+//
+//   scan already running   -> show progress, touch nothing
+//   an index file exists   -> load it and list artists. NEVER scans; revalidation
+//                             is explicit-rescan and first-enable only, and
+//                             scanning on entry is the slice-5 load-path regression
+//   a scan was cancelled   -> show the cancelled line and ARM a retry; the NEXT
+//                             entry scans. Without this, cancelling a 15.8 s scan
+//                             and reopening the section would restart it at once,
+//                             which is the section fighting the user
+//   otherwise (no file)    -> FIRST ENABLE: start the scan
+//
+// The first-enable guard is deliberately "no index file", never "empty index": a
+// completed scan of a collection with no audio in it still writes a zero-track
+// file, so it settles instead of rescanning forever.
+// (Re)build the saved-station list, the [Radio] level-1 view. Extracted because
+// the same eight lines appeared at FIVE sites and the ascent path needed a third
+// caller; the three that reset the cursor now share this one. (The two in the
+// station-remove handler keep their own cursor CLAMP - deleting the last row must
+// not jump to the top - and are deliberately left alone.)
+//
+// in_radio_search_ = false is part of the view, not incidental: this list IS the
+// non-search view, so building it and leaving the flag set would leave the section
+// drawing stations while Enter still read search results.
+void UIManager::showRadioStationList() {
+    in_radio_search_ = false;
+    dir_entries_.clear(); dir_display_.clear();
+    dir_entries_.push_back("[Back]"); dir_display_.push_back("[Back]");
+    for (const auto& st : config_.radio_stations) {
+        dir_entries_.push_back(st);
+        dir_display_.push_back(sanitizeForDisplay(stationLabel(st)));
+    }
+    dir_cursor_ = 0; dir_scroll_ = 0;
+}
+
+// Ascend one level in [Radio]: search results -> saved stations -> out.
+void UIManager::radioAscend() {
+    if (in_radio_search_) { showRadioStationList(); return; }
+    in_radio_ = false;
+    refreshDir();                    // relists where the browser already was; no move
+}
+
+// Ascend one level in [Podcasts]. Extracted VERBATIM from the [Back] handler so
+// [Back] and Left cannot drift, and called from both.
+//
+// Library slice 4's authorised widening. Before it, Left inside [Podcasts] fell
+// through to the browser's parent-directory path, so it left the section entirely
+// AND walked current_dir_ up a level - which meant the only shipped two-level
+// section did not ascend on Left. Shipping a three-level [Library] that ascends
+// beside a [Podcasts] that does not would be an inconsistency the user meets
+// immediately. Nothing else in the podcast path is in scope.
+//
+// The search-results sub-mode ascends to the feed list too. That is one more
+// sub-state than the ruling named, and it is included because it is the same
+// [Back] logic and excluding it would leave Left dumping the user out of a
+// sub-mode that [Back] returns from - the exact inconsistency being fixed.
+void UIManager::podcastAscend() {
+    if (in_podcastindex_search_ || in_podcast_feed_) {  // results/episodes -> feed list
+        showPodcastFeedList();
+        return;
+    }
+    in_podcasts_ = false;            // level 1 -> leave the section
+    refreshDir();                    // relists where the browser already was; no move
+}
+
+// utf8Path is a file-static defined further down (beside the podcast cache paths) and
+// is needed up here for the untrusted config root. Declared rather than moved so the
+// diff stays where the slice is.
+static fs::path utf8Path(const std::string& s);
+
+// The folder the library indexes. A configured root wins; otherwise the OS music
+// folder, MEMOIZED - CDRipper::musicRoot() is a COM SHGetKnownFolderPath, and calling
+// one of those per row per frame was the suspected cause of a scroll-time crash during
+// the podcast campaign. This is a session constant either way.
+std::vector<std::string> UIManager::libraryRoots() const {
+    if (!config_.library_roots.empty()) return config_.library_roots;
+    static const std::string kMusicRoot = CDRipper::musicRoot();
+    return { kMusicRoot };
+}
+
+// Is this exact folder one of the configured roots? Exact (folded) match, not
+// coverage: '@' on a SUBFOLDER of a root must offer to add it and then be told it is
+// already covered, rather than silently offering to remove the parent.
+bool UIManager::isLibraryRoot(const std::string& path) const {
+    const std::string p = libidx::detail::foldPathKey(libidx::detail::normaliseRoot(path));
+    for (const std::string& e : config_.library_roots)
+        if (libidx::detail::foldPathKey(libidx::detail::normaliseRoot(e)) == p) return true;
+    return false;
+}
+
+// Yellow, bottom-left, ~5 s. THE mechanism for an in-place refusal, and not
+// lib_status_ - that is a ROW INSIDE the library pane (the scanning line), with no
+// colour and no timeout. This is the F6-confirm line, which is where "yellow, in
+// place, never a toast" was ruled.
+void UIManager::libRootReject(const std::string& msg) {
+    status_msg_        = msg;
+    status_msg_ticks_  = 0;
+    status_msg_yellow_ = true;
+    redraw_needed_.store(true);
+}
+
+// Add a folder as a library root, or explain why not.
+//
+// THREE REJECTIONS, and the third is the one worth arguing about. Adding a PARENT of
+// an existing root is refused rather than absorbing the child: absorbing silently
+// deletes a root the user configured, its undo is a 15.8 s rescan, and it is the one
+// case where a typo ("C:\") has a blast radius measured in the whole disk. Refusing
+// and naming the conflict leaves them able to remove the child first if that is what
+// they meant.
+void UIManager::addLibraryRoot(const std::string& raw) {
+    const std::string root = libidx::detail::normaliseRoot(raw);
+    if (root.empty()) return;
+
+    for (const std::string& e : config_.library_roots) {
+        if (libidx::detail::foldPathKey(libidx::detail::normaliseRoot(e))
+            == libidx::detail::foldPathKey(root)) {
+            libRootReject("Folder is already in the library");
+            return;
+        }
+        if (libidx::detail::isPathUnder(root, e)) {
+            libRootReject("Already covered by " + sanitizeForDisplay(e));
+            return;
+        }
+        if (libidx::detail::isPathUnder(e, root)) {
+            libRootReject("That folder contains " + sanitizeForDisplay(e)
+                          + " - remove that one first");
+            return;
+        }
+    }
+
+    // The FIRST explicit root must not silently drop the implicit default. Until now
+    // an empty list meant the OS music folder; writing one root would make that folder
+    // vanish from the library without the user having removed anything.
+    if (config_.library_roots.empty()) {
+        const std::vector<std::string> implied = libraryRoots();   // the memoized default
+        for (const std::string& d : implied) {
+            const std::string nd = libidx::detail::normaliseRoot(d);
+            if (nd.empty()) continue;
+            if (libidx::detail::foldPathKey(nd) == libidx::detail::foldPathKey(root)) continue;
+            if (libidx::detail::isPathUnder(root, nd)) {   // the default already covers it
+                libRootReject("Already covered by " + sanitizeForDisplay(nd));
+                return;
+            }
+            config_.library_roots.push_back(nd);
+        }
+    }
+
+    config_.library_roots.push_back(root);
+    config_.save();
+    startLibraryScan("Added a library folder - scanning...");
+}
+
+// Remove a root. Its records leave IMMEDIATELY - isPathUnder already identifies them,
+// so no walk is needed - and the index file is rewritten so the removal survives a
+// restart. Instant is the honest behaviour here: a removal that waited for a rescan
+// would leave the user unable to tell whether it had worked.
+void UIManager::removeLibraryRoot(const std::string& raw) {
+    const std::string root = libidx::detail::normaliseRoot(raw);
+    auto& roots = config_.library_roots;
+    const std::size_t before = roots.size();
+    roots.erase(std::remove_if(roots.begin(), roots.end(),
+                    [&](const std::string& e) {
+                        return libidx::detail::foldPathKey(libidx::detail::normaliseRoot(e))
+                            == libidx::detail::foldPathKey(root);
+                    }),
+                roots.end());
+    if (roots.size() == before) { libRootReject("That folder is not a library folder"); return; }
+
+    auto& tr = library_index_.tracks;
+    const std::size_t tracks_before = tr.size();
+    tr.erase(std::remove_if(tr.begin(), tr.end(),
+                 [&](const libidx::LibraryTrack& t) {
+                     return libidx::detail::isPathUnder(t.path, root);
+                 }),
+             tr.end());
+    library_index_.roots = roots;
+    // The compilation set is DERIVED from the records, so it has to be rebuilt or a
+    // removed root could leave an album flagged on evidence that is no longer there.
+    libidx::rebuildCompilations(library_index_);
+    (void)libidx::saveIndexFileAtomic(libidx::libraryIndexPath(), library_index_);
+    config_.save();
+
+    if (in_library_) { libnav::reset(lib_nav_); populateLevel(); }
+    libRootReject("Removed " + sanitizeForDisplay(root) + " - "
+                  + std::to_string(tracks_before - tr.size()) + " tracks left the library");
+}
+
+// Every configured root on one line, for messages. Named rather than formatted at the
+// call site because two messages that list roots differently is a small version of the
+// two-lists problem this campaign keeps closing.
+std::string UIManager::rootsSummary() const {
+    const std::vector<std::string> roots = libraryRoots();
+    if (roots.empty()) return CDRipper::musicRoot();
+    std::string s;
+    for (std::size_t i = 0; i < roots.size(); ++i) {
+        if (i) s += (i + 1 == roots.size()) ? " and " : ", ";
+        s += roots[i];
+    }
+    return s;
+}
+
+// Can that folder actually be walked? Answering BEFORE starting a scan is what makes a
+// bad root honest: the scanner reports only "did not complete" for an unreadable root,
+// which is the same thing it reports for a cancellation.
+//
+// The string is UNTRUSTED - a user types library_root into a file - so it goes through
+// utf8Path, which converts explicitly and cannot throw on invalid UTF-8, rather than a
+// bare fs::exists(std::string), which throws on Windows even in the error_code form
+// because the conversion runs before the code applies. The catch is belt-and-braces.
+bool UIManager::libraryRootReadable(const std::string& root) const {
+    if (root.empty()) return false;
+    try {
+        std::error_code ec;
+        const bool ok = fs::is_directory(utf8Path(root), ec);
+        return ok && !ec;
+    } catch (...) { return false; }
+}
+
+// Start a scan. Shared by first enable, a changed root, and the F12 rescan, so all
+// three validate the root and set the same state - there is one way to start a scan.
+void UIManager::startLibraryScan(const char* reason) {
+    const std::vector<std::string> roots = libraryRoots();
+    // Slice 11: refuse only when NOT ONE root is readable. With a single configured
+    // root that is exactly the shipped test and exactly the shipped message; with
+    // several, one offline drive must not stop the others being scanned, and the
+    // scanner carries the offline one's records forward untouched.
+    std::size_t readable = 0;
+    for (const std::string& r : roots) if (libraryRootReadable(r)) ++readable;
+    if (readable == 0) {
+        // NOT "cancelled". This is the message that did not exist before slice 6, and
+        // its absence is why an unreadable root reported a cancellation.
+        lib_scan_running_     = false;
+        lib_cancel_requested_ = false;
+        lib_status_ = (roots.size() == 1)
+            ? "Cannot read the music folder: " + sanitizeForDisplay(roots.front())
+            : "Cannot read any of the " + std::to_string(roots.size()) + " library folders";
+        // ONLY WHEN THE USER IS LOOKING AT THE LIBRARY. See the note below.
+        if (in_library_) populateLevel();
+        else             libRootReject(lib_status_);
+        return;
+    }
+    library_scanner_.start(roots, libidx::libraryIndexPath());
+    lib_scan_running_     = true;
+    lib_cancel_requested_ = false;
+    // The reason is part of the message, not set by the caller beforehand: this
+    // function owns lib_status_ while a scan is starting, so a caller setting it first
+    // would simply be overwritten here - which is what happened to the root-changed
+    // message on the first cut of this slice.
+    lib_status_ = std::string(reason ? reason : "Scanning the music folder...")
+                + " (Esc to cancel)";
+
+    // ── THE PANE IS NOT THIS FUNCTION'S TO TAKE (slice 11 gate failure) ────────
+    //
+    // populateLevel() used to run unconditionally here, and every caller of this
+    // function was inside [Library] until slice 11 added '@'. Pressing '@' in the
+    // FOLDER BROWSER therefore cleared dir_entries_ and pushed the library's [Back]
+    // row and lib_status_ into it: the directory listing vanished, the header still
+    // said "Dir: D:\", and the completion path could not put it back because THAT one
+    // is correctly guarded on in_library_.
+    //
+    // lib_status_ is a row inside the LIBRARY pane - established when this campaign
+    // corrected the brief's claim that it was the bottom-left line. Writing it into a
+    // pane the library does not own was the whole bug.
+    //
+    // So: repopulate only when the library pane is what the user is looking at.
+    // Otherwise the scan is background work and reports on the bottom-left yellow
+    // line, which is the mechanism for saying something without taking a pane.
+    if (in_library_) populateLevel();
+    else             libRootReject(lib_status_);
+}
+
+// Esc while a scan is running. The scanner already polls this per file and already
+// commits nothing on a partial walk (the LIB-S2 invariant); what did not exist was any
+// way for the USER to reach it - cancel() had exactly one caller, the destructor, so
+// the whole cancelled-and-retry path below was unreachable in the shipped product.
+void UIManager::cancelLibraryScan() {
+    if (!lib_scan_running_) return;
+    lib_cancel_requested_ = true;      // tells the pickup which of the two this was
+    library_scanner_.cancel();
+    lib_status_ = "Cancelling the library scan...";
+    if (in_library_) populateLevel();  // same rule as startLibraryScan - never take a
+    else             libRootReject(lib_status_);   // pane the library is not showing
+}
+
+void UIManager::enterLibrarySection() {
+    in_recent_ = false; in_favs_ = false; in_radio_ = false; in_radio_search_ = false;
+    in_books_ = false;  in_drive_list_ = false;
+    in_podcasts_ = false; in_podcast_feed_ = false; in_podcastindex_search_ = false;
+    in_library_ = true;
+    libnav::reset(lib_nav_);   // entering is definitionally a return to level 1
+
+    if (lib_scan_running_) { showLibraryArtists(); return; }
+
+    const std::string idx_path = libidx::libraryIndexPath();
+    if (libidx::loadIndexFile(idx_path, library_index_)) {
+        // THE ROOT-CHANGED CASE, and the one narrow exception to "no scan on section
+        // entry" in this program. LIB-S2 invalidates by construction - revalidation is
+        // keyed on absolute path, so a different root matches nothing - but NOTHING
+        // DETECTED IT, so a stale index over a different folder listed tracks that are
+        // not where it said they were.
+        //
+        // It is an exception rather than a regression because it fires only when a
+        // config value actually changed, and because it SETTLES: the scan writes the new
+        // root into the index, so the next entry compares equal and does nothing. Same
+        // shape as the first-enable guard being "no index FILE" rather than "empty
+        // index" - the guard has to be a condition the scan itself resolves.
+        // Slice 11: the comparison is over the LIST, order included. Two roots that
+        // swapped places index the same files, but comparing sets rather than lists
+        // would mean writing a second comparison rule for a case nobody can reach
+        // without editing the config by hand - and the rescan it triggers is 251 ms
+        // of revalidation, not a re-read.
+        const std::vector<std::string> roots = libraryRoots();
+        if (!library_index_.roots.empty() && library_index_.roots != roots) {
+            startLibraryScan(roots.size() == 1 ? "Music folder changed - rescanning..."
+                                               : "Library folders changed - rescanning...");
+            return;
+        }
+        lib_status_.clear();
+        showLibraryArtists();
+        return;
+    }
+    if (lib_scan_cancelled_) {
+        lib_scan_cancelled_ = false;          // arm: the next entry will scan
+        lib_status_ = "Library scan cancelled. Open [Library] again to retry.";
+        showLibraryArtists();
+        return;
+    }
+    startLibraryScan();                       // first enable
+}
+
+// The index record for a path, or nullptr. Linear over the index, called once per
+// keypress - never per row, never per frame - and deliberately not cached, because a
+// query result surviving a frame is exactly the staleness this campaign has avoided.
+const libidx::LibraryTrack* UIManager::libraryTrackFor(const std::string& path) const {
+    for (const libidx::LibraryTrack& t : library_index_.tracks)
+        if (t.path == path) return &t;
+    return nullptr;
+}
+
+// (Re)populate the browser with the artist list. A [Back] row leads at index 0,
+// exactly as every other virtual section does.
+//
+// dir_entries_ holds the RAW artist string (identity), dir_display_ the sanitized
+// one (what is drawn) - the lockstep idiom. The raw string is never used to build
+// a path: it comes from a tag and may be invalid UTF-8, which is what the
+// !in_library_ guards on the fs::path sites exist to prevent.
+//
+// The cursor is restored BY NAME through libidx::restoreCursor, so a scan landing
+// underneath a live selection re-seats it on the same artist rather than on
+// whatever row that subscript now happens to be.
+void UIManager::showLibraryArtists() {
+    lib_nav_.level = libnav::Level::Artists;
+    dir_entries_.clear(); dir_display_.clear();
+    dir_entries_.push_back("[Back]"); dir_display_.push_back("[Back]");
+
+    if (!lib_status_.empty()) {
+        dir_entries_.push_back("");                       // not selectable as a path
+        dir_display_.push_back(sanitizeForDisplay(lib_status_));
+        dir_cursor_ = 0; dir_scroll_ = 0;
+        return;
+    }
+
+    // Slice 10: the genre filter, if one is active. libidx::artists falls straight
+    // through to the unfiltered form on an empty genre, so there is one call here
+    // rather than a branch that could drift.
+    const std::vector<std::string> rows = libidx::artists(library_index_, lib_nav_.genre);
+    if (rows.empty()) {
+        dir_entries_.push_back("");
+        // Slice 11: the empty state NAMES EVERY ROOT. "under X" was right when there
+        // was one; with three configured it would be wrong about where it looked.
+        dir_display_.push_back(!lib_nav_.genre.empty()
+            ? ("No artists in " + sanitizeForDisplay(lib_nav_.genre))
+            : ("No audio found under " + sanitizeForDisplay(rootsSummary())));
+        dir_cursor_ = 0; dir_scroll_ = 0;
+        return;
+    }
+    for (const auto& a : rows) {
+        dir_entries_.push_back(a);
+        dir_display_.push_back(sanitizeForDisplay(a.empty() ? std::string("(no artist)") : a));
+    }
+    const int row = libidx::restoreCursor(lib_nav_.sel_artist, rows);
+    dir_cursor_ = (row < 0) ? 0 : row + 1;                // +1 for the [Back] row
+    if (dir_cursor_ >= (int)dir_entries_.size()) dir_cursor_ = 0;
+    // NO dir_scroll_ = 0 here. Restoring the cursor by name and then pinning the
+    // view to the top is what hid it: the row was correct and off-pane. The scroll
+    // is left as the user had it and drawDirBrowser's invariant reconciles the two
+    // against the NEW list, so a stale offset cannot survive as anything wrong -
+    // and a restored cursor of 0 drives it to 0 anyway, which is what this line did.
+}
+
+// ─── [Library] levels 2 and 3 (slice 4) ──────────────────────────────────────
+//
+// Both mirror showLibraryArtists exactly - [Back] at index 0, identity in
+// dir_entries_, sanitized display in dir_display_, cursor restored BY NAME - and
+// neither goes through the browser sort, because the order is the index's and is
+// already total. See LibraryNav.h for why nothing here stores an index.
+
+// Level 2: one artist's albums. Identity is the raw album string from a tag and
+// may be invalid UTF-8, so it is subject to exactly the same prohibition as an
+// artist string - nothing may build an fs::path from it.
+void UIManager::showLibraryAlbums() {
+    lib_nav_.level = libnav::Level::Albums;
+    dir_entries_.clear(); dir_display_.clear();
+    dir_entries_.push_back("[Back]"); dir_display_.push_back("[Back]");
+
+    const std::vector<std::string> rows =
+        libidx::albumsForArtist(library_index_, lib_nav_.artist, lib_nav_.genre);
+    if (rows.empty()) {
+        // Reachable without a bug: a rescan can complete while this level is open
+        // and no longer carry the artist (every file by them deleted or retagged).
+        // An honest empty state, not an error.
+        dir_entries_.push_back("");
+        dir_display_.push_back("No albums for " +
+                               sanitizeForDisplay(lib_nav_.artist.empty()
+                                                  ? std::string("(no artist)") : lib_nav_.artist));
+        dir_cursor_ = 0; dir_scroll_ = 0;
+        return;
+    }
+    for (const auto& al : rows) {
+        dir_entries_.push_back(al);
+        dir_display_.push_back(sanitizeForDisplay(al.empty() ? std::string("(no album)") : al));
+    }
+    const int row = libidx::restoreCursor(lib_nav_.sel_album, rows);
+    dir_cursor_ = (row < 0) ? 0 : row + 1;
+    if (dir_cursor_ >= (int)dir_entries_.size()) dir_cursor_ = 0;
+    // No dir_scroll_ reset - see showLibraryArtists.
+}
+
+// Level 3: one album's tracks.
+//
+// THE STALENESS RULE now lives in libnav::albumTracks, which is where index
+// subscripts are resolved and where they die - LIB-AA moved it there so the album
+// append reads the SAME function and the drawn order cannot drift from the appended
+// order. No subscript reaches this function at all any more.
+//
+// A track path is OS-origin - the scanner's directory walk produced it - so unlike
+// levels 1-2 it is safe to hand to the filesystem, which is what LIB-S5 wired: a
+// level-3 row resolves through browserEntryPath like any [FAVs] row.
+void UIManager::showLibraryTracks() {
+    lib_nav_.level = libnav::Level::Tracks;
+    dir_entries_.clear(); dir_display_.clear();
+    dir_entries_.push_back("[Back]"); dir_display_.push_back("[Back]");
+
+    // libnav::albumTracks, not libidx::tracksForAlbum directly: the album append reads
+    // the SAME function, so the order rows are drawn in and the order they are appended
+    // in cannot drift apart. It is also where the index subscripts are resolved, so
+    // none reaches this function at all.
+    const std::vector<libidx::LibraryTrack> rows =
+        libnav::albumTracks(library_index_, lib_nav_.artist, lib_nav_.album);
+    if (rows.empty()) {
+        dir_entries_.push_back("");
+        dir_display_.push_back("No tracks on " +
+                               sanitizeForDisplay(lib_nav_.album.empty()
+                                                  ? std::string("(no album)") : lib_nav_.album));
+        dir_cursor_ = 0; dir_scroll_ = 0;
+        return;
+    }
+    // Slice 8: on a compilation every row is a different artist, so the rows carry it.
+    // Asked once for the album rather than per row - the verdict is per album by
+    // construction, and asking per row would invite the two disagreeing.
+    const bool compilation = !rows.empty() && libidx::isCompilation(library_index_, rows.front());
+
+    std::vector<std::string> ident;      // for restoreCursor: the paths, in row order
+    ident.reserve(rows.size());
+    for (const libidx::LibraryTrack& t : rows) {
+        const std::string dur = (t.duration_sec > 0)
+                              ? formatTime((double)t.duration_sec) : std::string();
+        dir_entries_.push_back(t.path);                  // IDENTITY: the real path
+        dir_display_.push_back(
+            sanitizeForDisplay(libnav::trackRowLabel(t, dur, compilation)));
+        ident.push_back(t.path);
+    }
+    const int row = libidx::restoreCursor(lib_nav_.sel_track, ident);
+    dir_cursor_ = (row < 0) ? 0 : row + 1;
+    if (dir_cursor_ >= (int)dir_entries_.size()) dir_cursor_ = 0;
+    // No dir_scroll_ reset - see showLibraryArtists.
+}
+
+// 'a' on a level-2 album row: append the whole album, in the order level 3 draws it.
+//
+// WHY THE COUNT IS MEASURED AND NOT COUNTED. PlaylistManager::addTrack DEDUPS BY PATH -
+// it returns the existing index rather than appending a second copy - so appending an
+// album three of whose tracks are already in the playlist adds fifteen rows, not
+// eighteen. Reporting the number of paths iterated would over-report on every
+// partially-owned album, which is the common case for anyone who built a playlist by
+// hand first. So the report is playlist_.size() before against after: what actually
+// happened, not what was attempted.
+//
+// Missing files are SKIPPED AND COUNTED rather than aborting the append: fifteen tracks
+// is more useful than nothing, and a silent skip of three of eighteen is exactly the
+// silence LIB-S5 ruled against for one of one. The index is a cache and the remedy is a
+// rescan, so the count says so.
+//
+// Ordering, and the fact that it is the same order the pane shows, belong to
+// libnav::albumTracks. This function does no ordering of its own.
+void UIManager::appendAlbumUnderCursor() {
+    if (dir_cursor_ < 1 || dir_cursor_ >= (int)dir_entries_.size()) return;
+    const std::string album = dir_entries_[(size_t)dir_cursor_];
+    // The status and empty-state rows push "" as identity. An album name genuinely CAN
+    // be empty (untagged files), and that row is real and displays "(no album)", so the
+    // two are told apart by the display rather than by the identity being empty.
+    if (album.empty() && dir_display_[(size_t)dir_cursor_] != "(no album)") return;
+    const std::string label = dir_display_[(size_t)dir_cursor_];
+
+    const std::vector<libidx::LibraryTrack> rows =
+        libnav::albumTracks(library_index_, lib_nav_.artist, album);
+    if (rows.empty()) {                       // the index no longer lists this album
+        showTrackToast("No tracks on this album", label, "");
+        return;
+    }
+
+    const std::size_t before  = playlist_.size();
+    std::size_t       missing = 0;
+    for (const libidx::LibraryTrack& t : rows) {
+        // OS-origin paths - the scanner's own walk produced them - so this cannot throw
+        // the way a path built from tag text would. The error_code form regardless.
+        std::error_code ec;
+        if (!fs::exists(t.path, ec) || ec) { ++missing; continue; }
+        // addIndexedTrack, not addTrack: the record in hand already carries what
+        // populateMetadata would open the file to read, from an identical TagLib Fast
+        // read, so re-reading it was the whole 125-158 ms of a cold album append.
+        playlist_.addIndexedTrack(t.path, t.artist, t.title, t.duration_sec);
+    }
+    const std::size_t added = playlist_.size() - before;
+
+    const char* unit = (added == 1) ? " track" : " tracks";
+    if (added == 0 && missing == rows.size()) {
+        showTrackToast("No tracks found on disk - rescan the library", label, "");
+    } else if (added == 0 && missing > 0) {
+        showTrackToast("Already in the playlist, " + std::to_string(missing) + " missing",
+                       label, "");
+    } else if (added == 0) {
+        showTrackToast("Already in the playlist", label, "");
+    } else if (missing > 0) {
+        showTrackToast("Added " + std::to_string(added) + unit + ", " +
+                       std::to_string(missing) + " missing", label, "");
+    } else {
+        showTrackToast("Added " + std::to_string(added) + unit, label, "");
+    }
+}
+
+// The level-3 row under the cursor as a path something can be DONE to, or empty.
+//
+// Empty and silent at levels 1-2: an artist or album row is not actionable and
+// pressing a file key there is not an error worth a message. Empty and LOUD when the
+// row names a file the disk no longer has.
+//
+// That second case is the one thing a library row can do that no folder-browser row
+// can. The index is a CACHE: a track can be deleted, moved or renamed between the
+// last scan and this keypress, and the row will still be listed. [FAVs] and [Recent]
+// hit the same situation and fail silently (`if (!fs::exists(name)) return;`), which
+// is survivable there because those lists are user-curated and short. A library row
+// is one of thousands and the remedy is a rescan, which is not something silence can
+// convey - so it is named.
+//
+// fs::exists takes the error_code form on principle even though a scanner-produced
+// path is OS-origin and safe: the conversion runs before the code applies, so the
+// code is not what protects us here - the origin of the string is.
+std::string UIManager::libraryRowPath() {
+    const std::string p = browserEntryPath(dir_cursor_);
+    if (p.empty()) return {};                   // wrong level, or a non-row
+    std::error_code ec;
+    if (!fs::exists(p, ec) || ec) {
+        showTrackToast("Missing file - rescan the library",
+                       sanitizeForDisplay(libnav::pathStem(p)), "");
+        return {};
+    }
+    return p;
+}
+
+// The one populate dispatch. Every caller that means "relist the section" calls
+// this rather than a level-specific function, so a repopulate can never land on
+// the wrong level.
+void UIManager::populateLevel() {
+    switch (lib_nav_.level) {
+        case libnav::Level::Genres:  showLibraryGenres(); break;
+        case libnav::Level::Artists: showLibraryArtists(); break;
+        case libnav::Level::Albums:  showLibraryAlbums();  break;
+        case libnav::Level::Tracks:  showLibraryTracks();  break;
+        case libnav::Level::Results: showLibrarySearch();  break;
+        case libnav::Level::Stats:   showLibraryStats();   break;
+    }
+}
+
+// The folded play-stat map, rebuilt only when the source changed. See the header
+// for why it is folded at all; the short version is that a byte-exact join over
+// Dos's real config matched 20 entries of 295.
+const std::unordered_map<std::string, libidx::PlayStat>& UIManager::playStats() {
+    if (play_stats_dirty_) {
+        play_stats_ = libidx::buildPlayStats(config_.track_stats);
+        play_stats_dirty_ = false;
+    }
+    return play_stats_;
+}
+
+// ─── [Library] genres (slice 10) ─────────────────────────────────────────────
+//
+// A genre row's identity is TAG TEXT, exactly like an artist or album row, so it is
+// subject to the same prohibition: nothing may build an fs::path from it. That is
+// why Genres is absent from libnav::rowIsPath.
+void UIManager::showLibraryGenres() {
+    lib_nav_.level = libnav::Level::Genres;
+    dir_entries_.clear(); dir_display_.clear();
+    dir_entries_.push_back("[Back]"); dir_display_.push_back("[Back]");
+
+    const std::vector<std::string> rows = libidx::genres(library_index_);
+    if (rows.empty()) {
+        // Honest and reachable without a bug: a collection where nothing is tagged
+        // with a genre. 679 of Dos's 2,157 records have none, so an entirely
+        // untagged collection is only more of the same.
+        dir_entries_.push_back("");
+        dir_display_.push_back("No genres tagged in this collection");
+        dir_cursor_ = 0;
+        return;
+    }
+    for (const auto& g : rows) {
+        dir_entries_.push_back(g);
+        dir_display_.push_back(sanitizeForDisplay(g));
+    }
+    const int row = libidx::restoreCursor(lib_nav_.sel_genre, rows);
+    dir_cursor_ = (row < 0) ? 0 : row + 1;
+    if (dir_cursor_ >= (int)dir_entries_.size()) dir_cursor_ = 0;
+    // No dir_scroll_ reset - see showLibraryArtists.
+}
+
+// ─── [Library] stat views (slice 10) ─────────────────────────────────────────
+//
+// Two views, one level, no new section - the same shape as Results, so every
+// operation slices 5 and AA wired works on these rows by construction.
+//
+// THE JOIN IS THE INTERESTING PART. Config::track_stats is keyed on whatever path
+// the playlist entry held at play time, and those disagree on case: MEASURED on the
+// real config, a byte-exact join matched 20 of 295 entries and 17 files held two
+// case-variant entries with their counts SPLIT between them. libidx::buildPlayStats
+// folds and SUMS them, so what is ranked here is what the file was actually played.
+// The read-side fold is this slice; normalising the stored keys is LIB-S13.
+void UIManager::showLibraryStats() {
+    lib_nav_.level = libnav::Level::Stats;
+    dir_entries_.clear(); dir_display_.clear();
+    dir_entries_.push_back("[Back]"); dir_display_.push_back("[Back]");
+    lib_result_count_.clear();
+
+    const auto& ps = playStats();
+    const bool most = (lib_nav_.stat_view == libnav::StatView::MostPlayed);
+
+    std::size_t total = 0;
+    const std::vector<libidx::LibraryTrack> rows =
+        most ? libidx::mostPlayed (library_index_, ps, kLibSearchMax, &total)
+             : libidx::neverPlayed(library_index_, ps, kLibSearchMax, &total);
+
+    if (rows.empty()) {
+        dir_entries_.push_back("");
+        dir_display_.push_back(most ? "Nothing played yet"
+                                    : "Everything here has been played");
+        dir_cursor_ = 0;
+        return;
+    }
+
+    lib_result_count_ = (total > rows.size())
+        ? ("(" + std::to_string(rows.size()) + " of " + std::to_string(total) + ")")
+        : ("(" + std::to_string(total) + ")");
+
+    int wrows = 0, wcols = 0;
+    if (win_dir_) getmaxyx(win_dir_, wrows, wcols);
+    (void)wrows;
+    const int cols = std::max(20, wcols - 4);
+
+    std::vector<std::string> ident;
+    ident.reserve(rows.size());
+    for (const libidx::LibraryTrack& t : rows) {
+        dir_entries_.push_back(t.path);                  // IDENTITY: the real path
+        // Most-played leads with the count, because the count is why the row is in
+        // the list. Never-played has no count worth showing and is the ordinary
+        // search row, so the two views share one builder plus a prefix.
+        dir_display_.push_back(sanitizeForDisplay(
+            most ? libnav::statRowLabel(t, cols, libidx::lookupPlayStat(ps, t.path).play_count,
+                                        &library_index_)
+                 : libnav::searchRowLabel(t, cols, &library_index_)));
+        ident.push_back(t.path);
+    }
+    const int row = libidx::restoreCursor(lib_nav_.sel_track, ident);
+    dir_cursor_ = (row < 0) ? 0 : row + 1;
+    if (dir_cursor_ >= (int)dir_entries_.size()) dir_cursor_ = 0;
+    // No dir_scroll_ reset - see showLibraryArtists.
+}
+
+// Whole-collection search results as a browser level (slice 7).
+//
+// Re-runs the query from lib_nav_.query every time, which is what makes results need no
+// invalidation: an F12 rescan, or anything else that repopulates, produces results
+// against the new index for free. Same property the artist and album levels have had
+// since slice 4, and the reason the query is a STRING and not a saved result set.
+void UIManager::showLibrarySearch() {
+    lib_nav_.level = libnav::Level::Results;
+    dir_entries_.clear(); dir_display_.clear();
+    dir_entries_.push_back("[Back]"); dir_display_.push_back("[Back]");
+    lib_result_count_.clear();
+
+    if (lib_nav_.query.empty()) {          // the bar is open but nothing typed yet
+        dir_entries_.push_back("");
+        dir_display_.push_back("Type to search the collection");
+        dir_cursor_ = 0; dir_scroll_ = 0;
+        return;
+    }
+
+    std::size_t total = 0;
+    const std::vector<libidx::LibraryTrack> rows =
+        libidx::search(library_index_, lib_nav_.query, kLibSearchMax, &total);
+
+    if (rows.empty()) {
+        dir_entries_.push_back("");
+        dir_display_.push_back("No match for \"" + sanitizeForDisplay(lib_nav_.query) + "\"");
+        dir_cursor_ = 0; dir_scroll_ = 0;
+        return;
+    }
+
+    // "N" when complete, "N of M" when the cap bit. The total comes from search() and is
+    // counted BEFORE the cap, so it never understates.
+    lib_result_count_ = (total > rows.size())
+        ? ("(" + std::to_string(rows.size()) + " of " + std::to_string(total) + ")")
+        : ("(" + std::to_string(total) + ")");
+
+    // Width hint for the row builder: the pane's content columns, so it can decide
+    // whether the album still fits. The pane does the actual column-correct clipping.
+    int wrows = 0, wcols = 0;
+    if (win_dir_) getmaxyx(win_dir_, wrows, wcols);
+    const int cols = std::max(20, wcols - 4);     // borders plus the row prefix
+    std::vector<std::string> ident;
+    ident.reserve(rows.size());
+    for (const libidx::LibraryTrack& t : rows) {
+        dir_entries_.push_back(t.path);                  // IDENTITY: the real path
+        // Index-aware since slice 10: a compilation track with no artist tag now shows
+        // `Various Artists` here rather than the raw album-artist string.
+        dir_display_.push_back(sanitizeForDisplay(libnav::searchRowLabel(t, cols, &library_index_)));
+        ident.push_back(t.path);
+    }
+    const int row = libidx::restoreCursor(lib_nav_.sel_track, ident);
+    dir_cursor_ = (row < 0) ? 0 : row + 1;
+    if (dir_cursor_ >= (int)dir_entries_.size()) dir_cursor_ = 0;
+    // No dir_scroll_ reset - see showLibraryArtists. Live as-you-type search relies
+    // on this too: every keystroke repopulates, and resetting the scroll each time
+    // would fight the user's own scrolling through a 500-row result set.
+}
+
+// The ONE ascent path. [Back] and Left both call this, which is what makes them
+// identical at every level rather than two handlers that happen to agree.
+//
+// Leaving the section does NOT move current_dir_: refreshDir() relists wherever
+// the browser already was. That is the [Drives] back-row precedent, and it is the
+// difference from the shipped fall-through, which walked the browser up a
+// directory as a side effect of leaving - invisible until the user looked at the
+// pane and found themselves somewhere else.
+void UIManager::libraryAscend() {
+    switch (libnav::ascend(lib_nav_)) {
+        case libnav::Action::Repopulate:
+            populateLevel();
+            break;
+        case libnav::Action::LeaveSection:
+            in_library_ = false;
+            lib_nav_.sel_artist.clear();   // slice-3 behaviour: an explicit exit forgets the row
+            refreshDir();
+            break;
+        case libnav::Action::None:
+            break;
+    }
+}
+
+// ─── The one ascent path, for every browser section ──────────────────────────
+//
+// Called by [Back] in all seven sections and by Left. Before this, Left had a
+// branch for [Drives] only and every other section fell through to the
+// parent-directory path, so Left left the section AND walked current_dir_ up a
+// level - and in the two sections that HAVE levels it skipped the levels entirely,
+// which is why [Podcasts] could not step back from episodes to shows.
+//
+// Leaving a section never moves current_dir_. refreshDir() relists wherever the
+// browser already was, which is the [Drives] back-row precedent: the directory
+// move was invisible until the user looked at the pane and found themselves
+// somewhere else.
+//
+// The three sections with sub-levels come first and own their own ascent, so a
+// level is consumed before the section is. The flat four are one line each. Order
+// is otherwise immaterial - the section flags are mutually exclusive, every
+// enter path clearing the rest.
+bool UIManager::sectionAscend() {
+    if (in_library_)    { libraryAscend(); return true; }   // tracks -> albums -> artists -> out
+    if (in_podcasts_)   { podcastAscend(); return true; }   // episodes/results -> feeds -> out
+    if (in_radio_)      { radioAscend();   return true; }   // results -> stations -> out
+    if (in_drive_list_) { in_drive_list_ = false; refreshDir(); return true; }
+    if (in_recent_)     { in_recent_     = false; refreshDir(); return true; }
+    if (in_favs_)       { in_favs_       = false; refreshDir(); return true; }
+    if (in_books_)      { in_books_      = false; refreshDir(); return true; }
+    return false;       // not in a section: the caller owns ordinary navigation
+}
+
+// Per-frame pickup for the scan worker, mirroring pollPodcastFetch. A COMPLETED
+// scan installs its index and relists; a CANCELLED one installs nothing (the
+// LIB-S2 invariant - a partial result would read as mass deletion) and leaves a
+// state the next entry can retry from.
+void UIManager::pollLibraryScan() {
+    if (!lib_scan_running_) return;
+
+    if (library_scanner_.active()) {                       // still walking: live count
+        const uint32_t seen = library_scanner_.progress().files_seen.load();
+        std::string s = "Scanning the music folder... " + std::to_string(seen) + " files";
+        if (in_library_) {
+            // Level 1 specifically, not populateLevel(): a scan can only be in
+            // flight AT level 1, because the only row a scanning section shows is
+            // the status row, whose identity is "" and which therefore cannot be
+            // descended through. The status row belongs to level 1 and so does this.
+            if (s != lib_status_) { lib_status_ = s; showLibraryArtists(); }
+        } else {
+            // Slice 11: a scan started with '@' runs while the user stands in the
+            // folder browser, so its progress goes on the bottom-left line and the
+            // listing is left alone. REFRESHED EVERY POLL on purpose - status_msg_
+            // expires after ~60 ticks (~5 s) and a scan takes 15, so a set-once
+            // message would vanish two-thirds of the way through and read as a
+            // finished scan. Re-setting resets the tick count.
+            lib_status_        = s;
+            status_msg_        = s + " (Esc to cancel)";
+            status_msg_ticks_  = 0;
+            status_msg_yellow_ = true;
+        }
+        return;
+    }
+    if (!library_scanner_.done()) return;
+
+    libidx::ScanOutcome out = library_scanner_.take();
+    lib_scan_running_ = false;
+    // Whether the user was watching the library pane while this ran. Decides who
+    // reports the result: the pane, or the bottom-left line.
+    const bool watching = in_library_;
+
+    if (out.completed) {
+        // Slice 11: a scan that skipped a root SUCCEEDED - the other roots were walked
+        // and committed, and the skipped root's records were carried forward untouched.
+        // But it is not a clean scan, and saying nothing would let a user believe an
+        // offline drive had been rescanned. Yellow on the command line, in place, ~5s.
+        if (!out.skipped_roots.empty()) {
+            std::string s = "Kept tracks from " + std::to_string(out.skipped_roots.size())
+                          + (out.skipped_roots.size() == 1 ? " folder that is" : " folders that are")
+                          + " not readable: " + sanitizeForDisplay(out.skipped_roots.front());
+            if (out.skipped_roots.size() > 1) s += ", ...";
+            status_msg_        = s;
+            status_msg_ticks_  = 0;
+            status_msg_yellow_ = true;
+        }
+        const std::size_t n = out.index.tracks.size();
+        library_index_ = std::move(out.index);
+        lib_status_.clear();
+        lib_scan_cancelled_ = false;
+        // Started from the folder browser: the pane never changed and must not change
+        // now, so the ONLY sign the scan finished is this line. Without it the progress
+        // message would simply stop updating and expire, which reads as a scan that
+        // died rather than one that finished. Skipped-root warnings above win.
+        // Not keyed on status_msg_yellow_: that flag can be true for an unrelated
+        // reason, and "was the user watching the library pane" is the actual question.
+        if (!watching && out.skipped_roots.empty()) {
+            status_msg_        = "Library scan complete - " + std::to_string(n) + " tracks";
+            status_msg_ticks_  = 0;
+            status_msg_yellow_ = true;
+        }
+    } else if (lib_cancel_requested_) {
+        // The user pressed Esc. Nothing was committed - the LIB-S2 invariant - so any
+        // previous index file is still on disk, byte for byte.
+        lib_scan_cancelled_ = true;
+        lib_status_ = "Library scan cancelled. Open [Library] again to retry.";
+    } else {
+        // NOT a cancellation: the walk failed, which in practice means the root went
+        // away or became unreadable mid-scan. ScanOutcome reports both as "did not
+        // complete", so this branch is the difference. It does NOT arm the retry, because
+        // retrying an unreadable folder just fails again.
+        lib_scan_cancelled_ = false;
+        lib_status_ = "Could not read the music folder: " +
+                      sanitizeForDisplay(rootsSummary());
+    }
+    lib_cancel_requested_ = false;
+    // populateLevel() rather than showLibraryArtists(): a completed scan relists
+    // whatever level is open instead of yanking the user back to the artist list.
+    // In slice 4 that is always level 1 (see the note above), so this is not a
+    // behaviour change today - it is the correct shape for slice 6's rescan key,
+    // which CAN fire from any level, and it re-queries from the two held strings
+    // rather than from anything the old index handed out.
+    //
+    // The in_library_ guard was ALREADY here and correct; what was wrong was that
+    // startLibraryScan had no matching one, so a scan begun from the folder browser
+    // took the pane on the way in and nothing could give it back.
+    if (!watching) {
+        // Not watching: the pane was never touched, so there is nothing to relist.
+        // Cancelled and failed scans still owe the user a word, since the progress
+        // line they were reading is about to stop.
+        if (!out.completed && !lib_status_.empty()) libRootReject(lib_status_);
+        redraw_needed_.store(true);
+        return;
+    }
+    populateLevel();
 }
 
 // Spawn the byterm search worker (slice 6). Runs off the UI thread - a slow endpoint
@@ -10272,6 +11945,39 @@ void UIManager::drawPodcastPlayConflict() {
     mvwaddstr(w, 5, 3, "[W] Wait - queue this to play next");
     mvwaddstr(w, 6, 3, "[P] Play now - interrupt the download (it restarts later)");
     mvwaddstr(w, 7, 3, "[Esc] Cancel");
+    wrefresh(w);
+    delwin(w);
+}
+
+// Add or remove a library root (slice 11). Mirrors drawPodcastPlayConflict's box.
+//
+// A popup rather than a silent toggle because ADDING a root starts a scan, and a
+// keystroke that costs 15.8 seconds should say so first. Removal confirms too, and
+// says what it does - the records go IMMEDIATELY, no rescan - because "did that work,
+// or is something still pending?" is the question a silent removal leaves behind.
+void UIManager::drawLibraryRootConfirm() {
+    const int BOX_W = 66, BOX_H = 9;
+    int y0 = (screen_rows_ - BOX_H) / 2, x0 = (screen_cols_ - BOX_W) / 2;
+    if (y0 < 0) y0 = 0;
+    if (x0 < 0) x0 = 0;
+    WINDOW* w = newwin(BOX_H, BOX_W, y0, x0);
+    if (!w) return;
+    wbkgd(w, config_.awesome_mode ? COLOR_PAIR(CP_DIM) : COLOR_PAIR(0));
+    werase(w);
+    const char* title = lib_root_removing_ ? " REMOVE LIBRARY FOLDER " : " ADD LIBRARY FOLDER ";
+    panelFrame(w, title, true);
+    if (!config_.awesome_mode) mvwaddstr(w, 0, (BOX_W - (int)strlen(title)) / 2, title);
+
+    mvwaddnstr(w, 2, 3, sanitizeForDisplay(lib_root_candidate_).c_str(), BOX_W - 5);
+    if (lib_root_removing_) {
+        mvwaddstr(w, 4, 3, "Its tracks leave the library immediately. The files are");
+        mvwaddstr(w, 5, 3, "not touched, and no rescan is needed.");
+    } else {
+        mvwaddstr(w, 4, 3, "The library will scan this folder and everything under it.");
+        mvwaddstr(w, 5, 3, "Folders already indexed are revalidated, not re-read.");
+    }
+    mvwaddstr(w, 7, 3, lib_root_removing_ ? "[Y] Remove it    [Esc] Cancel"
+                                          : "[Y] Add it       [Esc] Cancel");
     wrefresh(w);
     delwin(w);
 }

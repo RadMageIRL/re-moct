@@ -35,6 +35,20 @@ and a playlist/rip view. The public feature guide is [`docs/index.html`](docs/in
 - Page navigation (`PgUp`/`PgDn`/`Home`/`End`), cursor position readout in the playlist
   header (`[3/12]`), optional per-row file-type column (`Shift+F`)
 
+**Library**
+- A `[Library]` section that lists every artist in your music folder regardless of how the
+  folders are arranged. RE-MOCT stays a folder player - the directory browser is unchanged
+  and still where everything starts - and this sits beside it for when you know the artist
+  and not the folder
+- Artist -> album -> track, with track numbers and lengths; the first open reads tags and
+  shows its progress, after which it opens instantly and only re-reads files that changed
+  (`F12` rescans, `Esc` cancels a running scan)
+- Watches more than one folder (`@` adds one), so music on a second drive is one list with
+  the rest. A folder that is offline is skipped, not emptied
+- Search the whole collection with `|` - artists, albums and tracks narrow as you type
+- Browse by genre with `g`; genres written two ways (`Post Punk`, `Post-Punk`) are one genre
+- Two views on what you have actually played, with `%`
+
 **Convert & library**
 - Convert files to another format (`x`) - a single file, every file in a folder,
   or a marked set (`u` marks, `U` clears); reuses the rip encoders and carries the
@@ -53,6 +67,16 @@ and a playlist/rip view. The public feature guide is [`docs/index.html`](docs/in
 **CD playback & ripping** (Ctrl+Y)
 - Red Book CD playback + MusicBrainz disc lookup (Ctrl+R)
 - Eject from the TUI (Shift+E) and drive-list refresh for hot-plugged drives (F12)
+- **Rips are byte-exact.** A RE-MOCT rip of a disc is byte-for-byte identical to the same
+  disc ripped by dBpoweramp - verified across three albums, forty tracks, zero differing
+  samples. The AccurateRip checksum is computed over the audio actually written to the
+  file, not over a separate read, so a verification pass and the file it verifies cannot
+  disagree
+- **Rip only the tracks you want**: with a CD open, mark tracks in the playlist with `u`
+  (`U` clears). Mark nothing and the whole disc is ripped exactly as before. Artifacts that
+  describe the disc as a whole rather than the tracks you took - the cue sheet, album
+  volume level, whole-disc CUETools verification - are left out of a partial rip, and the
+  log says which and why
 - Four rip modes:
   - **[A] AccurateRip** - network CRC verify against accuraterip.com + drive-offset correction
   - **[C] CUETools Database** - offset-immune whole-disc CRC32 (cue.tools/db), an online
@@ -173,7 +197,8 @@ truecolor + Alt+Enter fullscreen); see [BUILD.md](BUILD.md).
 | `x` / `u` / `U` | Convert / mark / clear marks | `Ctrl+E` | Record playing stream |
 | `Ctrl+O` | Batch ReplayGain (normalize folder) | `Alt+Enter` | Fullscreen (Windows wingui) |
 | `Ctrl+N` | Nerd Font title icons toggle | `F6` | iHeart re-pin mode: off / ad-escape / hybrid / timed / live-edge |
-| `~` | Reload `theme.conf` colours (live) | | |
+| `\|` / `g` / `%` | Library: collection search / genres / play-stat views | `@` | Add a folder to the library |
+| `~` | Reload `theme.conf` colours (live) | `F12` | Rescan library (in `[Library]`) |
 
 ## Configuration
 

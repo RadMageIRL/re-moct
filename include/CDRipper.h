@@ -12,6 +12,7 @@
 #include <thread>
 #include <atomic>
 #include <functional>
+#include "RipSelection.h"   // CD-S1: ripsel::Item, the disc/selection split
 #include <filesystem>
 #include <cstdint>
 #include <memory>
@@ -32,7 +33,11 @@ enum class RipMode {
 };
 
 // ─── AccurateRip result per track ─────────────────────────────────────────────
-enum class ARStatus { NotQueried, Matched_v2, Matched_v1, NotFound, NetworkError, ReadError };
+// CD-S4: the enum and its labels moved to ArStatus.h so the labels are pure and
+// testable, and so every label site is an exhaustive switch that -Wswitch will
+// break if a status is ever added without being spelled. Included here so every
+// existing user of ARStatus compiles unchanged.
+#include "ArStatus.h"
 
 struct ARTrackResult {
     ARStatus status     = ARStatus::NotQueried;
@@ -51,6 +56,14 @@ struct RGResult {
     double album_gain = 0.0;
     double album_peak = 0.0;
     bool   valid      = false;
+    // CD-S2: is there an ALBUM figure at all? 0.0 dB is a legitimate gain, so
+    // the numbers above cannot say "absent" by themselves - the same conflation
+    // CD-S1 closed in the summary counter, one layer out. False on a partial
+    // rip, where an album value measured over a subset would silently claim to
+    // describe the album; the tag pair is then omitted entirely rather than
+    // written as a sentinel, because ReplayGain has no absent value and every
+    // scanner reads a MISSING album tag as "not scanned yet".
+    bool   album_valid = false;
 };
 
 // ─── Rip state ────────────────────────────────────────────────────────────────
@@ -83,13 +96,22 @@ public:
         std::string path;
     };
 
+    // `tracks` is ALWAYS THE FULL TOC. It is what the AccurateRip disc ID, the
+    // response chunk filter, the result indexing and the multi-disc pick are
+    // computed from, and every one of them is wrong given anything shorter -
+    // so a subset is expressed by `selected_toc`, never by passing fewer tracks.
+    //
+    // `selected_toc` holds TOC INDICES (0-based) to extract. EMPTY MEANS ALL,
+    // which is the shipped behaviour byte-for-byte: ripsel::planAll reproduces
+    // exactly the arguments this worker passed before a selection existed.
     bool start(AudioManager&               audio,
                const std::vector<CDTrack>& tracks,
                const std::string&          out_dir,
                const MBRelease&            rel,
                RipMode                     mode,
                RipOptions                  opt,
-               ProgressCb                  cb);
+               ProgressCb                  cb,
+               const std::vector<int>&     selected_toc = {});
 
     void cancel();
     bool     isActive() const { return active_.load(); }
@@ -111,6 +133,7 @@ private:
 
     void worker(std::string          drive_letter,
                 std::vector<CDTrack> tracks,
+                std::vector<ripsel::Item> plan,
                 std::string          out_dir,
                 MBRelease            rel,
                 RipMode              mode,
@@ -119,8 +142,8 @@ private:
                 std::unique_ptr<core::ICdDevice> dev,
                 int                  drive_offset,
                 std::string          drive_model,
-                uint32_t             full_leadout_lba = 0,
-                std::vector<uint32_t> data_track_lbas = {});
+                uint32_t             full_leadout_frame = 0,
+                std::vector<uint32_t> data_track_frames = {});
 
     ARTrackResult ripTrack(core::ICdDevice&   dev,
                            const CDTrack&     track,
@@ -159,8 +182,8 @@ private:
 
     // AccurateRip
     static uint32_t computeCDDB(const std::vector<CDTrack>& tracks,
-                                uint32_t full_leadout_lba = 0,
-                                const std::vector<uint32_t>& data_track_lbas = {});
+                                uint32_t full_leadout_frame = 0,
+                                const std::vector<uint32_t>& data_track_frames = {});
 
     // Fetch AR binary, save .bin and manifest to ar_cache_dir.
     // Returns true even on 404 (disc not found); returns false on network error.
@@ -169,8 +192,8 @@ private:
                             const std::string&                                  ar_cache_dir,
                             std::vector<std::vector<std::pair<uint32_t,int>>>&  out_v1,
                             std::vector<std::vector<std::pair<uint32_t,int>>>&  out_v2,
-                            uint32_t                                            full_leadout_lba = 0,
-                            const std::vector<uint32_t>&                        data_track_lbas = {});
+                            uint32_t                                            full_leadout_frame = 0,
+                            const std::vector<uint32_t>&                        data_track_frames = {});
 
     // CTDB (CUETools Database) — global CRC32 verification
     // Returns CTDB ID string and whether disc is verified

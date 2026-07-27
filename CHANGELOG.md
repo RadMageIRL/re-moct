@@ -5,6 +5,362 @@ All notable changes to RE-MOCT are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.0] - 2026-07-27
+
+### Added
+
+- **Rip only the tracks you want.** With a CD open, mark tracks in the playlist
+  with `u` and RE-MOCT rips just those; `U` clears the marks again. Marking
+  nothing rips the whole disc exactly as it always has, so if you never press
+  `u` nothing about ripping has changed for you. Unmarking the last track goes
+  back to ripping everything rather than to ripping nothing, and the rip window
+  shows how many of the disc's tracks it is about to take, appearing only when
+  that is fewer than all of them.
+  Some of what a rip writes describes the disc as a whole rather than the tracks
+  you took, so a partial rip leaves those out and says which and why in its log.
+  There is no cue sheet, because a cue sheet over part of a disc describes a
+  disc that does not exist and cannot be burned back. There is no album volume
+  level either, because it cannot honestly be measured from part of an album -
+  rip half now and half later and you would end up with two different album
+  levels for one album. Per-track volume levels are still written as usual, and
+  the disc's table of contents is still saved, since it stays true and records
+  what you did not take as much as what you did. CUETools verification checks
+  the whole disc's audio as a single number and has no partial form, so it is
+  shown as unavailable while only some tracks are marked, rather than quietly
+  ripping the whole disc behind your back. Your marks survive opening and
+  closing the rip window, and are cleared when you change discs.
+- A `[Library]` section in the browser, listing every artist in your music
+  folder regardless of how the folders are arranged. RE-MOCT stays a folder
+  player - the directory browser is unchanged and still where everything
+  starts - and this sits beside it for the times you know the artist and not
+  the folder. Opening it the first time reads the tags of everything under your
+  music folder, which takes a little while and shows its progress as it goes;
+  after that it opens instantly, and it only re-reads files that have actually
+  changed. Choosing an artist opens their albums, and choosing an album opens
+  its tracks, numbered and with their lengths. The left arrow and the `[Back]`
+  row both step back up one level, and the header always says which artist and
+  album you are inside. Tracks are ordered by disc and track number, falling
+  back to the filename for rips that were never tagged, and albums that share a
+  name between two artists stay separate. Coming back up a level puts the cursor
+  back on the row you came through rather than at the top of the list.
+  A library track behaves exactly like the same file in the folder browser, so
+  everything you already know works on it: Enter adds it to the playlist and plays
+  it, `a` adds it without playing so you can walk an album picking tracks, `q`
+  queues it, `*` favourites it, `u` marks it and `x` converts it, and `;` opens its
+  chapters. `a` on an album row takes the whole album in one press, in the order
+  the album is listed - disc then track number, falling back to the filename for
+  discs that were never tagged - and says how many tracks it added. Tracks you
+  already have in the playlist are not added twice, so the count is what actually
+  went in rather than the length of the album, and any track that has been deleted
+  since the last scan is reported as missing rather than passed over in silence. The `\` search works at all three levels, artists, albums and tracks.
+  If a track has been deleted or moved since the last scan, RE-MOCT now says which
+  file is missing instead of doing nothing, because the answer is to rescan and
+  there was no way to tell that from silence.
+- **Search your whole collection with `|`.** Type, and the list narrows as you type -
+  across every track you have, not just the folder you happen to be looking at. It
+  matches title, artist, album, album artist, genre and the filename, so a rip that
+  was never tagged is still findable by its name, and a query with several words
+  matches when every word is found somewhere. Press Enter on a result and it plays,
+  exactly as it would from anywhere else in the library; `a`, `q`, `*`, `u`, `x` and
+  `;` all work on a result too. Accents are handled the way you would want: typing
+  `bjork` finds `BJÖRK`, `motley crue` finds `Mötley Crüe`, and `dvorak` finds
+  `Dvořák`. `|` works from inside `[Library]` and from the ordinary folder browser,
+  because finding a track you have lost should not require going somewhere first.
+  `\` is unchanged and still searches the list in front of you - the two sit on the
+  same key, shifted: `\` for what you are looking at, `|` for everything you have.
+- `[Library]` can be turned off, and told where to look. Two new settings in
+  `remoct.conf`: `library=0` removes the section entirely - not a row that refuses
+  to open, actually absent, from the browser and from `[Drives]` alike - and
+  `library_root=` points it at a folder other than your system music folder. It
+  defaults to on, because until you open it the section costs nothing: no scan, no
+  index file, no background work, just one row in the browser. Pointed at a folder
+  that does not exist, or one it cannot read, it now says which folder and why
+  instead of claiming the scan was cancelled. Change the folder between runs and it
+  rescans once, says that is what it is doing, and then settles.
+- **F12** rescans the library, the same way F12 already refreshes `[Drives]`. The
+  library never rescans behind your back - that is deliberate, so opening the
+  section is always instant - so this is how you tell it to look again after adding
+  or retagging music. It works from any level, and the list you were looking at is
+  still the list you are looking at afterwards.
+- **Esc** cancels a library scan while it is running, and the section says how to do
+  it while it scans. A cancelled scan changes nothing: whatever index you had before
+  is left exactly as it was, down to the byte, because a half-finished walk cannot
+  tell the difference between a file you deleted and a file it simply has not reached
+  yet. The next time you open `[Library]` it says the scan was cancelled, and the
+  time after that it tries again.
+- Adding tracks from `[Library]` is now instant. It was re-reading the tags of every
+  file as it added it, which it already had in the index from the last scan: adding a
+  seventeen-track album took about a tenth of a second of pure disk reading, and now
+  takes no measurable time at all. The rows that end up in your playlist are
+  identical either way - the index and the playlist read tags exactly the same way -
+  and if you have retagged a file since the last scan, the playlist shows what
+  `[Library]` is showing you, which F12 is there to bring up to date.
+
+- **Edit tags on any file you can see, not just ones in the playlist.** Put the cursor
+  on a track anywhere in the browser - a library album, a collection search result, a
+  folder, `[FAVs]`, `[Recent]` or `[Books]` - press `i` for track info and `e` to
+  edit. Before, that only worked on playlist rows and everything else told you to add
+  the track first. Editing a track in the library updates what the library shows
+  straight away, including regrouping an album if you change who it is by, so you do
+  not have to rescan to see your own change. Playing files still refuse until you
+  stop, read-only files say so rather than failing quietly, and podcast episodes are
+  left alone because a re-download would throw the tags away.
+- **The library can now watch more than one folder.** Music kept on a second drive,
+  or in a folder outside your music folder, was invisible to the library and to the
+  `|` collection search no matter how much of it there was. Put the cursor on a
+  folder in the browser and press `@` to add it; press `@` on one you have already
+  added to remove it. A box asks first, because adding a folder starts a scan.
+  Removing one takes its tracks out of the library straight away and never touches
+  the files. Folders you add are remembered between runs. Adding a folder that is
+  already covered, or one that contains a folder you already added, is refused with a
+  message rather than quietly doing the wrong thing.
+- **A folder that is not there is skipped, not emptied.** If one of your library
+  folders lives on a drive that is unplugged, or you rename it, a rescan leaves its
+  tracks in the library exactly as they were and tells you it could not read that
+  folder. Before, anything the scan could not reach was treated as deleted.
+- **Browse by genre with `g`.** Inside `[Library]`, `g` lists every genre in your
+  collection and picking one narrows the artist list to it, then albums and tracks
+  as usual. Tracks that carry several genres in one tag count under each of them, so
+  a track tagged `Pop / Rock` appears under both. Genres separated by `/` or `;` are
+  split apart; commas and hyphens are left alone, which keeps
+  `Folk, World, & Country` and `Hip-Hop` intact as the single genres they are. A
+  track with no genre tag is not filed under an invented heading - it stays
+  reachable by artist, album and search. On this collection 35 different genre
+  strings become 27 real genres.
+- **Two new views on what you have played, with `%`.** Press it inside `[Library]`
+  to see your most played tracks with their counts, press it again for everything
+  you have never played, and again to go back. Never-played is most of a large
+  collection, so it shows the first 500 with the true total beside it. These are not
+  `[Recent]`, which is the short list of what you played last; these are the whole
+  collection sorted two ways.
+
+### Changed
+
+- Marking a file with `u`, and clearing marks with `U`, now confirm on the status
+  line at the bottom left in yellow for a couple of seconds, rather than raising a
+  notification. Marking is something you watch while working down a list, so the
+  confirmation belongs where you are already looking instead of in a popup.
+
+### Fixed
+
+- **Every ripped track started two seconds late. It no longer does.** RE-MOCT read
+  each track from a position 150 sectors - exactly 2.00 seconds - past where the
+  track actually begins. Every rip the program has ever produced is affected: each
+  track is missing its first two seconds, carries the first two seconds of the next
+  track on the end instead, and the final track of a disc ends in two seconds of
+  digital silence where the music should be. CD playback started two seconds into
+  each track for the same reason.
+  The cause was a disc address used in the wrong units. A drive reports where a
+  track starts as a running time from the beginning of the disc, which includes a
+  standard two-second lead-in; a read command wants that same position counted
+  without the lead-in. RE-MOCT took the first number and handed it straight to the
+  second, so every read landed 150 sectors late.
+  AccurateRip did not catch it, and could not have. The checksum was being built
+  from a separate, correctly positioned read rather than from the audio actually
+  written to disk, so a rip could verify at the highest confidence the database
+  offers while the file on disk was shifted. Verification now runs over the same
+  audio that lands in the file, which is how the reference rippers do it, so the
+  two can no longer disagree.
+  A rip of the same disc is now byte-for-byte identical to the same disc ripped by
+  dBpoweramp, all twelve tracks, with AccurateRip confirming every one at
+  confidence 200. Disc identification is untouched: the AccurateRip, CUETools,
+  CDDB and MusicBrainz disc IDs are computed exactly as before and are unchanged.
+  **If you have ripped CDs with RE-MOCT and want them right, they need re-ripping.**
+  The two seconds missing from the start of each track are not lost - they sit at
+  the end of the previous track's file - but the first track's opening two seconds
+  and the last track's closing two seconds were never written at all. There is no
+  tool to correct an existing rip in place, and none is planned: the audio that was
+  never read cannot be recovered from the files, so re-ripping from the disc is the
+  only way to get a correct copy.
+- **Rips that never consult AccurateRip no longer claim it failed.** AccurateRip is
+  only queried in `[A]` mode. The other three - `[C]` CUETools, `[Y]` Local and `[B]`
+  Local 2-pass - never ask it, but they were recording the answer as though the
+  lookup had been attempted and failed with a network error. A CUETools rip went
+  further and wrote that into every file it produced, so `ACCURATERIP: AR: network
+  error` sat permanently in the tags of music that had simply never been checked
+  against AccurateRip, and a Local rip logged `no match` beside a checksum of zero
+  that was never calculated in the first place. Now a rip that did not ask says it
+  did not ask: the log reads `not queried`, the summary counts those tracks
+  separately instead of adding them to the not-found total, and no AccurateRip tag
+  is written at all, because a rip that never consulted AccurateRip has nothing to
+  say about it. `[A]` AccurateRip rips are entirely unaffected, and the CUETools
+  verdict itself is unchanged.
+- **The track info pane (`i`) now shows the row you have highlighted.** Highlighting a
+  file in the browser and pressing `i` used to show a track from the playlist instead
+  of the one under the cursor, so the pane looked stuck on an unrelated song. It now
+  follows the cursor through every listing - library artists, albums and tracks,
+  collection search results, `[FAVs]`, `[Recent]`, `[Books]` and ordinary folders -
+  and where a row is not a file at all, such as an artist or a folder, it says so
+  plainly rather than showing something unrelated. Editing tags with `e` still works
+  on playlist rows exactly as before; on a browser row it now declines and tells you
+  to add the track first, rather than editing a different file than the one on screen.
+- **Split play counts are now repaired, once, on the next start.** The reading fix
+  below made the right number appear; this fixes the stored data, so a track that had
+  two separate tallies now has one and every future play adds to it. On this
+  collection 17 tracks were affected and not a single play is lost in the merge - the
+  totals before and after are identical. **A backup of your settings file is written
+  first**, as `remoct.conf.statbak` beside it, and RE-MOCT says so on the status line
+  the one time it happens. If anything looks wrong afterwards, quit RE-MOCT, rename
+  `remoct.conf.statbak` over `remoct.conf`, and start it again - you are back exactly
+  where you were. The backup is written only once and is never overwritten by a later
+  run. Nothing else in the file is touched, and no play history is discarded: stats
+  for tracks you have deleted, or that live outside your library folders, are kept.
+- **Play counts were being split in two, and the count shown was the wrong one.**
+  RE-MOCT recorded plays under the exact path a track was opened by, and the same
+  file opened from a folder, a playlist and a favourite could produce differently
+  capitalised paths - so one file ended up with two separate tallies. On this
+  collection 17 tracks were affected, and a track played 95 times showed as 73 or as
+  22 depending on which tally was found first. Worse, a track whose only tally was
+  stored under different capitalisation than the way you opened it read as never
+  played at all. Counts are now added together, so the number shown is the number of
+  times you actually played the file. This is a reading fix and nothing stored has
+  been altered.
+- The browser pane now always shows the row the cursor is on. Scroll down a long
+  listing, go somewhere else and come back, and the pane used to return to the top
+  of the list while the cursor stayed where you left it - so the highlighted row was
+  off the screen and the arrow keys appeared to do nothing until you had scrolled
+  back down to find it. The view now follows the cursor wherever it moves and
+  whatever moved it: returning to a section, stepping between artist, album and
+  track levels, rescanning with `F12`, searching, deleting a station, feed,
+  favourite or bookmark, and resizing the terminal smaller. This was never specific
+  to `[Library]` - it applied to any long listing, including a large folder,
+  `[FAVs]`, `[Recent]`, `[Books]` and a podcast's episodes - but the library made it
+  easy to hit, being the first section that routinely runs to hundreds of rows. The
+  view moves as little as it has to, so a row that is already visible never shifts
+  the pane. The playlist pane, which has always behaved this way, is unchanged.
+- Compilations no longer shatter. A various-artists album used to appear in
+  `[Library]` as one album per track, filed under a different artist each time, so a
+  40-track eighties compilation became forty one-track albums under forty artists.
+  They now group together under `Various Artists`, one row, with each track showing
+  who performed it. On this collection that removed about a hundred artist rows that
+  should never have been there. An album is treated as a compilation when it has no
+  album-artist tag, or one saying something like `Various` or `Soundtrack`, and at
+  least three different track artists - so an album with guest features on it, like
+  a Gorillaz record with six credited artists, stays where it belongs rather than
+  being scattered. Nothing about your files changes; this is how they are read.
+- Opening `[Library]` is faster, and noticeably so on a large collection. Building
+  the artist list was sorting one entry per track rather than one per artist: with a
+  hundred thousand tracks that was about sixty milliseconds every time the section
+  was opened or rescanned, and it is now about three.
+- The left arrow now does the same thing as the `[Back]` row in every section,
+  and leaving a section no longer moves you to a different folder. Previously the
+  left arrow only really worked in the folder browser: in `[FAVs]`, `[Radio]`,
+  `[Books]` and `[Recently Played]` it dropped you out of the section and, on the
+  way out, moved you up to the parent of the folder you had been browsing - so
+  you came back somewhere you had not been. In `[Podcasts]` it skipped past the
+  show you were inside and left the section entirely, with no way to step back
+  from a show's episodes to your list of shows. Now the left arrow steps back one
+  level where a section has levels, leaves the section where it does not, and
+  always returns you to the folder you were actually browsing. Every section's
+  header also says how to leave it; four of them did not say before.
+- In `[Radio]`, a saved station could stop playing when selected. After using the
+  station search and then leaving `[Radio]` and coming back, the section drew your
+  saved stations while still treating them as search results, so pressing Enter
+  quietly did nothing at all. Two of these leftover search states were not being
+  cleared; both are now.
+- The `[FAVs]` header said `f:fav/unfav`. The favourite key is `*`; `f` toggles
+  ReplayGain. The one section whose whole purpose is favourites was naming the
+  wrong key for managing them.
+- In `[Recently Played]`, the row at the top of the list is now labelled `[Back]`
+  however you got there. Opening it from `[Drives]` labelled that row `[Drives]`,
+  but it has always returned to the folder browser rather than to the drive list,
+  so the label named somewhere it did not go.
+- `[Drives]` now has a `[Back]` row, and the left arrow leaves it, the way every
+  other section already worked. It was the one section with no way out: there is
+  no parent directory to rise to from a list of drives, so the left arrow did
+  nothing there, and the only exits were opening a drive or jumping sideways
+  into another section. Whichever folder you were browsing when you opened it
+  was simply unreachable again. Both now return you to it.
+- Opening an older playlist no longer closes RE-MOCT. A .m3u or .pls written
+  years ago, or by another program, stores its text in the Windows ANSI encoding
+  rather than UTF-8, so an accented or punctuated filename inside it is not
+  valid UTF-8. Handing one of those lines to the system's path handling raised
+  an error that nothing caught, and the player exited on the spot - not a failed
+  load, an exit. Any playlist naming a file with an accent in it could do it,
+  which is to say a great many playlists that predate this one.
+  Those lines are now converted to UTF-8 as they are read, so the track loads
+  and plays instead of merely failing quietly, and a line that still cannot be
+  made sense of is skipped and counted with the other missing files rather than
+  taking the rest of the playlist down with it. Playlists already written in
+  UTF-8, including everything RE-MOCT saves itself, are read exactly as before,
+  byte for byte.
+- A track added from the library no longer turns up twice in the playlist when it
+  is already there. RE-MOCT has always refused to add a file the playlist already
+  holds, but on Windows it decided that by comparing the two paths letter for
+  letter, so the same file reached as `C:\Users\...` and as `c:\users\...` looked
+  like two different files and got two rows. It is one file, Windows treats it as
+  one file, and RE-MOCT now does too, quietly, exactly as it always did for a file
+  you added twice from the same place. This was never only a library problem - the
+  folder browser could do it to itself, and a saved playlist could come back with
+  the same track in it twice - so the fix is in one place and every route into the
+  playlist gets it. Playlists that already carry a track under both spellings lose
+  the second copy the next time they load, which is a row that was never a
+  different track.
+  Two things this deliberately does not do. It does not touch different formats of
+  the same song: `song.flac`, `song.opus` and `song.mp3` are three separate files
+  and all three still go in, which is the whole point of keeping them. And on Linux,
+  where two filenames differing only in capitals really are two different files,
+  nothing changes at all - both still add.
+- The play queue is unaffected, and that is on purpose: the queue is an order to
+  play things in rather than a list of what you own, so asking for the same song
+  twice in a row is a reasonable thing to want and still works.
+- **`g` now closes the genre list as well as opening it.** It used to be a one-way
+  door: once you were looking at genres, nothing inside `[Library]` took you back to
+  the plain artist list, and the only way out was to leave the section entirely and
+  come back. Pressing `g` a second time now returns you exactly where you pressed it,
+  and the left arrow and `[Back]` agree with it. `%` already worked this way, and
+  this is `g` catching up. The one cost, said plainly: leaving `[Library]` from the
+  genre list now takes two presses instead of one, because each press of the left
+  arrow undoes exactly one thing, which is how it behaves everywhere else.
+- **The left arrow could stop working entirely.** Pressing `%` for the stat views and
+  then `|` to search, then coming back, left the left arrow doing nothing at all -
+  permanently, until you went somewhere else. `[Back]` was dead alongside it. It only
+  needed two keypresses from opening the section, and it is fixed.
+- **Genres written two ways are one genre.** `Post Punk` and `Post-Punk` were two
+  rows; they are now one, listed under whichever spelling more of your files use, and
+  opening it shows everything from both. Nothing is split to achieve this, so
+  `Hip-Hop` is still one genre and not a "Hip" and a "Hop", and
+  `Folk, World, & Country` is still itself and not filed under `Folk`. Your files are
+  not touched, the tags are not rewritten, and a rescan produces exactly the same
+  index it did before - this only changes which row a track is listed under.
+- **Sections no longer throw you out when a folder changes on disk.** RE-MOCT
+  watches the folder you are browsing and relists it when something appears there,
+  which is right in the file browser and wrong everywhere else - it was still
+  running while you were inside `[Library]`, `[Radio]`, `[Podcasts]`, `[FAVs]`,
+  `[Recent]` or `[Books]`, and the relist tore the section down and dumped you back
+  in the folder browser. On Linux, with the music on a shared folder from the host,
+  it happened by itself about a second after opening the section, which is where it
+  was found. It was never only a Linux problem: on Windows the same thing happened
+  as soon as anything actually wrote into the folder you had been browsing - a
+  podcast finishing its download into it, or a rip writing a track. Only `[Drives]`
+  had been protected. The file browser still notices changes and still refreshes,
+  which is the part that was always meant to happen.
+- `?` now covers `[Library]`. Sixteen slices of it had gone in without the help pane
+  ever mentioning the section existed, so there was no way to find out from inside
+  the program that you could browse by artist, search everything you own with `|`,
+  add a folder with `@`, or that `e` in the info pane edits tags. It says what exists
+  and which key reaches it; the per-list detail stays in the header of the list it
+  applies to, where it was already right.
+
+### Internal
+
+- The browser's section rows are now built from one list everywhere. `[Drives]`
+  had its own hand-written copy of them, so the `[Library]` switch would have had
+  to be applied in two places that must agree - which is the same way `[Library]`
+  once ended up rendering at the bottom of the pane. Same rows, same order, one
+  list.
+- Groundwork for the library view: the metadata index, its on-disk cache format,
+  and the artist/album/track queries the browser will read from. Nothing is
+  wired to it yet, so there is no user-visible change in this entry - the index
+  has no scanner to fill it and no screen to draw it. It is recorded here
+  because the version now reads 1.5.0, and a build that says so should say why.
+- More library groundwork: the scanner that fills that index. It walks the music
+  folder, reads tags, and refreshes what it already knows by re-reading only the
+  files that actually changed. Still nothing wired to a screen. The list of
+  audio file types the player will open now lives in one place instead of two,
+  which is a change with no visible effect today and one fewer way for the
+  library and the playlist to disagree about what is playable later.
+
 ## [1.4.1] - 2026-07-25
 
 ### Changed

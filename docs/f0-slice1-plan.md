@@ -189,7 +189,19 @@ trailing all-zero frames  RE-MOCT=1483  dBpa=1483   (the album's own fade-out)
 
 **Machine gates: Windows 53/53, Linux 54/54.**
 
-**Not gated:** CD playback moved by the same 150 sectors and only ears settle it — Dos's.
+**CD playback: gated and confirmed good by Dos.** It moved by the same 150 sectors and only ears
+could settle it. Settled. Closed.
+
+**Confirmed against dBpoweramp on a third album after the gate** — *They Might Be Giants,
+Factory Showroom*, the 4575-sector-pregap disc: **13/13 byte-identical**, zero differing frames,
+no silence-fill on the last track. That disc is the sharpest test of the addressing in the set,
+because the frame-vs-LBA gap there is 61 seconds wide rather than 2.
+
+**Running total: 40 tracks across three albums, byte-identical to dBpoweramp, zero differing
+frames.** *Relish* 12/12, *BRAT* 15/15, *Factory Showroom* 13/13.
+
+**`f759781` is the reference for rips.** A RE-MOCT rip made with it is byte-identical to
+dBpoweramp's. Nothing here is open.
 
 ## 8. What this means for existing rips
 

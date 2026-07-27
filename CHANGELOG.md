@@ -143,6 +143,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Rips that never consult AccurateRip no longer claim it failed.** AccurateRip is
+  only queried in `[A]` mode. The other three - `[C]` CUETools, `[Y]` Local and `[B]`
+  Local 2-pass - never ask it, but they were recording the answer as though the
+  lookup had been attempted and failed with a network error. A CUETools rip went
+  further and wrote that into every file it produced, so `ACCURATERIP: AR: network
+  error` sat permanently in the tags of music that had simply never been checked
+  against AccurateRip, and a Local rip logged `no match` beside a checksum of zero
+  that was never calculated in the first place. Now a rip that did not ask says it
+  did not ask: the log reads `not queried`, the summary counts those tracks
+  separately instead of adding them to the not-found total, and no AccurateRip tag
+  is written at all, because a rip that never consulted AccurateRip has nothing to
+  say about it. `[A]` AccurateRip rips are entirely unaffected, and the CUETools
+  verdict itself is unchanged.
 - **The track info pane (`i`) now shows the row you have highlighted.** Highlighting a
   file in the browser and pressing `i` used to show a track from the playlist instead
   of the one under the cursor, so the pane looked stuck on an unrelated song. It now

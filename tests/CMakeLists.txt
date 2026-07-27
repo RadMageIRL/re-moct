@@ -206,6 +206,18 @@ add_executable(cd_track_select_test cd_track_select_test.cpp)
 target_include_directories(cd_track_select_test PRIVATE ${CMAKE_SOURCE_DIR}/include)
 add_test(NAME cd_track_select_test COMMAND cd_track_select_test)
 
+# ar-status-label (CD slice 4) - every AccurateRip status has its own words.
+#
+# Seven readers consume ARStatus and the wrong ones were wrong for one shared
+# reason: a fall-through absorbed a value nobody listed, so "never asked" printed
+# as "no match" and, in CUETools mode, stamped ACCURATERIP=AR: network error into
+# the user's files permanently. Asserts every status maps to its own non-empty
+# label and none lands on the sentinel, so deleting a case fails the test.
+# Pure, header-only, both matrix jobs.
+add_executable(ar_status_label_test ar_status_label_test.cpp)
+target_include_directories(ar_status_label_test PRIVATE ${CMAKE_SOURCE_DIR}/include)
+add_test(NAME ar_status_label_test COMMAND ar_status_label_test)
+
 # pane-scroll (Library slice 9) - the cursor/scroll rule BOTH list panes share.
 #
 # Same reason browser_pins_test exists: the rule used to live in two places free to

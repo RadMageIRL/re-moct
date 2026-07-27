@@ -1777,7 +1777,22 @@ void CDRipper::worker(std::string          drive_letter,
             // overwrite it with a (meaningless) match/no-match verdict.
             if (candidate.status == ARStatus::ReadError) return result;
             result.status = ARStatus::NotFound;
-            if (!ar_db_loaded) { result.status = ARStatus::NetworkError; return result; }
+            // CD-S4, and the root of the whole slice. fetchARData runs in
+            // AccurateRip mode ONLY, so in [C] CUETools, [Y] Local and [B] Local
+            // 2-pass `ar_db_loaded` is false because NOBODY ASKED - not because a
+            // network call failed. Marking those NetworkError asserts a failure
+            // that never happened, and six readers then repeat it: measured, a
+            // CUETools rip stamps ACCURATERIP=AR: network error into every file,
+            // permanently, and all three modes log "no match" - in the Local ones
+            // beside crc_v1=00000000, a comparison against a checksum that was
+            // never computed. NotQueried already exists and already means exactly
+            // this. In AccurateRip mode the value is unchanged, so nothing in [A]
+            // moves.
+            if (!ar_db_loaded) {
+                result.status = (mode == RipMode::AccurateRip) ? ARStatus::NetworkError
+                                                               : ARStatus::NotQueried;
+                return result;
+            }
             if (i >= (int)ar_db_v1.size()) return result;
             // Check all DB v1 field entries first (may contain v1 or v2 CRCs)
             for (const auto& [crc, conf] : ar_db_v1[i]) {
@@ -1835,9 +1850,7 @@ void CDRipper::worker(std::string          drive_letter,
             if (lf) {
                 fprintf(lf, "\nTrack %d Pass 1: crc_v1(=csum_lo)=%08x  crc_v2(=csum_lo+hi)=%08x  status=%d (%s)\n",
                     tnum, ar.crc_v1, ar.crc_v2, (int)ar.status,
-                    ar.status==ARStatus::Matched_v2 ? "AR v2 OK" :
-                    ar.status==ARStatus::Matched_v1 ? "AR v1 OK" :
-                    ar.status==ARStatus::ReadError  ? "preamble read error (inconclusive)" : "no match");
+                    arStatusPassLabel(ar.status));   // CD-S4: exhaustive, no fall-through
                 if (i < (int)ar_db_v1.size()) {
                     fprintf(lf, "  DB main_crcs (%zu):\n", ar_db_v1[i].size());
                     for (auto& [crc,conf] : ar_db_v1[i])
@@ -2467,16 +2480,27 @@ void CDRipper::worker(std::string          drive_letter,
             // the same fact as NotFound ("asked, no match"). Counting the whole
             // vector would report every unripped track as a verification miss.
             // The enum already draws that distinction; only this reader lost it.
-            int ar_v2=0, ar_v1=0, ar_none=0;
+            // CD-S4: "never asked" gets its own bucket. It used to fall into
+            // ar_none, so a CUETools or Local rip reported twelve failed
+            // AccurateRip lookups that were never attempted.
+            int ar_v2=0, ar_v1=0, ar_none=0, ar_nq=0;
             for (const ripsel::Item& item : plan) {
                 const ARTrackResult& r = ar_results[(size_t)item.toc_index];
                 if (r.status==ARStatus::Matched_v2) ++ar_v2;
                 else if (r.status==ARStatus::Matched_v1) ++ar_v1;
+                else if (r.status==ARStatus::NotQueried) ++ar_nq;
                 else ++ar_none;
             }
             fprintf(lf, "\n=== Summary ===\n");
-            fprintf(lf, "AR: %d v2 + %d v1 matched, %d not found / %d total\n",
-                    ar_v2, ar_v1, ar_none, sel_count);
+            // The fourth term appears ONLY when it is non-zero. In AccurateRip
+            // mode checkAR always assigns a real verdict, so ar_nq is 0 there and
+            // this line stays character-identical - the stop condition.
+            if (ar_nq > 0)
+                fprintf(lf, "AR: %d v2 + %d v1 matched, %d not found, %d not queried / %d total\n",
+                        ar_v2, ar_v1, ar_none, ar_nq, sel_count);
+            else
+                fprintf(lf, "AR: %d v2 + %d v1 matched, %d not found / %d total\n",
+                        ar_v2, ar_v1, ar_none, sel_count);
             // CD-S2: on a whole-disc rip this block is unchanged, character for
             // character. On a partial one it names every disc-level artifact that
             // was omitted and why, so nothing is missing silently.
@@ -2497,14 +2521,12 @@ void CDRipper::worker(std::string          drive_letter,
             // and the fall-through label below would render that as "not found".
             for (const ripsel::Item& item : plan) {
                 const int i = item.toc_index;
-                const char* status =
-                    ar_results[i].status==ARStatus::Matched_v2 ? "[AR v2 OK]" :
-                    ar_results[i].status==ARStatus::Matched_v1 ? "[AR v1 OK]" :
-                    ar_results[i].status==ARStatus::NetworkError ? "[AR net err]" :
-                    ar_results[i].status==ARStatus::ReadError ? "[AR inconclusive: read err]" :
-                    "[AR not found]";
+                // CD-S4: one exhaustive label, so a status nobody listed can no
+                // longer come out as "[AR not found]" off the else branch.
+                const std::string status =
+                    std::string("[") + arStatusLabel(ar_results[i].status) + "]";
                 fprintf(lf, "  Track %02d: %s conf=%d  rg=%.2fdB [%08x] [%08x]\n",
-                    i+1, status, ar_results[i].confidence,
+                    i+1, status.c_str(), ar_results[i].confidence,
                     i < (int)rg_results.size() ? rg_results[i].track_gain : 0.0,
                     ar_results[i].crc_v1, ar_results[i].crc_v2);
             }

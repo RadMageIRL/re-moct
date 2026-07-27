@@ -33,7 +33,11 @@ enum class RipMode {
 };
 
 // ─── AccurateRip result per track ─────────────────────────────────────────────
-enum class ARStatus { NotQueried, Matched_v2, Matched_v1, NotFound, NetworkError, ReadError };
+// CD-S4: the enum and its labels moved to ArStatus.h so the labels are pure and
+// testable, and so every label site is an exhaustive switch that -Wswitch will
+// break if a status is ever added without being spelled. Included here so every
+// existing user of ARStatus compiles unchanged.
+#include "ArStatus.h"
 
 struct ARTrackResult {
     ARStatus status     = ARStatus::NotQueried;

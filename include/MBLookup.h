@@ -26,6 +26,24 @@ struct MBRelease {
     std::string artist;
     std::string date;
     std::vector<MBTrack> tracks;
+
+    // The hidden track ahead of track 1, when the release names one. Kept OUT
+    // of `tracks` deliberately and on pain of breaking disc identification:
+    // MBTrack::number is a 1-based position within its disc, and
+    // pickDiscForTrackCount matches a medium BY COUNTING those entries, so an
+    // extra element would make a 13-track disc look like a 14-track one and
+    // pick the wrong medium on a multi-disc release. It is not a track; the TOC
+    // does not describe it; it does not belong in a list of tracks.
+    //
+    // Both sources carry it, in different shapes, and both are read:
+    //   MusicBrainz - `media[].pregap`, a key SEPARATE from `tracks`, with
+    //                 position 0. Factory Showroom gives "Token Back to
+    //                 Brooklyn", 61000 ms, matching the 4575-sector pregap.
+    //   Discogs     - an ordinary tracklist row whose `position` is "0".
+    //
+    // Empty means the release named no title, which is not the same as the disc
+    // having no hidden track - the TOC decides that, and only the TOC.
+    std::string pregap_title;
 };
 
 // For multi-disc releases, rel.tracks holds every disc's tracks tagged with

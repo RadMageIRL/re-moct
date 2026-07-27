@@ -5,6 +5,7 @@
 // no longer inherit Windows from this path).
 #include "core/ICdIo.h"
 #include "core/ISource.h"   // Phase 2 slice A: the internal Source interface
+#include "HtoaSpan.h"       // hidden track one audio: TOC-only detection + span
 
 #include <cstdint>
 #include <memory>
@@ -109,7 +110,19 @@ public:
         return offs;
     }
 
-    // Start playing a track (1-based). Stops current playback first.
+    // "Nothing is playing." It used to be 0, which was fine for exactly as long
+    // as no track could BE 0 - and then the hidden track arrived, which is
+    // track 0 by every convention there is (cdparanoia addresses it as track 0,
+    // MusicBrainz gives it position 0, CUERipper names it "00"). One value was
+    // carrying two meanings and they had only ever agreed by accident.
+    //
+    // -1 because a track number is never negative, so no disc can collide with
+    // it, and because every comparison that used to read `== 0` or `> 0` fails
+    // loudly rather than quietly doing the wrong thing if one is missed.
+    static constexpr int kNoTrack = -1;
+
+    // Start playing a track. 0 is the hidden track ahead of track 1, where a
+    // disc has one; 1..n are the disc's own tracks. Stops current playback first.
     bool playTrack(int track_number);
     void stop();
     void stopReader() {
@@ -117,7 +130,7 @@ public:
         reader_stop_.store(true);
         playing_.store(false);
         if (reader_thread_.joinable()) reader_thread_.join();
-        current_track_.store(0);
+        current_track_.store(kNoTrack);
         ring_write_.store(0);
         ring_read_.store(0);
     }
@@ -158,6 +171,17 @@ public:
     }
 
     int    currentTrack()   const { return current_track_.load(); }
+    // Does this disc hide a track ahead of track 1? TOC-only, known at open().
+    bool   hasHtoa()        const { return has_htoa_; }
+    // The one place a track number becomes a track. Returns the synthetic
+    // hidden-track entry for 0, the TOC entry for 1..n, nullptr for anything
+    // else - including 0 on a disc that has no hidden track, which is what
+    // stops a stale row playing the front of an ordinary disc.
+    const CDTrack* trackByNumber(int n) const {
+        if (n == 0) return has_htoa_ ? &htoa_track_ : nullptr;
+        for (const auto& t : tracks_) if (t.number == n) return &t;
+        return nullptr;
+    }
     double positionSec()    const override;
     double durationSec()    const override;
 
@@ -178,7 +202,11 @@ private:
     std::atomic<bool>       paused_         { false };
     std::atomic<bool>       reader_stop_    { false };
     std::atomic<bool>       media_removed_  { false };
-    std::atomic<int>        current_track_  { 0 };
+    std::atomic<int>        current_track_  { kNoTrack };
+    // Synthetic, never in tracks_: the TOC does not describe this audio, and
+    // tracks_ IS the TOC - everything that counts a disc's tracks reads it.
+    CDTrack                 htoa_track_     {};
+    bool                    has_htoa_       { false };
     std::atomic<uint32_t>   track_end_lba_  { 0 };
     std::atomic<uint32_t>   current_lba_    { 0 };
 

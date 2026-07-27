@@ -47,6 +47,17 @@ struct MapResult {
     // Marked paths that named no track on this disc: a foreign drive, a stale
     // row, or a row kind with no TOC entry. Counted so a drop can never be silent.
     int unresolved = 0;
+    // The hidden track was marked. It is track NUMBER 0, which by definition has
+    // no TOC entry - the table of contents is the list of tracks and this is not
+    // one - so it must be taken out here, before the lookup below, or a perfectly
+    // legitimate selection would be counted as a row that "matched no track" and
+    // reported to the user as a mistake.
+    //
+    // A bool rather than a -1 in toc_indices: that vector's every element is a
+    // TOC position, and a sentinel would make it one value carrying two meanings,
+    // which is the defect this codebase has closed six times over. It also cannot
+    // be more than one - a disc has at most one pregap and it is always first.
+    bool htoa = false;
 };
 
 // `toc_numbers[i]` is the track NUMBER of TOC entry `i`. The caller passes it
@@ -63,6 +74,10 @@ inline MapResult toTocIndices(const std::vector<std::string>& marked_paths,
         int         num = 0;
         // Not a CD row at all, or a row belonging to a different drive.
         if (!parseCDPath(p, drv, num) || drv != drive_spec) { ++out.unresolved; continue; }
+
+        // Track 0 is the hidden track and is not in the TOC. Partition it off
+        // before the lookup runs, never after.
+        if (num == 0) { out.htoa = true; continue; }
 
         // LOOK THE NUMBER UP. Never `num - 1`.
         int idx = -1;
@@ -88,8 +103,22 @@ inline MapResult toTocIndices(const std::vector<std::string>& marked_paths,
 // track, not to ripping nothing. That is the only reading consistent with
 // "empty means all", and there is deliberately no way to express "rip nothing" -
 // start() already refuses an empty plan, and the way to not rip is to not rip.
+// "Whole disc" means the DISC's tracks and nothing else. The hidden track is not
+// one of them, so it is deliberately not consulted here: marking every numbered
+// track plus the hidden one is still a whole-disc rip, and it still gets the cue
+// sheet, the album ReplayGain and the CUETools verdict that a whole-disc rip has
+// always got. Reading m.htoa here instead would make a full selection look
+// partial and silently strip all three.
 inline bool isWholeDiscSelection(const MapResult& m, int disc_total) {
     return m.toc_indices.empty() || (int)m.toc_indices.size() >= disc_total;
+}
+
+// Did the user ask for nothing at all? The rip has three shapes and this
+// separates the one that must not become "the whole disc": with the hidden track
+// marked on its own, no numbered track is wanted, and an empty toc_indices there
+// means NONE rather than ALL. CDRipper::start reads exactly this pair.
+inline bool selectsNothing(const MapResult& m) {
+    return m.toc_indices.empty() && !m.htoa;
 }
 
 } // namespace cdsel

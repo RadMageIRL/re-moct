@@ -97,6 +97,22 @@ bool CDSource::open(const std::string& drive_letter) {
         return false;
     }
 
+    // The hidden track, if this disc has one. Built here, once, from the TOC
+    // alone - no read, no spin-up - and held as a synthetic entry so that
+    // playTrack, seekTo, positionSec and durationSec all find it through the
+    // same lookup they use for every other track, instead of each growing its
+    // own "unless it is track 0" branch. Four special cases would be four
+    // chances to disagree.
+    has_htoa_ = false;
+    if (const auto span = htoa::span(tracks_.front().lba())) {
+        htoa_track_ = CDTrack{};
+        htoa_track_.number       = 0;
+        htoa_track_.start_frame  = kMsfLeadIn;      // lba() == 0: the disc's start
+        htoa_track_.length_lba   = span->sectors;
+        htoa_track_.duration_sec = (int)(span->sectors / htoa::kSectorsPerSecond);
+        has_htoa_ = true;
+    }
+
 
 
     // Standard TOC leadout = toc.entries[last] (first track after last)
@@ -159,9 +175,8 @@ void CDSource::close() {
 // ─── Playback ─────────────────────────────────────────────────────────────────
 
 bool CDSource::playTrack(int track_number) {
-    const CDTrack* ct = nullptr;
-    for (auto& t : tracks_)
-        if (t.number == track_number) { ct = &t; break; }
+    // 0 is the hidden track; 1..n are the disc's own. One lookup for both.
+    const CDTrack* ct = trackByNumber(track_number);
     if (!ct) return false;
 
     // Signal reader to stop and wait for it
@@ -169,8 +184,8 @@ bool CDSource::playTrack(int track_number) {
     if (reader_thread_.joinable()) reader_thread_.join();
 
     // Now safe to reset everything — audio callback outputs silence
-    // while current_track_ is 0 (between stop and start)
-    current_track_.store(0);  // briefly zero so callback outputs silence
+    // while current_track_ is kNoTrack (between stop and start)
+    current_track_.store(kNoTrack);  // silence the callback across the switch
     ring_write_.store(0);
     ring_read_.store(0);
 
@@ -193,7 +208,7 @@ bool CDSource::playTrack(int track_number) {
 }
 
 void CDSource::stop() {
-    current_track_.store(0);  // zero first so callback stops signalling track_ended
+    current_track_.store(kNoTrack);  // first, so the callback stops signalling track_ended
     reader_stop_.store(true);
     playing_.store(false);
     if (reader_thread_.joinable()) reader_thread_.join();
@@ -233,7 +248,7 @@ void CDSource::readerWorker() {
                 // Drive ejected or unreadable — hard stop
                 // Flush ring so callback outputs silence immediately
                 ring_write_.store(ring_read_.load());
-                current_track_.store(0);
+                current_track_.store(kNoTrack);
                 playing_.store(false);
                 media_removed_.store(true);
                 break;
@@ -256,12 +271,11 @@ void CDSource::readerWorker() {
 }
 
 bool CDSource::seekTo(double seconds) {
-    if (current_track_.load() == 0) return false;
+    if (current_track_.load() == kNoTrack) return false;
     // Find track start LBA
-    uint32_t track_start = 0;
-    for (auto& t : tracks_)
-        // LBA: target_lba below becomes current_lba_, a read address (F0-S1).
-        if (t.number == current_track_.load()) { track_start = t.lba(); break; }
+    // LBA: target_lba below becomes current_lba_, a read address (F0-S1).
+    const CDTrack* cur = trackByNumber(current_track_.load());
+    uint32_t track_start = cur ? cur->lba() : 0;
 
     // Calculate target LBA: 75 sectors per second (truncation == the old int form)
     uint32_t target_lba = track_start + (uint32_t)(seconds * 75);
@@ -293,7 +307,7 @@ bool CDSource::readSectors(uint32_t lba, int count, uint8_t* buf) {
 // ─── Audio callback interface ─────────────────────────────────────────────────
 
 uint32_t CDSource::readFrames(float* dst, uint32_t frame_count) {
-    if (current_track_.load() == 0 || paused_.load()) {
+    if (current_track_.load() == kNoTrack || paused_.load()) {
         std::memset(dst, 0, frame_count * 2 * sizeof(float));
         return frame_count;
     }
@@ -311,21 +325,19 @@ uint32_t CDSource::readFrames(float* dst, uint32_t frame_count) {
 // ─── Position ─────────────────────────────────────────────────────────────────
 
 double CDSource::positionSec() const {
-    if (!current_track_.load()) return 0.0;
-    for (auto& t : tracks_)
-        if (t.number == current_track_.load()) {
-            // Both operands must be LBA: current_lba_ is a read cursor. Mixing
-            // it with start_frame would report a position 2.00 s too high.
-            uint32_t played = current_lba_.load() - t.lba();
-            return (double)(played / 75);    // whole seconds (integer division), widened
-        }
+    if (current_track_.load() == kNoTrack) return 0.0;
+    if (const CDTrack* t = trackByNumber(current_track_.load())) {
+        // Both operands must be LBA: current_lba_ is a read cursor. Mixing
+        // it with start_frame would report a position 2.00 s too high.
+        uint32_t played = current_lba_.load() - t->lba();
+        return (double)(played / 75);    // whole seconds (integer division), widened
+    }
     return 0.0;
 }
 
 double CDSource::durationSec() const {
-    for (auto& t : tracks_)
-        if (t.number == current_track_.load())
-            return (double)t.duration_sec;
+    if (const CDTrack* t = trackByNumber(current_track_.load()))
+        return (double)t->duration_sec;
     return 0.0;
 }
 

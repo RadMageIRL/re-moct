@@ -5,6 +5,50 @@ All notable changes to RE-MOCT are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.6.0] - 2026-07-27
+
+### Added
+
+- **Hidden tracks at the front of a CD can now be ripped.** Some records put a
+  song in front of track 1, in the stretch of audio the disc's table of contents
+  does not describe - They Might Be Giants' Factory Showroom hides a minute of
+  "Token Back to Brooklyn" there. RE-MOCT now notices when a disc has one and
+  shows it as a row above track 1, numbered `00`, with the playlist header
+  reporting it separately as `+1 HTOA` so the disc's own track count stays what
+  the disc says it is.
+  It plays like any other row on the disc. Enter starts it, the now-playing line
+  and the playing badge show it, the row lights up, it counts as a play, it
+  appears in `[Recently Played]`, and it scrobbles under its own title once
+  MusicBrainz has been asked (`Ctrl+R`) - the same conditions every other CD
+  track scrobbles under.
+  It is never taken as part of a normal rip. Mark it with `u`, the same key that
+  marks tracks, and it is written as its own file alongside whatever else you
+  marked - mark it together with tracks and you get both, and marking every track
+  as well as the hidden one still rips the disc exactly as a whole-disc rip
+  always has, cue sheet and all. The file is named after the track when
+  MusicBrainz or Discogs knows what it is called, and after the album otherwise,
+  so it is never left unnamed. It sorts first, because it is first.
+  Nothing verifies this audio and nothing pretends to. AccurateRip and the
+  CUETools database both begin at track 1, so neither has ever had anything to
+  say about a hidden track, and no verification tag is written for it - a rip
+  that never asked has nothing to report. What the rip does record is how the
+  read went: if any part of the hidden track could not be read, the log, the
+  `disc.json` sidecar and the status line all say how much was replaced with
+  silence, because a hidden track that came off the disc incomplete must never be
+  handed over looking whole.
+  Discs are detected by their table of contents alone, which costs no read and no
+  waiting, using the same five-second threshold CUETools uses. An ordinary disc
+  with the usual fraction of a second of lead-in is not offered as having a
+  hidden track, and never will be.
+
+### Fixed
+
+- Metadata from Discogs no longer shifts every track by one on releases that list
+  a hidden track. Discogs puts such a track in the ordinary track list at
+  position `0`, and RE-MOCT was renumbering the list from the top, so a
+  thirteen-track disc came back with fourteen entries and every title attached to
+  the wrong track.
+
 ## [1.5.0] - 2026-07-27
 
 ### Added

@@ -140,6 +140,17 @@ MBRelease MBLookup::parseJson(const std::string& json_str) {
             int disc_no = 0;
             for (auto& media : rel["media"]) {
                 ++disc_no;
+                // The hidden track, if the release names one. MusicBrainz keeps
+                // it in its OWN key beside "tracks", not inside it - a pregap
+                // track is position 0 and is not part of the tracklist - so a
+                // parser that only walks "tracks" drops it silently. Read here
+                // and kept out of result.tracks: an extra element would make
+                // pickDiscForTrackCount count a 13-track medium as 14.
+                if (media.contains("pregap") && media["pregap"].is_object()) {
+                    std::string pt = media["pregap"].value("title", "");
+                    if (!pt.empty() && result.pregap_title.empty())
+                        result.pregap_title = pt;
+                }
                 if (!media.contains("tracks")) continue;
                 for (auto& t : media["tracks"]) {
                     MBTrack mt;
@@ -415,6 +426,13 @@ void MBLookup::mbidWorker(std::string mbid, MBCallback cb) {
             int disc_no = 0;
             for (auto& media : j["media"]) {
                 ++disc_no;
+                // See the sibling site above: "pregap" is a key of its own,
+                // never an entry in "tracks".
+                if (media.contains("pregap") && media["pregap"].is_object()) {
+                    std::string pt = media["pregap"].value("title", "");
+                    if (!pt.empty() && release.pregap_title.empty())
+                        release.pregap_title = pt;
+                }
                 if (!media.contains("tracks")) continue;
                 for (auto& t : media["tracks"]) {
                     MBTrack mt;
@@ -563,6 +581,19 @@ void MBLookup::discogsReleaseWorker(std::string discogs_id, MBCallback cb) {
         for (auto& t : j["tracklist"]) {
             std::string type = t.value("type_", "track");
             if (type != "track") continue;   // skip heading / index rows
+            // Discogs puts the hidden track INSIDE the tracklist, as an
+            // ordinary row whose position is "0" - unlike MusicBrainz, which
+            // gives it a key of its own. Renumbering sequentially would hand it
+            // number 1 and shift every real track up by one, so a 13-track disc
+            // would come back with 14 entries all misnamed. Take it out here,
+            // before the counter sees it, and route it where MusicBrainz's
+            // equivalent goes.
+            if (t.value("position", std::string()) == "0") {
+                std::string pt = t.value("title", "");
+                if (!pt.empty() && release.pregap_title.empty())
+                    release.pregap_title = pt;
+                continue;
+            }
             MBTrack mt;
             mt.number = ++seq;
             mt.title  = t.value("title", "");

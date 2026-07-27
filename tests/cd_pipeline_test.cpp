@@ -317,7 +317,7 @@ int main() {
         }
         cd.stop();
         CHECK(!cd.isPlaying());
-        CHECK(cd.currentTrack() == 0);
+        CHECK(cd.currentTrack() == CDSource::kNoTrack);   // not 0: 0 is the hidden track
     }
 
     // ── 5. Transient read error: exact silence-fill, LBA advances past batch ──
@@ -352,7 +352,7 @@ int main() {
         CHECK(cd.playTrack(1));
         CHECK(waitFor(3000, [](CDSource& c){ return c.mediaRemoved(); }, cd));
         CHECK(!cd.isPlaying());
-        CHECK(cd.currentTrack() == 0);
+        CHECK(cd.currentTrack() == CDSource::kNoTrack);   // not 0: 0 is the hidden track
         {   // silence out after the hard stop
             std::vector<int16_t> chunk;
             readChunk(cd, chunk);
@@ -387,7 +387,7 @@ int main() {
         cd.stopReader();
         CHECK(cd.isOpen());                               // device still open for ripping
         CHECK(!cd.isPlaying());
-        CHECK(cd.currentTrack() == 0);
+        CHECK(cd.currentTrack() == CDSource::kNoTrack);   // not 0: 0 is the hidden track
         cd.close();
         CHECK(!cd.isOpen());
     }

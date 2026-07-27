@@ -1,5 +1,6 @@
 #include "CDRipper.h"
 #include "RipSelection.h"  // CD-S1: the disc/selection split
+#include "HtoaSpan.h"      // hidden track one audio: is there any, and where
 #include "ar_crc.h"
 #include "Version.h"        // REMOCT_VERSION (single source) for the CTDB UA + rip tags
 #include "core/IHttp.h"     // core::IHttp seam (AR/CTDB fetch); WinINet lives behind it
@@ -239,9 +240,18 @@ static bool readSectors(core::ICdDevice& dev, uint32_t lba, int count,
 }
 
 // Retry wrapper — falls back to single-sector on block failure
+//
+// `filled_out` counts the sectors this call gave up on and replaced with
+// silence. It is optional and defaults to nullptr, so every existing caller
+// behaves exactly as before; only the hidden-track extraction asks for it,
+// because HTOA is the one thing here that nothing verifies. The fill itself is
+// deliberate and long-standing - a silent sector beats aborting a whole rip -
+// but returning `true` while saying nothing is how a truncated file gets handed
+// over looking complete, which is the shape CD-S4 closed one level up.
 static bool readSectorsWithRetry(core::ICdDevice& dev, uint32_t lba, int count,
                                  uint8_t* pcm_buf, bool use_c2,
-                                 int* c2_errors = nullptr) {
+                                 int* c2_errors = nullptr,
+                                 uint32_t* filled_out = nullptr) {
     for (int attempt = 0; attempt <= 4; ++attempt) {
         if (readSectors(dev, lba, count, pcm_buf, use_c2, c2_errors))
             return true;
@@ -252,8 +262,10 @@ static bool readSectorsWithRetry(core::ICdDevice& dev, uint32_t lba, int count,
             for (int s = 0; s < count; ++s) {
                 int c2e = 0;
                 if (!readSectors(dev, lba+s, 1,
-                                 pcm_buf + s*SECTOR_BYTES, use_c2, &c2e))
+                                 pcm_buf + s*SECTOR_BYTES, use_c2, &c2e)) {
                     std::memset(pcm_buf + s*SECTOR_BYTES, 0, SECTOR_BYTES);
+                    if (filled_out) ++(*filled_out);
+                }
                 if (c2_errors) *c2_errors += c2e;
             }
             return true; // silence > abort
@@ -1004,7 +1016,8 @@ ARTrackResult CDRipper::ripTrack(core::ICdDevice&   dev,
                                  size_t             ctdb_bytes_in,
                                  int                pressing_offset,
                                  size_t             ctdb_total_bytes,
-                                 ebur128_state**    out_ebur) {
+                                 ebur128_state**    out_ebur,
+                                 ReadAccount*       account) {
 
     ARTrackResult ar_result;
     ar_result.status = ARStatus::NotQueried;
@@ -1140,7 +1153,30 @@ ARTrackResult CDRipper::ripTrack(core::ICdDevice&   dev,
     // the disc in LBA (MMC-3 Table 333). Handing start_frame here read every
     // track 150 sectors - 2.00 s - late, on every disc, for the project's whole
     // life. See docs/RECON-finding0-addressing.md.
-    uint32_t lba       = (uint32_t)((long long)track.lba() + corr_lba_adv);  // signed: adv may be < 0
+    //
+    // THE CLAMP, and it applies to the hidden track only. The pregap begins at
+    // the first addressable sector on the disc, so on a drive with a NEGATIVE
+    // read offset the corrected address lands before LBA 0 - and `lba` is
+    // unsigned, so it would wrap to ~4e9 and the read would simply fail. The
+    // shipped offset table reaches -1164 samples, just under two sectors, so
+    // this is reachable on real hardware and not on either drive here.
+    //
+    // Clamping keeps every sample that physically exists: the first `clamped`
+    // sectors are not offset-corrected, and about 26 ms at the very head of a
+    // hidden track is not worth refusing the disc over. Nothing is padded and
+    // nothing is skipped, so `filled` is untouched - the two numbers stay
+    // separate, which is exactly what the ruling asked for.
+    //
+    // A numbered track passes no account and is NOT clamped: whether a
+    // negative-offset drive has this problem on track 1 of an ordinary disc is
+    // a real question and a separate one, and silently clamping here would hide
+    // it rather than answer it.
+    long long want_lba = (long long)track.lba() + corr_lba_adv;
+    if (account && account->clamp_at_disc_start && want_lba < 0) {
+        account->clamped = (uint32_t)(-want_lba);
+        want_lba = 0;
+    }
+    uint32_t lba       = (uint32_t)want_lba;  // signed above: adv may be < 0
     uint32_t remaining = (uint32_t)track.length_lba;   // always full track length
     bool  ok        = true;
     uint32_t done_secs = 0;
@@ -1176,7 +1212,8 @@ ARTrackResult CDRipper::ripTrack(core::ICdDevice&   dev,
         int   c2_errs   = 0;
 
         if (!readSectorsWithRetry(dev, lba, (int)this_read, raw_buf,
-                                  use_c2, &c2_errs)) {
+                                  use_c2, &c2_errs,
+                                  account ? &account->filled : nullptr)) {
             ok = false; break;
         }
         total_c2_errors += c2_errs;
@@ -1432,7 +1469,8 @@ void CDRipper::worker(std::string          drive_letter,
                       int                  drive_offset,
                       std::string          drive_model,
                       uint32_t             full_leadout_frame,
-                      std::vector<uint32_t> data_track_frames) {
+                      std::vector<uint32_t> data_track_frames,
+                      bool                 rip_htoa) {
 
     state_.store(RipState::Ripping);
 
@@ -2155,6 +2193,148 @@ void CDRipper::worker(std::string          drive_letter,
         }
     }
 
+    // ── Hidden track one audio ────────────────────────────────────────────
+    // Its own action, its own file, and nothing else depends on it. It runs
+    // after the numbered tracks so the disc's own rip is finished and complete
+    // before anything optional is attempted, and so a failure here cannot cost
+    // a user the album.
+    //
+    // It is NOT fed to CTDB. The CUETools stream begins at the pregap's end by
+    // definition, so the seeds below are fresh rather than `ctdb_state`'s, and
+    // the returned CTDB fields are dropped on the floor. Threading the disc's
+    // accumulator through here would corrupt the verdict for the whole disc with
+    // audio the database has never seen.
+    //
+    // It is NOT verified. AccurateRip is queried per numbered track and CTDB
+    // covers the disc from track 1 onward; neither has any notion of this audio
+    // and neither is asked about it. No AR tag is written, for the reason CD-S4
+    // established: a rip that never asked has nothing to say.
+    std::string  htoa_file;          // written path, empty if not attempted/failed
+    std::string  htoa_prefix;        // "00 - Title", the cue/m3u stem
+    std::string  htoa_title;         // what it ended up called
+    ReadAccount  htoa_acct;
+    uint32_t     htoa_sectors = 0;
+    bool         htoa_written = false;
+    if (rip_htoa && !cancel_.load() && !tracks.empty()) {
+        const auto span = htoa::span(tracks[0].lba());
+        if (span) {
+            htoa_sectors = span->sectors;
+
+            // Track 0's name. The release's own title when either source named
+            // one, otherwise the album's name with HTOA appended - never blank,
+            // and never invented out of nothing.
+            htoa_title = rel.pregap_title;   // "" = neither source named one
+            // ONE string, two uses. The file's name and the file's TITLE tag are
+            // the same text, differing only by the path sanitising the filename
+            // needs - derived here rather than built twice, because built twice
+            // they drifted: the name said "Token Back to Brooklyn" while the tag
+            // said "Track 00", which is tagFile's fallback for a track it has no
+            // metadata for. The hidden track always has metadata now, even when
+            // no source named it, so it must never reach that fallback.
+            const std::string htoa_tag_title =
+                !htoa_title.empty() ? htoa_title : (rel.title + " HTOA");
+            const std::string prefix = "00 - " + sanitizePath(htoa_tag_title);
+
+            htoa_prefix = prefix;
+            const std::vector<RipOutput> houts = buildOuts(opt, out_dir, prefix);
+
+            // The synthetic track. start_frame is set so lba() evaluates to 0 -
+            // the pregap starts at the first addressable sector - and it NEVER
+            // joins `tracks`: the AccurateRip disc ID is position-weighted over
+            // that vector, the response filter rejects on its size, results are
+            // indexed by its position, and the multi-disc pick counts it. CD-S1
+            // enumerated all five. Number 0 is what makes buildOuts emit "00".
+            CDTrack ht{};
+            ht.number       = 0;
+            ht.start_frame  = kMsfLeadIn;          // lba() == 0
+            ht.length_lba   = span->sectors;
+            ht.duration_sec = (int)(span->sectors / htoa::kSectorsPerSecond);
+
+            htoa_acct.clamp_at_disc_start = true;
+
+            if (cb) {
+                RipProgress p; p.state = RipState::Ripping;
+                p.status_msg = "Extracting hidden track (" +
+                               std::to_string(span->sectors) + " sectors)...";
+                cb(p);
+            }
+
+            RGResult       hrg;
+            ebur128_state* hebur = nullptr;
+            ripTrack(*dev, ht, /*track_idx=*/0, disc_total,
+                     /*is_first=*/false, /*is_last=*/false,
+                     use_c2, houts, opt, hrg, cb,
+                     log_path, mode, drive_offset,
+                     /*ctdb_crc_in=*/0xFFFFFFFFu,   // fresh: never the disc's
+                     /*ctdb_bytes_in=*/0,
+                     /*pressing_offset=*/0,
+                     /*ctdb_total_bytes=*/0,
+                     &hebur,
+                     &htoa_acct);
+            if (hebur) ebur128_destroy(&hebur);
+
+            if (!houts.empty() && !cancel_.load()) {
+                htoa_file    = houts.front().path;
+                htoa_written = true;
+                // Track ReplayGain describes this file and is written. Album
+                // ReplayGain describes the RELEASE and must not see it: a hidden
+                // track folded into the album figure would shift it away from
+                // every other rip of the same record. hrg carries no album value
+                // (album_valid is false unless the caller sets it) and is not
+                // added to rg_results, which the album pass below sums.
+                // Carries the title into the tag. Passing nullptr here is what
+                // produced "Track 00": with no MBTrack, tagFile synthesises a
+                // label from the track number, which is right for an untitled
+                // disc track and wrong for this. Artist is left empty on purpose
+                // so tagFile's existing fallback to the release artist applies -
+                // one artist rule, not a second copy of it.
+                MBTrack hmt;
+                hmt.number = 0;
+                hmt.title  = htoa_tag_title;
+                hmt.disc   = current_disc;
+                for (const auto& o : houts)
+                    tagFile(o.path, rel, &hmt, /*track_num=*/0,
+                            art, ARTrackResult{}, hrg, mode,
+                            /*ctdb_status=*/"", /*ctdb_disc_id=*/"");
+            }
+
+            FILE* lf = port::fopenUtf8(log_path, "a");
+            if (lf) {
+                fprintf(lf, "\n=== Hidden track one audio ===\n");
+                fprintf(lf, "Span            : LBA 0..%u (%u sectors, %.3f s)\n",
+                        span->lastLba(), span->sectors, span->seconds());
+                fprintf(lf, "Title           : %s\n",
+                        !htoa_title.empty() ? htoa_title.c_str()
+                                            : "(none from metadata)");
+                fprintf(lf, "File            : %s\n",
+                        htoa_written ? htoa_file.c_str() : "(not written)");
+                // The two accounting numbers, kept apart on purpose. `filled` is
+                // the only quality signal this audio has; `clamped` is offset
+                // correction dropped at the disc's first sector and involves no
+                // substituted audio at all.
+                fprintf(lf, "Sectors filled  : %u%s\n", htoa_acct.filled,
+                        htoa_acct.filled ? "   <- INCOMPLETE: silence was substituted for unreadable audio"
+                                         : "");
+                fprintf(lf, "Sectors clamped : %u%s\n", htoa_acct.clamped,
+                        htoa_acct.clamped ? "   (negative drive offset; head not offset-corrected)"
+                                          : "");
+                fprintf(lf, "Verification    : none. AccurateRip and CUETools both begin at\n");
+                fprintf(lf, "                  track 1, so this audio is unverified by design\n");
+                fprintf(lf, "                  and no AccurateRip tag is written.\n");
+                fclose(lf);
+            }
+
+            if (cb) {
+                RipProgress p; p.state = RipState::Ripping;
+                p.status_msg = htoa_acct.filled
+                    ? "Hidden track INCOMPLETE - " + std::to_string(htoa_acct.filled)
+                      + " unreadable sectors filled with silence"
+                    : "Hidden track extracted (" + std::to_string(span->sectors) + " sectors)";
+                cb(p); port::sleepMs(800);
+            }
+        }
+    }
+
     // ── Album ReplayGain ──────────────────────────────────────────────────
     // Album peak = loudest track true-peak (correct as-is).
     double album_peak = 0;
@@ -2260,6 +2440,23 @@ void CDRipper::worker(std::string          drive_letter,
             fprintf(cf, "REM DISCID %08x\r\n", computeCDDB(tracks, full_leadout_frame, data_track_frames));
             fprintf(cf, "REM COMMENT \"RE-MOCT v" REMOCT_VERSION "\"\r\n");
 
+            // The per-track descriptive lines. Factored out because the hidden
+            // track makes track 1's block span two FILE statements, and these
+            // lines must read identically whichever branch emits them - written
+            // twice they would drift.
+            auto emit_track_meta = [&](int i, const MBTrack* mt) {
+                if (mt && !mt->title.empty())
+                    fprintf(cf, "    TITLE \"%s\"\r\n", mt->title.c_str());
+                std::string trk_artist = (mt && !mt->artist.empty()) ? mt->artist : rel.artist;
+                if (!trk_artist.empty())
+                    fprintf(cf, "    PERFORMER \"%s\"\r\n", trk_artist.c_str());
+                // AR status as REM
+                if (ar_results[i].status == ARStatus::Matched_v2 ||
+                    ar_results[i].status == ARStatus::Matched_v1)
+                    fprintf(cf, "    REM ACCURATERIP [%08x] CONFIDENCE %d\r\n",
+                            ar_results[i].crc_v2, ar_results[i].confidence);
+            };
+
             for (const ripsel::Item& item : plan) {
                 const int i = item.toc_index;
                 const CDTrack& trk = tracks[i];
@@ -2272,19 +2469,34 @@ void CDRipper::worker(std::string          drive_letter,
                 std::string prefix2 = nn.str();
                 if (mt && !mt->title.empty()) prefix2 += " - " + sanitizePath(mt->title);
 
+                // THE ONE PLACE THIS FILE EMITS A SHAPE IT NEVER HAS BEFORE.
+                // Everywhere else a cue track is one FILE, one TRACK, one INDEX
+                // 01. The hidden track is not a track of its own - there is no
+                // TRACK 00 and a cue sheet may not contain one - it is track 1's
+                // INDEX 00, the pregap, which happens to hold music. So a single
+                // TRACK 01 spans TWO FILE statements: INDEX 00 lands in the
+                // hidden track's file, INDEX 01 in track 1's. That is the shape
+                // CUERipper writes, and it is the only shape a cue can express
+                // this in.
+                //
+                // Only reachable on a whole-disc rip (the enclosing guard) with
+                // the hidden track actually written - so a disc without one, or
+                // a rip that did not take it, emits exactly what it always did
+                // and the cue never names a file that is not there.
+                if (htoa_written && item.is_first) {
+                    fprintf(cf, "FILE \"%s%s\" WAVE\r\n", htoa_prefix.c_str(), list_ext);
+                    fprintf(cf, "  TRACK %02d AUDIO\r\n", tnum);
+                    emit_track_meta(i, mt);
+                    fprintf(cf, "    INDEX 00 00:00:00\r\n");
+                    fprintf(cf, "FILE \"%s%s\" WAVE\r\n", prefix2.c_str(), list_ext);
+                    fprintf(cf, "    INDEX 01 00:00:00\r\n");
+                    continue;
+                }
+
                 // FILE per track (non-embedded CUE) — the master format (§ above)
                 fprintf(cf, "FILE \"%s%s\" WAVE\r\n", prefix2.c_str(), list_ext);
                 fprintf(cf, "  TRACK %02d AUDIO\r\n", tnum);
-                if (mt && !mt->title.empty())
-                    fprintf(cf, "    TITLE \"%s\"\r\n", mt->title.c_str());
-                std::string trk_artist = (mt && !mt->artist.empty()) ? mt->artist : rel.artist;
-                if (!trk_artist.empty())
-                    fprintf(cf, "    PERFORMER \"%s\"\r\n", trk_artist.c_str());
-                // AR status as REM
-                if (ar_results[i].status == ARStatus::Matched_v2 ||
-                    ar_results[i].status == ARStatus::Matched_v1)
-                    fprintf(cf, "    REM ACCURATERIP [%08x] CONFIDENCE %d\r\n",
-                            ar_results[i].crc_v2, ar_results[i].confidence);
+                emit_track_meta(i, mt);
                 fprintf(cf, "    INDEX 01 00:00:00\r\n");
             }
             fclose(cf);
@@ -2301,6 +2513,18 @@ void CDRipper::worker(std::string          drive_letter,
         FILE* mf = port::fopenUtf8(m3u_path, "wb");
         if (mf) {
             fprintf(mf, "#EXTM3U\r\n");
+            // The hidden track comes first, because it is first on the disc.
+            // The m3u lists what was written, so it is listed when it was
+            // written and absent when it was not - including on an HTOA-only
+            // rip, where it is the single entry.
+            if (htoa_written) {
+                std::string hdisplay = rel.artist.empty()
+                    ? htoa_prefix
+                    : rel.artist + " - " + (htoa_title.empty() ? htoa_prefix : htoa_title);
+                fprintf(mf, "#EXTINF:%d,%s\r\n",
+                        (int)(htoa_sectors / htoa::kSectorsPerSecond), hdisplay.c_str());
+                fprintf(mf, "%s%s\r\n", htoa_prefix.c_str(), list_ext);
+            }
             for (const ripsel::Item& item : plan) {
                 const int i = item.toc_index;
                 const CDTrack& trk = tracks[i];
@@ -2437,6 +2661,34 @@ void CDRipper::worker(std::string          drive_letter,
                 for (const ripsel::Item& item : plan)
                     sel["ripped"].push_back(tracks[(size_t)item.toc_index].number);
                 j["selection"] = sel;
+            }
+
+            // The hidden track, written only when one was extracted. Machine
+            // readable because nothing else can speak for this audio: it is
+            // outside AccurateRip and outside CTDB by construction, so a tool
+            // reading this folder has no verdict to consult and only these
+            // numbers to go on.
+            //
+            // `filled` and `clamped` are two fields on purpose and must never be
+            // added together. `filled` is silence substituted for audio that
+            // could not be read, and any non-zero value means this file is
+            // incomplete - the one boundary measured on the gate disc sits
+            // inside digital silence, so nothing in the audio itself can reveal
+            // it. `clamped` is offset correction dropped at the disc's first
+            // sector on a negative-offset drive; no audio was substituted and
+            // nothing is missing that the drive could have delivered.
+            if (htoa_written) {
+                json h;
+                h["start_lba"]       = 0;
+                h["sectors"]         = htoa_sectors;
+                h["seconds"]         = (double)htoa_sectors / htoa::kSectorsPerSecond;
+                h["file"]            = fs::path(htoa_file).filename().string();
+                h["title"]           = htoa_title;          // "" = none from metadata
+                h["sectors_filled"]  = htoa_acct.filled;
+                h["sectors_clamped"] = htoa_acct.clamped;
+                h["complete"]        = (htoa_acct.filled == 0);
+                h["verified"]        = false;   // always: nothing covers this audio
+                j["htoa"] = h;
             }
 
             auto arStr = [](ARStatus s) -> const char* {
@@ -2595,7 +2847,8 @@ bool CDRipper::start(AudioManager&               audio,
                      RipMode                      mode,
                      RipOptions                   opt,
                      ProgressCb                   cb,
-                     const std::vector<int>&      selected_toc) {
+                     const std::vector<int>&      selected_toc,
+                     bool                         rip_htoa) {
     if (active_.load()) return false;
     active_.store(true);
     cancel_.store(false);
@@ -2612,10 +2865,18 @@ bool CDRipper::start(AudioManager&               audio,
     // index again. Empty selection == the whole disc, and planAll reproduces
     // the exact arguments the worker used before selection existed.
     const int disc_total = (int)tracks.size();
-    std::vector<ripsel::Item> plan = selected_toc.empty()
-                                   ? ripsel::planAll(disc_total)
-                                   : ripsel::plan(disc_total, selected_toc);
-    if (plan.empty()) return false;   // nothing selected: refuse, as the format
+    // An empty selection still means ALL - CD-S1's contract, and the whole of
+    // the "nothing changed for a user who never marks" claim. The one case it
+    // cannot express by itself is "only the hidden track", where no numbered
+    // track is wanted; rip_htoa separates the two, because nothing marked never
+    // sets it. See the table on start()'s declaration.
+    std::vector<ripsel::Item> plan =
+        selected_toc.empty()
+            ? (rip_htoa ? std::vector<ripsel::Item>{}      // HTOA on its own
+                        : ripsel::planAll(disc_total))     // untouched default
+            : ripsel::plan(disc_total, selected_toc);
+    if (plan.empty() && !rip_htoa)
+        return false;                 // nothing selected: refuse, as the format
                                       // picker already does at zero formats
     // CD-S2: CTDB is ONE CRC32 over the whole disc's audio and has no partial
     // form. Run over a subset it is wrong two independent ways: ctdb_total_bytes
@@ -2633,7 +2894,7 @@ bool CDRipper::start(AudioManager&               audio,
     thread_ = std::thread(&CDRipper::worker, this,
                           dl, tracks, std::move(plan), out_dir, rel, mode, std::move(opt), cb,
                           std::move(dev), drv_offset, drv_model,
-                          full_leadout, data_trk_frames);
+                          full_leadout, data_trk_frames, rip_htoa);
     return true;
 }
 

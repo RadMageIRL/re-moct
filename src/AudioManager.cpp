@@ -808,7 +808,9 @@ void AudioManager::onDataCallback(void* output, ma_uint32 frame_count) {
             return;
         }
         // Signal track end only when a track was playing and has now stopped
-        if (cd_source_.currentTrack() > 0 &&
+        // != kNoTrack, NOT > 0: the hidden track is track 0, and > 0 would
+        // silently never signal its end - no advance, no play count, no [Recent].
+        if (cd_source_.currentTrack() != CDSource::kNoTrack &&
             !cd_source_.isPlaying() && !cd_source_.paused())
             track_ended_flag_.store(true);
         return;

@@ -186,6 +186,14 @@ add_executable(browser_sections_test browser_sections_test.cpp)
 target_include_directories(browser_sections_test PRIVATE ${CMAKE_SOURCE_DIR}/include)
 add_test(NAME browser_sections_test COMMAND browser_sections_test)
 
+# rip-selection (CD-S1) - which tracks to rip, and which track each one IS on
+# the disc. is_first/is_last choose the AccurateRip CRC skip window, so deriving
+# them from loop position instead of TOC position produces a WRONG checksum
+# rather than a failed lookup. Pure, header-only, both matrix jobs.
+add_executable(rip_selection_test rip_selection_test.cpp)
+target_include_directories(rip_selection_test PRIVATE ${CMAKE_SOURCE_DIR}/include)
+add_test(NAME rip_selection_test COMMAND rip_selection_test)
+
 # pane-scroll (Library slice 9) - the cursor/scroll rule BOTH list panes share.
 #
 # Same reason browser_pins_test exists: the rule used to live in two places free to

@@ -1,4 +1,5 @@
 #include "CDRipper.h"
+#include "RipSelection.h"  // CD-S1: the disc/selection split
 #include "ar_crc.h"
 #include "Version.h"        // REMOCT_VERSION (single source) for the CTDB UA + rip tags
 #include "core/IHttp.h"     // core::IHttp seam (AR/CTDB fetch); WinINet lives behind it
@@ -1423,6 +1424,7 @@ ARTrackResult CDRipper::ripTrack(core::ICdDevice&   dev,
 // ─── Worker thread ────────────────────────────────────────────────────────────
 void CDRipper::worker(std::string          drive_letter,
                       std::vector<CDTrack> tracks,
+                      std::vector<ripsel::Item> plan,
                       std::string          out_dir,
                       MBRelease            rel,
                       RipMode              mode,
@@ -1662,7 +1664,15 @@ void CDRipper::worker(std::string          drive_letter,
 
     // ── Per-track rip ─────────────────────────────────────────────────────
     setDriveSpeed(*dev, 0xFFFF);
-    int total = (int)tracks.size();
+    // CD-S1: TWO quantities, because this used to be one.
+    //   disc_total = how many tracks the DISC has - the AR disc ID, the chunk
+    //                filter, is_first/is_last, the multi-disc pick and CTDB all
+    //                mean this one, and all of them are wrong with any other value.
+    //   sel_count  = how many we are RIPPING - loop bounds and progress only.
+    // They are equal on a whole-disc rip, which is why one variable served for
+    // both until a selection existed.
+    const int disc_total = (int)tracks.size();
+    const int sel_count  = (int)plan.size();
 
     // CTDB end-trim needs the disc audio total up front. The byte stream CTDB
     // accumulates is exactly each track's length_lba*SECTOR_BYTES in order, so
@@ -1677,11 +1687,11 @@ void CDRipper::worker(std::string          drive_letter,
     // Once detected, used for all subsequent tracks' Pass 1 and Pass 2.
     int  pressing_offset          = 0;
     bool pressing_offset_detected = false;
-    std::vector<ARTrackResult> ar_results(total);
-    std::vector<RGResult>      rg_results(total);
+    std::vector<ARTrackResult> ar_results(disc_total);
+    std::vector<RGResult>      rg_results(disc_total);
     // Integrated-loudness state for each KEPT track's audio, handed back from
     // ripTrack. Combined after the loop for true album gain, then destroyed.
-    std::vector<ebur128_state*> album_states(total, nullptr);
+    std::vector<ebur128_state*> album_states(disc_total, nullptr);
     bool any_error = false;
 
     // CTDB CRC state threads across all tracks (initialized with seed 0xFFFFFFFF)
@@ -1689,9 +1699,13 @@ void CDRipper::worker(std::string          drive_letter,
     ctdb_state.ctdb_crc   = 0xFFFFFFFFu;  // CRC32 seed
     ctdb_state.ctdb_bytes = 0;
 
-    for (int i = 0; i < total; ++i) {
+    for (int s = 0; s < sel_count; ++s) {
         if (cancel_.load()) break;
 
+        // `i` is the TOC index, NOT the plan position - every disc-meaning use
+        // below depends on that, ar_results[i] most of all.
+        const ripsel::Item& item = plan[(size_t)s];
+        const int i = item.toc_index;
         const CDTrack& trk = tracks[i];
         int tnum = trk.number;
         const MBTrack* mt = nullptr;
@@ -1706,12 +1720,12 @@ void CDRipper::worker(std::string          drive_letter,
 
         // For track 1: only drive_offset (pressing not yet detected).
         // For all subsequent tracks: drive_offset + pressing_offset (once detected).
-        const int eff_pressing = pressing_offset_detected && i > 0 ? pressing_offset : 0;
+        const int eff_pressing = pressing_offset_detected && s > 0 ? pressing_offset : 0;
 
         RGResult rg;
         ebur128_state* ebur_kept = nullptr;   // Pass 1 loudness state (kept unless Pass 2 wins)
-        ARTrackResult ar = ripTrack(*dev, trk, i, total,
-                                    i==0, i==total-1,
+        ARTrackResult ar = ripTrack(*dev, trk, i, disc_total,
+                                    item.is_first, item.is_last,
                                     use_c2,
                                     outs, opt, rg, cb,
                                     log_path, mode, drive_offset,
@@ -1867,8 +1881,8 @@ void CDRipper::worker(std::string          drive_letter,
                         if (drive_offset + p < 0) continue;
                         const auto probe_outs = withSuffix(outs, ".probe");
                         RGResult      rg_probe;
-                        ARTrackResult ar_probe = ripTrack(*dev, trk, i, total,
-                                                          true, total == 1,
+                        ARTrackResult ar_probe = ripTrack(*dev, trk, i, disc_total,
+                                                          item.is_first, item.is_last,
                                                           use_c2,
                                                           probe_outs, opt,
                                                           rg_probe, nullptr,
@@ -1905,7 +1919,7 @@ void CDRipper::worker(std::string          drive_letter,
 
             if (cb) {
                 RipProgress p; p.state=RipState::Ripping;
-                p.track=i+1; p.total=total; p.pct=0;
+                p.track=s+1; p.total=sel_count; p.pct=0;
                 p.status_msg = "Track "+std::to_string(tnum)
                              +" AR mismatch on Pass 1 -- re-ripping (Pass 2)...";
                 cb(p);
@@ -1934,8 +1948,8 @@ void CDRipper::worker(std::string          drive_letter,
 
             RGResult      rg2;
             ebur128_state* ebur_p2 = nullptr;
-            ARTrackResult ar2 = ripTrack(*dev, trk, i, total,
-                                         i==0, i==total-1,
+            ARTrackResult ar2 = ripTrack(*dev, trk, i, disc_total,
+                                         item.is_first, item.is_last,
                                          use_c2,
                                          tmp_outs, opt, rg2, cb,
                                          log_path, mode, drive_offset,
@@ -1999,7 +2013,7 @@ void CDRipper::worker(std::string          drive_letter,
             flushDriveCache(*dev, trk.start_lba, full_leadout_lba, use_c2);
             const auto det_outs = withSuffix(outs, ".det");
             RGResult      rgd;
-            ARTrackResult ard = ripTrack(*dev, trk, i, total, i==0, i==total-1,
+            ARTrackResult ard = ripTrack(*dev, trk, i, disc_total, item.is_first, item.is_last,
                                          use_c2, det_outs, opt, rgd, cb,
                                          log_path, mode, drive_offset,
                                          ctdb_state.ctdb_crc, ctdb_state.ctdb_bytes,
@@ -2025,7 +2039,7 @@ void CDRipper::worker(std::string          drive_letter,
         // Report AR result with Pass label matching dBpoweramp style
         if (cb) {
             RipProgress p; p.state=RipState::Ripping;
-            p.track=i+1; p.total=total; p.pct=100;
+            p.track=s+1; p.total=sel_count; p.pct=100;
             std::string pass_tag = (pass_count == 1) ? " [Pass 1]" : " [Pass 1 & 2]";
             switch(ar.status) {
             case ARStatus::Matched_v2:
@@ -2088,7 +2102,7 @@ void CDRipper::worker(std::string          drive_letter,
             cb(p);
         }
 
-        fetchCTDBData(ctdb_id, log_path, total, ctdb_status);
+        fetchCTDBData(ctdb_id, log_path, disc_total, ctdb_status);
 
         if (cb) {
             RipProgress p; p.state = RipState::Ripping;
@@ -2141,7 +2155,9 @@ void CDRipper::worker(std::string          drive_letter,
     }
 
     // ── Tag all files ─────────────────────────────────────────────────────
-    for (int i = 0; i < total && !cancel_.load(); ++i) {
+    for (const ripsel::Item& item : plan) {
+        if (cancel_.load()) break;
+        const int i = item.toc_index;
         const CDTrack& trk = tracks[i];
         int tnum = trk.number;
         const MBTrack* mt = nullptr;
@@ -2192,7 +2208,8 @@ void CDRipper::worker(std::string          drive_letter,
             fprintf(cf, "REM DISCID %08x\r\n", computeCDDB(tracks, full_leadout_lba, data_track_lbas));
             fprintf(cf, "REM COMMENT \"RE-MOCT v" REMOCT_VERSION "\"\r\n");
 
-            for (int i = 0; i < total; ++i) {
+            for (const ripsel::Item& item : plan) {
+                const int i = item.toc_index;
                 const CDTrack& trk = tracks[i];
                 int tnum = trk.number;
                 const MBTrack* mt = nullptr;
@@ -2232,7 +2249,8 @@ void CDRipper::worker(std::string          drive_letter,
         FILE* mf = port::fopenUtf8(m3u_path, "wb");
         if (mf) {
             fprintf(mf, "#EXTM3U\r\n");
-            for (int i = 0; i < total; ++i) {
+            for (const ripsel::Item& item : plan) {
+                const int i = item.toc_index;
                 const CDTrack& trk = tracks[i];
                 int tnum = trk.number;
                 const MBTrack* mt = nullptr;
@@ -2268,7 +2286,7 @@ void CDRipper::worker(std::string          drive_letter,
                 fprintf(tf, "# MB ID     : %s\r\n", rel.mb_id.c_str());
             fprintf(tf, "#\r\n");
             fprintf(tf, "# Track  Start-LBA  Length-LBA  Start-MSF    Duration\r\n");
-            for (int i = 0; i < total; ++i) {
+            for (int i = 0; i < disc_total; ++i) {
                 const CDTrack& t = tracks[i];
                 uint32_t m = t.start_lba / 75 / 60;
                 uint32_t s = (t.start_lba / 75) % 60;
@@ -2296,13 +2314,13 @@ void CDRipper::worker(std::string          drive_letter,
             uint32_t lo_j = full_leadout_lba ? (uint32_t)full_leadout_lba
                           : tracks.back().start_lba + tracks.back().length_lba;
             uint32_t id1 = 0, id2 = 0, rel_lo = lo_j - AR_PREGAP;
-            for (int i = 0; i < total; ++i) {
+            for (int i = 0; i < disc_total; ++i) {
                 uint32_t rel = tracks[i].start_lba - AR_PREGAP;
                 id1 += rel;
                 id2 += std::max(rel, 1u) * (uint32_t)(i + 1);
             }
             id1 += rel_lo;
-            id2 += rel_lo * (uint32_t)(total + 1);
+            id2 += rel_lo * (uint32_t)(disc_total + 1);
 
             json j;
             j["schema_version"] = 1;
@@ -2323,7 +2341,7 @@ void CDRipper::worker(std::string          drive_letter,
             toc["pregap_frames"] = (int)tracks[0].start_lba - (int)AR_PREGAP; // 0 if standard
             toc["leadout_lba"]   = (uint32_t)lo_j;
             toc["data_tracks"]   = data_track_lbas;
-            for (int i = 0; i < total; ++i) {
+            for (int i = 0; i < disc_total; ++i) {
                 const CDTrack& t = tracks[i];
                 char msf[16];
                 snprintf(msf, sizeof msf, "%02u:%02u:%02u",
@@ -2382,19 +2400,29 @@ void CDRipper::worker(std::string          drive_letter,
     {
         FILE* lf = port::fopenUtf8(log_path, "a");
         if (lf) {
+            // CD-S1: count only what was RIPPED. ar_results is sized to the disc
+            // so its slots line up with AccurateRip's, which means an unripped
+            // track sits at ARStatus::NotQueried - "never asked", which is NOT
+            // the same fact as NotFound ("asked, no match"). Counting the whole
+            // vector would report every unripped track as a verification miss.
+            // The enum already draws that distinction; only this reader lost it.
             int ar_v2=0, ar_v1=0, ar_none=0;
-            for (auto& r : ar_results) {
+            for (const ripsel::Item& item : plan) {
+                const ARTrackResult& r = ar_results[(size_t)item.toc_index];
                 if (r.status==ARStatus::Matched_v2) ++ar_v2;
                 else if (r.status==ARStatus::Matched_v1) ++ar_v1;
                 else ++ar_none;
             }
             fprintf(lf, "\n=== Summary ===\n");
             fprintf(lf, "AR: %d v2 + %d v1 matched, %d not found / %d total\n",
-                    ar_v2, ar_v1, ar_none, (int)ar_results.size());
+                    ar_v2, ar_v1, ar_none, sel_count);
             fprintf(lf, "ReplayGain: album gain=%.2f dB peak=%.6f\n",
                     rg_results.empty() ? 0.0 : rg_results[0].album_gain,
                     rg_results.empty() ? 0.0 : rg_results[0].album_peak);
-            for (int i = 0; i < (int)ar_results.size(); ++i) {
+            // Only the ripped tracks are listed: an unripped slot is NotQueried,
+            // and the fall-through label below would render that as "not found".
+            for (const ripsel::Item& item : plan) {
+                const int i = item.toc_index;
                 const char* status =
                     ar_results[i].status==ARStatus::Matched_v2 ? "[AR v2 OK]" :
                     ar_results[i].status==ARStatus::Matched_v1 ? "[AR v1 OK]" :
@@ -2431,10 +2459,10 @@ void CDRipper::worker(std::string          drive_letter,
         }
         state_.store(RipState::Done);
         if (cb) {
-            RipProgress p; p.state=RipState::Done; p.track=total; p.total=total; p.pct=100;
+            RipProgress p; p.state=RipState::Done; p.track=sel_count; p.total=sel_count; p.pct=100;
             std::ostringstream ss;
             ss << "Rip complete!  AR: " << ar_v2 << "v2 + " << ar_v1 << "v1 / "
-               << total << " tracks  -> " << out_dir;
+               << sel_count << " tracks  -> " << out_dir;
             p.status_msg = ss.str();
             cb(p);
         }
@@ -2449,7 +2477,8 @@ bool CDRipper::start(AudioManager&               audio,
                      const MBRelease&             rel,
                      RipMode                      mode,
                      RipOptions                   opt,
-                     ProgressCb                   cb) {
+                     ProgressCb                   cb,
+                     const std::vector<int>&      selected_toc) {
     if (active_.load()) return false;
     active_.store(true);
     cancel_.store(false);
@@ -2462,8 +2491,17 @@ bool CDRipper::start(AudioManager&               audio,
     uint32_t              full_leadout  = audio.cdSource().fullLeadoutLba();
     std::vector<uint32_t> data_trk_lbas = audio.cdSource().dataTrackLbas();
     auto dev = openDrive(dl);   // may be null — worker reports the error (as baseline)
+    // CD-S1: build the extraction plan HERE, so the worker never sees a bare
+    // index again. Empty selection == the whole disc, and planAll reproduces
+    // the exact arguments the worker used before selection existed.
+    const int disc_total = (int)tracks.size();
+    std::vector<ripsel::Item> plan = selected_toc.empty()
+                                   ? ripsel::planAll(disc_total)
+                                   : ripsel::plan(disc_total, selected_toc);
+    if (plan.empty()) return false;   // nothing selected: refuse, as the format
+                                      // picker already does at zero formats
     thread_ = std::thread(&CDRipper::worker, this,
-                          dl, tracks, out_dir, rel, mode, std::move(opt), cb,
+                          dl, tracks, std::move(plan), out_dir, rel, mode, std::move(opt), cb,
                           std::move(dev), drv_offset, drv_model,
                           full_leadout, data_trk_lbas);
     return true;

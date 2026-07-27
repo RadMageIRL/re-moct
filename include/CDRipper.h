@@ -12,6 +12,7 @@
 #include <thread>
 #include <atomic>
 #include <functional>
+#include "RipSelection.h"   // CD-S1: ripsel::Item, the disc/selection split
 #include <filesystem>
 #include <cstdint>
 #include <memory>
@@ -83,13 +84,22 @@ public:
         std::string path;
     };
 
+    // `tracks` is ALWAYS THE FULL TOC. It is what the AccurateRip disc ID, the
+    // response chunk filter, the result indexing and the multi-disc pick are
+    // computed from, and every one of them is wrong given anything shorter -
+    // so a subset is expressed by `selected_toc`, never by passing fewer tracks.
+    //
+    // `selected_toc` holds TOC INDICES (0-based) to extract. EMPTY MEANS ALL,
+    // which is the shipped behaviour byte-for-byte: ripsel::planAll reproduces
+    // exactly the arguments this worker passed before a selection existed.
     bool start(AudioManager&               audio,
                const std::vector<CDTrack>& tracks,
                const std::string&          out_dir,
                const MBRelease&            rel,
                RipMode                     mode,
                RipOptions                  opt,
-               ProgressCb                  cb);
+               ProgressCb                  cb,
+               const std::vector<int>&     selected_toc = {});
 
     void cancel();
     bool     isActive() const { return active_.load(); }
@@ -111,6 +121,7 @@ private:
 
     void worker(std::string          drive_letter,
                 std::vector<CDTrack> tracks,
+                std::vector<ripsel::Item> plan,
                 std::string          out_dir,
                 MBRelease            rel,
                 RipMode              mode,

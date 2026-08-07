@@ -38,18 +38,37 @@ static void populate_track_info(TrackInfo& info, const std::string& path) {
 #endif
     if (ref.isNull()) return;
 
-    // Helper: TagLib string -> UTF-8. Use to8Bit(true) which is correct for UTF-8 tags.
-    // For Latin-1 encoded ID3v2.3 tags, strip non-ASCII garbage gracefully.
+    // TagLib string -> UTF-8 via to8Bit(true), stored RAW.
+    //
+    // THE FOLD DOES NOT RUN HERE, and that is the point. TrackInfo is the
+    // identity of the playing track: the scrobblers, the OS media card, Discord
+    // Rich Presence and the tag editor all read these fields, and every one of
+    // them wants what the tag actually says. Folding on the way in sent "????"
+    // to Last.fm for a Japanese-tagged file and wrote it back into the file if
+    // the tag editor then saved. The CD scrobble path already reads the raw
+    // MBRelease for exactly this reason (UIManager::updateScrobbler) - this is
+    // the same rule applied to the other two sources.
+    //
+    // foldForDisplay runs at the DRAW sites instead (drawTitleBar, drawTrackInfo,
+    // drawLyrics, the toast bar), which is where a terminal-shaped string is
+    // actually wanted. Same split the library index has always used.
     if (auto* tag = ref.tag(); tag) {
-        std::string title  = sanitizeForDisplay(tag->title().to8Bit(true));
-        std::string artist = sanitizeForDisplay(tag->artist().to8Bit(true));
+        std::string title  = tag->title().to8Bit(true);
+        std::string artist = tag->artist().to8Bit(true);
         if (!title.empty())  info.title  = title;
         if (!artist.empty()) info.artist = artist;
-        if (!tag->album().isEmpty())   info.album   = sanitizeForDisplay(tag->album().to8Bit(true));
-        if (!tag->genre().isEmpty())   info.genre   = sanitizeForDisplay(tag->genre().to8Bit(true));
+        if (!tag->album().isEmpty())   info.album   = tag->album().to8Bit(true);
+        if (!tag->genre().isEmpty())   info.genre   = tag->genre().to8Bit(true);
         if (!tag->comment().isEmpty()) {
-            std::string c = sanitizeForDisplay(tag->comment().to8Bit(true));
-            if (c.size() > 80) c = c.substr(0, 77) + "...";
+            std::string c = tag->comment().to8Bit(true);
+            // Byte cap, cut on a codepoint boundary: raw tag text is multi-byte
+            // now, and slicing mid-sequence would hand the draw path a broken
+            // glyph (and the '?' reject, once foldForDisplay saw it).
+            if (c.size() > 80) {
+                size_t n = 77;
+                while (n > 0 && ((unsigned char)c[n] & 0xC0) == 0x80) --n;
+                c = c.substr(0, n) + "...";
+            }
             info.comment = c;
         }
         info.year      = (int)tag->year();

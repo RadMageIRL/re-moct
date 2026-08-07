@@ -5,6 +5,56 @@ All notable changes to RE-MOCT are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.6.1] - 2026-08-07
+
+### Fixed
+
+- **Text that is not English renders as itself.** Japanese, Chinese, Korean, Greek
+  and Cyrillic titles, artists, albums and filenames were being replaced with one
+  `?` per character before they were drawn, so an album by 水田直志 listed as
+  `????` in the browser and the playlist. The line at the top of the browser
+  showing the current folder was never put through that step, which is why the
+  same name could be readable there and unreadable in the rows directly beneath
+  it. Everything now goes through the same rule, and that rule no longer decides
+  anything based on how many bytes a character takes up - which is what it had
+  been doing, and why European text survived and Asian text did not.
+  On Windows RE-MOCT chooses its own font, so text renders only if that font has
+  the characters: the bundled JetBrains Mono covers Latin, Greek and Cyrillic but
+  not Chinese, Japanese or Korean. Point `wingui_font` at a font that covers them
+  and the rows will draw. On Linux your terminal's font decides, as it always has.
+- **Accented letters keep their accents.** `Müller` was drawn as `Muller` and
+  `café` as `cafe`, from a hand-written list of seventeen letters that never
+  included `ö`, `ñ`, `å` or `ř` - so one name on screen could lose its accent
+  while the name below it kept two. The list is gone and a letter keeps its
+  accent, whichever letter it is. **An existing library changes appearance the
+  first time you run this version.** Nothing was rewritten and no file was
+  touched: the accented spelling is what your tags have said all along, and it is
+  what you were always meant to see.
+- **Scrobbles carry the real title.** Last.fm and ListenBrainz, the Windows media
+  card and Discord Rich Presence were all being sent the same flattened text that
+  was drawn on screen, so a Japanese-tagged track scrobbled as `???? - ????` and
+  stayed that way in your listening history. They now receive what the tag says.
+  This applies to files on disk and to radio alike, and all three ways a station
+  can announce a song agree with each other for the first time - one of them had
+  always sent the real title and the other two had not, so the same station could
+  scrobble differently depending on how it was streaming.
+- **The tag editor no longer writes flattened text back into your files.** Opening
+  `Ctrl+E` on the track that was playing and saving would store whatever the
+  screen had been showing - so saving an untouched field could quietly turn `café`
+  into `cafe` inside the file. The editor now starts from what the file actually
+  contains.
+
+### Changed
+
+- Recordings of a live stream are named from the station's real title, so a
+  station playing Japanese writes Japanese filenames. Characters that a filename
+  cannot legally contain are replaced as they always have been. This matches what
+  ripping a CD has always done.
+- Curly quotes, the various dashes and hyphens, ellipses, bullets and the
+  different widths of space are still folded to their plain ASCII equivalents, and
+  will stay that way. That is about typography rather than language: `Don’t` and
+  `Don't` are the same word, and a terminal can always draw the second one.
+
 ## [1.6.0] - 2026-07-27
 
 ### Added

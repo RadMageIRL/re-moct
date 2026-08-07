@@ -1129,8 +1129,15 @@ void StreamSource::updateIHeartNowPlaying(const std::string& body) {
     }
 
     // Commit publish (caller owns now_playing_ / np_pub_q_ / the mutex).
+    //
+    // RAW, not folded. now_playing_ is the station's identity: the host scrobbles
+    // it, publishes it to the OS media card and Discord, keys the cover-art lookup
+    // on it, and names recorded files from it. parseIcyMetadata has always stored
+    // it raw; the iHeart and HLS-ID3 paths folded, so the same station scrobbled
+    // differently depending on which transport carried the title. All three agree
+    // now. The host folds at its draw sites (drawProgress, drawRecPanel).
     if (d.committed) {
-        std::string disp = sanitizeForDisplay(d.newDisp);
+        std::string disp = d.newDisp;
         std::lock_guard<std::mutex> lk(now_playing_mtx_);
         if (disp != now_playing_) {
             now_playing_ = disp;
@@ -1309,9 +1316,9 @@ void StreamSource::hlsParseId3(const uint8_t* tag, size_t len) {
         slog("hls-id3: tag found (ver=2.%d size=%u) but no TIT2/TPE1", ver, tagsize);
         return;
     }
+    // Raw, matching parseIcyMetadata and the iHeart commit - see the note there.
     std::string combined = artist.empty() ? title
                          : (title.empty() ? artist : artist + " - " + title);
-    combined = sanitizeForDisplay(combined);
     {
         std::lock_guard<std::mutex> lk(now_playing_mtx_);
         if (combined == now_playing_) return;         // unchanged

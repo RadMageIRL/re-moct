@@ -98,10 +98,15 @@ inline constexpr int         kFormatVersion = 1;
 inline constexpr std::size_t kFieldCount = 12;
 
 // ── One track ───────────────────────────────────────────────────────────────
-// Tag text is stored RAW. sanitizeForDisplay runs at draw time in slices 3-4,
+// Tag text is stored RAW. foldForDisplay runs at draw time in slices 3-4,
 // not here: folding on the way in would be lossy, and it would also be
-// insufficient (sanitizeForDisplay passes ASCII control bytes straight through,
+// insufficient (foldForDisplay passes ASCII control bytes straight through,
 // as the chapters slice discovered).
+//
+// That split is unchanged, and the fold now takes far less with it: it
+// normalizes typography and passes language through, so what is lost by folding
+// on the way in is smaller than it was but is still loss. Raw in, fold at the
+// draw. The same rule LocalFileSource and StreamSource follow for the scrobblers.
 //
 // Play count is deliberately ABSENT. Config already owns TrackStats
 // {play_count, last_played} keyed by path; duplicating it here would create two
@@ -304,7 +309,7 @@ inline std::string pathStemOf(const std::string& p) {
 // emoji - passes through unchanged and matches byte-exactly. This is a Latin fold, not
 // a Unicode collation, and a full case table is not worth carrying for one feature.
 //
-// Not to be confused with sanitizeForDisplay, which folds a PARTIAL set of accents for
+// Not to be confused with foldForDisplay, which folds a PARTIAL set of accents for
 // DRAWING and is deliberately left alone: display keeps its accents, matching does not.
 inline const char* foldLatin1(uint32_t cp) {
     switch (cp) {

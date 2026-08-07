@@ -390,7 +390,7 @@ void UIManager::showTrackToast(const std::string& title, const std::string& arti
     // mapping (artist prepends) into the cmdline bar as the always-visible
     // graceful-degradation surface. Sanitized: the bar draws via the narrow API
     // and metadata can carry non-ASCII.
-    status_msg_ = sanitizeForDisplay(artist.empty() ? title
+    status_msg_ = foldForDisplay(artist.empty() ? title
                                                     : artist + " - " + title);
     status_msg_ticks_ = 0;
     status_msg_yellow_ = false;
@@ -1420,7 +1420,7 @@ void UIManager::run() {
             if ((++rg_tick % 12) == 0) {
                 rip_status_ = "ReplayGain " + std::to_string(gain_scan_.index()) + "/" +
                               std::to_string(gain_scan_.total()) + "  " +
-                              sanitizeForDisplay(gain_scan_.currentFile());
+                              foldForDisplay(gain_scan_.currentFile());
                 rip_msg_ticks_ = 0;
                 redraw_needed_.store(true);
             }
@@ -1442,7 +1442,7 @@ void UIManager::run() {
             if ((++cv_tick % 12) == 0) {
                 rip_status_ = "Converting " + std::to_string(convert_job_.index()) + "/" +
                               std::to_string(convert_job_.total()) + "  " +
-                              sanitizeForDisplay(convert_job_.currentFile());
+                              foldForDisplay(convert_job_.currentFile());
                 rip_msg_ticks_ = 0;
                 redraw_needed_.store(true);
             }
@@ -1806,7 +1806,10 @@ void UIManager::tickFrame() {
         std::string np = track.artist.empty() ? track.title : track.artist + " - " + track.title;
         std::string right_approx = "  RE-MOCT v" REMOCT_VERSION " ";
         int max_np = screen_cols_ - (int)right_approx.size() - 4;
-        if (!np.empty() && max_np > 0 && (int)np.size() > max_np)
+        // Measured the way drawTitleBar actually renders it: folded, in COLUMNS.
+        // Raw TrackInfo makes byte length a bad proxy - a CJK title is three bytes
+        // per column and would trip this marquee test while still fitting the bar.
+        if (!np.empty() && max_np > 0 && dispWidth(foldForDisplay(np)) > max_np)
             redraw_needed_.store(true);
     }
 
@@ -2457,12 +2460,16 @@ void UIManager::drawRecPanel() {
         mvwaddstr(w, BOX_H - 2, 3, "[R] Record        [N/Esc] Close");
     } else {
         // ── RECORDING view (live state, all atomic reads) ───────────────
-        std::string np = audio_.streamNowPlaying();
-        if ((int)np.size() > BOX_W - 14) np = np.substr(0, BOX_W - 17) + "...";
+        // nowPlaying is raw station metadata, so it folds here and is cut in
+        // COLUMNS through the wide path - the old byte substr would have split a
+        // multi-byte title, and mvwprintw does not decode UTF-8 on ncursesw.
+        std::string np = foldForDisplay(audio_.streamNowPlaying());
+        if (dispWidth(np) > BOX_W - 14) np = truncateToWidth(np, BOX_W - 17) + "...";
         wattron(w, COLOR_PAIR(CP_STATUS_ERR) | A_BOLD);
         mvwaddstr(w, 5, 3, "* REC");
         wattroff(w, COLOR_PAIR(CP_STATUS_ERR) | A_BOLD);
-        mvwprintw(w, 5, 10, "%s", np.c_str());
+        std::wstring wnp = utf8_to_wide(np);
+        mvwaddnwstr(w, 5, 10, wnp.c_str(), (int)wnp.size());
 
         int es = rec.elapsedSec();
         mvwprintw(w, 7, 3, "elapsed %d:%02d    cuts %d    written %.1f MB",
@@ -2524,7 +2531,7 @@ void UIManager::applyReleaseTitles(const MBRelease& rel) {
             if (!rel.pregap_title.empty()) {
                 std::string dt = rel.artist.empty()
                     ? rel.pregap_title : rel.artist + " - " + rel.pregap_title;
-                playlist_.setDisplayTitle(i, sanitizeForDisplay(dt));
+                playlist_.setDisplayTitle(i, foldForDisplay(dt));
             }
             continue;
         }
@@ -2532,7 +2539,7 @@ void UIManager::applyReleaseTitles(const MBRelease& rel) {
             if (mt.number == tnum && mt.disc == cur_disc && !mt.title.empty()) {
                 std::string dt = mt.artist.empty()
                     ? mt.title : mt.artist + " - " + mt.title;
-                playlist_.setDisplayTitle(i, sanitizeForDisplay(dt));
+                playlist_.setDisplayTitle(i, foldForDisplay(dt));
                 break;
             }
         }
@@ -2783,8 +2790,11 @@ void UIManager::drawTitleBar() {
         np = label.empty() ? "(live stream)" : label;
     } else
     if (audio_.state() != PlaybackState::Stopped && !track.path.empty()) {
+        // TrackInfo is raw (LocalFileSource stores what the tag says, for the
+        // scrobblers and the tag editor); the fold belongs here, at the draw.
         np = track.artist.empty() ? track.title : track.artist + " - " + track.title;
         if (np.empty()) np = fs::path(track.path).filename().string();
+        np = foldForDisplay(np);
         // Don't clobber a manually-browsed chapter list (a highlighted, not-playing
         // book) while the Chapters pane is open - this draw runs every tick, so an
         // ungated refresh would replace the browsed list on the next frame. Re-syncs
@@ -3054,7 +3064,7 @@ void UIManager::drawDirBrowser() {
         // substr would cut a multi-byte name mid-sequence and render as a broken
         // glyph - and artist and album names are exactly where the non-ASCII is.
         auto clip = [](const std::string& s, int cols) {
-            const std::string d = sanitizeForDisplay(s.empty() ? std::string("(none)") : s);
+            const std::string d = foldForDisplay(s.empty() ? std::string("(none)") : s);
             if (dispWidth(d) <= cols) return d;
             return truncateToWidth(d, cols - 1) + "\xE2\x80\xA6";   // U+2026, one column
         };
@@ -3988,7 +3998,7 @@ std::string UIManager::browserSectionLabel() const {
     if (in_podcasts_) {
         if (in_podcast_feed_) {
             std::string t = config_.podcastFeedTitle(podcast_feed_url_);
-            if (!t.empty()) return sanitizeForDisplay(t);
+            if (!t.empty()) return foldForDisplay(t);
         }
         return "Podcasts";
     }
@@ -4073,13 +4083,18 @@ void UIManager::drawLyrics() {
         }
     }
 
-    // Header
+    // Header. The title is raw TrackInfo, so it folds here and is cut in COLUMNS,
+    // then drawn through the wide path: a byte-wise resize() would split a
+    // multi-byte title mid-sequence, and the narrow API does not decode UTF-8 on
+    // the ncursesw build at all.
     std::string hdr = " Lyrics  [L:close] ";
     if (lrc_.loaded)
-        hdr = " Lyrics: " + (track.title.empty() ? "unknown" : track.title) + "  [L:close] ";
-    hdr.resize((size_t)cols, ' ');
+        hdr = " Lyrics: " + foldForDisplay(track.title.empty() ? std::string("unknown")
+                                                              : track.title)
+            + "  [L:close] ";
+    std::wstring whdr = utf8_to_wide(padToWidth(hdr, cols));
     wattron(w, COLOR_PAIR(CP_FOCUSED) | A_BOLD);
-    mvwaddnstr(w, 0, 0, hdr.c_str(), cols);
+    mvwaddnwstr(w, 0, 0, whdr.c_str(), (int)whdr.size());
     wattroff(w, COLOR_PAIR(CP_FOCUSED) | A_BOLD);
 
     int visible = rows - 2;  // -1 header -1 border
@@ -4241,8 +4256,8 @@ bool UIManager::saveTagEdits() {
             // Rebuild display title as "Artist - Title"
             std::string dt;
             if (!tag_edit_values_[1].empty())
-                dt = sanitizeForDisplay(tag_edit_values_[1]) + " - ";
-            dt += sanitizeForDisplay(tag_edit_values_[0]);
+                dt = foldForDisplay(tag_edit_values_[1]) + " - ";
+            dt += foldForDisplay(tag_edit_values_[0]);
             playlist_.setDisplayTitle(i, dt);
             break;
         }
@@ -5111,13 +5126,21 @@ void UIManager::drawTrackInfo() {
 #endif
                         if (!ref.isNull()) {
                             if (auto* tag = ref.tag(); tag) {
-                                info_cached_track_.title   = sanitizeForDisplay(tag->title().to8Bit(true));
-                                info_cached_track_.artist  = sanitizeForDisplay(tag->artist().to8Bit(true));
-                                info_cached_track_.album   = sanitizeForDisplay(tag->album().to8Bit(true));
-                                info_cached_track_.genre   = sanitizeForDisplay(tag->genre().to8Bit(true));
+                                // RAW, matching LocalFileSource: this cache is also
+                                // the tag editor's seed (Ctrl+E), so folding here
+                                // would write folded text back into the file. The
+                                // fold runs at the add() calls below.
+                                info_cached_track_.title   = tag->title().to8Bit(true);
+                                info_cached_track_.artist  = tag->artist().to8Bit(true);
+                                info_cached_track_.album   = tag->album().to8Bit(true);
+                                info_cached_track_.genre   = tag->genre().to8Bit(true);
                                 if (!tag->comment().isEmpty()) {
-                                    std::string c = sanitizeForDisplay(tag->comment().to8Bit(true));
-                                    if (c.size() > 80) c = c.substr(0, 77) + "...";
+                                    std::string c = tag->comment().to8Bit(true);
+                                    if (c.size() > 80) {   // cut on a codepoint boundary
+                                        size_t n = 77;
+                                        while (n > 0 && ((unsigned char)c[n] & 0xC0) == 0x80) --n;
+                                        c = c.substr(0, n) + "...";
+                                    }
                                     info_cached_track_.comment = c;
                                 }
                                 info_cached_track_.year      = (int)tag->year();
@@ -5152,8 +5175,12 @@ void UIManager::drawTrackInfo() {
             static const char* editable_labels[] = {"Title","Artist","Album","Genre","Year"};
             bool is_editable = false;
             for (auto* el : editable_labels) if (std::string(label) == el) { is_editable = true; break; }
+            // THE fold for this pane, in one place. TrackInfo now arrives raw, and
+            // every field routes through here. Edit mode is unaffected: it draws
+            // tag_edit_values_ directly (see the Value block below), so what the
+            // user types and what gets written back stay raw.
             if (!val.empty() || (tag_edit_mode_ && is_editable))
-                fields.push_back({label, val});
+                fields.push_back({label, foldForDisplay(val)});
         };
         auto addInt = [&](const char* label, int val, const std::string& suffix = "") {
             if (val > 0) fields.push_back({label, std::to_string(val) + suffix});
@@ -5192,7 +5219,7 @@ void UIManager::drawTrackInfo() {
         }
 
         // File info
-        add("File", sanitizeForDisplay(fs::path(path).filename().string()));
+        add("File", foldForDisplay(fs::path(path).filename().string()));
         try {
             auto sz = fs::file_size(path);
             std::string szstr;
@@ -5203,7 +5230,7 @@ void UIManager::drawTrackInfo() {
                 szstr = std::to_string(sz / 1024) + " KB";
             add("Size", szstr);
         } catch (...) {}
-        add("Path", sanitizeForDisplay(path));
+        add("Path", foldForDisplay(path));
 
         // Play statistics — not applicable for CD tracks (volatile, not saved)
         //
@@ -5459,7 +5486,7 @@ void UIManager::drawProgress() {
         // scanner sweeping the idle gap between them. It all draws in this single
         // stream-bar pass (one wnoutrefresh by the caller), so the scanner and the
         // title can never fight for the region -> no flicker.
-        std::string title = audio_.streamNowPlaying();
+        std::string title = foldForDisplay(audio_.streamNowPlaying());   // raw off the wire
         std::string right = audio_.streamBuffering() ? "[BUFFERING]" : "[LIVE]";
         right += "  vol:" + std::to_string((int)(audio_.volume()*100.0f+0.5f)) + "%";
         std::string left = title.empty() ? "(live stream)" : title;
@@ -5762,7 +5789,7 @@ static std::string radioLabel(const std::string& url) {
 
 std::string UIManager::stationLabel(const std::string& url) const {
     std::string nm = config_.radioStationName(url);
-    if (!nm.empty()) return "RADIO: " + sanitizeForDisplay(nm);
+    if (!nm.empty()) return "RADIO: " + foldForDisplay(nm);
     return radioLabel(url);
 }
 
@@ -7841,7 +7868,7 @@ void UIManager::handleInput(int ch) {
                 // wrong directory. Enter = tag untagged, F = force re-tag all.
                 rgscan_prompt_ = true;
                 rgscan_dir_    = current_dir_;
-                rip_status_ = "ReplayGain scan '" + sanitizeForDisplay(rgscan_dir_) +
+                rip_status_ = "ReplayGain scan '" + foldForDisplay(rgscan_dir_) +
                               "': [Enter] tag untagged  [F] force re-tag  [Esc] cancel";
                 rip_msg_ticks_ = 0;
                 redraw_needed_.store(true);
@@ -7915,7 +7942,7 @@ void UIManager::handleInput(int ch) {
                         // the run loop (mb_release_ is cached above).
                         mb_titles_pending_.store(true);
                         if (!rel.title.empty())
-                            mb_album_ = sanitizeForDisplay(rel.title) + (rel.date.size() >= 4
+                            mb_album_ = foldForDisplay(rel.title) + (rel.date.size() >= 4
                                        ? " (" + rel.date.substr(0,4) + ")" : "");
                         redraw_needed_.store(true);
                     });
@@ -7963,7 +7990,7 @@ void UIManager::handleInput(int ch) {
                 if (!fs::is_directory(p) && PlaylistManager::isSupportedAudio(p)) {
                     qe.path          = p;
                     // Default to sanitized stem; TagLib will override if tags present
-                    qe.display_title = sanitizeForDisplay(fs::path(p).stem().string());
+                    qe.display_title = foldForDisplay(fs::path(p).stem().string());
                     qe.duration_sec  = 0;
                     try {
 #ifdef _WIN32
@@ -7974,8 +8001,8 @@ void UIManager::handleInput(int ch) {
 #endif
                         if (!ref.isNull()) {
                             if (auto* tag = ref.tag()) {
-                                std::string t = sanitizeForDisplay(tag->title().to8Bit(true));
-                                std::string a = sanitizeForDisplay(tag->artist().to8Bit(true));
+                                std::string t = foldForDisplay(tag->title().to8Bit(true));
+                                std::string a = foldForDisplay(tag->artist().to8Bit(true));
                                 if (!t.empty())
                                     qe.display_title = a.empty() ? t : a + " - " + t;
                             }
@@ -8099,7 +8126,7 @@ void UIManager::handleInput(int ch) {
                     for (const auto& fp : config_.fav_tracks) {
                         dir_entries_.push_back(fp);
                         std::string disp = fs::path(fp).filename().string();
-                        dir_display_.push_back(sanitizeForDisplay(disp.empty() ? fp : disp));
+                        dir_display_.push_back(foldForDisplay(disp.empty() ? fp : disp));
                     }
                     if (dir_cursor_ >= (int)dir_entries_.size())
                         dir_cursor_ = std::max(0, (int)dir_entries_.size() - 1);
@@ -8114,7 +8141,7 @@ void UIManager::handleInput(int ch) {
                     dir_entries_.push_back("[Back]"); dir_display_.push_back("[Back]");
                     for (const auto& st : config_.radio_stations) {
                         dir_entries_.push_back(st);
-                        dir_display_.push_back(sanitizeForDisplay(stationLabel(st)));
+                        dir_display_.push_back(foldForDisplay(stationLabel(st)));
                     }
                     if (dir_cursor_ >= (int)dir_entries_.size())
                         dir_cursor_ = std::max(0, (int)dir_entries_.size() - 1);
@@ -8146,7 +8173,7 @@ void UIManager::handleInput(int ch) {
                     for (const auto& bk : config_.audiobooks) {
                         dir_entries_.push_back(bk);
                         std::string disp = fs::path(bk).filename().string();
-                        dir_display_.push_back(sanitizeForDisplay(disp.empty() ? bk : disp));
+                        dir_display_.push_back(foldForDisplay(disp.empty() ? bk : disp));
                     }
                     if (dir_cursor_ >= (int)dir_entries_.size())
                         dir_cursor_ = std::max(0, (int)dir_entries_.size() - 1);
@@ -8372,10 +8399,10 @@ void UIManager::handleInput(int ch) {
                     // Status row, yellow, ~2s - the same treatment as the CD rip
                     // marking below, and for the same reason: marking is in-place
                     // state you watch while working down a list, not a
-                    // notification. sanitizeForDisplay because this one is a real
+                    // notification. foldForDisplay because this one is a real
                     // filename rather than a synthetic row label.
                     status_msg_ = (now ? "Marked " : "Unmarked ")
-                                + sanitizeForDisplay(fs::path(p).filename().string());
+                                + foldForDisplay(fs::path(p).filename().string());
                     status_msg_ticks_  = 0;
                     status_msg_yellow_ = true;
                     status_short_pin_  = status_msg_;
@@ -8612,7 +8639,7 @@ void UIManager::handleInput(int ch) {
                     dir_entries_.push_back("[Back]"); dir_display_.push_back("[Back]");
                     for (const auto& st : config_.radio_stations) {
                         dir_entries_.push_back(st);
-                        dir_display_.push_back(sanitizeForDisplay(stationLabel(st)));
+                        dir_display_.push_back(foldForDisplay(stationLabel(st)));
                     }
                     if (dir_cursor_ >= (int)dir_entries_.size())
                         dir_cursor_ = std::max(0, (int)dir_entries_.size() - 1);
@@ -8914,7 +8941,7 @@ void UIManager::gotoClose(bool commit) {
                     // prefix); blank -> today's URL-derived label. Name is in-session
                     // only for now — persistence needs the Config schema change.
                     std::string label = name.empty() ? radioLabel(url)
-                                                      : ("RADIO: " + sanitizeForDisplay(name));
+                                                      : ("RADIO: " + foldForDisplay(name));
                     config_.addRadioStation(url, name);   // persist URL + name, show in [Radio]
                     config_.save();                       // flush now so the name survives restart
 
@@ -8948,7 +8975,7 @@ void UIManager::gotoClose(bool commit) {
                         if (!r.codec.empty())       meta += (meta.empty() ? "" : " ") + r.codec;
                         if (!r.country.empty())     meta += (meta.empty() ? "" : ", ") + r.country;
                         std::string info = r.name + (meta.empty() ? "" : "  (" + meta + ")");
-                        dir_display_.push_back(sanitizeForDisplay(info));
+                        dir_display_.push_back(foldForDisplay(info));
                     }
                     dir_cursor_ = 0; dir_scroll_ = 0;
                     if (radio_results_.empty())
@@ -9324,7 +9351,7 @@ void UIManager::activateSelection() {
                 for (const auto& p : config_.recent_tracks) {
                     dir_entries_.push_back(p);
                     std::string disp = fs::path(p).filename().string();
-                    dir_display_.push_back(sanitizeForDisplay(disp.empty() ? p : disp));
+                    dir_display_.push_back(foldForDisplay(disp.empty() ? p : disp));
                 }
                 dir_cursor_ = 0; dir_scroll_ = 0;
                 return;
@@ -9337,7 +9364,7 @@ void UIManager::activateSelection() {
                 for (const auto& fp : config_.fav_tracks) {
                     dir_entries_.push_back(fp);
                     std::string disp = fs::path(fp).filename().string();
-                    dir_display_.push_back(sanitizeForDisplay(disp.empty() ? fp : disp));
+                    dir_display_.push_back(foldForDisplay(disp.empty() ? fp : disp));
                 }
                 dir_cursor_ = 0; dir_scroll_ = 0;
                 return;
@@ -9358,7 +9385,7 @@ void UIManager::activateSelection() {
                 for (const auto& bk : config_.audiobooks) {
                     dir_entries_.push_back(bk);
                     std::string disp = fs::path(bk).filename().string();
-                    dir_display_.push_back(sanitizeForDisplay(disp.empty() ? bk : disp));
+                    dir_display_.push_back(foldForDisplay(disp.empty() ? bk : disp));
                 }
                 dir_cursor_ = 0; dir_scroll_ = 0;
                 return;
@@ -9493,7 +9520,7 @@ void UIManager::activateSelection() {
                 int ri = dir_cursor_ - 1;        // [Back] occupies index 0
                 if (ri < 0 || ri >= (int)pi_results_.size()) return;
                 if (config_.isPodcastFeed(name)) {
-                    status_msg_ = "Already subscribed: " + sanitizeForDisplay(pi_results_[(size_t)ri].title);
+                    status_msg_ = "Already subscribed: " + foldForDisplay(pi_results_[(size_t)ri].title);
                     status_msg_ticks_ = 0; status_msg_yellow_ = true;
                     return;
                 }
@@ -9571,7 +9598,7 @@ void UIManager::activateSelection() {
             for (const auto& rp : config_.recent_tracks) {
                 dir_entries_.push_back(rp);
                 std::string disp = fs::path(rp).filename().string();
-                dir_display_.push_back(sanitizeForDisplay(disp.empty() ? rp : disp));
+                dir_display_.push_back(foldForDisplay(disp.empty() ? rp : disp));
             }
             dir_cursor_ = 0; dir_scroll_ = 0;
             return;
@@ -9585,7 +9612,7 @@ void UIManager::activateSelection() {
             for (const auto& fp : config_.fav_tracks) {
                 dir_entries_.push_back(fp);
                 std::string disp = fs::path(fp).filename().string();
-                dir_display_.push_back(sanitizeForDisplay(disp.empty() ? fp : disp));
+                dir_display_.push_back(foldForDisplay(disp.empty() ? fp : disp));
             }
             dir_cursor_ = 0; dir_scroll_ = 0;
             return;
@@ -9600,7 +9627,7 @@ void UIManager::activateSelection() {
             for (const auto& bk : config_.audiobooks) {
                 dir_entries_.push_back(bk);
                 std::string disp = fs::path(bk).filename().string();
-                dir_display_.push_back(sanitizeForDisplay(disp.empty() ? bk : disp));
+                dir_display_.push_back(foldForDisplay(disp.empty() ? bk : disp));
             }
             dir_cursor_ = 0; dir_scroll_ = 0;
             return;
@@ -10025,7 +10052,7 @@ void UIManager::refreshDir() {
             bool is_m3u = (ext == ".m3u" || ext == ".m3u8" || ext == ".pls" || ext == ".xspf");
             if (de.is_directory() || PlaylistManager::isSupportedAudio(de.path().string()) || is_m3u) {
                 dir_entries_.push_back(nm);
-                dir_display_.push_back(sanitizeForDisplay(nm));
+                dir_display_.push_back(foldForDisplay(nm));
             }
         }
 
@@ -10162,7 +10189,7 @@ UIManager::InfoSubject UIManager::infoPaneSubject() const {
             const PodcastEpisode& ep = podcast_episodes_[(size_t)(dir_cursor_ - 1)];
             s.source        = InfoSource::Podcast;
             s.path          = episodeCacheFile(podcast_feed_url_, ep);   // ASCII-safe
-            s.display_title = sanitizeForDisplay(ep.title);
+            s.display_title = foldForDisplay(ep.title);
             s.duration_sec  = (int)ep.duration_sec;
             return s;
         }
@@ -10171,7 +10198,7 @@ UIManager::InfoSubject UIManager::infoPaneSubject() const {
             const std::string title = config_.podcastFeedTitle(furl);
             s.source        = InfoSource::Podcast;
             s.path          = pathSafeAscii(furl);   // pseudo-path; never a real file
-            s.display_title = sanitizeForDisplay(title.empty() ? furl : title);
+            s.display_title = foldForDisplay(title.empty() ? furl : title);
             return s;                                // a feed row: art and title, no file
         }
     }
@@ -10191,7 +10218,7 @@ UIManager::InfoSubject UIManager::infoPaneSubject() const {
         && !(focus_ == Pane::Playlist && pl_cursor_ < (int)playlist_.size())) {
         s.source        = InfoSource::Podcast;
         s.path          = podcast_playing_path_;
-        s.display_title = audio_.currentTrack().title;
+        s.display_title = foldForDisplay(audio_.currentTrack().title);   // TrackInfo is raw
         s.duration_sec  = audio_.currentTrack().duration_sec;
         return s;
     }
@@ -10269,7 +10296,7 @@ void UIManager::showPodcastFeedList() {
     for (const auto& url : config_.podcast_feeds) {
         dir_entries_.push_back(url);
         std::string title = config_.podcastFeedTitle(url);
-        dir_display_.push_back(sanitizeForDisplay(title.empty() ? url : title));
+        dir_display_.push_back(foldForDisplay(title.empty() ? url : title));
     }
     dir_cursor_ = 0; dir_scroll_ = 0;
 }
@@ -10307,7 +10334,7 @@ void UIManager::showRadioStationList() {
     dir_entries_.push_back("[Back]"); dir_display_.push_back("[Back]");
     for (const auto& st : config_.radio_stations) {
         dir_entries_.push_back(st);
-        dir_display_.push_back(sanitizeForDisplay(stationLabel(st)));
+        dir_display_.push_back(foldForDisplay(stationLabel(st)));
     }
     dir_cursor_ = 0; dir_scroll_ = 0;
 }
@@ -10397,11 +10424,11 @@ void UIManager::addLibraryRoot(const std::string& raw) {
             return;
         }
         if (libidx::detail::isPathUnder(root, e)) {
-            libRootReject("Already covered by " + sanitizeForDisplay(e));
+            libRootReject("Already covered by " + foldForDisplay(e));
             return;
         }
         if (libidx::detail::isPathUnder(e, root)) {
-            libRootReject("That folder contains " + sanitizeForDisplay(e)
+            libRootReject("That folder contains " + foldForDisplay(e)
                           + " - remove that one first");
             return;
         }
@@ -10417,7 +10444,7 @@ void UIManager::addLibraryRoot(const std::string& raw) {
             if (nd.empty()) continue;
             if (libidx::detail::foldPathKey(nd) == libidx::detail::foldPathKey(root)) continue;
             if (libidx::detail::isPathUnder(root, nd)) {   // the default already covers it
-                libRootReject("Already covered by " + sanitizeForDisplay(nd));
+                libRootReject("Already covered by " + foldForDisplay(nd));
                 return;
             }
             config_.library_roots.push_back(nd);
@@ -10460,7 +10487,7 @@ void UIManager::removeLibraryRoot(const std::string& raw) {
     config_.save();
 
     if (in_library_) { libnav::reset(lib_nav_); populateLevel(); }
-    libRootReject("Removed " + sanitizeForDisplay(root) + " - "
+    libRootReject("Removed " + foldForDisplay(root) + " - "
                   + std::to_string(tracks_before - tr.size()) + " tracks left the library");
 }
 
@@ -10511,7 +10538,7 @@ void UIManager::startLibraryScan(const char* reason) {
         lib_scan_running_     = false;
         lib_cancel_requested_ = false;
         lib_status_ = (roots.size() == 1)
-            ? "Cannot read the music folder: " + sanitizeForDisplay(roots.front())
+            ? "Cannot read the music folder: " + foldForDisplay(roots.front())
             : "Cannot read any of the " + std::to_string(roots.size()) + " library folders";
         // ONLY WHEN THE USER IS LOOKING AT THE LIBRARY. See the note below.
         if (in_library_) populateLevel();
@@ -10634,7 +10661,7 @@ void UIManager::showLibraryArtists() {
 
     if (!lib_status_.empty()) {
         dir_entries_.push_back("");                       // not selectable as a path
-        dir_display_.push_back(sanitizeForDisplay(lib_status_));
+        dir_display_.push_back(foldForDisplay(lib_status_));
         dir_cursor_ = 0; dir_scroll_ = 0;
         return;
     }
@@ -10648,14 +10675,14 @@ void UIManager::showLibraryArtists() {
         // Slice 11: the empty state NAMES EVERY ROOT. "under X" was right when there
         // was one; with three configured it would be wrong about where it looked.
         dir_display_.push_back(!lib_nav_.genre.empty()
-            ? ("No artists in " + sanitizeForDisplay(lib_nav_.genre))
-            : ("No audio found under " + sanitizeForDisplay(rootsSummary())));
+            ? ("No artists in " + foldForDisplay(lib_nav_.genre))
+            : ("No audio found under " + foldForDisplay(rootsSummary())));
         dir_cursor_ = 0; dir_scroll_ = 0;
         return;
     }
     for (const auto& a : rows) {
         dir_entries_.push_back(a);
-        dir_display_.push_back(sanitizeForDisplay(a.empty() ? std::string("(no artist)") : a));
+        dir_display_.push_back(foldForDisplay(a.empty() ? std::string("(no artist)") : a));
     }
     const int row = libidx::restoreCursor(lib_nav_.sel_artist, rows);
     dir_cursor_ = (row < 0) ? 0 : row + 1;                // +1 for the [Back] row
@@ -10690,14 +10717,14 @@ void UIManager::showLibraryAlbums() {
         // An honest empty state, not an error.
         dir_entries_.push_back("");
         dir_display_.push_back("No albums for " +
-                               sanitizeForDisplay(lib_nav_.artist.empty()
+                               foldForDisplay(lib_nav_.artist.empty()
                                                   ? std::string("(no artist)") : lib_nav_.artist));
         dir_cursor_ = 0; dir_scroll_ = 0;
         return;
     }
     for (const auto& al : rows) {
         dir_entries_.push_back(al);
-        dir_display_.push_back(sanitizeForDisplay(al.empty() ? std::string("(no album)") : al));
+        dir_display_.push_back(foldForDisplay(al.empty() ? std::string("(no album)") : al));
     }
     const int row = libidx::restoreCursor(lib_nav_.sel_album, rows);
     dir_cursor_ = (row < 0) ? 0 : row + 1;
@@ -10729,7 +10756,7 @@ void UIManager::showLibraryTracks() {
     if (rows.empty()) {
         dir_entries_.push_back("");
         dir_display_.push_back("No tracks on " +
-                               sanitizeForDisplay(lib_nav_.album.empty()
+                               foldForDisplay(lib_nav_.album.empty()
                                                   ? std::string("(no album)") : lib_nav_.album));
         dir_cursor_ = 0; dir_scroll_ = 0;
         return;
@@ -10746,7 +10773,7 @@ void UIManager::showLibraryTracks() {
                               ? formatTime((double)t.duration_sec) : std::string();
         dir_entries_.push_back(t.path);                  // IDENTITY: the real path
         dir_display_.push_back(
-            sanitizeForDisplay(libnav::trackRowLabel(t, dur, compilation)));
+            foldForDisplay(libnav::trackRowLabel(t, dur, compilation)));
         ident.push_back(t.path);
     }
     const int row = libidx::restoreCursor(lib_nav_.sel_track, ident);
@@ -10841,7 +10868,7 @@ std::string UIManager::libraryRowPath() {
     std::error_code ec;
     if (!fs::exists(p, ec) || ec) {
         showTrackToast("Missing file - rescan the library",
-                       sanitizeForDisplay(libnav::pathStem(p)), "");
+                       foldForDisplay(libnav::pathStem(p)), "");
         return {};
     }
     return p;
@@ -10894,7 +10921,7 @@ void UIManager::showLibraryGenres() {
     }
     for (const auto& g : rows) {
         dir_entries_.push_back(g);
-        dir_display_.push_back(sanitizeForDisplay(g));
+        dir_display_.push_back(foldForDisplay(g));
     }
     const int row = libidx::restoreCursor(lib_nav_.sel_genre, rows);
     dir_cursor_ = (row < 0) ? 0 : row + 1;
@@ -10951,7 +10978,7 @@ void UIManager::showLibraryStats() {
         // Most-played leads with the count, because the count is why the row is in
         // the list. Never-played has no count worth showing and is the ordinary
         // search row, so the two views share one builder plus a prefix.
-        dir_display_.push_back(sanitizeForDisplay(
+        dir_display_.push_back(foldForDisplay(
             most ? libnav::statRowLabel(t, cols, libidx::lookupPlayStat(ps, t.path).play_count,
                                         &library_index_)
                  : libnav::searchRowLabel(t, cols, &library_index_)));
@@ -10988,7 +11015,7 @@ void UIManager::showLibrarySearch() {
 
     if (rows.empty()) {
         dir_entries_.push_back("");
-        dir_display_.push_back("No match for \"" + sanitizeForDisplay(lib_nav_.query) + "\"");
+        dir_display_.push_back("No match for \"" + foldForDisplay(lib_nav_.query) + "\"");
         dir_cursor_ = 0; dir_scroll_ = 0;
         return;
     }
@@ -11010,7 +11037,7 @@ void UIManager::showLibrarySearch() {
         dir_entries_.push_back(t.path);                  // IDENTITY: the real path
         // Index-aware since slice 10: a compilation track with no artist tag now shows
         // `Various Artists` here rather than the raw album-artist string.
-        dir_display_.push_back(sanitizeForDisplay(libnav::searchRowLabel(t, cols, &library_index_)));
+        dir_display_.push_back(foldForDisplay(libnav::searchRowLabel(t, cols, &library_index_)));
         ident.push_back(t.path);
     }
     const int row = libidx::restoreCursor(lib_nav_.sel_track, ident);
@@ -11118,7 +11145,7 @@ void UIManager::pollLibraryScan() {
         if (!out.skipped_roots.empty()) {
             std::string s = "Kept tracks from " + std::to_string(out.skipped_roots.size())
                           + (out.skipped_roots.size() == 1 ? " folder that is" : " folders that are")
-                          + " not readable: " + sanitizeForDisplay(out.skipped_roots.front());
+                          + " not readable: " + foldForDisplay(out.skipped_roots.front());
             if (out.skipped_roots.size() > 1) s += ", ...";
             status_msg_        = s;
             status_msg_ticks_  = 0;
@@ -11151,7 +11178,7 @@ void UIManager::pollLibraryScan() {
         // retrying an unreadable folder just fails again.
         lib_scan_cancelled_ = false;
         lib_status_ = "Could not read the music folder: " +
-                      sanitizeForDisplay(rootsSummary());
+                      foldForDisplay(rootsSummary());
     }
     lib_cancel_requested_ = false;
     // populateLevel() rather than showLibraryArtists(): a completed scan relists
@@ -11248,7 +11275,7 @@ void UIManager::showPodcastIndexResults() {
     for (const auto& r : pi_results_) {
         dir_entries_.push_back(r.url);
         std::string info = r.title + (r.author.empty() ? "" : "  (" + r.author + ")");
-        dir_display_.push_back(sanitizeForDisplay(info));
+        dir_display_.push_back(foldForDisplay(info));
     }
     dir_cursor_ = 0; dir_scroll_ = 0;
 }
@@ -11345,7 +11372,7 @@ void UIManager::pollPodcastFetch() {
         for (const auto& ep : podcast_episodes_) {
             // Row id = the playable URL (slice 3 will use it); "" ids fall back to guid.
             dir_entries_.push_back(ep.audio_url.empty() ? ep.guid : ep.audio_url);
-            dir_display_.push_back(sanitizeForDisplay(podcastEpisodeLabel(ep)));
+            dir_display_.push_back(foldForDisplay(podcastEpisodeLabel(ep)));
         }
         dir_cursor_ = 0; dir_scroll_ = 0;
     }
@@ -11719,7 +11746,7 @@ void UIManager::enqueueEpisodeDownload(int episode_index, bool play_when_done, b
     item.play_when_done = play_when_done;
     if (front) podcast_queue_.push_front(item);
     else       podcast_queue_.push_back(item);
-    if (!play_when_done) showTrackToast("Queued for download", sanitizeForDisplay(item.title), "");
+    if (!play_when_done) showTrackToast("Queued for download", foldForDisplay(item.title), "");
     pumpPodcastQueue();
     requestRedraw();
 }
@@ -11751,7 +11778,7 @@ void UIManager::startActiveDownload(const PodcastQueueItem& item) {
     podcast_dl_total_.store(0);
     std::atomic_ref<std::int32_t>(podcast_dl_cancel_).store(0);
     if (podcast_dl_thread_.joinable()) podcast_dl_thread_.join();
-    podcast_dl_status_ = "Downloading " + sanitizeForDisplay(item.title) + "  [0%]";
+    podcast_dl_status_ = "Downloading " + foldForDisplay(item.title) + "  [0%]";
     podcast_dl_ticks_ = 0;
     std::string url = item.url, dest = item.dest;
     std::string art_url = item.art_url, art_disk = item.art_disk;
@@ -11811,7 +11838,7 @@ void UIManager::deleteEpisodeDownload(int episode_index) {
     if (episodeQueued(id)) {                       // pending -> drop it from the queue
         for (auto it = podcast_queue_.begin(); it != podcast_queue_.end(); ++it)
             if (it->id == id) { podcast_queue_.erase(it); break; }
-        showTrackToast("Removed from download queue", sanitizeForDisplay(ep.title), "");
+        showTrackToast("Removed from download queue", foldForDisplay(ep.title), "");
         requestRedraw();
         return;
     }
@@ -11831,7 +11858,7 @@ void UIManager::deleteEpisodeDownload(int episode_index) {
     // refetchable data with nothing of the user's in it.
     fs::remove(chaptersSidecarPath(file), ec);
     fs::remove(chaptersSrcPath(file), ec);
-    showTrackToast("Deleted download", sanitizeForDisplay(ep.title), "");
+    showTrackToast("Deleted download", foldForDisplay(ep.title), "");
     requestRedraw();
 }
 
@@ -11842,7 +11869,7 @@ void UIManager::pollPodcastDownload() {
     if (podcast_dl_active_.load() && !podcast_dl_done_.load()) {
         std::uint64_t recv = podcast_dl_received_.load(), tot = podcast_dl_total_.load();
         int pct = tot > 0 ? (int)(100.0 * (double)recv / (double)tot) : 0;
-        std::string line = "Downloading " + sanitizeForDisplay(podcast_dl_item_.title) +
+        std::string line = "Downloading " + foldForDisplay(podcast_dl_item_.title) +
                            "  [" + std::to_string(pct) + "%]";
         if (line != podcast_dl_status_) { podcast_dl_status_ = line; requestRedraw(); }
         return;
@@ -11855,7 +11882,7 @@ void UIManager::pollPodcastDownload() {
         bool cancelled = std::atomic_ref<std::int32_t>(podcast_dl_cancel_).load() != 0;
 
         if (ok) {
-            podcast_dl_status_ = "Downloaded " + sanitizeForDisplay(item.title) + "  [100%]";
+            podcast_dl_status_ = "Downloaded " + foldForDisplay(item.title) + "  [100%]";
             podcast_dl_ticks_ = 0;
             if (item.play_when_done)
                 playEpisodeFile(item.dest, item.id, item.art_url, item.art_is_feed, item.art_disk,
@@ -11869,10 +11896,10 @@ void UIManager::pollPodcastDownload() {
             // then skip so one dead URL never stalls the queue.
             if (++item.attempts < 3) {
                 podcast_queue_.push_front(item);                 // restart from scratch
-                podcast_dl_status_ = "Retrying " + sanitizeForDisplay(item.title) +
+                podcast_dl_status_ = "Retrying " + foldForDisplay(item.title) +
                                      "  (" + std::to_string(item.attempts) + "/3)";
             } else {
-                podcast_dl_status_ = "Download failed: " + sanitizeForDisplay(item.title);
+                podcast_dl_status_ = "Download failed: " + foldForDisplay(item.title);
             }
             podcast_dl_ticks_ = 0;
         }
@@ -12087,11 +12114,11 @@ void UIManager::drawPodcastPlayConflict() {
     panelFrame(w, title, true);
     if (!config_.awesome_mode) mvwaddstr(w, 0, (BOX_W - (int)strlen(title)) / 2, title);
 
-    std::string active = "Downloading: " + sanitizeForDisplay(podcast_dl_item_.title);
+    std::string active = "Downloading: " + foldForDisplay(podcast_dl_item_.title);
     std::string want;
     if (podcast_conflict_index_ >= 0 && podcast_conflict_index_ < (int)podcast_episodes_.size())
         want = "You pressed play on: " +
-               sanitizeForDisplay(podcast_episodes_[(size_t)podcast_conflict_index_].title);
+               foldForDisplay(podcast_episodes_[(size_t)podcast_conflict_index_].title);
     mvwaddnstr(w, 2, 3, active.c_str(), BOX_W - 5);
     mvwaddnstr(w, 3, 3, want.c_str(),   BOX_W - 5);
     mvwaddstr(w, 5, 3, "[W] Wait - queue this to play next");
@@ -12120,7 +12147,7 @@ void UIManager::drawLibraryRootConfirm() {
     panelFrame(w, title, true);
     if (!config_.awesome_mode) mvwaddstr(w, 0, (BOX_W - (int)strlen(title)) / 2, title);
 
-    mvwaddnstr(w, 2, 3, sanitizeForDisplay(lib_root_candidate_).c_str(), BOX_W - 5);
+    mvwaddnstr(w, 2, 3, foldForDisplay(lib_root_candidate_).c_str(), BOX_W - 5);
     if (lib_root_removing_) {
         mvwaddstr(w, 4, 3, "Its tracks leave the library immediately. The files are");
         mvwaddstr(w, 5, 3, "not touched, and no rescan is needed.");
@@ -12190,7 +12217,7 @@ void UIManager::drawConvertScope() {
     };
     row(4, !convert_single_.empty(), convert_single_.empty()
         ? "[1] This file: (no audio file focused)"
-        : "[1] This file: " + sanitizeForDisplay(std::filesystem::path(convert_single_).filename().string()));
+        : "[1] This file: " + foldForDisplay(std::filesystem::path(convert_single_).filename().string()));
     row(5, !convert_src_dir_.empty(), convert_src_dir_.empty()
         ? "[2] This folder: (n/a here)"
         : "[2] This folder: " + std::to_string(folder_n) + " file(s)");
@@ -12213,7 +12240,7 @@ void UIManager::drawConvertScope() {
     row(8, !convert_pl_file_.empty(), convert_pl_file_.empty()
         ? "[5] Playlist file: (focus a .m3u/.pls/.xspf)"
         : "[5] Playlist file: " +
-          sanitizeForDisplay(std::filesystem::path(convert_pl_file_).filename().string()));
+          foldForDisplay(std::filesystem::path(convert_pl_file_).filename().string()));
     mvwaddstr(w, 10, 3, "[1-5] pick   [Esc] cancel");
     wrefresh(w); delwin(w);
 }
@@ -12238,7 +12265,7 @@ void UIManager::drawPlaylistFormat() {
     static const char* kPlNames[] = { "M3U8 (extended M3U)", "PLS", "XSPF" };
     static const char* kPlExts[]  = { ".m3u8", ".pls", ".xspf" };
     mvwaddnstr(w, 2, 3, ("Reformat: " +
-        sanitizeForDisplay(fs::path(plexp_src_).filename().string())).c_str(), BOX_W - 5);
+        foldForDisplay(fs::path(plexp_src_).filename().string())).c_str(), BOX_W - 5);
     for (int i = 0; i < 3; ++i) {
         if (i == plexp_focus_) wattron(w, A_REVERSE);
         mvwaddnstr(w, 4 + i, 3,
@@ -12251,7 +12278,7 @@ void UIManager::drawPlaylistFormat() {
     fs::path dst = dir / (stem + kPlExts[plexp_focus_]);
     for (int suf = 1; fs::exists(dst) && suf < 100; ++suf)
         dst = dir / (stem + "-" + std::to_string(suf) + kPlExts[plexp_focus_]);
-    mvwaddnstr(w, 8, 3, ("To: " + sanitizeForDisplay(dst.string())).c_str(), BOX_W - 5);
+    mvwaddnstr(w, 8, 3, ("To: " + foldForDisplay(dst.string())).c_str(), BOX_W - 5);
     mvwaddnstr(w, 9, 3, "[S] Save as... (pane -> name + path)", BOX_W - 5);
     mvwaddstr(w, BOX_H - 2, 3, "[1-3/Up/Down] format   [Enter] write   [Esc] cancel");
     wrefresh(w); delwin(w);
@@ -12285,7 +12312,7 @@ void UIManager::drawConvertConfirm() {
         scope = std::to_string(keep) + (keep == 1 ? " pane entry" : " pane entries");
     }
     else if (convert_scope_ == 5) scope = "file: " + fs::path(convert_pl_file_).filename().string();
-    mvwaddnstr(w, 2, 3, sanitizeForDisplay(scope).c_str(), BOX_W - 5);
+    mvwaddnstr(w, 2, 3, foldForDisplay(scope).c_str(), BOX_W - 5);
 
     mvwaddstr(w, 4, 3, "Output format");
     mvwaddstr(w, 4, BOX_W - 15, "(1-6 select)");
@@ -12452,8 +12479,8 @@ void UIManager::drawMBSearch() {
             // Sanitize to ASCII first: avoids raw-multibyte mojibake under the
             // non-UTF-8 ncurses locale, and makes the byte-based substr() below
             // safe (it can no longer slice through a multibyte sequence).
-            std::string art_full = sanitizeForDisplay(r.artist);
-            std::string ttl_full = sanitizeForDisplay(r.title);
+            std::string art_full = foldForDisplay(r.artist);
+            std::string ttl_full = foldForDisplay(r.title);
             std::string art_s = art_full.size() > 20 ? art_full.substr(0, 19) + ">" : art_full;
             std::string ttl_s = ttl_full.size() > 22 ? ttl_full.substr(0, 21) + ">" : ttl_full;
 
@@ -12576,8 +12603,8 @@ void UIManager::handleMBSearchInput(int ch) {
                         mb_release_ = rel;
                         mb_titles_pending_.store(true);   // apply titles on UI thread
                         if (!rel.title.empty())
-                            mb_album_ = (rel.artist.empty() ? "" : sanitizeForDisplay(rel.artist) + " - ")
-                                      + sanitizeForDisplay(rel.title)
+                            mb_album_ = (rel.artist.empty() ? "" : foldForDisplay(rel.artist) + " - ")
+                                      + foldForDisplay(rel.title)
                                       + (rel.date.size() >= 4
                                           ? " (" + rel.date.substr(0, 4) + ")" : "");
                         mb_status_       = "Discogs: Metadata loaded - " + mb_album_;
@@ -12614,7 +12641,7 @@ void UIManager::handleMBSearchInput(int ch) {
                     mb_release_ = rel;
                     mb_titles_pending_.store(true);   // apply titles on UI thread
                     if (!rel.title.empty())
-                        mb_album_ = sanitizeForDisplay(rel.title) + (rel.date.size() >= 4
+                        mb_album_ = foldForDisplay(rel.title) + (rel.date.size() >= 4
                                    ? " (" + rel.date.substr(0, 4) + ")" : "");
                     mb_status_       = "MB: Metadata loaded - " + mb_album_;
                     mb_status_ticks_ = 0;

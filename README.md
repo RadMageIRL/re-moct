@@ -283,6 +283,11 @@ font does nothing.
 
   Use the **Mono** / **NFM** width variant so glyphs stay single-cell. An empty
   `wingui_font=` keeps the bundled JetBrains Mono default.
+- **For Chinese, Japanese or Korean text, set this.** RE-MOCT passes those
+  characters through to the screen as of 1.6.1, but it can only draw what the
+  chosen font contains, and JetBrains Mono covers Latin, Greek and Cyrillic only.
+  A CJK library needs a font that covers CJK - and note that such fonts draw those
+  characters two cells wide, which RE-MOCT already accounts for.
 - **Get the exact face name** (the GDI family name, not the filename) from Settings >
   Fonts, or PowerShell:
 

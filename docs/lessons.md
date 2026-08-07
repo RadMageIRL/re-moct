@@ -10,8 +10,19 @@
   byte-based slicing with a self-contained column-counter in StringUtils
   (`utf8_next`, `cpWidth`, `dispWidth`, `truncateToWidth`, `truncateToWidthRight`,
   `padToWidth`, `scrollToWidth`). Platform-independent, probe-validated.
-- Astral/emoji (surrogate pairs, Windows 16-bit wchar_t) may not render; folded to
-  '?' - acceptable, no regression.
+- Astral/emoji (surrogate pairs, Windows 16-bit wchar_t) may not render. They are
+  NO LONGER folded to '?' - `foldForDisplay` passes every codepoint it does not
+  explicitly normalize, so an emoji now reaches the draw path: correct on Linux
+  (32-bit wchar_t, one codepoint per cell), still two lone surrogates on Windows.
+  Accepted limit, documented, not worked around. **This note is about the ASTRAL
+  plane only** - it was read for a while as blessing the old '?' catch-all for all
+  non-ASCII, which is how 水田直志 drew as "????" in every row for four months.
+- **The display fold normalizes typography and passes language through**
+  (`foldForDisplay`, StringUtils.h). Byte length is never a criterion - that was
+  the bug. Raw text is what identity and outbound paths carry (library index,
+  `TrackInfo`, `now_playing_`, the CD `MBRelease`); the fold happens at the draw
+  site and nowhere upstream of it. Fold on the way IN and you scrobble what you
+  drew, which is how Last.fm got "???? - ????".
 - Color pairs 1–13 are themed (init loop); `CP_VIZ_TIP` (14) = peak fg on default bg,
   init_pair'd after the loop. Viz pairs are fg==bg solid space-fills, so a partial
   block needs a real bg - that's why the sub-cell tip uses `CP_VIZ_TIP`. Theme reload

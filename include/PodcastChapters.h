@@ -26,7 +26,7 @@
 // honest "no chapters" rather than an error.
 
 #include "Mp4Chapters.h"   // Mp4Chapter — the one chapter model
-#include "StringUtils.h"   // sanitizeForDisplay
+#include "StringUtils.h"   // foldForDisplay
 
 #include "json.hpp"        // nlohmann single-header (vendored; already in product TUs)
 
@@ -68,19 +68,24 @@ inline std::string collapseWs(const std::string& s) {
 }
 
 // Chapter titles are arbitrary publisher text on their way to curses. Two things
-// have to go: ASCII control bytes, which sanitizeForDisplay passes through
-// VERBATIM (it folds Unicode punctuation and rejects bad UTF-8, but its ASCII
-// fast path copies any byte under 0x80, escape and newline included), and the
-// Unicode punctuation sanitizeForDisplay exists to fold. Control bytes become
+// have to go: ASCII control bytes, which foldForDisplay passes through
+// VERBATIM (it normalizes Unicode punctuation and rejects bad UTF-8, but its
+// ASCII fast path copies any byte under 0x80, escape and newline included), and
+// the Unicode punctuation foldForDisplay exists to fold. Control bytes become
 // spaces first so words either side of one do not fuse, then the display fold
 // runs, then whitespace collapses and the result is trimmed.
+//
+// kMaxTitleBytes is a BYTE cap and the fold no longer flattens language to one
+// byte per character, so a CJK title now fits roughly a third as many characters
+// as an ASCII one. That is a shorter title, never a broken one: the truncation
+// below already backs off to a codepoint boundary.
 inline std::string cleanChapterTitle(const std::string& raw) {
     std::string stripped;
     stripped.reserve(raw.size());
     for (unsigned char c : raw)
         stripped += (c < 0x20 || c == 0x7F) ? ' ' : (char)c;
 
-    std::string t = collapseWs(sanitizeForDisplay(stripped));
+    std::string t = collapseWs(foldForDisplay(stripped));
     if (t.size() > kMaxTitleBytes) {
         std::size_t n = kMaxTitleBytes;
         while (n > 0 && ((unsigned char)t[n] & 0xC0) == 0x80) --n;   // don't split a sequence

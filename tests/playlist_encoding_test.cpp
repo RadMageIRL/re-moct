@@ -75,21 +75,84 @@ static void test_display_title_for() {
     CHECK(PM::displayTitleFor("/m/two.dots.ogg", "", "") == "two.dots",
           "only the last dot is the extension");
     // The library passes RAW index text (the index deliberately stores tags
-    // unsanitised, because folding on the way in would be lossy), so the folding has to
-    // happen here - and it does: a smart quote comes back as ASCII whichever caller
-    // supplied it.
+    // unfolded, because folding on the way in would be lossy), so the TYPOGRAPHIC
+    // normalization has to happen here - and it does: a smart quote comes back as
+    // ASCII whichever caller supplied it.
     CHECK(PM::displayTitleFor("/m/x.flac", "", "Don\xE2\x80\x99t") == "Don't",
-          "non-ASCII is folded here, so both callers get the same string");
+          "typography is folded here, so both callers get the same string");
 
-    // AND the honest limit, pinned rather than left to be discovered: sanitizeForDisplay
-    // folds NON-ASCII and passes every byte below 0x80 through verbatim, so an ASCII
-    // control byte in a tag survives. That is pre-existing behaviour of the tag path -
+    // AND the honest limit, pinned rather than left to be discovered: foldForDisplay
+    // passes every byte below 0x80 through verbatim, so an ASCII control byte in a
+    // tag survives. The control byte survives because it is ASCII - NOT because
+    // non-ASCII is folded away, which is what this used to say and is no longer
+    // true of anything. That is pre-existing behaviour of the tag path -
     // populateMetadata has always done exactly this - and the point here is that the
     // library path is IDENTICAL to it rather than better or worse. Stripping controls
     // would be a change to every row in the program, not a library slice.
     const std::string ctl = std::string("Ti") + '\t' + "tle";
     CHECK(PM::displayTitleFor("/m/x.flac", "", ctl) == ctl,
           "an ASCII control byte passes through - same as the tag path, by design");
+
+    // THE REGRESSION GUARD. A row label keeps its language. This is the whole
+    // reason the fold was rewritten: every 3- and 4-byte sequence used to become
+    // one '?' each, so this album's artist drew as "????" in browser and playlist
+    // rows while the directory header above them - which never folded - showed it
+    // correctly.
+    CHECK(PM::displayTitleFor("/m/x.flac", "\xE6\xB0\xB4\xE7\x94\xB0\xE7\x9B\xB4\xE5\xBF\x97",
+                              "\xE6\x9D\xB1\xE4\xBA\xAC")
+              == "\xE6\xB0\xB4\xE7\x94\xB0\xE7\x9B\xB4\xE5\xBF\x97 - \xE6\x9D\xB1\xE4\xBA\xAC",
+          "CJK survives a row label intact");
+}
+
+// foldForDisplay itself: the table from the design note, made executable. Each
+// surviving group gets one case, so the contract is checkable rather than prose.
+// THE RULE: reject malformed UTF-8 as '?', normalize the table below, pass
+// everything else through verbatim. Byte length is never a criterion.
+static void test_fold_for_display() {
+    // ── 3. PASS: language, whatever its byte length ─────────────────────────
+    CHECK(foldForDisplay("\xE6\xB0\xB4\xE7\x94\xB0\xE7\x9B\xB4\xE5\xBF\x97")
+              == "\xE6\xB0\xB4\xE7\x94\xB0\xE7\x9B\xB4\xE5\xBF\x97", "CJK passes (3-byte)");
+    CHECK(foldForDisplay("\xE3\x82\xAA\xE3\x83\xAA") == "\xE3\x82\xAA\xE3\x83\xAA",
+          "katakana passes (3-byte)");
+    CHECK(foldForDisplay("\xD0\x9C\xD0\xBE") == "\xD0\x9C\xD0\xBE", "Cyrillic passes (2-byte)");
+    CHECK(foldForDisplay("\xF0\x9F\x8E\xB5") == "\xF0\x9F\x8E\xB5", "emoji passes (4-byte)");
+    // Group J is GONE: a letter keeps its diacritic, and it no longer matters
+    // which letter. "Muller" and "Angstrom" used to disagree in the same pane.
+    CHECK(foldForDisplay("caf\xC3\xA9")   == "caf\xC3\xA9",   "e-acute keeps its accent");
+    CHECK(foldForDisplay("M\xC3\xBCller") == "M\xC3\xBCller", "u-umlaut keeps its accent");
+
+    // ── 2. NORMALIZE: typography, one case per surviving group ──────────────
+    CHECK(foldForDisplay("Don\xE2\x80\x99t")        == "Don't", "A: quotes/primes");
+    CHECK(foldForDisplay("\xE2\x80\x9Cq\xE2\x80\x9D") == "\"q\"", "B: double quotes");
+    CHECK(foldForDisplay("a\xE2\x80\x94" "b")       == "a-b",   "C: dash variants");
+    CHECK(foldForDisplay("so\xC2\xAD" "ft")         == "so-ft", "C: soft hyphen");
+    CHECK(foldForDisplay("w\xE2\x80\xA6")           == "w.",    "D: ellipsis");
+    CHECK(foldForDisplay("\xE2\x80\xA2")            == "*",     "D: bullet");
+    CHECK(foldForDisplay("a\xC2\xA0" "b")           == "a b",   "E: nbsp");
+    CHECK(foldForDisplay("a\xE3\x80\x80" "b")       == "a b",   "E: ideographic space");
+    CHECK(foldForDisplay("a\xE2\x80\x8B" "b")       == "ab",    "F: zero-width dropped");
+    CHECK(foldForDisplay("\xEF\xBB\xBF" "x")        == "x",     "F: BOM dropped");
+    CHECK(foldForDisplay("\xC5\x93")                == "oe",    "G: oe ligature");
+    CHECK(foldForDisplay("\xC3\x86")                == "AE",    "G: AE ligature");
+    CHECK(foldForDisplay(std::string("Ti") + '\t' + "tle") == std::string("Ti") + '\t' + "tle",
+          "H: ASCII control passes verbatim");
+
+    // ── 1. REJECT: malformed UTF-8 is '?', one per bad byte ─────────────────
+    // These used to fall out of the length rule by accident. Now that length
+    // decides nothing they are rejected on purpose - without this, invalid bytes
+    // would reach the terminal AND the scrobblers.
+    CHECK(foldForDisplay("caf\xE9")           == "caf?", "I: invalid lead byte");
+    CHECK(foldForDisplay("x\x80" "y")         == "x?y",  "I: lone continuation");
+    CHECK(foldForDisplay("x\xC3")             == "x?",   "I: truncated tail");
+    CHECK(foldForDisplay("x\xE2\x28\xA1")     == "x?(?", "I: bad continuation, resyncs");
+    CHECK(foldForDisplay("\xC0\xAF")          == "??",   "I: overlong form");
+    CHECK(foldForDisplay("\xED\xA0\x80")      == "???",  "I: surrogate half");
+    CHECK(foldForDisplay("\xF5\x80\x80\x80")  == "????", "I: out of range");
+
+    // Idempotent: folding folded text changes nothing. The info pane folds at the
+    // add() site over values that may already have been folded upstream.
+    const std::string once = foldForDisplay("Don\xE2\x80\x99t \xE6\x9D\xB1\xE4\xBA\xAC");
+    CHECK(foldForDisplay(once) == once, "fold is idempotent");
 }
 
 static void test_helpers() {
@@ -208,6 +271,7 @@ int main() {
     if (ec) { std::printf("cannot create temp dir\n"); return 1; }
 
     test_helpers();
+    test_fold_for_display();
     test_display_title_for();
     test_latin1_m3u();
     test_latin1_pls();

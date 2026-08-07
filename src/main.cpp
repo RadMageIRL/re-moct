@@ -235,7 +235,7 @@ int main(int argc, char* argv[]) {
             if (e.path.rfind("http://", 0) == 0 || e.path.rfind("https://", 0) == 0) {
                 std::string nm = config.radioStationName(e.path);
                 if (!nm.empty())
-                    playlist.setDisplayTitle(i, "RADIO: " + sanitizeForDisplay(nm));
+                    playlist.setDisplayTitle(i, "RADIO: " + foldForDisplay(nm));
             }
         }
         if (!config.playlist_paths.empty())

@@ -72,14 +72,14 @@ bool PlaylistManager::isAudiobook(const std::string& path) {
 // library and the same file added from the folder browser are formatted by the same
 // code rather than by two copies of it that have to agree.
 //
-// sanitizeForDisplay is applied HERE, which is why the library can pass raw index text:
+// foldForDisplay is applied HERE, which is why the library can pass raw index text:
 // the index deliberately stores tag text unsanitised, because folding on the way in
 // would be lossy.
 std::string PlaylistManager::displayTitleFor(const std::string& path,
                                             const std::string& artist,
                                             const std::string& title) {
-    const std::string t = sanitizeForDisplay(title);
-    const std::string a = sanitizeForDisplay(artist);
+    const std::string t = foldForDisplay(title);
+    const std::string a = foldForDisplay(artist);
     if (!a.empty() && !t.empty()) return a + " - " + t;
     if (!t.empty())               return t;
     return path_stem(path);

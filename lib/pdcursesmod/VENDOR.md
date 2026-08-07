@@ -88,8 +88,9 @@ In `pdcurses/refresh.c` (`PDC_transform_line_sliced`):
   replacing CJK with `?`: before that `PDC_wcwidth` never returned 2, no dummy cell
   ever existed, and the case was unreachable by construction. Reproduced as a hard
   abort on a border-drag with wide glyphs on screen.
-  **Report upstream and drop this patch once it lands there** - see the pin notes
-  below; a patch upstream also carries is not ours to maintain.
+  **Filed upstream as Bill-Gray/PDCursesMod issue #386. DROP THIS PATCH once it
+  lands there** - check the issue before re-pinning; a patch upstream also carries
+  is not ours to maintain. Report as filed: `docs/upstream-pdcursesmod-chunk-boundary.md`.
 
 Re-apply these after re-pinning; grep the tree for `RE-MOCT patch` to find them.
 

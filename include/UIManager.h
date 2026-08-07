@@ -83,6 +83,9 @@ public:
     // move/size loop, so the marquee/spectrum keep animating during a title-bar
     // move (WM_MOVE never fires the resize callback). Renders one tickFrame().
     void onWinguiPaintTick();
+    // Raised from the WM_MOVING subclass (remoctWndProc). Flag only - a held drag
+    // starves WM_TIMER completely, so the timer alone cannot repaint a move.
+    void onWinguiLiveMove();
     const std::string& currentDir() const { return current_dir_; }
 #ifdef PDCURSES
     // wingui only (Alt+Enter): toggle a borderless window that fills the monitor,
@@ -271,11 +274,18 @@ private:
     // loop/paint-tick side. Never draw from inside the WM_SIZE handler - see
     // onWinguiLiveResize for why that aborted the process.
     std::atomic<bool> live_resize_pending_ { false };
+    // wingui move-drag: WM_MOVING (app-side subclass) only RAISES this. The paint
+    // happens on the loop/paint-tick side, and never touches geometry.
+    std::atomic<bool> live_move_pending_ { false };
     int  help_scroll_   = 0;   // scroll position in help pane
     void resizeWindows();
     // Applies a live-resize raised by the WM_SIZE handler. Called from the run loop
     // and the modal paint tick - never from inside the WM_SIZE handler itself.
     void servicePendingResize();
+    // Move twin: repaints the animated subset for a raised WM_MOVING. Throttled,
+    // and structurally incapable of calling resizeWindows() - a move has no
+    // geometry change. Same two callers, same never-from-the-handler rule.
+    void servicePendingMove();
 
     // Time display mode
     bool show_remaining_ = false;

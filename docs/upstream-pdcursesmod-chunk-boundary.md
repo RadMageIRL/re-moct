@@ -1,7 +1,7 @@
 # Upstream report: PDCursesMod — fullwidth glyph split across a MAX_PACKET_LEN chunk boundary aborts
 
-Prepared for <https://github.com/Bill-Gray/PDCursesMod>. Not yet filed — awaiting Dos's go, since
-it posts publicly under his GitHub identity.
+**FILED: Bill-Gray/PDCursesMod issue #386.** Nothing further needed unless upstream responds; when
+the fix lands there, drop the local patch (`VENDOR.md`, entry 4).
 
 ---
 

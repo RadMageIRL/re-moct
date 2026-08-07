@@ -248,3 +248,63 @@ boundary** - which is why several hundred automated ASCII-only resizes never rep
 5. **Do not claim a repro without checking state.** Several "survived 400 resizes" results were
    void: playback had never started, which a screenshot showed immediately and an assumption did
    not.
+
+---
+
+## 11. THE MOVE FREEZE — and the app-side window subclass (added after §10)
+
+**Dragging the window to a new position froze the display for the whole drag.** Separate defect from
+the crash, found the same night, fixed and confirmed on hardware.
+
+**THERE IS NOW AN APP-SIDE SUBCLASS ON THE WINGUI WINDOW.** `remoctWndProc` in `UIManager.cpp`
+(anonymous namespace) is installed over `PDC_hWnd` with `SetWindowLongPtrW(GWLP_WNDPROC)` next to the
+two `PDC_set_*_callback` registrations. **It observes `WM_MOVING` and always forwards to the previous
+proc - it never intercepts.** Anyone debugging window behaviour needs to know it is there.
+
+**Why a subclass and not a third vendored callback** (Dos's ruling): every vendored line is carried
+through every future merge, and this one comes straight out if upstream grows a real hook. The
+`pdcscrn.c` callback would have been marginally cleaner engineering and permanently ours.
+
+### The mechanism
+
+`WM_TIMER` is synthesised only when the message queue drains. A held drag never lets it drain.
+Measured inside ONE modal loop: a 344 ms burst of motion produced **zero** `WM_TIMER` against **44**
+in the idle window immediately before it, and **235 `WM_MOVING`** in that same starved interval. So
+the modal paint timer cannot carry a move; `WM_MOVING` is the move's equivalent of the `WM_SIZE` that
+already drives a resize.
+
+Both are needed and neither alone is enough: `WM_MOVING` covers motion, the timer covers a held-but-
+stationary drag (44 ticks, zero `WM_MOVING`, measured).
+
+### What `servicePendingMove()` does differently from its resize twin
+
+- **`resizeWindows()` is unreachable from it, structurally.** A move has no geometry change, and a
+  synthetic drag in recon produced 73 stray `WM_SIZE` during a MOVE - whatever causes that must
+  never be able to turn a move into a relayout.
+- **Throttled to 33 ms.** `WM_MOVING` is not a frame clock: **~680/s** measured. Painting on every
+  one would have cost several times the freeze it fixes. This was not in the approved proposal and
+  would have shipped a regression without it.
+- **Animated subset, not `drawAll()`.** Browser + playlist are ~56% of a frame under playback and
+  cannot change mid-drag. **Accepted, documented trade:** their ROW marquees freeze for the drag and
+  a mid-drag track change does not repaint the now-playing highlight. Both resolve on release.
+
+### NOT FIXED, and not ours — do not re-investigate
+
+**Press the title bar and hold still: ~500 ms freeze before anything happens.** Confirmed cause:
+
+```
+00A1 WM_NCLBUTTONDOWN (HTCAPTION)
+0112 WM_SYSCOMMAND wp=F012 (SC_MOVE|HTCAPTION)
+   <- 500 ms, ZERO messages dispatched - the blink timer stops dead
+0215 WM_CAPTURECHANGED / 0231 WM_ENTERSIZEMOVE   <- only now
+```
+
+Seven freezes, every one after `WM_SYSCOMMAND wp=F012`; gaps of 500/500/500/500/516/516/328 ms
+against **`GetDoubleClickTime()` = 500** on this machine. `DefWindowProc` holds the caption press for
+the double-click interval, dispatching **nothing** - so no app-side timer or message hook can paint
+there either. **Option 2 (own the move loop: Aero Snap, multi-monitor edges, Escape-to-cancel,
+keyboard move, snapping) was proposed and refused as a bad trade.** Accepted as Windows behaviour and
+recorded in the CHANGELOG so it is documented rather than rediscovered.
+
+Measured worst single freeze is **516 ms**, not the 1-2 s originally perceived - worth knowing before
+anyone spends effort on it.

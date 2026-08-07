@@ -61,6 +61,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   RE-MOCT also no longer redraws the screen from inside the notification Windows
   sends while a window is being resized, which was wrong on its own terms and is
   what made the fault so easy to hit.
+- **Windows: the screen no longer freezes while you drag the window to a new
+  place.** Holding the mouse button and moving the window stopped the display
+  dead - for a second or more at a time, worse while music was playing - and it
+  caught up only when you paused or let go. RE-MOCT was waiting on a timer that
+  Windows only delivers when nothing else is happening, and a held drag means
+  something is always happening, so the timer simply never arrived. It now
+  repaints from the message Windows sends as the window actually moves, which is
+  the same way it has always kept up with a resize, and keeps the timer for the
+  case that message does not cover: holding the button still.
+  While the window is being dragged, only the parts that can actually change are
+  redrawn - the top line, the progress bar and the spectrum. Long names in the
+  file and playlist panes stop scrolling until you let go, and if a track changes
+  mid-drag the highlight moves when the drag ends.
+  One thing this does not fix: pressing the title bar and holding still without
+  moving pauses the display for about half a second before anything happens.
+  Windows spends that time deciding whether the click was going to be a
+  double-click, and it delivers nothing to the program at all while it does -
+  every application behaves this way, it is just easier to notice in one with a
+  spectrum running. It ends the moment you move.
 
 ### Changed
 

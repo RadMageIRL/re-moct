@@ -122,6 +122,29 @@ UIManager* g_wingui_ui = nullptr;
 void winguiResizeTrampoline() { if (g_wingui_ui) g_wingui_ui->onWinguiLiveResize(); }
 void winguiPaintTickTrampoline() { if (g_wingui_ui) g_wingui_ui->onWinguiPaintTick(); }
 
+// ── Move-drag repaint: WM_MOVING, via an app-side subclass ───────────────────
+// The modal paint timer (PDC_set_paint_tick_callback, 33 ms) cannot carry a MOVE
+// on its own. WM_TIMER is synthesised only when the message queue drains, and a
+// held drag never lets it drain: measured inside ONE modal loop, a 344 ms burst
+// of motion produced ZERO WM_TIMER against 44 in the idle window immediately
+// before it, and 235 WM_MOVING in that same starved interval. So the screen
+// froze for the whole time the button was held and moving, then caught up the
+// instant motion paused. WM_MOVING is the move's equivalent of the WM_SIZE that
+// already drives a resize: it arrives per motion step, exactly when the timer
+// cannot.
+//
+// A SUBCLASS rather than a third PDC_set_*_callback in pdcscrn.c, on Dos's call:
+// every vendored line is carried through every future merge, and this one comes
+// straight back out if upstream ever grows a real hook. Nothing vendored changes.
+// The previous proc is always called - this observes, it does not intercept.
+WNDPROC g_prev_wndproc = nullptr;
+LRESULT CALLBACK remoctWndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
+    // RAISE A FLAG ONLY. Drawing from inside a window handler is what aborted the
+    // process on the resize path - see onWinguiLiveResize for the full account.
+    if (msg == WM_MOVING && g_wingui_ui) g_wingui_ui->onWinguiLiveMove();
+    return CallWindowProc(g_prev_wndproc, h, msg, wp, lp);
+}
+
 // Make the wingui GDI window's title bar / border follow the OS light/dark theme
 // (Windows 10 20H1+). Reads HKCU AppsUseLightTheme (0 = dark) and applies
 // DWMWA_USE_IMMERSIVE_DARK_MODE - attribute 20 on current builds, 19 on older
@@ -304,6 +327,12 @@ UIManager::UIManager(PlaylistManager& playlist, AudioManager& audio,
     // Repaint live during a title-bar MOVE too (WM_MOVE fires no resize callback);
     // a modal-loop timer drives this (see onWinguiPaintTick).
     PDC_set_paint_tick_callback(&winguiPaintTickTrampoline);
+    // WM_MOVING has no callback in the vendored port, so observe it by subclassing
+    // the window (see remoctWndProc). Installed once; the window outlives it and is
+    // destroyed at endwin, so there is nothing to unhook.
+    if (PDC_hWnd && !g_prev_wndproc)
+        g_prev_wndproc = (WNDPROC)SetWindowLongPtrW(PDC_hWnd, GWLP_WNDPROC,
+                                                    (LONG_PTR)&remoctWndProc);
 #endif
     setlocale(LC_ALL, "");
     cbreak();
@@ -476,6 +505,49 @@ void UIManager::onWinguiLiveResize() {
 void UIManager::servicePendingResize() {
     if (live_resize_pending_.exchange(false))
         resizeWindows();
+}
+
+// Raised from the WM_MOVING subclass. Flag only - see remoctWndProc.
+void UIManager::onWinguiLiveMove() {
+    live_move_pending_.store(true);
+}
+
+// The move twin of servicePendingResize, and deliberately NOT the same work.
+//
+// NO resizeWindows() ON THIS PATH, STRUCTURALLY. A move changes no geometry, so
+// the teardown/rebuild has nothing to do and every reason not to run: it is the
+// path that aborted the process once already. This function cannot reach it, and
+// that is a property of the code rather than of what messages happen to arrive -
+// a synthetic drag in recon produced 73 stray WM_SIZE during a MOVE, and whatever
+// caused that must not be able to turn a move into a relayout.
+//
+// THROTTLED, because WM_MOVING is not a frame clock. It arrives once per motion
+// step - measured ~680/s under a fast drag - and painting on every one would cost
+// several times what the starvation it fixes ever did. Rate-limited to the
+// cadence the modal timer would have delivered anyway.
+//
+// ANIMATED SUBSET, not drawAll(). Browser and playlist are ~56% of a frame under
+// playback and cannot change while a window is being dragged. The visible cost is
+// that their ROW marquees freeze for the duration of the drag while the title bar
+// and progress keep scrolling, and a track change mid-drag will not repaint the
+// now-playing highlight. Both resolve the moment the drag ends. Accepted trade.
+void UIManager::servicePendingMove() {
+    if (!live_move_pending_.exchange(false)) return;
+    // Small-terminal guard, matching tickFrame: resizeWindows() leaves the pane
+    // windows null below the minimum size and these draws dereference them.
+    if (!win_title_ || !win_cwd_ || !win_progress_ || !win_cmdline_) return;
+
+    static std::chrono::steady_clock::time_point last_move_paint{};
+    const auto now = std::chrono::steady_clock::now();
+    if (now - last_move_paint < std::chrono::milliseconds(33)) return;
+    last_move_paint = now;
+
+    // Keep the spectrum alive during the drag - drawAnimatedPanes renders
+    // viz_smoothed_, which only advances if the bins are recomputed.
+    if (right_pane_ == RightPane::Visualizer || vizStripShown())
+        computeVizBins();
+    drawAnimatedPanes();   // stages; the single flush is ours
+    doupdate();
 }
 
 #ifdef PDCURSES
@@ -1339,6 +1411,7 @@ void UIManager::run() {
     try { dir_mtime_ = fs::last_write_time(current_dir_); } catch (...) {}
 
     while (running_) {
+        servicePendingMove();     // WM_MOVING repaint; never touches geometry
         // Catches a live-resize raised while the drag was in progress (or after it
         // ended, when the modal paint timer has already stopped). Cheap no-op when
         // nothing is pending; guarantees the window ends up drawn at the final size.
@@ -1936,6 +2009,10 @@ void UIManager::onWinguiPaintTick() {
     // message, dispatched with no HandleSize frame on the stack, so the rebuild is
     // safe here and the window still reflows live while the border is held.
     servicePendingResize();
+    // Covers the case WM_MOVING does not: a held but STATIONARY drag, where no
+    // motion messages arrive and the timer is free to fire. Measured: 44 timer
+    // ticks in an idle window inside the same modal loop, zero WM_MOVING.
+    servicePendingMove();
     tickFrame();
     in_paint_tick = false;
 }

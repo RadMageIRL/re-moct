@@ -58,9 +58,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a character straddling the boundary, stopped the program. Both are fixed in
   `lib/pdcursesmod/pdcurses/refresh.c`, recorded in that folder's `VENDOR.md`,
   and reported upstream so the fix can eventually come from the library itself.
-  RE-MOCT also no longer redraws the screen from inside the notification Windows
-  sends while a window is being resized, which was wrong on its own terms and is
-  what made the fault so easy to hit.
+  That library fix is the whole of it: how RE-MOCT schedules its own drawing was
+  never what caused this, and nothing about resizing behaves differently as a
+  result.
 - **Windows: the screen no longer freezes while you drag the window to a new
   place.** Holding the mouse button and moving the window stopped the display
   dead - for a second or more at a time, worse while music was playing - and it

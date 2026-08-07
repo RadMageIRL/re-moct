@@ -88,9 +88,15 @@ In `pdcurses/refresh.c` (`PDC_transform_line_sliced`):
   replacing CJK with `?`: before that `PDC_wcwidth` never returned 2, no dummy cell
   ever existed, and the case was unreachable by construction. Reproduced as a hard
   abort on a border-drag with wide glyphs on screen.
-  **Filed upstream as Bill-Gray/PDCursesMod issue #386. DROP THIS PATCH once it
-  lands there** - check the issue before re-pinning; a patch upstream also carries
-  is not ours to maintain. Report as filed: `docs/upstream-pdcursesmod-chunk-boundary.md`.
+  **THIS PATCH IS THE ONLY THING PREVENTING THE ABORT.** Nothing on the RE-MOCT
+  side protects against it and nothing should be credited with doing so. In
+  particular the 1.6.1 resize deferral did NOT fix it - the build carrying that
+  deferral still aborted, on the sibling assert - and it was removed again once it
+  was found to cost visible flicker. **A re-pin that drops this patch brings the
+  crash straight back, however drawing happens to be scheduled.**
+  **Filed upstream as Bill-Gray/PDCursesMod issue #386. DROP THIS PATCH only once
+  it lands there** - check the issue before re-pinning. Report as filed:
+  `docs/upstream-pdcursesmod-chunk-boundary.md`.
 
 Re-apply these after re-pinning; grep the tree for `RE-MOCT patch` to find them.
 

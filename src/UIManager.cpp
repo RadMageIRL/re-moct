@@ -469,42 +469,40 @@ UIManager::~UIManager() {
 
 void UIManager::onWinguiLiveResize() {
     // Fires from wingui's WM_SIZE handler during the modal resize-drag, on the UI
-    // thread while getch() is blocked in the drag loop.
+    // thread while getch() is blocked in the drag loop. Rebuild + repaint so the
+    // window shows live content instead of blanking until the drag is released.
+    // Reentrancy guard: a nested WM_SIZE (should not happen mid-drag, but be safe)
+    // must not recurse into a second rebuild. Same-thread, so a plain bool suffices.
     //
-    // RAISE A FLAG. DO NOT DRAW HERE. This used to call resizeWindows() inline,
-    // which aborted the process:
+    // SYNCHRONOUS ON PURPOSE, and briefly was not. 1.6.1 deferred this to a flag
+    // serviced from the paint tick, on the principle that drawing from inside a
+    // WM_SIZE handler is wrong. The principle holds; it was not what aborted, and
+    // it cost a visible regression:
     //
-    //   wgetch -> napms -> PDC_napms pumps the queue -> WndProc -> HandleSize
-    //     -> here -> resizeWindows -> drawAll -> doupdate
-    //     -> PDC_transform_line -> assert -> abort
+    // HandleSize sets PDC_n_rows/cols to the NEW size before calling us, but COLS,
+    // LINES, curscr, stdscr and every win_* only change when resize_term() runs -
+    // in here. Deferred, the client area is the new size while the whole curses
+    // state is still the old one, so every WM_PAINT in the gap repaints the OLD
+    // grid into the NEW window: unpainted margin growing, clipped shrinking, until
+    // the tick catches up. Stale frame, correct frame, stale frame = the flicker
+    // 1.6.0 never had. Worse, the servicer is WM_TIMER, which a held drag starves
+    // (measured: zero timer messages across 344 ms of continuous motion), so the
+    // stale window is not bounded by the 33 ms interval at all.
     //
-    // doupdate is not a leaf. PDC_doupdate() is itself a PeekMessage/DispatchMessage
-    // pump (wingui/pdcdisp.c), so a SECOND WM_SIZE gets dispatched WHILE the first
-    // one's refresh is still walking the screen. HandleSize updates PDCurses'
-    // geometry underneath the in-flight doupdate, so a dirty span measured at the
-    // old width is transformed against the new buffer - and a double-width glyph's
-    // two cells end up split across the packet boundary. PDCursesMod catches that
-    // with assert((srcp[len-1] & A_CHARTEXT) != MAX_UNICODE) - MAX_UNICODE being
-    // DUMMY_CHAR_NEXT_TO_FULLWIDTH, the placeholder in a wide glyph's second cell -
-    // and aborts. The old in_live_resize bool did not help: it guards THIS function
-    // re-entering itself, and the damage is done by HandleSize before we are called.
+    // resizeWindows()'s own comment already recorded the standard this build was
+    // tuned to - an intermediate frame during a live resize-drag is visible flicker
+    // on wingui, and one full repaint per tick is flicker-free. The deferral broke
+    // both halves of that.
     //
-    // Unreachable before 1.6.1 by construction: every CJK codepoint folded to '?',
-    // so PDC_wcwidth never returned 2, no dummy cell ever existed, and no pair could
-    // be split. Real double-width glyphs on screen are what made it reachable.
-    //
-    // DEFERRED, NOT DROPPED. Both servicing sites below run outside the WM_SIZE
-    // handler, so the final size always gets its full rebuild and repaint:
-    //   - onWinguiPaintTick (modal-loop WM_TIMER) keeps the drag live
-    //   - run()'s loop catches it when the drag ends, or if no timer is running
-    live_resize_pending_.store(true);
-}
-
-// The one place a pending live-resize is turned into a real rebuild. Both callers
-// are outside the WM_SIZE handler; the exchange makes it run once per raise.
-void UIManager::servicePendingResize() {
-    if (live_resize_pending_.exchange(false))
-        resizeWindows();
+    // What actually aborted was a PDCursesMod defect - a fullwidth glyph's two
+    // cells split across a MAX_PACKET_LEN chunk boundary - fixed at source in
+    // lib/pdcursesmod/pdcurses/refresh.c and filed upstream as #386. THAT patch is
+    // the only thing preventing the abort. Scheduling never was.
+    static bool in_live_resize = false;
+    if (in_live_resize) return;
+    in_live_resize = true;
+    resizeWindows();
+    in_live_resize = false;
 }
 
 // Raised from the WM_MOVING subclass. Flag only - see remoctWndProc.
@@ -512,7 +510,7 @@ void UIManager::onWinguiLiveMove() {
     live_move_pending_.store(true);
 }
 
-// The move twin of servicePendingResize, and deliberately NOT the same work.
+// The move twin of onWinguiLiveResize, and deliberately NOT the same work.
 //
 // NO resizeWindows() ON THIS PATH, STRUCTURALLY. A move changes no geometry, so
 // the teardown/rebuild has nothing to do and every reason not to run: it is the
@@ -1415,7 +1413,6 @@ void UIManager::run() {
         // Catches a live-resize raised while the drag was in progress (or after it
         // ended, when the modal paint timer has already stopped). Cheap no-op when
         // nothing is pending; guarantees the window ends up drawn at the final size.
-        servicePendingResize();
         audio_.pollEvents();
         // XF C3: converge the armed next decoder on the resolver every tick,
         // AFTER pollEvents - its callbacks advance the playlist index, and the
@@ -2005,10 +2002,6 @@ void UIManager::onWinguiPaintTick() {
     static bool in_paint_tick = false;
     if (in_paint_tick) return;
     in_paint_tick = true;
-    // A drag raises live_resize_pending_ from WM_SIZE; this timer is a DIFFERENT
-    // message, dispatched with no HandleSize frame on the stack, so the rebuild is
-    // safe here and the window still reflows live while the border is held.
-    servicePendingResize();
     // Covers the case WM_MOVING does not: a held but STATIONARY drag, where no
     // motion messages arrive and the timer is free to fire. Measured: 44 timer
     // ticks in an idle window inside the same modal loop, zero WM_MOVING.

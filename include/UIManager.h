@@ -270,21 +270,14 @@ private:
     bool vizStripShown() const;   // Awesome + strip actually on screen (win_viz_ != null)
     bool running_       = false;
     std::atomic<bool> redraw_needed_ { true };
-    // wingui live-resize: WM_SIZE only RAISES this; the rebuild happens on the
-    // loop/paint-tick side. Never draw from inside the WM_SIZE handler - see
-    // onWinguiLiveResize for why that aborted the process.
-    std::atomic<bool> live_resize_pending_ { false };
     // wingui move-drag: WM_MOVING (app-side subclass) only RAISES this. The paint
     // happens on the loop/paint-tick side, and never touches geometry.
     std::atomic<bool> live_move_pending_ { false };
     int  help_scroll_   = 0;   // scroll position in help pane
     void resizeWindows();
-    // Applies a live-resize raised by the WM_SIZE handler. Called from the run loop
-    // and the modal paint tick - never from inside the WM_SIZE handler itself.
-    void servicePendingResize();
-    // Move twin: repaints the animated subset for a raised WM_MOVING. Throttled,
-    // and structurally incapable of calling resizeWindows() - a move has no
-    // geometry change. Same two callers, same never-from-the-handler rule.
+    // Repaints the animated subset for a raised WM_MOVING. Throttled, and
+    // structurally incapable of calling resizeWindows() - a move has no geometry
+    // change. Unlike a resize, a move has no synchronous rebuild to piggyback on.
     void servicePendingMove();
 
     // Time display mode

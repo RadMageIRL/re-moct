@@ -187,3 +187,64 @@ malformed-UTF-8 cases, and an idempotence check.
 - CHANGELOG link definitions are still missing for **1.3.1, 1.4.0, 1.4.1, 1.5.0, 1.6.0 and now
   1.6.1** (six). Sections all present, history complete. Ceremony decision, still open.
 - Tag naming is still split: every release tag is bare except **`v1.5.0`**. Cosmetic, still open.
+
+---
+
+## 10. THE RESIZE CRASH — found and fixed the same night (added after §1-9)
+
+**1.6.1 shipped a crash and it was found within hours: on Windows, dragging the window border with
+CJK on screen aborted the process.** Reliable in seconds, three independent reproductions by Dos.
+1.6.0 does not crash; 1.6.1 does. **It was this slice**, and the reason is structural: until the
+fold stopped replacing CJK with `?`, `PDC_wcwidth` never returned 2, no double-width cell ever
+existed, and the failing code was unreachable by construction.
+
+**THE BUG IS IN VENDORED PDCursesMod. `lib/pdcursesmod/pdcurses/refresh.c` now carries a local
+patch - see `VENDOR.md`, entry 4, and RE-APPLY IT AFTER ANY RE-PIN.** Upstream report is written at
+`docs/upstream-pdcursesmod-chunk-boundary.md`; **not filed** - it posts publicly under Dos's name
+and is his call.
+
+### The mechanism, since it is not obvious
+
+`PDC_transform_line_sliced` cuts a redraw span into `MAX_PACKET_LEN - 1` = **89**-cell chunks. A
+double-width glyph occupies two cells - the character, then `DUMMY_CHAR_NEXT_TO_FULLWIDTH`. When a
+chunk boundary falls between the two, the pair is split, and **both** ends of the split abort:
+
+| face | assert | why |
+|---|---|---|
+| chunk *begins* on the dummy | `i > 1 \|\| ch != MAX_UNICODE` (`refresh.c`) | the leading-dummy repair sat ABOVE the loop, so it ran once - for the first chunk only |
+| chunk *ends* on the dummy | `(srcp[len-1] & A_CHARTEXT) != MAX_UNICODE` (`wingui/pdcdisp.c`) | the trim read `ch`, which is STALE when the loop exits on `i == MAX_PACKET_LEN - 1` - that exit never evaluates `ch`, so `srcp[i-1]` is never examined |
+
+Both fixed in one function. The cursor-split recursion at the top needs nothing: it re-enters the
+same loop, so both repairs cover it. **Needs a window wider than 89 columns AND a wide glyph on the
+boundary** - which is why several hundred automated ASCII-only resizes never reproduced it.
+
+### Also changed, correct on its own terms
+
+- **`onWinguiLiveResize` no longer draws inside the `WM_SIZE` handler.** It raises
+  `live_resize_pending_`; `servicePendingResize()` does the rebuild from the modal paint tick (so
+  the drag still reflows live) and from the run loop (so the final size is always correct). This did
+  NOT fix the crash on its own - said so at the time rather than claiming partial credit - but
+  drawing from inside a resize handler was wrong regardless, and it is what made the fault so easy
+  to hit.
+- **`handle_sigsegv` (`main.cpp`) rewritten.** It used to set a flag and RETURN, which resumes at
+  the faulting instruction and loops forever - no crash record, ever. Now: async-signal-safe message
+  to stderr, restore `SIG_DFL`, re-raise. It would not have caught this one (a fail-fast is not
+  SIGSEGV) but it makes the next real memory fault reportable.
+
+### Lessons that cost real time
+
+1. **`PDC_doupdate()` is a message pump** (`PeekMessage`/`DispatchMessage`). `doupdate()` is not a
+   leaf on this build. Anything drawn from a Windows message handler can be re-entered.
+2. **`-DNDEBUG` is not set** - `CMAKE_BUILD_TYPE` is empty, so no build-type flags apply at all.
+   That is why this aborts cleanly instead of drawing a garbled line, and it is the only reason the
+   bug was findable. **Do not silence it.** Whether release packaging should set a build type is a
+   separate, open question.
+3. **A GUI-subsystem binary's stderr does not reach a redirect**, so the `fprintf` upstream put
+   above its own assert never landed in the log. `gdb -batch -ex run -ex "bt 60"` is the way to get
+   a trace; `catch-crash.bat` at the repo root does it in one double-click.
+4. **Verify a PID is one you started before driving a window.** A launch that silently failed with
+   exit 127 left an automation script driving Dos's own running instance - moving it, resizing it,
+   sending it keystrokes. Check `Win32_Process.CommandLine` first.
+5. **Do not claim a repro without checking state.** Several "survived 400 resizes" results were
+   void: playback had never started, which a screenshot showed immediately and an assumption did
+   not.

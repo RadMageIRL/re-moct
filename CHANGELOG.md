@@ -43,6 +43,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   screen had been showing - so saving an untouched field could quietly turn `café`
   into `cafe` inside the file. The editor now starts from what the file actually
   contains.
+- **Windows: dragging the window border no longer closes the program.** With
+  Japanese, Chinese or Korean text anywhere on screen, resizing the window by
+  dragging its edge could shut RE-MOCT down on the spot - reliably, within
+  seconds, and with no message. It needed a window wider than 89 characters and
+  a double-width character sitting exactly on the boundary where the screen is
+  drawn in sections, which is why it only appeared once this release started
+  showing those characters instead of replacing them with `?`.
+  The fault was in PDCursesMod, the library RE-MOCT uses to draw on Windows,
+  which is bundled with the program. A double-width character occupies two cells,
+  and the library repairs a redraw that begins part-way into one - but it was
+  doing that repair only for the first section of a line, and separately it
+  checked the wrong cell when deciding where a section ends. Either one, met by
+  a character straddling the boundary, stopped the program. Both are fixed in
+  `lib/pdcursesmod/pdcurses/refresh.c`, recorded in that folder's `VENDOR.md`,
+  and reported upstream so the fix can eventually come from the library itself.
+  RE-MOCT also no longer redraws the screen from inside the notification Windows
+  sends while a window is being resized, which was wrong on its own terms and is
+  what made the fault so easy to hit.
 
 ### Changed
 

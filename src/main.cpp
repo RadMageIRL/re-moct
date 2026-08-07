@@ -3,6 +3,11 @@
 #include <iostream>
 #include <stdexcept>
 #include <csignal>
+#ifdef _WIN32
+#include <io.h>        // _write - async-signal-safe stderr from handle_sigsegv
+#else
+#include <unistd.h>    // write
+#endif
 #include <clocale>
 #include <filesystem>
 
@@ -163,11 +168,31 @@ static void win32_console_init() {}
 static UIManager*    g_ui    = nullptr;
 static AudioManager* g_audio = nullptr;
 
-static void handle_sigsegv(int) {
-    // Miniaudio decoder crashed on a corrupt MP3 frame.
-    // Signal track end so the UI skips to next track.
-    // We can't do much here safely — just set a flag and return.
-    if (g_audio) g_audio->signalTrackEnd();
+// SIGSEGV is NOT recoverable, and this handler used to pretend it was: it set a
+// flag and RETURNED, which resumes at the faulting instruction, faults again, and
+// loops forever - the process wedges instead of dying, and no crash record is ever
+// produced. It was written for one theory (miniaudio hitting a corrupt MP3 frame)
+// and it cost real diagnosis time on a fault it had nothing to do with.
+//
+// A real memory fault must be REPORTED and then be fatal. Everything below is
+// async-signal-safe: a fixed string to stderr with write(), then re-raise through
+// the default handler so the OS records the crash the way it records any other.
+// signalTrackEnd() is deliberately NOT called - it takes locks and touches the
+// audio graph, neither of which is safe from a signal handler on a corrupt stack.
+static void handle_sigsegv(int sig) {
+    static const char msg[] =
+        "\nRE-MOCT: fatal memory fault (SIGSEGV).\n"
+        "Run under gdb to capture a backtrace:\n"
+        "  gdb -batch -ex run -ex \"bt 60\" --args remoct\n";
+#ifdef _WIN32
+    _write(2, msg, (unsigned)(sizeof msg - 1));
+#else
+    ssize_t n = write(2, msg, sizeof msg - 1); (void)n;
+#endif
+    // Back to the default disposition, then let the same fault kill us properly:
+    // exit code, WER record and core file all become what the platform expects.
+    std::signal(sig, SIG_DFL);
+    std::raise(sig);
 }
 
 int main(int argc, char* argv[]) {

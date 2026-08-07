@@ -183,19 +183,41 @@ void PDC_transform_line_sliced( int lineno, int x, int len, const chtype *srcp)
             SP->drawing_cursor = vis;
         }
     }
-#ifdef PDC_WIDE
-    if( x && (*srcp & A_CHARTEXT) == DUMMY_CHAR_NEXT_TO_FULLWIDTH)
-    {                   /* starting on a dummy next to a fullwidth */
-        x--;
-        srcp--;
-        len++;
-    }
-#endif
     while( len)
     {
 #ifdef PDC_WIDE
-        int i = 1;
+        int i = 1, draw;
         chtype ch;
+
+        /* RE-MOCT patch: this repair was upstream of the loop and therefore ran
+           ONCE, for the first chunk only.  The loop below cuts the span into
+           MAX_PACKET_LEN-1 (89) cell chunks, and every `srcp += i` can land the
+           next chunk on a dummy - the placeholder in a fullwidth glyph's second
+           cell - whose first half is now in the PREVIOUS chunk.  When that
+           happened the packet loop computed i == 1 with ch == MAX_UNICODE and
+           the assert below aborted the process.  (The same boundary produces the
+           sibling abort in PDC_transform_line when the dummy lands at the END of
+           a chunk instead.)  Moving the repair inside the loop applies it to
+           every chunk.  Needs a line wider than 89 cells and a fullwidth glyph
+           straddling a chunk boundary, which is why it only shows up on wide
+           windows displaying CJK. */
+        if( (*srcp & A_CHARTEXT) == DUMMY_CHAR_NEXT_TO_FULLWIDTH)
+        {
+            if( x)          /* back up onto the glyph's first half */
+            {
+                x--;
+                srcp--;
+                len++;
+            }
+            else            /* at column 0 the first half is off-line to the
+                               left:  nothing to back onto,  nothing to draw. */
+            {
+                x++;
+                srcp++;
+                if( !--len)
+                    break;
+            }
+        }
 
         while( i < MAX_PACKET_LEN - 1
                      && (ch = (srcp[i - 1] & A_CHARTEXT)) < MAX_UNICODE
@@ -204,8 +226,23 @@ void PDC_transform_line_sliced( int lineno, int x, int len, const chtype *srcp)
         if( i == 1 && ch == MAX_UNICODE)
             fprintf( stderr, "line %d, x=%d, len=%d\n", lineno, x, len);
         assert( i > 1 || ch != MAX_UNICODE);
-        PDC_transform_line( lineno, x,
-                          i - ((ch == MAX_UNICODE) ? 1 : 0), srcp);
+        /* RE-MOCT patch, second face of the same defect:  the trim below used to
+           read `ch`,  which is STALE when the loop above exits on its FIRST
+           condition (i reaching MAX_PACKET_LEN - 1).  That exit does not evaluate
+           `ch` for the current i,  so `ch` still holds srcp[i - 2] and srcp[i - 1]
+           is never examined at all.  With a fullwidth glyph straddling the chunk
+           boundary the packet was then handed to PDC_transform_line ENDING on a
+           dummy,  and its own assert -
+           assert( (srcp[len - 1] & A_CHARTEXT) != MAX_UNICODE) - aborted.
+           Test the packet's actual last cell instead.  Identical to the original
+           everywhere else:  when the loop exits BECAUSE srcp[i - 1] is a dummy,
+           `ch` is that same cell and both forms trim to i - 1.  x/len/srcp still
+           advance by i,  so the dummy is consumed exactly as before. */
+        draw = i;
+        if( (srcp[i - 1] & A_CHARTEXT) == MAX_UNICODE)
+            draw = i - 1;       /* never END a packet on a dummy */
+        if( draw)
+            PDC_transform_line( lineno, x, draw, srcp);
 #else
         const int i = min( len, MAX_PACKET_LEN - 1);
         PDC_transform_line( lineno, x, i, srcp);

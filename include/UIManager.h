@@ -267,8 +267,15 @@ private:
     bool vizStripShown() const;   // Awesome + strip actually on screen (win_viz_ != null)
     bool running_       = false;
     std::atomic<bool> redraw_needed_ { true };
+    // wingui live-resize: WM_SIZE only RAISES this; the rebuild happens on the
+    // loop/paint-tick side. Never draw from inside the WM_SIZE handler - see
+    // onWinguiLiveResize for why that aborted the process.
+    std::atomic<bool> live_resize_pending_ { false };
     int  help_scroll_   = 0;   // scroll position in help pane
     void resizeWindows();
+    // Applies a live-resize raised by the WM_SIZE handler. Called from the run loop
+    // and the modal paint tick - never from inside the WM_SIZE handler itself.
+    void servicePendingResize();
 
     // Time display mode
     bool show_remaining_ = false;

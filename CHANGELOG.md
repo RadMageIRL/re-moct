@@ -126,6 +126,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   name all stay exactly as they are. The list is only fetched when you ask for
   it, so an ordinary rip does no extra work. On a narrow window the preview is
   left out and the screen says so.
+  The art picker is `P`, and `F5` on the same screen reopens the release list
+  without leaving it - because the picture is usually what tells you the release
+  itself was wrong, and the fix belongs where the problem showed up.
   Each row shows what the person who uploaded it wrote, because that is the only
   thing that distinguishes one from another - the archive records no image sizes
   at all, and its own type labels disagree with those descriptions often enough

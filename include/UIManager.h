@@ -593,8 +593,29 @@ private:
     // outbound may be sent from a guess.
     struct CdIdentity { std::string title, artist, album; };
     std::map<int, CdIdentity> cd_identity_;   // key = CD track number (0 = hidden)
+
+    // Was the medium these identities came from ASSUMED rather than determined?
+    // Recorded from the very DiscPick that built them, so it cannot drift from
+    // what the screen is warning about, and it is already false once the user
+    // has chosen a medium (DiscPick::user clears ambiguous()).
+    //
+    // A display guess is fine - it is visible, it carries a red warning, and it
+    // is gone on the next track. A SCROBBLE IS PERMANENT. So this suppresses
+    // Last.fm and ListenBrainz only; the media card and Discord still publish,
+    // because blanking them while the screen shows a title would be the worse
+    // lie and they correct themselves on the next track.
+    //
+    // Single-disc releases are never ambiguous, and neither is a unique
+    // track-count match, so the ordinary case cannot be blocked by this.
+    bool cd_identity_assumed_ = false;
+    // The CD track this was last announced for: once per TRACK, not per tick.
+    int  scrob_assumed_said_for_ = -1;
     // UI thread only, like the rows it describes.
-    void clearCdIdentity() { cd_identity_.clear(); }
+    void clearCdIdentity() {
+        cd_identity_.clear();
+        cd_identity_assumed_    = false;
+        scrob_assumed_said_for_ = -1;
+    }
 
     // ── The release / medium picker (^R), two stages in one overlay ──────────
     // Stage 0 chooses between the releases a disc ID resolves to; stage 1

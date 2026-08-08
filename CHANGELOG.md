@@ -102,6 +102,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   discards it with a message rather than quietly carrying on. Re-inserting the
   same disc keeps everything, including a release you picked by name that
   deliberately is not what the disc alone would have matched.
+- **Nothing is scrobbled from a disc RE-MOCT only guessed at.** When a set has
+  two discs with the same number of tracks, it falls back to the first and says
+  so on screen in red - but it was still sending those guessed titles to Last.fm
+  and ListenBrainz, where they stay. It now sends nothing until you say which
+  disc it is, and tells you that is why. The Windows media card and Discord keep
+  showing the same thing the screen shows: they are replaced on the next track,
+  so blanking them would be less honest than showing what you can already see.
+  Discs that are identified normally - which is nearly all of them, including
+  every single-disc album - scrobble exactly as before.
+- **A release you choose by hand is trusted, and its track list is not checked
+  against the disc.** If you pick a release by name with `Ctrl+F`, RE-MOCT uses
+  its titles as given. That is deliberate: it is what makes searching by name a
+  usable way to fix a bad automatic match. It also means a release whose track
+  order differs from the disc will report the wrong titles, and only you can
+  tell.
 - **`Ctrl+F` metadata search works on Linux.** It was Windows-only for no reason
   that survived inspection - the screen and its key handling were already
   portable - so Linux had no way to correct a wrong lookup at all.

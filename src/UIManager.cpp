@@ -2868,7 +2868,11 @@ DiscPick UIManager::applyReleaseTitles(const MBRelease& rel) {
     // Rebuilt from scratch every pass: this describes THIS release on THIS
     // medium, and a leftover entry from the previous answer is exactly the kind
     // of stale identity that reached ListenBrainz.
-    cd_identity_.clear();
+    clearCdIdentity();
+    // The SAME pick that is about to title the rows decides whether anything
+    // built from it may be sent outbound. One source, so the suppression and the
+    // red warning on screen can never disagree about whether this disc is known.
+    cd_identity_assumed_ = pick.ambiguous();
     for (std::size_t i = 0; i < playlist_.size(); ++i) {
         int tnum = cdTrackNumber(playlist_.at(i).path);
         if (tnum < 0) continue;
@@ -6713,6 +6717,32 @@ void UIManager::updateScrobbler() {
     // display values for the card these days).
     if (cd_unmatched)
         return;
+    // Q3: THE MEDIUM WAS ASSUMED, SO NOTHING PERMANENT LEAVES. The rows above
+    // were titled from a disc the program fell back to, not one it identified,
+    // and the screen says so in red. A scrobble carries no such warning and
+    // cannot be taken back - the wrong ones from this exact cause are in a real
+    // listening history now.
+    //
+    // Deliberately BELOW publishMedia and the Discord block: those two show what
+    // the screen shows and replace themselves on the next track, so suppressing
+    // them would be a worse lie than showing the same guess. This is the same
+    // line cd_unmatched draws one statement above, for the same reason.
+    //
+    // A release the user picked BY HAND is not caught here and is not meant to
+    // be: its tracklist is trusted on his say-so, which is the workaround he
+    // relies on when the disc ID matches badly.
+    if (audio_.cdMode() && cd_identity_assumed_) {
+        const int tn = audio_.cdCurrentTrack();
+        if (tn != scrob_assumed_said_for_) {
+            scrob_assumed_said_for_ = tn;   // once per track, not once per tick
+            // A toast, not mb_status_: the ambiguity note already occupies that
+            // line with the CAUSE, and this is the consequence. Overwriting the
+            // explanation with its own result would lose the more useful half.
+            showTrackToast("Not scrobbling: this disc is assumed, not confirmed",
+                           "F5 to choose which disc", "");
+        }
+        return;
+    }
 
     const std::string& k  = config_.lastfm_key;
     const std::string& s  = config_.lastfm_secret;

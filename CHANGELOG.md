@@ -5,7 +5,7 @@ All notable changes to RE-MOCT are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.6.1] - 2026-08-07
+## [1.6.1] - 2026-08-08
 
 ### Added
 
@@ -90,8 +90,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   loaded, they would match the new disc's track count against the OLD album and
   report whichever of its discs happened to have that many tracks: a real
   scrobble named a track by a composer who appears on no other disc of that set.
-  They now use the same answer the playlist and the header use, and when there is
-  no confident answer they send nothing rather than a guess. **Scrobbles are
+  They now use the same answer the playlist and the header use. **Scrobbles are
   permanent, so a wrong one is worse than a missing one.**
 - **Metadata from a previous disc is dropped when you change discs, and it says
   so.** Swapping a disc while playback was stopped left the old album's details
@@ -119,16 +118,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   tell.
 - **See the cover before you rip it, and change it without changing anything
   else.** The rip screen now shows the artwork it is about to use as a picture
-  rather than a filename, and `A` opens the full list of images the archive holds
+  rather than a filename, and `P` opens the full list of images the archive holds
   for that release - which for a box set is thirty-five, including each disc's
   own artwork, where before only one was ever reachable. Choosing one changes the
   art and nothing else: the release, the titles, the disc number and the folder
   name all stay exactly as they are. The list is only fetched when you ask for
   it, so an ordinary rip does no extra work. On a narrow window the preview is
   left out and the screen says so.
-  The art picker is `P`, and `F5` on the same screen reopens the release list
-  without leaving it - because the picture is usually what tells you the release
-  itself was wrong, and the fix belongs where the problem showed up.
+  `F5` on the same screen reopens the release list without leaving it - because
+  the picture is usually what tells you the release itself was wrong, and the fix
+  belongs where the problem showed up.
   Each row shows what the person who uploaded it wrote, because that is the only
   thing that distinguishes one from another - the archive records no image sizes
   at all, and its own type labels disagree with those descriptions often enough
@@ -137,7 +136,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`Ctrl+F` metadata search works on Linux.** It was Windows-only for no reason
   that survived inspection - the screen and its key handling were already
   portable - so Linux had no way to correct a wrong lookup at all.
-
 - **Text that is not English renders as itself.** Japanese, Chinese, Korean, Greek
   and Cyrillic titles, artists, albums and filenames were being replaced with one
   `?` per character before they were drawn, so an album by 水田直志 listed as
@@ -1492,3 +1490,10 @@ boundary with a **loadable plugin architecture**.
   shipped anonymous path is unchanged when the probe is not armed.
 
 [1.0.0]: https://github.com/RadMageIRL/re-moct/releases/tag/1.0.0
+
+[1.6.1]: https://github.com/RadMageIRL/re-moct/releases/tag/1.6.1
+[1.6.0]: https://github.com/RadMageIRL/re-moct/releases/tag/1.6.0
+[1.5.0]: https://github.com/RadMageIRL/re-moct/releases/tag/v1.5.0
+[1.4.1]: https://github.com/RadMageIRL/re-moct/releases/tag/1.4.1
+[1.4.0]: https://github.com/RadMageIRL/re-moct/releases/tag/1.4.0
+[1.3.1]: https://github.com/RadMageIRL/re-moct/releases/tag/1.3.1

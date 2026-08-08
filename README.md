@@ -99,7 +99,9 @@ and a playlist/rip view. The public feature guide is [`docs/index.html`](docs/in
   V-scale or a CBR bitrate; Opus bitrate; AAC VBR 1-5 ladder or a CBR bitrate;
   CBR/VBR toggle). M4A uses the bundled FDK-AAC encoder, so no extra library
   ships. Every tagged format carries embedded cover art
-  (Cover Art Archive) and EBU R128 ReplayGain tags. C2 error-pointer detection,
+  (Cover Art Archive - previewed on the rip screen and selectable from the full
+  set the archive holds, not just the one flagged front), a disc number for
+  multi-disc sets, and EBU R128 ReplayGain tags. C2 error-pointer detection,
   dual-pass on mismatch, per-rip logs (with lossless-master vs lossy-derived notes)
 
 **Internet radio & streaming**
@@ -190,9 +192,10 @@ truecolor + Alt+Enter fullscreen); see [BUILD.md](BUILD.md).
 |-----|--------|-----|--------|
 | `Tab` | Toggle DirBrowser ↔ Playlist | `Ctrl+T` | Toggle Classic / Awesome mode |
 | `Enter` | Play file / enter directory | `Ctrl+U` | Add / play a stream by URL |
-| `Space` | Pause / Resume | `Ctrl+R` | CD → MusicBrainz metadata |
-| `n` / `p` | Next / Previous | `Ctrl+Y` | Open CD rip panel |
-| `[` / `]` | Seek back / forward | `Ctrl+G` / `Ctrl+B` | Last.fm / ListenBrainz login |
+| `Space` | Pause / Resume | `Ctrl+R` | CD → MusicBrainz metadata (choose, when a disc matches several releases) |
+| `n` / `p` | Next / Previous | `Ctrl+Y` | Open CD rip panel (`P` cover art, `F5` release) |
+| `[` / `]` | Seek back / forward | `F5` | Reopen the release / disc picker |
+| `Ctrl+G` / `Ctrl+B` | Last.fm / ListenBrainz login | `Ctrl+F` | Find a release by name (Windows + Linux) |
 | `-` / `+` | Volume down / up | `Ctrl+D` | Discord Rich Presence toggle |
 | `*` | Star / unstar (FAVs) | `Ctrl+A` | iHeart deep-analysis log toggle |
 | `?` | Help pane | `Ctrl+P` | iHeart minted-profileId probe (experimental, off by default) |

@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <string>
 #include <vector>
+#include <map>
 #include <array>
 #include <filesystem>
 #include <chrono>
@@ -571,6 +572,29 @@ private:
     // when the disc was assumed rather than determined. Computing it twice would
     // be two chances to disagree.
     DiscPick applyReleaseTitles(const MBRelease& rel);   // UI thread only
+
+    // ── The identity the ROWS were titled from ───────────────────────────────
+    // RAW artist/title/album, keyed by CD track number, written by
+    // applyReleaseTitles at the moment it resolves a medium and titles the
+    // playlist from it. The scrobbler, the OS media card and Discord read THIS
+    // instead of resolving a medium of their own.
+    //
+    // There used to be a fifth resolution site: updateScrobbler() called
+    // pickDiscForTrackCount directly. It missed the user's disc override (so a
+    // chosen disc 2 scrobbled disc 1's track), and - worse - it paired a STALE
+    // release with a LIVE playlist row count. That pairing does not fail, it
+    // SUCCEEDS WRONGLY: it finds whichever medium of the old release happens to
+    // have the new disc's track count. A 10-row playlist against a stale
+    // 7-medium release resolved medium 7 and scrobbled a track by a composer who
+    // is on no other disc of the set.
+    //
+    // Binding the identity to the ROWS closes both, because the rows are rebuilt
+    // on every disc open. Empty means "we do not know what this is", and nothing
+    // outbound may be sent from a guess.
+    struct CdIdentity { std::string title, artist, album; };
+    std::map<int, CdIdentity> cd_identity_;   // key = CD track number (0 = hidden)
+    // UI thread only, like the rows it describes.
+    void clearCdIdentity() { cd_identity_.clear(); }
 
     // ── The release / medium picker (^R), two stages in one overlay ──────────
     // Stage 0 chooses between the releases a disc ID resolves to; stage 1

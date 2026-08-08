@@ -81,6 +81,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   one, which made it look like it was cycling through possibilities when it never
   was. It also no longer discards a disc you had chosen, which re-applying the
   same release used to do.
+- **Scrobbles, the Windows media card and Discord now name the track you are
+  actually hearing.** They worked out which disc of a set was playing on their
+  own, separately from everything on screen, and got it wrong in two ways.
+  A disc you had chosen yourself was ignored, so playing disc 2 track 5 of
+  *Mellon Collie* reported disc 1 track 5 - a different song - while the screen
+  correctly showed the right one. And if metadata from a previous disc was still
+  loaded, they would match the new disc's track count against the OLD album and
+  report whichever of its discs happened to have that many tracks: a real
+  scrobble named a track by a composer who appears on no other disc of that set.
+  They now use the same answer the playlist and the header use, and when there is
+  no confident answer they send nothing rather than a guess. **Scrobbles are
+  permanent, so a wrong one is worse than a missing one.**
 - **`Ctrl+F` metadata search works on Linux.** It was Windows-only for no reason
   that survived inspection - the screen and its key handling were already
   portable - so Linux had no way to correct a wrong lookup at all.

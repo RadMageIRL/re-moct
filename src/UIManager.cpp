@@ -1283,6 +1283,8 @@ void UIManager::purgeCDRows(const std::string& drive) {
         return e.path.substr(0, prefix.size()) == prefix;
     });
     pl_cursor_ = std::min(pl_cursor_, std::max(0, (int)playlist_.size() - 1));
+    // The identity describes those rows. It must not outlive them.
+    clearCdIdentity();
 }
 
 // Shift+E in [Drives]: eject the highlighted CD drive. See UIManager.h for the
@@ -1326,6 +1328,7 @@ void UIManager::ejectDrive(const std::string& drive_entry) {
             // one, and a stale override would silently mislabel it.
             mb_disc_override_ = 0;
             mb_pick_.cands.clear();
+            clearCdIdentity();
         }
     }
     // Send the physical eject on a fresh seam handle - for a drive RE-MOCT never
@@ -1434,6 +1437,7 @@ bool UIManager::reopenCDForAction(const std::string& drive) {
         // one, and a stale override would silently mislabel it.
         mb_disc_override_ = 0;
         mb_pick_.cands.clear();
+        clearCdIdentity();
     }
     cd_ripper_.cancel();
     showTrackToast("CD ejected", "Disc removed", "");
@@ -1724,6 +1728,7 @@ void UIManager::run() {
                 // one, and a stale override would silently mislabel it.
                 mb_disc_override_ = 0;
                 mb_pick_.cands.clear();
+                clearCdIdentity();
             }
             cd_ripper_.cancel();
             ui_overlay_ = UIOverlay::None;
@@ -2794,6 +2799,10 @@ DiscPick UIManager::applyReleaseTitles(const MBRelease& rel) {
         mb_status_       = note;
         mb_status_ticks_ = 0;
     }
+    // Rebuilt from scratch every pass: this describes THIS release on THIS
+    // medium, and a leftover entry from the previous answer is exactly the kind
+    // of stale identity that reached ListenBrainz.
+    cd_identity_.clear();
     for (std::size_t i = 0; i < playlist_.size(); ++i) {
         int tnum = cdTrackNumber(playlist_.at(i).path);
         if (tnum < 0) continue;
@@ -2808,6 +2817,7 @@ DiscPick UIManager::applyReleaseTitles(const MBRelease& rel) {
                 std::string dt = rel.artist.empty()
                     ? rel.pregap_title : rel.artist + " - " + rel.pregap_title;
                 playlist_.setDisplayTitle(i, foldForDisplay(dt));
+                cd_identity_[0] = { rel.pregap_title, rel.artist, rel.title };
             }
             continue;
         }
@@ -2816,6 +2826,13 @@ DiscPick UIManager::applyReleaseTitles(const MBRelease& rel) {
                 std::string dt = mt.artist.empty()
                     ? mt.title : mt.artist + " - " + mt.title;
                 playlist_.setDisplayTitle(i, foldForDisplay(dt));
+                // RAW, and from the same MBTrack the row was titled from. The
+                // artist falls back to the release where the track names none -
+                // the display can omit a redundant artist, an outbound scrobble
+                // cannot.
+                cd_identity_[tnum] = { mt.title,
+                                       mt.artist.empty() ? rel.artist : mt.artist,
+                                       rel.title };
                 break;
             }
         }
@@ -6404,35 +6421,31 @@ void UIManager::updateScrobbler() {
         // No MB metadata for this track -> leave artist/track empty so the guard
         // below skips: CD scrobbling requires a MusicBrainz lookup (Ctrl+R).
         int tnum = audio_.cdCurrentTrack();
-        MBRelease rel;
-        { std::lock_guard<std::mutex> lk(mb_mutex_); rel = mb_release_; }
-        // NUMBERED rows only: pickDiscForTrackCount identifies the medium by
-        // this count, and the hidden track's row would make a 13-track disc
-        // look like a 14-track one and match the wrong disc of a set.
-        int n_phys = 0;
-        for (std::size_t k2 = 0; k2 < playlist_.size(); ++k2)
-            if (cdTrackNumber(playlist_.at(k2).path) >= 1) ++n_phys;
-        const int cur_disc = pickDiscForTrackCount(rel, n_phys);
-        // The hidden track's title lives in its own field, not in rel.tracks -
-        // it is not a track of the release. Without this the loop below finds
-        // nothing, artist/track stay empty, and the guard downstream skips the
-        // scrobble entirely: it played and was never counted.
-        std::string cd_title, cd_artist;
-        if (tnum == 0) {
-            cd_title  = rel.pregap_title;
-            cd_artist = rel.artist;
-        } else {
-            for (const auto& m : rel.tracks)
-                if (m.number == tnum && m.disc == cur_disc) {
-                    cd_title  = m.title;
-                    cd_artist = m.artist.empty() ? rel.artist : m.artist;
-                    break;
-                }
+        // THE DISPLAY'S ANSWER, NOT A SECOND ONE. This used to call
+        // pickDiscForTrackCount itself - a fifth site re-deriving a decision
+        // four others had already made - and it got that decision wrong two
+        // different ways. It could not see the medium the user had CHOSEN, so a
+        // chosen disc 2 scrobbled disc 1's track of the same number. And it
+        // resolved a possibly-STALE release against a LIVE count of the current
+        // playlist's rows, which does not fail but succeeds wrongly: it finds
+        // whichever medium of the old release happens to match the new disc's
+        // track count and reports it with full confidence.
+        //
+        // cd_identity_ is written by applyReleaseTitles at the moment it titles
+        // the rows, so this is by construction the same release AND the same
+        // medium the screen is showing. It cannot drift, because there is no
+        // longer a second derivation to drift from. Absent = we do not know what
+        // this track is, and the branch below refuses to send anything.
+        std::string cd_title, cd_artist, cd_album;
+        if (auto it = cd_identity_.find(tnum); it != cd_identity_.end()) {
+            cd_title  = it->second.title;
+            cd_artist = it->second.artist;
+            cd_album  = it->second.album;
         }
         if (!cd_title.empty()) {
             artist = cd_artist;
             track  = cd_title;
-            album  = rel.title;
+            album  = cd_album;
             pos = (int)audio_.cdPositionSec();
             dur = (int)audio_.cdDurationSec();
         } else {
@@ -10373,6 +10386,12 @@ void UIManager::activateDrive(const std::string& drive_entry) {
             // not clearing rips the wrong thing. This runs on every open, which
             // is also the path the CD poll re-enters on media change.
             cd_sel_.clear();
+            // Same reasoning, one field over: the synthetic paths are
+            // disc-INDEPENDENT, so a title resolved for the PREVIOUS disc would
+            // still be found by track number on this one. That is precisely how a
+            // stale release reached the scrobbler. Cleared on every open, which is
+            // also the path the CD poll re-enters on media change.
+            clearCdIdentity();
             // Populate playlist with CD tracks
             playlist_.clear();
             // The hidden track goes first, because it is first on the disc.

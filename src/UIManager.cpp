@@ -1790,6 +1790,7 @@ void UIManager::run() {
             std::size_t n = 0;
             { std::lock_guard<std::mutex> lk(mb_mutex_); n = mb_pick_.cands.size(); }
             if (n >= 2 && ui_overlay_ == UIOverlay::None) {
+                mb_pick_return_ = UIOverlay::None;   // opened from the main view
                 mb_pick_.stage  = 0;
                 mb_pick_.cursor = 0;
                 ui_overlay_     = UIOverlay::MBPick;
@@ -1810,6 +1811,7 @@ void UIManager::run() {
         serviceArtPicker();   // art index + preview thumbnails, both async
         if (mb_medium_pending_ && ui_overlay_ == UIOverlay::None) {
             mb_medium_pending_ = false;
+            mb_pick_return_    = UIOverlay::None;   // opened from the main view
             MBRelease r;
             { std::lock_guard<std::mutex> lk(mb_mutex_); r = mb_release_; }
             int n_phys = 0;
@@ -2587,12 +2589,19 @@ void UIManager::drawRipConfirm() {   // slice 6: common (ncurses + portable CDSo
                                                      : rip_art_label_;
             if ((int)lbl.size() > ART_W) lbl.resize((std::size_t)ART_W);
             mvwaddnstr(w, ay + ART_H + 1, ax, lbl.c_str(), ART_W);
-            mvwaddnstr(w, ay + ART_H + 2, ax, "[A] change art", ART_W);
+            // Both actions live in the art column, so neither costs a row from
+            // the mode list. "change release" sits UNDER the picture on purpose:
+            // the picture is what tells you the release is wrong, so that is the
+            // order the problem is actually met in.
+            mvwaddnstr(w, ay + ART_H + 2, ax, "[P]  change art",     ART_W);
+            mvwaddnstr(w, ay + ART_H + 3, ax, "[F5] change release", ART_W);
         } else {
             // Degrades to nothing, and SAYS SO rather than leaving a user
             // wondering where the picture went.
+            // No art column: one line, both keys still named, and it says why
+            // there is no picture rather than leaving a gap.
             mvwaddnstr(w, mode_y + 5, 3,
-                       "[A] change cover art  (widen the window to preview it)",
+                       "[P] art   [F5] release   (widen the window to preview)",
                        kRipConfirmBaseW - 6);
         }
     }
@@ -2981,8 +2990,12 @@ void UIManager::openMediumStage(const MBRelease& rel, int n_physical, int cursor
 // ^R is deliberately untouched and still re-queries. Overloading it would have
 // meant an existing key quietly changing meaning, and this needed no explanation
 // on a key that already means refresh-or-reopen elsewhere in the app.
-void UIManager::reopenPicker() {
-    if (ui_overlay_ != UIOverlay::None) return;    // never stack modals
+void UIManager::reopenPicker(UIOverlay return_to) {
+    // Never stack pickers - but the confirm modal is a legitimate origin, and
+    // only that one. Anything else still refuses.
+    if (ui_overlay_ != UIOverlay::None && ui_overlay_ != return_to) return;
+    if (ui_overlay_ != UIOverlay::None && ui_overlay_ != UIOverlay::RipConfirm) return;
+    mb_pick_return_ = return_to;
     if (mb_fetching_.load()) {
         showTrackToast("MB: lookup still running", "", "");
         return;
@@ -7178,12 +7191,30 @@ void UIManager::handleInput(int ch) {
             redraw_needed_.store(true);
             return;
         }
-        // [A] the cover-art picker. NO GLOBAL KEY IS CONSUMED: art only exists
-        // in the context of a rip, and this modal is already the
+        // [P] picture - the cover-art picker. NO GLOBAL KEY IS CONSUMED: art only
+        // exists in the context of a rip, and this modal is already the
         // review-before-writing screen. Changing art changes ART - the release,
         // the titles, the disc number and the folder name all stay as they are.
-        if (ch == 'a' || ch == 'A') {
+        //
+        // WAS [A], WHICH WAS A COLLISION AND SHIPPED. [A] is AccurateRip, the
+        // mode used most, and it predates this by many versions - and because
+        // this test sat ABOVE the mode switch and returned, AccurateRip was not
+        // merely shadowed, it was UNREACHABLE from the modal. `P` is free on this
+        // screen and deliberately not adjacent to `c`, `y` or `b`: all three
+        // start a rip, so a mis-hit beside them writes files.
+        if (ch == 'p' || ch == 'P') {
             openArtPicker();
+            return;
+        }
+        // [F5] reopen the release picker without leaving this screen. The art
+        // preview is what tells you the release is wrong - a box front instead of
+        // the album's own cover - so the fix belongs on the same screen that
+        // showed you the problem, not three keystrokes away through a cancel.
+        //
+        // The modal's `default: return` swallows every unhandled key, so this
+        // would never have reached the global F5 on its own.
+        if (ch == KEY_F(5)) {
+            reopenPicker(UIOverlay::RipConfirm);
             return;
         }
         // Digit toggles: '1'..'0'+kRipFormatCount flip a row and stay open.
@@ -13433,14 +13464,14 @@ void UIManager::handleMBPickInput(int ch) {
             mb_status_ticks_ = 0;
         }
         if (mb_pick_win_) { delwin(mb_pick_win_); mb_pick_win_ = nullptr; }
-        ui_overlay_ = UIOverlay::None;
+        ui_overlay_ = mb_pick_return_;
         redraw_needed_.store(true);
         return;
     }
     // Global control keys pass through, exactly as the search modal does.
     if (ch < 32 && ch != '\n' && ch != '\r') {
         if (mb_pick_win_) { delwin(mb_pick_win_); mb_pick_win_ = nullptr; }
-        ui_overlay_ = UIOverlay::None;
+        ui_overlay_ = mb_pick_return_;
         redraw_needed_.store(true);
         handleInput(ch);
         return;
@@ -13473,7 +13504,7 @@ void UIManager::handleMBPickInput(int ch) {
             openMediumStage(pickd, n_phys);
         } else {
             if (mb_pick_win_) { delwin(mb_pick_win_); mb_pick_win_ = nullptr; }
-            ui_overlay_ = UIOverlay::None;
+            ui_overlay_ = mb_pick_return_;
         }
         redraw_needed_.store(true);
         return;
@@ -13492,7 +13523,7 @@ void UIManager::handleMBPickInput(int ch) {
     // is false once `user` is set, so this pass cannot reopen this stage.
     mb_titles_pending_.store(true);
     if (mb_pick_win_) { delwin(mb_pick_win_); mb_pick_win_ = nullptr; }
-    ui_overlay_ = UIOverlay::None;
+    ui_overlay_ = mb_pick_return_;
     redraw_needed_.store(true);
 }
 

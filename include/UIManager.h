@@ -676,7 +676,15 @@ private:
     // Called after EVERY successful openCD. Drops the release cluster when the
     // disc is not the one it was adopted for, and says so.
     void dropReleaseIfDiscChanged();
-    void reopenPicker();                             // F5, UI thread only
+    // Where the picker returns when it closes. The art picker already had to
+    // solve this (it closes back to RipConfirm); the release picker closing to
+    // None would dump the user off the confirm screen, which is the screen the
+    // whole point was to stay on.
+    UIOverlay mb_pick_return_ = UIOverlay::None;
+    // `return_to` is also the ORIGIN: the never-stack-modals guard is relaxed for
+    // exactly that overlay and nothing else, so a picker still cannot open over a
+    // picker.
+    void reopenPicker(UIOverlay return_to = UIOverlay::None);
 
     // ── Cover art: see it before ripping, change only it ────────────────────
     // The complaint was that RE-MOCT took the automatic cover with no way to

@@ -85,24 +85,39 @@ machine + ring-buffer re-pin fix. Device-switching fix. Column-aware UTF-8 pipel
 The disc-number campaign (below). `Ctrl+F` metadata search is **common** now.
 
 ## 1.6.1: which disc this is - the vocabulary to keep straight
-`DiscPick` (`include/MBLookup.h`) is the one answer: `{disc, total, matches, user}`
-with `ambiguous() == !user && total > 1 && matches != 1`. `pickDiscForTrackCount`
-is a thin wrapper over `pickDisc` and its contract is unchanged. **Ambiguous means
-disc 1 was ASSUMED**, covering both no-match and a tie; a user's choice
-(`withUserDisc`) clears it, because a person's answer is determined whatever the
-counts say. Everything that reports - `discLogLine`, `discSourceLabel`,
-`discAmbiguityNote`, `discColumn`, `formatCandidateRow`, `wrapToWidth` - is a pure
-function over it in that same header, so the log, the sidecar, the modal and the
-cmdline cannot drift. `UIManager::resolvedPick()` is the only thing consumers call.
+`DiscPick` (`include/MBLookup.h`) is the one answer: `{disc, total, matches, user}`,
+`ambiguous() == !user && total > 1 && matches != 1`. **Ambiguous means disc 1 was
+ASSUMED** (no match OR a tie); `withUserDisc` clears it - a person's answer is
+determined whatever the counts say. Every reporting helper (`discLogLine`,
+`discSourceLabel`, `discAmbiguityNote`, `discColumn`, `formatCandidateRow`,
+`wrapToWidth`) is a pure function over it in that header, so the log, sidecar,
+modal and cmdline cannot drift. `resolvedPick()` is what consumers call;
+`pickDiscForTrackCount` is a thin wrapper, contract unchanged.
 
-**`toc_track_count` is the TRACK count. `total_discs` / `DiscPick::total` is the
-MEDIA count.** They were both `disc_total` until 2026-08-08, in one file, meaning
-opposite things. In `disc.json`, `disc.disc_total` is media and the older
-`selection.disc_total` is tracks - published in 1.5.0, deliberately NOT renamed.
+**`toc_track_count` is the TRACK count; `total_discs` / `DiscPick::total` is the
+MEDIA count** - both were `disc_total` in one file until 2026-08-08. In
+`disc.json`, `disc.disc_total` is media and the older `selection.disc_total` is
+tracks: published in 1.5.0, deliberately NOT renamed.
 
 `disc.json` is **schema 4**: the `disc` block carries `disc_number`, `disc_total`
 and `disc_source` ∈ `unique_track_count` | `ambiguous_fallback` | `user`.
 Every taggable output carries the disc number, `1/1` included (`include/DiscTag.h`).
+
+## Outbound identity - THE DISPLAY MAY GUESS, THE RECORD MAY NOT
+- `cd_identity_` is the ONE identity for anything leaving the machine: raw
+  artist/title/album by CD track, written by `applyReleaseTitles` from the medium
+  it titled the rows with, cleared with those rows (purge, every `openCD`, every
+  release clear). **Nothing outbound re-derives a disc.** A fifth site that did
+  scrobbled a chosen disc 2 as disc 1, and resolved a STALE release against a LIVE
+  row count - which does not fail, it **succeeds wrongly**: it finds whichever
+  medium of the old release matches the new disc's count.
+- **A release is stamped with the disc ID it was adopted for**
+  (`mb_release_disc_id_`, set in `adoptReleaseLocked`; every `openCD` compares).
+  The question is "adopted FOR this disc", never "matches this disc" - the latter
+  is unanswerable for a `Ctrl+F` pick by construction.
+- **An assumed medium never scrobbles** (`cd_identity_assumed_` = `pick.ambiguous()`).
+  Last.fm/ListenBrainz only; SMTC/Discord still publish - a view, not a record.
+  **A `Ctrl+F` pick IS trusted** and its tracklist is deliberately not re-checked.
 
 ## LOCKED - the conversation does not happen
 `docs/LOCKED-CODE.md` is binding. **Every proposal touching the CD path opens with
@@ -123,10 +138,10 @@ never substituted for each other. Fixed in `f759781`; never re-litigated.
 
 ## Where the project is
 **Phases 0-4 COMPLETE** (2026-07-04): every platform call behind a seam on both
-platforms, Linux port done, streaming source is a real loadable plugin
-(`remoct_stream.{so,dll}`) proven byte-identical to compiled-in. Detail in
-`docs/roadmap.md` / `docs/architecture.md` / the phase-4 handoff. **"Fix iHeart and
-ship without rebuilding the host" is literally true.**
+platforms, Linux port done, streaming is a real loadable plugin
+(`remoct_stream.{so,dll}`) proven byte-identical to compiled-in - so **"fix iHeart
+and ship without rebuilding the host" is literally true.** Detail in
+`docs/roadmap.md` / `docs/architecture.md`.
 
 **Released:** 1.5.0 and 1.6.0 (2026-07-27), both merged to `main` and tagged.
 1.5.0 = per-track rip selection + the 17-slice `[Library]` section + the CD
@@ -170,11 +185,9 @@ drains, so a held drag starves it to **zero** - which is why a MOVE repaints fro
 what made the crash findable - do not silence them.
 
 ## Earlier flights (detail in the matching handoffs)
-**2026-07-16:** .opus/.wv/.ogg playback via custom miniaudio backends; RIP OVERHAUL
-(`IEncoder` seam, FLAC/MP3/WAV/Opus/WavPack, modal digits 1-5, one verified read).
-**2026-07-17:** stream-record complete (^E, `[REC]`), MP3 tag read+write,
-log-semantics, radio-art staleness, THE ABI OPENED ONCE (`254baca`, additive, no
-version bump), batch ReplayGain (^O).
+**07-16:** .opus/.wv/.ogg playback; RIP OVERHAUL (`IEncoder` seam, 5 formats).
+**07-17:** stream-record (^E), MP3 tag write, THE ABI OPENED ONCE (`254baca`,
+additive, no bump), batch RG (^O).
 
 ## Deep knowledge - read the matching file when a task touches it
 - Roadmap, phases, parked items, decisions → `docs/roadmap.md`

@@ -48,7 +48,7 @@ enum class RightPane { Playlist, Visualizer, Help, TrackInfo, Bookmarks, Lyrics,
 enum class SearchSource { Playlist, Browser };   // which list \-search targets (from focus_)
 
 // Modal overlays drawn on top of the normal layout
-enum class UIOverlay { None, RipConfirm, MBSearch, RecPanel, ConvertScope, ConvertConfirm, PlaylistFormat, PodcastPlayConflict, PodcastIndexCreds, LibraryRoot };
+enum class UIOverlay { None, RipConfirm, MBSearch, MBPick, RecPanel, ConvertScope, ConvertConfirm, PlaylistFormat, PodcastPlayConflict, PodcastIndexCreds, LibraryRoot };
 
 class UIManager {
 public:
@@ -560,7 +560,6 @@ private:
     MBLookup    mb_lookup_;
     std::atomic<bool> mb_fetching_ { false };
     std::string mb_error_;    // protected by mb_mutex_
-    std::string mb_album_;    // protected by mb_mutex_
     MBRelease   mb_release_;  // cached full release for ripping, protected by mb_mutex_
     std::mutex  mb_mutex_;
     // Set true by a worker callback once mb_release_ is cached; the run loop then
@@ -568,7 +567,43 @@ private:
     // ever be touched by the UI thread (its entries_ vector is unsynchronised),
     // so worker callbacks never call playlist_ methods directly.
     std::atomic<bool> mb_titles_pending_ { false };
-    void applyReleaseTitles(const MBRelease& rel);   // UI thread only
+    // Returns the pick it applied, so the run loop can open the medium stage
+    // when the disc was assumed rather than determined. Computing it twice would
+    // be two chances to disagree.
+    DiscPick applyReleaseTitles(const MBRelease& rel);   // UI thread only
+
+    // ── The release / medium picker (^R), two stages in one overlay ──────────
+    // Stage 0 chooses between the releases a disc ID resolves to; stage 1
+    // chooses the medium when the chosen release cannot resolve one by track
+    // count. Each stage is skipped when it has nothing to ask: one candidate
+    // skips stage 0, an unambiguous release skips stage 1. Mellon Collie's
+    // disc 2 is the case that needs both.
+    struct MBPickState {
+        int  stage  = 0;                  // 0 = release list, 1 = medium list
+        int  cursor = 0;
+        int  n_physical = 0;              // the disc's audio track count
+        std::vector<MBRelease> cands;     // stage 0 rows (guarded by mb_mutex_)
+        MBRelease chosen;                 // stage 1's release
+        std::string note;                 // truncation notice, or ""
+    } mb_pick_;
+    WINDOW* mb_pick_win_ = nullptr;       // cached modal window
+    // Set by a worker callback, drained by the run loop: overlays are UI-thread
+    // state and a worker must never open one directly (the mb_search_close_
+    // pending_ pattern, which exists for exactly this reason).
+    std::atomic<bool> mb_pick_open_pending_ { false };
+    void drawMBPick();
+    void handleMBPickInput(int ch);
+    void openMediumStage(const MBRelease& rel, int n_physical);
+    void applyChosenRelease(const MBRelease& rel);   // UI thread only
+
+    // The medium a PERSON chose, 0 = nobody has. Guarded by mb_mutex_ and
+    // cleared wherever mb_release_ is: it describes the disc in the drive, so a
+    // stale value surviving an eject would mislabel the next one.
+    int mb_disc_override_ = 0;
+    // The pick every consumer should use: the track-count result, with the
+    // user's choice applied when there is one. One place, so the three sites
+    // that ask cannot answer differently.
+    DiscPick resolvedPick(const MBRelease& rel, int n_physical) const;
 
     // ── MusicBrainz manual search modal (Ctrl+F) ──────────────────────────────
     struct MBSearchState {

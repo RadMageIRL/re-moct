@@ -1087,6 +1087,52 @@ target_link_libraries(m4a_encoder_test PRIVATE
 add_test(NAME m4a_encoder_test COMMAND m4a_encoder_test)
 set_tests_properties(m4a_encoder_test PROPERTIES TIMEOUT 120)
 
+# disc-tag (release/disc picker P5) - the disc number written into each taggable
+# container and read back by the SHIPPING scanner. Links the real encoders (a tag
+# in a fake container proves nothing about the tagger) and LibraryScanner.cpp, so
+# assertion (C) is scanCollection() itself rather than a re-implementation of it.
+# Deliberately does NOT link CDRipper.cpp: the writer under test is DiscTag.h,
+# which tagFile calls, and pulling the rip TU in would drag CD I/O and the HTTP
+# seam into a test that touches neither. Both matrix jobs.
+add_executable(disc_tag_test
+    disc_tag_test.cpp
+    ${CMAKE_SOURCE_DIR}/src/LibraryScanner.cpp
+    ${CMAKE_SOURCE_DIR}/src/EncoderFactory.cpp
+    ${CMAKE_SOURCE_DIR}/src/FlacEncoder.cpp
+    ${CMAKE_SOURCE_DIR}/src/Mp3Encoder.cpp
+    ${CMAKE_SOURCE_DIR}/src/WavEncoder.cpp
+    ${CMAKE_SOURCE_DIR}/src/OpusRipEncoder.cpp
+    ${CMAKE_SOURCE_DIR}/src/WavPackEncoder.cpp
+    ${CMAKE_SOURCE_DIR}/src/M4aEncoder.cpp
+    ${CMAKE_SOURCE_DIR}/src/Mp4Chapters.cpp
+    ${CMAKE_SOURCE_DIR}/src/Log.cpp
+)
+target_include_directories(disc_tag_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/lib
+    ${FLAC_INCLUDE} ${LAME_INCLUDE} ${FDKAAC_INCLUDE}
+    ${OPUS_INCLUDE} ${OPUS_INCLUDE}/opus ${WAVPACK_INCLUDE}
+    ${TAGLIB_INCLUDE_DIRS})
+target_link_libraries(disc_tag_test PRIVATE
+    ${TAGLIB_LIBRARIES} ${FLAC_LIB} ${LAME_LIB} ${FDKAAC_LIB}
+    ${OPUSENC_LIB} ${OPUSFILE_LIB} ${OPUS_LIB}
+    ${VORBISFILE_LIB} ${VORBIS_LIB} ${OGG_LIB} ${WAVPACK_LIB}
+    $<$<PLATFORM_ID:Linux>:dl> $<$<PLATFORM_ID:Linux>:pthread> $<$<PLATFORM_ID:Linux>:m>)
+if(WIN32 AND REMOCT_STATIC_PROBE)
+    target_compile_definitions(disc_tag_test PRIVATE FLAC__NO_DLL)
+endif()
+add_test(NAME disc_tag_test COMMAND disc_tag_test)
+set_tests_properties(disc_tag_test PROPERTIES TIMEOUT 120)
+
+# disc-pick (release/disc picker P3 part 1) - the medium identification and the
+# three surfaces that now report an ASSUMED disc instead of falling back to 1 in
+# silence. Fixtures are the two real discs (FFXI PREMIUM BOX, Mellon Collie), so
+# no drive is needed. MBLookup.h's free functions are header-only with no
+# dependency beyond std, so this target links nothing at all. Both matrix jobs.
+add_executable(disc_pick_test disc_pick_test.cpp)
+target_include_directories(disc_pick_test PRIVATE ${CMAKE_SOURCE_DIR}/include)
+add_test(NAME disc_pick_test COMMAND disc_pick_test)
+set_tests_properties(disc_pick_test PROPERTIES TIMEOUT 60)
+
 # ── The grouping target: `cmake --build build --target remoct_tests` ─────────
 # What install.sh --tests-only builds. Rather than list forty-odd names here -
 # a list that would go stale the first time a slice forgets to update it - ask

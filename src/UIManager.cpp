@@ -100,6 +100,38 @@ static void sclog(const char* fmt, ...) {
 
 namespace fs = std::filesystem;
 
+namespace {
+// ── The one place a release becomes the label a user reads ──────────────────
+// P4. This used to be built at THREE callback sites in TWO formats: the ^R disc
+// lookup produced "Title (Year)" with no artist at all, while both ^F paths
+// produced "Artist - Title (Year)" - so the same indicator said different things
+// depending on which key had fetched the metadata.
+//
+// Composed AT THE DRAW rather than stored. The string it replaced (`mb_album_`)
+// was folded display text held in member state, which is exactly the shape
+// 1.6.1's "raw in, fold at the draw" rule exists to prevent: the fold belongs
+// here, at the point of display, and `mb_release_` stays raw for the scrobblers
+// and the tag writers that read it.
+//
+// The disc part appears only for a real multi-disc set. A default-constructed
+// DiscPick has total == 1, so a caller with no disc resolved simply omits it.
+//
+// DELIBERATELY OUTSIDE the #ifdef PDCURSES block below. The anonymous namespace
+// down there holds the wingui trampolines and is Windows-only; putting this in
+// it compiled cleanly on Windows and deleted it on Linux. Nothing here is
+// platform-specific and every caller is common.
+std::string releaseLabel(const MBRelease& rel, const DiscPick& pick = DiscPick{}) {
+    if (rel.title.empty()) return {};
+    std::string s;
+    if (!rel.artist.empty()) s = foldForDisplay(rel.artist) + " - ";
+    s += foldForDisplay(rel.title);
+    if (rel.date.size() >= 4) s += " (" + rel.date.substr(0, 4) + ")";
+    if (pick.total > 1)
+        s += " - Disc " + std::to_string(pick.disc) + "/" + std::to_string(pick.total);
+    return s;
+}
+}  // namespace
+
 #ifdef PDCURSES
 #include <dwmapi.h>   // DwmSetWindowAttribute — OS-matching (dark) title bar
 // wingui global (pdcdisp.c), UNICODE build => wchar_t[128]. Declared at global
@@ -448,6 +480,7 @@ UIManager::~UIManager() {
     if (podcast_chap_thread_.joinable()) podcast_chap_thread_.join();    // chapters fetch is bounded by its 15s timeout
     flushPodcastProgress();   // persist the resume position if quitting mid-episode
     if (mb_search_win_) { delwin(mb_search_win_); mb_search_win_ = nullptr; }
+    if (mb_pick_win_)   { delwin(mb_pick_win_);   mb_pick_win_   = nullptr; }
 #ifdef PDCURSES
     // Remember the wingui window size for next launch (screen_rows_/cols_ track the
     // live size via resizeWindows). Only rewrite config when it actually changed.
@@ -1287,9 +1320,12 @@ void UIManager::ejectDrive(const std::string& drive_entry) {
         mb_fetching_.store(false);
         {
             std::lock_guard<std::mutex> lk(mb_mutex_);
-            mb_album_.clear();
             mb_error_.clear();
             mb_release_ = {};
+            // Disc-scoped: a medium chosen for THIS disc says nothing about the next
+            // one, and a stale override would silently mislabel it.
+            mb_disc_override_ = 0;
+            mb_pick_.cands.clear();
         }
     }
     // Send the physical eject on a fresh seam handle - for a drive RE-MOCT never
@@ -1392,9 +1428,12 @@ bool UIManager::reopenCDForAction(const std::string& drive) {
     mb_fetching_.store(false);
     {
         std::lock_guard<std::mutex> lk(mb_mutex_);
-        mb_album_.clear();
         mb_error_.clear();
         mb_release_ = {};
+        // Disc-scoped: a medium chosen for THIS disc says nothing about the next
+        // one, and a stale override would silently mislabel it.
+        mb_disc_override_ = 0;
+        mb_pick_.cands.clear();
     }
     cd_ripper_.cancel();
     showTrackToast("CD ejected", "Disc removed", "");
@@ -1679,9 +1718,12 @@ void UIManager::run() {
             mb_fetching_.store(false);
             {
                 std::lock_guard<std::mutex> lk(mb_mutex_);
-                mb_album_.clear();
                 mb_error_.clear();
                 mb_release_ = {};
+                // Disc-scoped: a medium chosen for THIS disc says nothing about the next
+                // one, and a stale override would silently mislabel it.
+                mb_disc_override_ = 0;
+                mb_pick_.cands.clear();
             }
             cd_ripper_.cancel();
             ui_overlay_ = UIOverlay::None;
@@ -1706,8 +1748,32 @@ void UIManager::run() {
             // mb_release_ can't tear the copy.
             MBRelease rel_snapshot;
             { std::lock_guard<std::mutex> lk(mb_mutex_); rel_snapshot = mb_release_; }
-            applyReleaseTitles(rel_snapshot);
+            const DiscPick applied = applyReleaseTitles(rel_snapshot);
+            // ONE place decides that the medium stage is needed, so every route
+            // into a release - ^R with one candidate, ^R with several, ^F - gets
+            // the same treatment without each remembering to ask. `ambiguous()`
+            // is already false once the user has chosen, so re-titling after a
+            // choice cannot reopen the stage that made it.
+            if (applied.ambiguous() && ui_overlay_ == UIOverlay::None) {
+                int n_phys = 0;
+                for (std::size_t k = 0; k < playlist_.size(); ++k)
+                    if (cdTrackNumber(playlist_.at(k).path) >= 1) ++n_phys;
+                openMediumStage(rel_snapshot, n_phys);
+            }
             redraw_needed_.store(true);
+        }
+        // A disc-ID lookup came back with more than one release: open the picker
+        // here, on the UI thread. Overlays are UI-thread state (the reason
+        // mb_search_close_pending_ exists), so the worker only raises a flag.
+        if (mb_pick_open_pending_.exchange(false)) {
+            std::size_t n = 0;
+            { std::lock_guard<std::mutex> lk(mb_mutex_); n = mb_pick_.cands.size(); }
+            if (n >= 2 && ui_overlay_ == UIOverlay::None) {
+                mb_pick_.stage  = 0;
+                mb_pick_.cursor = 0;
+                ui_overlay_     = UIOverlay::MBPick;
+                redraw_needed_.store(true);
+            }
         }
         if (mb_search_close_pending_.load()) {
             mb_search_close_pending_.store(false);
@@ -1853,6 +1919,8 @@ void UIManager::run() {
                 handleGotoInput(ch);
             else if (ui_overlay_ == UIOverlay::MBSearch)
                 handleMBSearchInput(ch);
+            else if (ui_overlay_ == UIOverlay::MBPick)
+                handleMBPickInput(ch);
             else
                 handleInput(ch);
             if (ui_overlay_ == UIOverlay::None)
@@ -2040,6 +2108,7 @@ void UIManager::drawAnimatedPanes() {
 void UIManager::drawOverlay() {
     if (ui_overlay_ == UIOverlay::RipConfirm) drawRipConfirm();
     else if (ui_overlay_ == UIOverlay::MBSearch) drawMBSearch();
+    else if (ui_overlay_ == UIOverlay::MBPick)   drawMBPick();
     else if (ui_overlay_ == UIOverlay::RecPanel) drawRecPanel();
     else if (ui_overlay_ == UIOverlay::ConvertScope) drawConvertScope();
     else if (ui_overlay_ == UIOverlay::ConvertConfirm) drawConvertConfirm();
@@ -2287,12 +2356,22 @@ void UIManager::drawRipConfirm() {   // slice 6: common (ncurses + portable CDSo
     std::string album_str;
     std::string drive_model;
     int drive_offset = 0;
+    DiscPick    disc_pick;
+    bool        have_release = false;
     {
         std::lock_guard<std::mutex> lk(mb_mutex_);
-        out_dir      = CDRipper::buildOutputDir(mb_release_);
+        // P4: the pick drives BOTH the path shown below and the disc line, off
+        // the same track count the rip will use (cd.tracks()), so this modal
+        // cannot promise a folder the worker then disagrees with.
+        disc_pick    = resolvedPick(mb_release_, ntracks);
+        have_release = !mb_release_.title.empty();
+        out_dir      = CDRipper::buildOutputDir(mb_release_, disc_pick.disc);
         album_str    = mb_release_.artist.empty() ? mb_release_.title
                      : mb_release_.artist + " - " + mb_release_.title;
+        if (mb_release_.date.size() >= 4)
+            album_str += " (" + mb_release_.date.substr(0, 4) + ")";
     }
+    album_str = foldForDisplay(album_str);
     drive_model  = audio_.cdSource().driveModel();
     drive_offset = audio_.cdSource().driveOffset();
 
@@ -2303,7 +2382,31 @@ void UIManager::drawRipConfirm() {   // slice 6: common (ncurses + portable CDSo
 
     mvwprintw(w, 2, 3, "Drive  %s\\   offset %+d samples",
               cd.driveLetter().c_str(), drive_offset);
-    mvwprintw(w, 3, 3, "Disc   %d tracks", ntracks);
+    // RELABELLED from "Disc %d tracks". That is a TRACK COUNT, and with a real
+    // disc number now sitting on the same row it read as one number about discs.
+    mvwprintw(w, 3, 3, "Tracks %d", ntracks);
+
+    // ── Which disc, and whether we actually know ──────────────────────────
+    // The last screen before bytes are written, so this is where an assumed
+    // medium has to be visible. Right-aligned on the track-count row when the
+    // set has more than one disc; the reason goes on row 5, which is otherwise
+    // a spacer, so nothing below moves and the box does not change height.
+    if (have_release && disc_pick.total > 1) {
+        char dbuf[64];
+        std::snprintf(dbuf, sizeof(dbuf), "Disc %d of %d%s",
+                      disc_pick.disc, disc_pick.total,
+                      disc_pick.ambiguous() ? "  ASSUMED" : "");
+        const int dx = BOX_W - (int)std::strlen(dbuf) - 3;
+        if (disc_pick.ambiguous()) wattron(w, COLOR_PAIR(CP_STATUS_ERR) | A_BOLD);
+        mvwaddstr(w, 3, dx, dbuf);
+        if (disc_pick.ambiguous()) wattroff(w, COLOR_PAIR(CP_STATUS_ERR) | A_BOLD);
+    }
+    if (have_release && disc_pick.ambiguous()) {
+        const std::string note = discAmbiguityNote(disc_pick, ntracks);
+        wattron(w, COLOR_PAIR(CP_STATUS_ERR) | A_BOLD);
+        mvwaddnstr(w, 5, 3, note.c_str(), BOX_W - 6);
+        wattroff(w, COLOR_PAIR(CP_STATUS_ERR) | A_BOLD);
+    }
 
     // Album line + the live selection summary (or the deselect-all hint)
     // right-aligned on the same row. The album truncates to keep the
@@ -2611,7 +2714,29 @@ void UIManager::drawRecPanel() {
 // inside it), which has no internal locking, so it must never run on a worker
 // thread. Worker callbacks cache the release and raise mb_titles_pending_; the run
 // loop drains that flag and calls this with a snapshot taken under mb_mutex_.
-void UIManager::applyReleaseTitles(const MBRelease& rel) {
+// The one pick every consumer uses. Caller must hold mb_mutex_ (it reads
+// mb_disc_override_). Track counts decide unless a person has said otherwise.
+DiscPick UIManager::resolvedPick(const MBRelease& rel, int n_physical) const {
+    DiscPick p = pickDisc(rel, n_physical);
+    if (mb_disc_override_ >= 1) p = withUserDisc(p, mb_disc_override_);
+    return p;
+}
+
+// Adopt a release: cache it, drop any medium the user chose for the PREVIOUS
+// one, and ask the run loop to re-title the playlist. UI thread only.
+void UIManager::applyChosenRelease(const MBRelease& rel) {
+    {
+        std::lock_guard<std::mutex> lk(mb_mutex_);
+        mb_release_       = rel;
+        // A choice made about a different release means nothing about this one.
+        mb_disc_override_ = 0;
+        mb_error_.clear();
+    }
+    mb_titles_pending_.store(true);
+    redraw_needed_.store(true);
+}
+
+DiscPick UIManager::applyReleaseTitles(const MBRelease& rel) {
     // Multi-disc: scope titles to the disc currently in the drive.
     //
     // COUNT NUMBERED TRACKS ONLY. pickDiscForTrackCount identifies the medium by
@@ -2622,7 +2747,24 @@ void UIManager::applyReleaseTitles(const MBRelease& rel) {
     int n_phys_md = 0;
     for (std::size_t k = 0; k < playlist_.size(); ++k)
         if (cdTrackNumber(playlist_.at(k).path) >= 1) ++n_phys_md;
-    const int cur_disc = pickDiscForTrackCount(rel, n_phys_md);
+    DiscPick pick;
+    { std::lock_guard<std::mutex> lk(mb_mutex_); pick = resolvedPick(rel, n_phys_md); }
+    const int cur_disc = pick.disc;
+
+    // THIS is the moment the wrong titles appear on screen. When the medium was
+    // assumed rather than determined, every row below is about to be filled from
+    // some other disc's tracklist, and until now nothing said so - the rip that
+    // exposed this wrote a whole disc of wrong titles in silence.
+    //
+    // Said here rather than at the rip: by then the titles have been on screen
+    // for a while and are already in the files. mb_status_ and its tick counter
+    // are written by worker threads under mb_mutex_; this runs on the UI thread,
+    // holding no lock, so take it.
+    if (const std::string note = discAmbiguityNote(pick, n_phys_md); !note.empty()) {
+        std::lock_guard<std::mutex> lk(mb_mutex_);
+        mb_status_       = note;
+        mb_status_ticks_ = 0;
+    }
     for (std::size_t i = 0; i < playlist_.size(); ++i) {
         int tnum = cdTrackNumber(playlist_.at(i).path);
         if (tnum < 0) continue;
@@ -2649,6 +2791,25 @@ void UIManager::applyReleaseTitles(const MBRelease& rel) {
             }
         }
     }
+    return pick;
+}
+
+// ─── The picker's medium stage ───────────────────────────────────────────────
+// Opened whenever the RESOLVED release cannot name a medium by track count -
+// after a multi-candidate pick, after a single-candidate auto-apply, and after a
+// ^F search. It is not a sub-step of the release stage: Mellon Collie's release
+// can be perfectly correct and still leave the medium undecided, which is the
+// case a release picker alone would not have helped with.
+void UIManager::openMediumStage(const MBRelease& rel, int n_physical) {
+    mb_pick_.stage      = 1;
+    mb_pick_.chosen     = rel;
+    mb_pick_.n_physical = n_physical;
+    mb_pick_.note.clear();
+    // Preselected on disc 1 - today's silent fallback - so Enter reproduces the
+    // old behaviour in one keystroke. The default is PRESELECTED, not preapplied.
+    mb_pick_.cursor     = 0;
+    ui_overlay_         = UIOverlay::MBPick;
+    redraw_needed_.store(true);
 }
 
 
@@ -2963,10 +3124,14 @@ void UIManager::drawTitleBar() {
     // tag + album so stop() no longer visibly forgets the disc.
     if (!cd_drive_letter_.empty()) modes += " [CD]";
     if (mb_fetching_.load())  modes += " [MB...]";
-    else {
+    else if (!cd_drive_letter_.empty()) {
+        // P4: composed here, from the raw release plus the resolved disc, so
+        // every path that can load metadata produces the SAME text. Track count
+        // read before the lock - audio_ is not mb_mutex_'s to guard.
+        const int ntr = (int)audio_.cdSource().tracks().size();
         std::lock_guard<std::mutex> lk(mb_mutex_);
-        if (!mb_album_.empty() && !cd_drive_letter_.empty())
-            modes += " [" + mb_album_ + "]";
+        const std::string lbl = releaseLabel(mb_release_, resolvedPick(mb_release_, ntr));
+        if (!lbl.empty()) modes += " [" + lbl + "]";
     }
     if (sleep_minutes_ > 0) {
         auto elapsed = std::chrono::duration_cast<std::chrono::minutes>(
@@ -5746,9 +5911,14 @@ void UIManager::drawCmdLine() {
         mb_error_snap  = mb_error_;
     }
     if (!mb_status_snap.empty()) {
+        // "ambiguous" joins the existing markers so the assumed-disc note draws
+        // as a warning instead of as a green OK line. Same phrase-matching idiom
+        // already here - not a new mechanism, and discAmbiguityNote() is the one
+        // producer of that word, so the coupling has exactly one end to check.
         bool is_err = (mb_status_snap.find("No results") != std::string::npos
                     || mb_status_snap.find("error")      != std::string::npos
-                    || mb_status_snap.find("failed")     != std::string::npos);
+                    || mb_status_snap.find("failed")     != std::string::npos
+                    || mb_status_snap.find("ambiguous")  != std::string::npos);
         wattron(win_cmdline_, COLOR_PAIR(is_err ? CP_STATUS_ERR : CP_STATUS_OK) | A_BOLD);
         mvwaddnstr(win_cmdline_, 0, 1, mb_status_snap.c_str(), screen_cols_ - 2);
         wattroff(win_cmdline_, COLOR_PAIR(is_err ? CP_STATUS_ERR : CP_STATUS_OK) | A_BOLD);
@@ -6497,8 +6667,9 @@ void UIManager::lastfmBeginAuth() {
 
 void UIManager::handleInput(int ch) {
     // slice 6: overlay input is common. The RipConfirm modal (^Y) is live on Linux;
-    // the MBSearch line is inert there (^F stays gated, so it never opens).
+    // both MB modals are live on Linux now (^F is no longer gated).
     if (ui_overlay_ == UIOverlay::MBSearch) { handleMBSearchInput(ch); return; }
+    if (ui_overlay_ == UIOverlay::MBPick)   { handleMBPickInput(ch);   return; }
     // ── Podcast Index first-use credentials modal (slice 6): [S] open the signup page,
     // [E] enter key+secret now (chains to the input bar), [Esc]/[C] cancel (nothing set).
     if (ui_overlay_ == UIOverlay::PodcastIndexCreds) {
@@ -6832,8 +7003,12 @@ void UIManager::handleInput(int ch) {
         std::string out_dir;
         {
             std::lock_guard<std::mutex> lk(mb_mutex_);
-            rel     = mb_release_;
-            out_dir = CDRipper::buildOutputDir(rel);
+            rel = mb_release_;
+            // P4: the COMPLETE path, "Disc N" included, so this status line and
+            // the confirm modal name the folder the rip actually writes to. The
+            // pick comes from `tracks` - the same vector start() is handed two
+            // statements down - so the worker cannot resolve a different disc.
+            out_dir = CDRipper::buildOutputDir(rel, resolvedPick(rel, (int)tracks.size()).disc);
         }
         rip_status_    = "Initializing rip...  Output: " + out_dir;
         rip_msg_ticks_ = 0;
@@ -6889,12 +7064,14 @@ void UIManager::handleInput(int ch) {
                         + " marked row(s) matched no track on this disc and were skipped";
             rip_msg_ticks_ = 0;
         }
+        int disc_override = 0;
+        { std::lock_guard<std::mutex> lk(mb_mutex_); disc_override = mb_disc_override_; }
         cd_ripper_.start(audio_, tracks, out_dir, rel, chosen, std::move(opt),
             [this](const RipProgress& p) {
                 rip_status_ = p.status_msg;
                 rip_msg_ticks_ = 0;
                 redraw_needed_.store(true);
-            }, sel.toc_indices, sel.htoa);
+            }, sel.toc_indices, sel.htoa, disc_override);
         cd_sel_.clear();   // consumed, mirroring how marked_ is cleared after a convert
         return;
     }
@@ -7883,9 +8060,9 @@ void UIManager::handleInput(int ch) {
         // scrobbler-login and radio-URL keys from the Linux build (Dos-found:
         // ^U/^G/^B dead while ^N/^T/^L/^Q worked — a key probe proved the tty
         // delivers all of them; the gap was here). Gate each key on WHY:
-        // ^D = common since slice 4 (Unix-socket IIpc); ^F = the MBSearch overlay
-        // ENTRY stays deferred (its draw/input handlers are portable, but the
-        // feature is Windows-only for now); ^Y/^R = common since slice 6 (SG_IO CD).
+        // ^D = common since slice 4 (Unix-socket IIpc); ^F = COMMON as of the
+        // release/disc picker - the last thing keeping it Windows-only was the
+        // gate itself; ^Y/^R = common since slice 6 (SG_IO CD).
         case 4:  // Ctrl+D — toggle Discord Rich Presence
             config_.discord_presence = !config_.discord_presence;
             config_.save();
@@ -7905,15 +8082,19 @@ void UIManager::handleInput(int ch) {
             else
                 showTrackToast("ListenBrainz: logged in as " + config_.listenbrainz_user, "", "");
             break;
-#ifdef _WIN32
         case 6:  // Ctrl+F — MusicBrainz / Discogs manual search
+            // UNGATED. This was #ifdef _WIN32 with the reason "the feature is
+            // Windows-only for now", and the tree said twice that the draw and
+            // input handlers were already portable. The picker this feeds is
+            // common, MBLookup is entirely core::IHttp + std, and the modal is
+            // ncurses and std::string throughout - so the gate had nothing left
+            // to protect. Linux had NO manual metadata override at all until now.
             if (ui_overlay_ == UIOverlay::None && !mb_lookup_.isActive()) {
                 mb_search_ = {};
                 ui_overlay_ = UIOverlay::MBSearch;
                 redraw_needed_.store(true);
             }
             break;
-#endif
         case 7:  // Ctrl+G — Last.fm login (stateful: request token, then exchange)
             if (!config_.lastfm_session.empty()) {
                 // Already logged in — report it, mirroring ^B. (Re-auth = clear
@@ -8017,42 +8198,74 @@ void UIManager::handleInput(int ch) {
             }
             break;
         case 18:  // Ctrl+R — MusicBrainz CD lookup
-            if (!cd_drive_letter_.empty() && !mb_fetching_.load()) {
-                if (mb_lookup_.isActive()) break;  // already in progress
+            // Every refusal below now SAYS SO. All but one used to be a bare
+            // `break`, so a press could do nothing at all with no feedback -
+            // which is how repeated presses came to look like they were cycling
+            // through candidates. Nothing in the build ever cycled: each press
+            // is a fresh identical request that replaces the previous answer.
+            if (cd_drive_letter_.empty()) {
+                showTrackToast("MB: no disc loaded", "", "");
+                break;
+            }
+            if (mb_fetching_.load() || mb_lookup_.isActive()) {
+                showTrackToast("MB: lookup already running", "", "");
+                break;
+            }
+            {
                 // Slice 3: look up a stopped-but-loaded disc. Gate on loaded, not
                 // cdMode — reopen the handle first (stop() closed it); bail on an
                 // empty tray (reopenCDForAction purges + toasts).
                 if (!reopenCDForAction(cd_drive_letter_)) break;
                 const auto& cd = audio_.cdSource();
-                if (cd.tracks().empty()) break;
+                if (cd.tracks().empty()) {
+                    showTrackToast("MB: this disc has no audio tracks", "", "");
+                    break;
+                }
                 mb_fetching_.store(true);
                 redraw_needed_.store(true);
                 int first = cd.tracks().front().number;
                 int last  = cd.tracks().back().number;
+                const int n_phys = (int)cd.tracks().size();
                 auto offsets = cd.tocOffsets();
                 mb_lookup_.lookup(first, last, offsets,
-                    [this](bool ok, const MBRelease& rel, const std::string& err) {
+                    [this, n_phys](bool ok, std::vector<MBRelease> rels,
+                                   const std::string& note) {
                         // All writes to UIManager state from worker thread
                         // must be under mb_mutex_ to prevent races with UI reads
                         std::lock_guard<std::mutex> lk(mb_mutex_);
                         mb_fetching_.store(false);
-                        if (!ok) {
-                            mb_error_ = err;
+                        if (!ok || rels.empty()) {
+                            mb_error_ = ok ? "No releases matched this disc" : note;
                             redraw_needed_.store(true);
                             return;
                         }
                         mb_error_.clear();
-                        mb_release_ = rel;  // cache for ripping
-                        // playlist_ is UI-thread-owned: defer the title apply to
-                        // the run loop (mb_release_ is cached above).
-                        mb_titles_pending_.store(true);
-                        if (!rel.title.empty())
-                            mb_album_ = foldForDisplay(rel.title) + (rel.date.size() >= 4
-                                       ? " (" + rel.date.substr(0,4) + ")" : "");
+                        mb_pick_.cands      = std::move(rels);
+                        mb_pick_.note       = note;      // "" unless truncated
+                        mb_pick_.n_physical = n_phys;
+
+                        if (mb_pick_.cands.size() == 1) {
+                            // ONE candidate: nothing to choose, so no modal. This
+                            // is most discs, and a dialog on every lookup would
+                            // train the user to dismiss the one that matters.
+                            mb_release_       = mb_pick_.cands.front();
+                            mb_disc_override_ = 0;
+                            mb_titles_pending_.store(true);
+                            // The run loop still opens the MEDIUM stage if this
+                            // single release cannot name a disc - Mellon Collie
+                            // needs that even when the release is not in doubt.
+                        } else {
+                            // Several: the choice is the user's. Nothing is
+                            // applied yet, so Escape genuinely leaves the
+                            // previous state alone.
+                            mb_status_       = std::to_string(mb_pick_.cands.size())
+                                             + " releases match this disc"
+                                             + (note.empty() ? "" : " (" + note + ")");
+                            mb_status_ticks_ = 0;
+                            mb_pick_open_pending_.store(true);
+                        }
                         redraw_needed_.store(true);
                     });
-            } else if (cd_drive_letter_.empty()) {
-                // No disc loaded — silently ignore
             }
             break;
         case 'Q':
@@ -12464,6 +12677,213 @@ void UIManager::drawConvertConfirm() {
     wrefresh(w); delwin(w);
 }
 
+// ─── The release / medium picker (^R) ────────────────────────────────────────
+// Its own overlay rather than a mode bolted onto MBSearch: that modal is two
+// text fields over a list of MBSearchResult, this is no text fields over a list
+// of MBRelease, and threading a flag through both handlers would make one
+// function mean two things. What IS shared is formatCandidateRow() - the two
+// lists must look identical, because Dos already reads the ^F rows fluently.
+void UIManager::drawMBPick() {
+    const int BOX_W = std::min(screen_cols_ - 4, 76);
+    const int BOX_H = std::min(screen_rows_ - 4, 22);
+    int y0 = (screen_rows_ - BOX_H) / 2;
+    int x0 = (screen_cols_ - BOX_W) / 2;
+    if (y0 < 0) y0 = 0;
+    if (x0 < 0) x0 = 0;
+
+    // Snapshot under the lock: the candidate vector is written by the lookup
+    // worker (same discipline drawMBSearch uses).
+    int stage, cursor, n_phys;
+    std::string note;
+    std::vector<MBRelease> cands;
+    MBRelease chosen;
+    {
+        std::lock_guard<std::mutex> lk(mb_mutex_);
+        stage  = mb_pick_.stage;   cursor = mb_pick_.cursor;
+        n_phys = mb_pick_.n_physical;
+        note   = mb_pick_.note;
+        if (stage == 0) cands = mb_pick_.cands; else chosen = mb_pick_.chosen;
+    }
+
+    if (!mb_pick_win_ || getmaxx(mb_pick_win_) != BOX_W
+                      || getmaxy(mb_pick_win_) != BOX_H) {
+        if (mb_pick_win_) { delwin(mb_pick_win_); mb_pick_win_ = nullptr; }
+        mb_pick_win_ = newwin(BOX_H, BOX_W, y0, x0);
+    } else {
+        mvwin(mb_pick_win_, y0, x0);
+    }
+    WINDOW* w = mb_pick_win_;
+    if (!w) return;
+    wbkgd(w, config_.awesome_mode ? COLOR_PAIR(CP_DIM) : COLOR_PAIR(0));
+    werase(w);
+
+    const char* title = (stage == 0) ? " WHICH RELEASE IS THIS DISC? "
+                                     : " WHICH DISC OF THE SET? ";
+    panelFrame(w, title, true);
+    if (!config_.awesome_mode)
+        mvwaddstr(w, 0, (BOX_W - (int)strlen(title)) / 2, title);
+
+    const int LIST_START = 4;
+    const int LIST_ROWS  = BOX_H - LIST_START - 3;
+    const int ROW_W      = BOX_W - 4;
+
+    if (stage == 0) {
+        mvwprintw(w, 2, 3, "This disc (%d tracks) matches %d releases.",
+                  n_phys, (int)cands.size());
+        if (!note.empty()) {
+            wattron(w, COLOR_PAIR(CP_STATUS_ERR) | A_BOLD);
+            mvwaddnstr(w, 3, 3, note.c_str(), ROW_W);
+            wattroff(w, COLOR_PAIR(CP_STATUS_ERR) | A_BOLD);
+        } else {
+            mvwaddstr(w, 3, 3, "The right-hand column is the disc each one would give.");
+        }
+        int top = std::max(0, cursor - LIST_ROWS + 1);
+        for (int i = 0; i < LIST_ROWS; ++i) {
+            const int idx = top + i;
+            if (idx >= (int)cands.size()) break;
+            const MBRelease& r = cands[(std::size_t)idx];
+            // FOLD HERE, at the draw, and nowhere earlier: mb_release_ and the
+            // candidates stay raw for the scrobblers and the tag writers.
+            CandidateRow row;
+            row.artist   = foldForDisplay(r.artist);
+            row.title    = foldForDisplay(r.title);
+            row.disambig = foldForDisplay(r.disambiguation);
+            row.year     = r.date.size() >= 4 ? r.date.substr(0, 4) : "";
+            row.right    = discColumn(pickDisc(r, n_phys));
+            const std::string line = formatCandidateRow(idx, row, ROW_W);
+            const bool hi = (idx == cursor);
+            if (hi) wattron(w, COLOR_PAIR(CP_SELECTED) | A_BOLD);
+            mvwaddnstr(w, LIST_START + i, 2, line.c_str(), ROW_W);
+            if (hi) wattroff(w, COLOR_PAIR(CP_SELECTED) | A_BOLD);
+        }
+    } else {
+        int total = 1;
+        for (const auto& t : chosen.tracks) if (t.disc > total) total = t.disc;
+        mvwaddnstr(w, 2, 3, foldForDisplay(chosen.title).c_str(), ROW_W);
+        wattron(w, COLOR_PAIR(CP_STATUS_ERR) | A_BOLD);
+        mvwaddnstr(w, 3, 3,
+                   discAmbiguityNote(pickDisc(chosen, n_phys), n_phys).c_str(), ROW_W);
+        wattroff(w, COLOR_PAIR(CP_STATUS_ERR) | A_BOLD);
+        int top = std::max(0, cursor - LIST_ROWS + 1);
+        for (int i = 0; i < LIST_ROWS; ++i) {
+            const int d = top + i + 1;          // 1-based medium
+            if (d > total) break;
+            int count = 0;
+            const MBTrack* firstt = nullptr;
+            for (const auto& t : chosen.tracks)
+                if (t.disc == d) { ++count; if (!firstt || t.number < firstt->number) firstt = &t; }
+            // The FIRST TRACK TITLE is the row's whole point. Mellon Collie's two
+            // media both hold 14 tracks, so the count cannot separate them and
+            // "Mellon Collie and the Infinite Sadness" vs "Where Boys Fear to
+            // Tread" can.
+            char head[24];
+            std::snprintf(head, sizeof(head), "%2d.  %2d trk  ", d, count);
+            std::string line = head;
+            line += firstt ? foldForDisplay(firstt->title) : std::string("(no titles)");
+            if (count == n_phys) line += "   <- fits";
+            const bool hi = (top + i == cursor);
+            if (hi) wattron(w, COLOR_PAIR(CP_SELECTED) | A_BOLD);
+            mvwaddnstr(w, LIST_START + i, 2, line.c_str(), ROW_W);
+            if (hi) wattroff(w, COLOR_PAIR(CP_SELECTED) | A_BOLD);
+        }
+    }
+
+    mvwhline(w, BOX_H - 2, 1, ACS_HLINE, BOX_W - 2);
+    mvwaddstr(w, BOX_H - 1, 2,
+              "Up/Down:choose   Enter:use it   Esc:cancel (nothing applied)");
+    wrefresh(w);
+}
+
+// Input for both stages. Escape CANCELS rather than falling back to candidate 1:
+// defaulting on dismissal would be the same silent arbitrary pick this whole
+// feature exists to remove, just behind one more keystroke. The cursor starts on
+// candidate 1, so Enter still reproduces the old behaviour in one press.
+void UIManager::handleMBPickInput(int ch) {
+    int stage, cursor, rows = 0, n_phys;
+    MBRelease chosen;
+    {
+        std::lock_guard<std::mutex> lk(mb_mutex_);
+        stage = mb_pick_.stage; cursor = mb_pick_.cursor; n_phys = mb_pick_.n_physical;
+        if (stage == 0) rows = (int)mb_pick_.cands.size();
+        else {
+            chosen = mb_pick_.chosen;
+            for (const auto& t : chosen.tracks) if (t.disc > rows) rows = t.disc;
+        }
+    }
+
+    if (ch == 27) {   // Escape
+        const bool was_release_stage = (stage == 0);
+        {
+            std::lock_guard<std::mutex> lk(mb_mutex_);
+            mb_status_       = was_release_stage
+                             ? "Release not chosen - no metadata applied"
+                             : "Disc not chosen - disc 1 assumed, titles may be wrong";
+            mb_status_ticks_ = 0;
+        }
+        if (mb_pick_win_) { delwin(mb_pick_win_); mb_pick_win_ = nullptr; }
+        ui_overlay_ = UIOverlay::None;
+        redraw_needed_.store(true);
+        return;
+    }
+    // Global control keys pass through, exactly as the search modal does.
+    if (ch < 32 && ch != '\n' && ch != '\r') {
+        if (mb_pick_win_) { delwin(mb_pick_win_); mb_pick_win_ = nullptr; }
+        ui_overlay_ = UIOverlay::None;
+        redraw_needed_.store(true);
+        handleInput(ch);
+        return;
+    }
+    if (ch == KEY_UP)   {
+        std::lock_guard<std::mutex> lk(mb_mutex_);
+        if (mb_pick_.cursor > 0) { --mb_pick_.cursor; redraw_needed_.store(true); }
+        return;
+    }
+    if (ch == KEY_DOWN) {
+        std::lock_guard<std::mutex> lk(mb_mutex_);
+        if (mb_pick_.cursor < rows - 1) { ++mb_pick_.cursor; redraw_needed_.store(true); }
+        return;
+    }
+    if (ch != '\n' && ch != '\r' && ch != KEY_ENTER) return;
+
+    if (stage == 0) {
+        MBRelease pickd;
+        {
+            std::lock_guard<std::mutex> lk(mb_mutex_);
+            if (cursor < 0 || cursor >= (int)mb_pick_.cands.size()) return;
+            pickd = mb_pick_.cands[(std::size_t)cursor];
+        }
+        applyChosenRelease(pickd);
+        // Straight into the medium stage when this release still cannot name a
+        // disc - no close-then-reopen, which would flash the overlay. The run
+        // loop's opener is guarded on ui_overlay_ == None, so it will not fire
+        // a second one behind this.
+        if (pickDisc(pickd, n_phys).ambiguous()) {
+            openMediumStage(pickd, n_phys);
+        } else {
+            if (mb_pick_win_) { delwin(mb_pick_win_); mb_pick_win_ = nullptr; }
+            ui_overlay_ = UIOverlay::None;
+        }
+        redraw_needed_.store(true);
+        return;
+    }
+
+    // Stage 1: the medium. This is the producer of disc_source "user".
+    const int disc = cursor + 1;
+    {
+        std::lock_guard<std::mutex> lk(mb_mutex_);
+        mb_disc_override_ = disc;
+        mb_status_        = "Disc " + std::to_string(disc) + " of "
+                          + std::to_string(rows) + " chosen";
+        mb_status_ticks_  = 0;
+    }
+    // Re-title the playlist against the medium the user just named. ambiguous()
+    // is false once `user` is set, so this pass cannot reopen this stage.
+    mb_titles_pending_.store(true);
+    if (mb_pick_win_) { delwin(mb_pick_win_); mb_pick_win_ = nullptr; }
+    ui_overlay_ = UIOverlay::None;
+    redraw_needed_.store(true);
+}
+
 void UIManager::drawMBSearch() {
     const int BOX_W = std::min(screen_cols_ - 4, 72);
     const int BOX_H = std::min(screen_rows_ - 4, 24);
@@ -12579,20 +12999,23 @@ void UIManager::drawMBSearch() {
             const auto& r = snap_results[(size_t)idx];
             bool hi = in_list && (idx == snap_list_cursor);
 
-            std::string year  = r.date.size() >= 4 ? r.date.substr(0, 4) : r.date;
-            std::string src   = r.from_discogs ? " [D]" : "";
-            // Sanitize to ASCII first: avoids raw-multibyte mojibake under the
-            // non-UTF-8 ncurses locale, and makes the byte-based substr() below
-            // safe (it can no longer slice through a multibyte sequence).
-            std::string art_full = foldForDisplay(r.artist);
-            std::string ttl_full = foldForDisplay(r.title);
-            std::string art_s = art_full.size() > 20 ? art_full.substr(0, 19) + ">" : art_full;
-            std::string ttl_s = ttl_full.size() > 22 ? ttl_full.substr(0, 21) + ">" : ttl_full;
-
-            char line[256];
-            std::snprintf(line, sizeof(line), "%2d. %-20s  %-22s  %4s  %2s%s",
-                idx + 1, art_s.c_str(), ttl_s.c_str(),
-                year.c_str(), r.country.substr(0, 2).c_str(), src.c_str());
+            // THE SHARED FORMATTER. Both candidate lists go through
+            // formatCandidateRow so they cannot drift; the fold stays here, at
+            // the draw, which is also what makes the byte-based truncation
+            // inside it safe. The disambiguation is new and load-bearing: two
+            // MusicBrainz releases can agree on artist, title, date and country
+            // and differ only in it.
+            CandidateRow row;
+            row.artist       = foldForDisplay(r.artist);
+            row.title        = foldForDisplay(r.title);
+            row.disambig     = foldForDisplay(r.disambiguation);
+            row.year         = r.date.size() >= 4 ? r.date.substr(0, 4) : r.date;
+            row.country      = r.country.substr(0, 2);
+            row.right        = r.track_count > 0
+                             ? std::to_string(r.track_count) + "t" : std::string();
+            row.from_discogs = r.from_discogs;
+            const std::string line_s = formatCandidateRow(idx, row, BOX_W - 4);
+            const char* line = line_s.c_str();
 
             if (hi) {
                 // Selected result row — use the themeable 'selected' pair so the
@@ -12707,12 +13130,10 @@ void UIManager::handleMBSearchInput(int ch) {
                         mb_error_.clear();
                         mb_release_ = rel;
                         mb_titles_pending_.store(true);   // apply titles on UI thread
-                        if (!rel.title.empty())
-                            mb_album_ = (rel.artist.empty() ? "" : foldForDisplay(rel.artist) + " - ")
-                                      + foldForDisplay(rel.title)
-                                      + (rel.date.size() >= 4
-                                          ? " (" + rel.date.substr(0, 4) + ")" : "");
-                        mb_status_       = "Discogs: Metadata loaded - " + mb_album_;
+                        // Same composer the indicator uses. No disc here: this
+                        // runs on a worker thread and the CD track count is not
+                        // this thread's to read.
+                        mb_status_       = "Discogs: Metadata loaded - " + releaseLabel(rel);
                         mb_status_ticks_ = 0;
                         mb_search_close_pending_.store(true);
                         redraw_needed_.store(true);
@@ -12745,10 +13166,7 @@ void UIManager::handleMBSearchInput(int ch) {
                     mb_error_.clear();
                     mb_release_ = rel;
                     mb_titles_pending_.store(true);   // apply titles on UI thread
-                    if (!rel.title.empty())
-                        mb_album_ = foldForDisplay(rel.title) + (rel.date.size() >= 4
-                                   ? " (" + rel.date.substr(0, 4) + ")" : "");
-                    mb_status_       = "MB: Metadata loaded - " + mb_album_;
+                    mb_status_       = "MB: Metadata loaded - " + releaseLabel(rel);
                     mb_status_ticks_ = 0;
                     mb_search_close_pending_.store(true);
                     redraw_needed_.store(true);

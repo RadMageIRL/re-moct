@@ -7,7 +7,70 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [1.6.1] - 2026-08-07
 
+### Added
+
+- **Ripped tracks carry their disc number.** Ripping disc 3 of a seven-disc box
+  produced nineteen files whose only record of which disc they came from was the
+  name of the folder they sat in - move one file out and that was gone, and a
+  player asked to put the box in order had nothing to order it by. Every ripped
+  track now carries the disc number and the disc total in whichever field its
+  format uses for that, so other players and taggers read it as their own:
+  FLAC, MP3, Opus, WavPack and M4A. WAV has nowhere to put it and never did.
+  A hidden track before track 1 carries the same disc number as the tracks
+  beside it, because that is the disc it came from.
+  **A single-disc album is written as disc 1 of 1 rather than left blank.** That
+  is deliberate: a blank disc number used to mean both "this album is one disc"
+  and "nobody wrote one", and those are different facts. Now a blank one means
+  only that the file was not ripped by this version.
+  Files ripped before this version are not touched and do not change.
+
 ### Fixed
+
+- **A rip that could not tell which disc it had now says so instead of guessing
+  in silence.** RE-MOCT works out which disc of a set is in the drive by counting
+  its tracks and looking for the one disc in the release with that many. When
+  exactly one matches, that is the answer. When none matches, or when two discs
+  of the same set happen to hold the same number of tracks, it assumed disc 1 -
+  and said nothing at all, in the log, in the `disc.json` sidecar or on screen.
+  Ripping disc 2 of *Mellon Collie and the Infinite Sadness*, whose two discs
+  have the same track count, wrote a full disc of titles taken from disc 1, and
+  the only way to find out was to look at the finished files. The assumption is
+  unchanged - disc 1 is still what it falls back to - but it is now stated in all
+  three places, as it happens, with the reason. Every rip log now carries a
+  `Disc :` line whether the set has seven discs or one.
+- **The rip screen shows which disc it thinks you have, before it writes
+  anything.** Ripping a box set put the files in a `Disc 3` folder, and the only
+  place that number ever appeared was the "rip complete" line after the fact -
+  by which point there was nothing to do about it. The confirm screen now names
+  the release, the year and `Disc 3 of 7`, and says plainly when the disc could
+  not be determined; the line shown as the rip starts names the same folder the
+  files will actually land in. Nothing about which disc gets chosen has changed -
+  only when you find out.
+- **The album shown in the header reads the same however you looked it up.**
+  Fetching CD metadata with `Ctrl+R` showed the album and year but never the
+  artist, while searching by name with `Ctrl+F` showed all three, so the same
+  disc was described two different ways depending on which key you had pressed.
+  Both now show artist, album, year, and the disc number on a multi-disc set.
+- **You choose which release the disc is, when there is more than one answer.**
+  A disc ID identifies a piece of plastic, and the same plastic is often sold
+  several times over - as a standalone album, as part of a box, as a reissue.
+  RE-MOCT asked MusicBrainz, received every one of those, kept the first and
+  threw the rest away without ever showing them. Fetching metadata for disc 2 of
+  *Mellon Collie* returned four releases and silently used a six-disc box.
+  When a disc matches more than one release you now get the list, with the year,
+  the edition note that separates two otherwise identical entries, and a column
+  showing which disc of that set the row would give you - or `?` when it cannot
+  tell. One match still applies straight away with nothing to dismiss.
+- **And you choose which disc of the set it is, when the track counts cannot
+  say.** If the release you picked has two discs with the same number of tracks,
+  RE-MOCT now asks instead of assuming, listing each disc with its first track -
+  which is what actually tells *Tonight, Tonight* from *Where Boys Fear to
+  Tread*. The disc you choose is recorded in `disc.json` as chosen rather than
+  guessed. Escape at either question leaves things exactly as they were rather
+  than picking for you.
+- **`Ctrl+F` metadata search works on Linux.** It was Windows-only for no reason
+  that survived inspection - the screen and its key handling were already
+  portable - so Linux had no way to correct a wrong lookup at all.
 
 - **Text that is not English renders as itself.** Japanese, Chinese, Korean, Greek
   and Cyrillic titles, artists, albums and filenames were being replaced with one
@@ -87,6 +150,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   station playing Japanese writes Japanese filenames. Characters that a filename
   cannot legally contain are replaced as they always have been. This matches what
   ripping a CD has always done.
+- The rip confirm screen's `Disc N tracks` line now reads `Tracks N`. It was
+  always a count of tracks, and with a real disc number beside it the old wording
+  read as a statement about discs.
 - Curly quotes, the various dashes and hyphens, ellipses, bullets and the
   different widths of space are still folded to their plain ASCII equivalents, and
   will stay that way. That is about typography rather than language: `Don’t` and

@@ -1751,15 +1751,23 @@ void UIManager::run() {
             const DiscPick applied = applyReleaseTitles(rel_snapshot);
             // ONE place decides that the medium stage is needed, so every route
             // into a release - ^R with one candidate, ^R with several, ^F - gets
-            // the same treatment without each remembering to ask. `ambiguous()`
-            // is already false once the user has chosen, so re-titling after a
-            // choice cannot reopen the stage that made it.
-            if (applied.ambiguous() && ui_overlay_ == UIOverlay::None) {
-                int n_phys = 0;
-                for (std::size_t k = 0; k < playlist_.size(); ++k)
-                    if (cdTrackNumber(playlist_.at(k).path) >= 1) ++n_phys;
-                openMediumStage(rel_snapshot, n_phys);
-            }
+            // the same treatment without each remembering to ask.
+            //
+            // ARM A FLAG, do not open here. Opening on the spot required the
+            // screen to be free on this exact tick, and after a ^F pick it is
+            // not: that callback raises mb_titles_pending_ AND
+            // mb_search_close_pending_ together, this block runs first, and the
+            // search modal is still up - so the guard failed, the flag was
+            // already consumed, and the stage never opened at all. A ^F pick
+            // that landed on an ambiguous release silently kept disc 1, which is
+            // the exact defect this feature exists to remove, reintroduced by a
+            // drain order. The flag survives ticks; it does not care what is on
+            // screen or in what order the modals close.
+            //
+            // Not armed while the picker itself is up, or escaping stage 1 would
+            // re-arm and reopen it forever.
+            mb_medium_pending_ = applied.ambiguous()
+                              && ui_overlay_ != UIOverlay::MBPick;
             redraw_needed_.store(true);
         }
         // A disc-ID lookup came back with more than one release: open the picker
@@ -1781,6 +1789,19 @@ void UIManager::run() {
             if (mb_search_win_) { delwin(mb_search_win_); mb_search_win_ = nullptr; }
             ui_overlay_ = UIOverlay::None;
             redraw_needed_.store(true);
+        }
+        // The medium stage opens as soon as the screen is free, whatever freed
+        // it. Deliberately AFTER the search-modal close above, so a ^F pick that
+        // resolves to an ambiguous release gets asked on the very next pass
+        // rather than never.
+        if (mb_medium_pending_ && ui_overlay_ == UIOverlay::None) {
+            mb_medium_pending_ = false;
+            MBRelease r;
+            { std::lock_guard<std::mutex> lk(mb_mutex_); r = mb_release_; }
+            int n_phys = 0;
+            for (std::size_t k = 0; k < playlist_.size(); ++k)
+                if (cdTrackNumber(playlist_.at(k).path) >= 1) ++n_phys;
+            openMediumStage(r, n_phys);
         }
         {
             std::lock_guard<std::mutex> lk(mb_mutex_);   // mb_status_ written by worker threads
@@ -12723,8 +12744,10 @@ void UIManager::drawMBPick() {
     if (!config_.awesome_mode)
         mvwaddstr(w, 0, (BOX_W - (int)strlen(title)) / 2, title);
 
-    const int LIST_START = 4;
-    const int LIST_ROWS  = BOX_H - LIST_START - 3;
+    // LIST_START is computed, not fixed: the ambiguity note wraps to as many
+    // rows as it needs and the list begins under it. A constant here is what let
+    // the note be drawn into a single row it did not fit in.
+    int       LIST_START = 4;
     const int ROW_W      = BOX_W - 4;
 
     if (stage == 0) {
@@ -12737,6 +12760,7 @@ void UIManager::drawMBPick() {
         } else {
             mvwaddstr(w, 3, 3, "The right-hand column is the disc each one would give.");
         }
+        const int LIST_ROWS = BOX_H - LIST_START - 3;
         int top = std::max(0, cursor - LIST_ROWS + 1);
         for (int i = 0; i < LIST_ROWS; ++i) {
             const int idx = top + i;
@@ -12760,11 +12784,21 @@ void UIManager::drawMBPick() {
         int total = 1;
         for (const auto& t : chosen.tracks) if (t.disc > total) total = t.disc;
         mvwaddnstr(w, 2, 3, foldForDisplay(chosen.title).c_str(), ROW_W);
+        // The same string the command line shows, WRAPPED to this box rather
+        // than truncated by it. Two rows on a 76-column modal, one on a wide
+        // terminal - the text is identical either way.
+        const std::vector<std::string> note_lines =
+            wrapToWidth(discAmbiguityNote(pickDisc(chosen, n_phys), n_phys), ROW_W);
         wattron(w, COLOR_PAIR(CP_STATUS_ERR) | A_BOLD);
-        mvwaddnstr(w, 3, 3,
-                   discAmbiguityNote(pickDisc(chosen, n_phys), n_phys).c_str(), ROW_W);
+        int ny = 3;
+        for (const auto& ln : note_lines) {
+            if (ny >= BOX_H - 4) break;          // never write over the footer
+            mvwaddnstr(w, ny++, 3, ln.c_str(), ROW_W);
+        }
         wattroff(w, COLOR_PAIR(CP_STATUS_ERR) | A_BOLD);
-        int top = std::max(0, cursor - LIST_ROWS + 1);
+        LIST_START = ny + 1;
+        int top = std::max(0, cursor - (BOX_H - LIST_START - 3) + 1);
+        const int LIST_ROWS = BOX_H - LIST_START - 3;
         for (int i = 0; i < LIST_ROWS; ++i) {
             const int d = top + i + 1;          // 1-based medium
             if (d > total) break;
@@ -13129,6 +13163,12 @@ void UIManager::handleMBSearchInput(int ch) {
                         }
                         mb_error_.clear();
                         mb_release_ = rel;
+                        // A medium chosen for a DIFFERENT release means
+                        // nothing about this one, and carrying it over
+                        // would silently label the new release's tracks
+                        // with the old disc. applyChosenRelease does this
+                        // for the picker's path; this is the ^F twin.
+                        mb_disc_override_ = 0;
                         mb_titles_pending_.store(true);   // apply titles on UI thread
                         // Same composer the indicator uses. No disc here: this
                         // runs on a worker thread and the CD track count is not
@@ -13165,6 +13205,7 @@ void UIManager::handleMBSearchInput(int ch) {
                     }
                     mb_error_.clear();
                     mb_release_ = rel;
+                    mb_disc_override_ = 0;   // see the Discogs twin above
                     mb_titles_pending_.store(true);   // apply titles on UI thread
                     mb_status_       = "MB: Metadata loaded - " + releaseLabel(rel);
                     mb_status_ticks_ = 0;

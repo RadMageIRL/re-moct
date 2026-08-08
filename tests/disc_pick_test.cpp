@@ -267,6 +267,49 @@ int main() {
         }
     }
 
+    // ── 9. The note fits the box it is drawn in ────────────────────────────
+    // discAmbiguityNote is written for the command line, where the whole
+    // terminal is available. Reused verbatim inside the 76-column medium modal
+    // it ran off the right edge and ended "titles may be w" - confirmed on
+    // hardware. Wrapping keeps ONE string for both surfaces; shortening it for
+    // the modal would have meant two to keep in step.
+    std::printf("\n-- the ambiguity note fits a 76-column modal --\n");
+    {
+        const DiscPick p = pickDisc(releaseWithMedia({14, 14}), 14);
+        const std::string note = discAmbiguityNote(p, 14);
+        const int ROW_W = 76 - 4;                 // drawMBPick's usable width
+
+        check((int)note.size() > ROW_W,
+              "the note really is wider than the modal", std::to_string(note.size()));
+
+        const std::vector<std::string> lines = wrapToWidth(note, ROW_W);
+        bool fits = !lines.empty();
+        for (const auto& l : lines) if ((int)l.size() > ROW_W) fits = false;
+        check(fits, "every wrapped line fits", std::to_string(lines.size()) + " lines");
+        check(lines.size() == 2, "and it takes two rows, not more",
+              std::to_string(lines.size()));
+
+        // Nothing lost and no word split: rejoining reproduces the original.
+        std::string joined;
+        for (std::size_t i = 0; i < lines.size(); ++i)
+            joined += (i ? " " : "") + lines[i];
+        check(joined == note, "wrapping loses no text", joined);
+        check(lines.back().find("titles may be wrong") != std::string::npos,
+              "the actionable half survives", lines.back());
+
+        // A wide terminal keeps it on one line - the cmdline case, unchanged.
+        check(wrapToWidth(note, 100).size() == 1, "one line when there is room");
+        // Degenerate widths must not hang or throw.
+        check(wrapToWidth(note, 0).empty(), "width 0 yields nothing");
+        for (int wdt : {1, 5, 12, 40}) {
+            const auto ls = wrapToWidth(note, wdt);
+            bool ok = !ls.empty();
+            for (const auto& l : ls) if ((int)l.size() > wdt) ok = false;
+            check(ok, "width " + std::to_string(wdt) + " respected",
+                  std::to_string(ls.size()) + " lines");
+        }
+    }
+
 
     std::printf("\n%s (%d failure%s)\n",
                 g_fail ? "FAILED" : "PASSED", g_fail, g_fail == 1 ? "" : "s");

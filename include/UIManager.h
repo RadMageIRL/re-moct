@@ -591,6 +591,11 @@ private:
     // state and a worker must never open one directly (the mb_search_close_
     // pending_ pattern, which exists for exactly this reason).
     std::atomic<bool> mb_pick_open_pending_ { false };
+    // The medium stage is OWED. UI-thread only, and a flag rather than an
+    // immediate open because the screen is not always free on the tick the
+    // need is discovered - a ^F pick closes its own modal in a later block of
+    // the same pass. It survives until the screen frees up.
+    bool mb_medium_pending_ = false;
     void drawMBPick();
     void handleMBPickInput(int ch);
     void openMediumStage(const MBRelease& rel, int n_physical);

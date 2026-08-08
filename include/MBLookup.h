@@ -165,6 +165,57 @@ inline std::string discAmbiguityNote(const DiscPick& p, int n_physical) {
     return s;
 }
 
+// Break text into lines of at most `width` columns, on word boundaries. Exists
+// so a message can have ONE definition and still be shown in two places of
+// different size: discAmbiguityNote is written for the command line, where the
+// whole terminal width is available, and was reused verbatim inside a 76-column
+// modal, where it ran off the right edge and ended "titles may be w". Shortening
+// it for the modal would have meant two strings to keep in step; wrapping keeps
+// one. ASCII by contract, like formatCandidateRow below.
+inline std::vector<std::string> wrapToWidth(const std::string& s, int width) {
+    std::vector<std::string> out;
+    if (width <= 0) return out;
+    if (s.size() <= (std::size_t)width) { out.push_back(s); return out; }
+
+    // Two rows' worth: BALANCE them instead of filling the first and leaving a
+    // stub. Greedy filling put the 76-column note into 71 + "wrong", which is
+    // correct and reads as a rendering fault. Split at the word boundary nearest
+    // the middle, provided both halves still fit.
+    if (s.size() <= (std::size_t)width * 2) {
+        const std::size_t mid = s.size() / 2;
+        const std::size_t l = s.rfind(' ', mid);
+        const std::size_t r = s.find(' ', mid);
+        std::size_t best = std::string::npos, bestd = 0;
+        for (std::size_t c : { l, r }) {
+            if (c == std::string::npos || c == 0 || c + 1 >= s.size()) continue;
+            if (c > (std::size_t)width) continue;                 // head too long
+            if (s.size() - c - 1 > (std::size_t)width) continue;  // tail too long
+            const std::size_t d = c > mid ? c - mid : mid - c;
+            if (best == std::string::npos || d < bestd) { best = c; bestd = d; }
+        }
+        if (best != std::string::npos) {
+            out.push_back(s.substr(0, best));
+            out.push_back(s.substr(best + 1));
+            return out;
+        }
+    }
+
+    std::size_t i = 0;
+    while (i < s.size()) {
+        std::size_t take = (s.size() - i <= (std::size_t)width) ? s.size() - i
+                                                                : (std::size_t)width;
+        if (i + take < s.size()) {
+            // Back up to the last space so a word is never split in half.
+            std::size_t sp = s.rfind(' ', i + take);
+            if (sp != std::string::npos && sp > i) take = sp - i;
+        }
+        out.push_back(s.substr(i, take));
+        i += take;
+        while (i < s.size() && s[i] == ' ') ++i;   // eat the break's spaces
+    }
+    return out;
+}
+
 // ─── The candidate row, shared by both lists ─────────────────────────────────
 // ^F (text search) and ^R (disc-ID picker) draw candidate lists that MUST look
 // identical - Dos already reads the ^F rows fluently, and two formatters would

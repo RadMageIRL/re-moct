@@ -8,11 +8,20 @@ Supersedes `docs/session-handoff-2026-07-27-1030.md` (which was written before t
 
 ## NEXT SESSION STARTS HERE
 
-1. **Dos's live test of 1.6.1 is outstanding.** Four things to look at - §6. Two of them may come
-   back as regressions and that is expected, not a surprise.
-2. **Let it run a day or two before any release is considered.** Dos's call. No tag, no merge.
-3. **On Windows, set `wingui_font` to a CJK-capable font before judging the Japanese rendering.**
-   The bundled JetBrains Mono has no CJK glyphs. Boxes are a font result, not a fold result.
+**Everything in this handoff is DONE and CONFIRMED ON HARDWARE unless it says otherwise.** Tip
+`e3fcbd2`, pushed, tracked tree clean. Nothing is mid-flight and nothing is broken.
+
+1. **Nothing is waiting on you.** The session closed clean: 1.6.1 unreleased on `experimental`,
+   four commits, all gated Windows 54/54 + Linux 55/55, all live-tested by Dos.
+2. **The 1.6.1 release ceremony is the next substantive thing, and it is Dos's call on timing.**
+   §13 has the readiness state and the three decisions that are still open. §15 lists the five
+   commits; §16 the process lessons, three of which are mine to own.
+3. **Read `docs/LOCKED-CODE.md` before proposing anything near the CD path**, and open such a
+   proposal with the declaration line. It forbids the discussion, not just the change.
+4. **On Windows, set `wingui_font` to a CJK-capable font before judging Japanese rendering.**
+   Bundled JetBrains Mono has no CJK. Boxes are a font result, not a fold result.
+5. **Do not re-investigate the half-second pause when you press the title bar and hold still.**
+   It is Windows' double-click wait, it dispatches nothing at all, and it is closed - §11.
 
 ---
 
@@ -308,3 +317,106 @@ recorded in the CHANGELOG so it is documented rather than rediscovered.
 
 Measured worst single freeze is **516 ms**, not the 1-2 s originally perceived - worth knowing before
 anyone spends effort on it.
+
+---
+
+## 12. THE RESIZE FLICKER — the deferral removed again (added after §11, session close)
+
+**1.6.1 shipped a visual regression against 1.6.0: resizing flickered the whole way through a drag.**
+Found by Dos on hardware, fixed, confirmed smooth. Tip is `e3fcbd2`.
+
+**The cause was the deferral written in §10** — the one that was kept "because drawing from inside a
+`WM_SIZE` handler is wrong in principle." The principle holds. **It was never what aborted**, that was
+said at the time, and it turned out to cost something real.
+
+`HandleSize` sets `PDC_n_rows/cols` to the new size before calling us, but `COLS`, `LINES`, `curscr`,
+`stdscr` and every `win_*` only change when `resize_term()` runs - which was inside the rebuild we had
+postponed. So the client area was the new size while the entire curses state was the old one, and
+**every `WM_PAINT` in that gap drew the old grid into the new window**: bare margin growing, clipped
+shrinking. Then the tick corrected it. Stale, correct, stale = flicker.
+
+**And the servicer was on a starved clock.** Measured on the resize path directly (not carried across
+from the move): **zero `WM_TIMER` during a flooded modal size loop**, against 35 in the idle window of
+that same loop, longest gap **532 ms** — over 11x the 47 ms interval. The stale window was never
+bounded by the interval.
+
+**`resizeWindows()`'s own comment already recorded the standard**: an intermediate frame during a live
+resize drag is visible flicker on wingui, and one full repaint per tick is what the build was tuned
+to. The deferral broke both halves and added a second full frame on any serviced tick.
+
+### What the code looks like now
+
+- **`onWinguiLiveResize()` is synchronous again**, behind `in_live_resize`, exactly as 1.6.0.
+  `resizeWindows()` was byte-identical between versions, so the call site was the only difference.
+- **`live_resize_pending_` and `servicePendingResize()` are deleted**, not dormant.
+- **The MOVE deferral stays** and shares none of that machinery. A move has no size message to ride,
+  which is the whole reason it needed one. `servicePendingMove()` is now the only deferred paint
+  path in the build, and that is correct.
+
+### The lesson worth keeping
+
+**A fix kept on principle, for a fault it did not fix, is still a change that has to earn its place.**
+The deferral was reported as not-the-fix when it was written; it should have come out the moment the
+real cause was patched at source, instead of waiting for Dos to see flicker.
+
+---
+
+## 13. RELEASE READINESS — 1.6.1, and the three open ceremony decisions
+
+**1.6.1 is UNRELEASED on `experimental/win-pdcurses`.** Not merged, not tagged, deliberately.
+
+- `Version.h` and `CMakeLists.txt` = **1.6.1**. CHANGELOG `## [1.6.1] - 2026-08-07`, dated, four
+  Fixed entries and two Changed.
+- **`docs/index.html` still says 1.6.0 on purpose** - it reconciles at ceremony, as it did last
+  cycle. It also does not yet describe any 1.6.1 feature. **That is ceremony work.**
+- README carries the Windows CJK-font bullet.
+
+**Three things still open, all cosmetic, all ceremony decisions:**
+
+1. **CHANGELOG link definitions missing for six releases** - 1.3.1, 1.4.0, 1.4.1, 1.5.0, 1.6.0,
+   1.6.1. Twelve sections, seven link lines. Add them or drop the convention deliberately.
+2. **Tag naming is split**: every release tag is bare except **`v1.5.0`**. Adding link definitions
+   mechanically would produce a wrong URL for that one.
+3. **The CHANGELOG has still never been read end to end** - now ~45 entries across five campaigns.
+
+**The ceremony itself** (from the workflow memory, as run for 1.3.0/1.3.1/1.5.0/1.6.0): finalise the
+CHANGELOG date on experimental -> ff `dev` -> `git merge --no-ff dev -m "Merge dev into main: RE-MOCT
+1.6.1"` -> push main -> annotated bare tag `1.6.1` on the main merge commit -> push the tag. **`main`
+carries direct GitHub web edits not in `dev`, so it is never ff-able - always `--no-ff`.** Stash
+untracked WIP before the main checkout. **Dos does the clean-box build and the GitHub release himself.**
+
+## 14. STILL UNTRACKED — a standing decision, not an oversight
+
+`docs/LOCKED-CODE.md` and `docs/CD-ADDRESSING-LOCKED.md` were committed this session (`7767867`).
+Still untracked, unchanged, and **Dos's call, not to be committed unasked**:
+
+- **13 session handoffs**, 07-18 through 07-27 - including the two covering the 1.5.0 and 1.6.0
+  ceremonies. That trail is local-only.
+- **Four not-greenlit notes**: `warn-sweep-plan.md`, `SCOPE-podcasts.md`, `RECON-gap-handling.md`,
+  `RECON-playing-predicate.md`. Correctly untracked by convention.
+- **Scratch that must never ride along**: `tools/src/cap*/`, `np_*/`, `*_heartbeat.log`, `*_out.txt`.
+
+## 15. Session commits, in order
+
+| commit | what |
+|---|---|
+| `29618c3` | the display fold + outbound raw + the tag-editor fix |
+| `6a02060` | the CJK resize crash - vendored `refresh.c`, both faces |
+| `3967055` | the move-drag freeze - `WM_MOVING` subclass, throttled subset draw |
+| `7767867` | the two locked-policy docs into the repo |
+| `e3fcbd2` | resize deferral removed, flicker regression fixed |
+
+## 16. Process lessons from this session — the expensive ones
+
+1. **Verify a PID is one you started before driving a window.** A launch failing silently with exit
+   127 left automation driving Dos's own instance - moving it, resizing it, sending it keystrokes.
+   Check `Win32_Process.CommandLine`.
+2. **Do not claim a reproduction without checking state.** Several "survived 400 resizes" results
+   were void because playback had never started. A screenshot showed it in seconds; an assumption
+   never would have.
+3. **Measure before proposing a mechanism.** Three theories were wrong before the backtrace: it was
+   not a stack overrun, not the geometry assert, and not the `x == 0` case. Each cost a build.
+4. **Stopping at the scope boundary was right every time** - and each stop was approved. Widening
+   the approval unilaterally would have hidden the second face of the vendored defect.
+5. **A GUI-subsystem binary's stderr does not reach a redirect.** `gdb -batch -ex run -ex "bt 60"` is
+   the way; `catch-crash.bat` at the repo root does it in one double-click.

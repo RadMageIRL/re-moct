@@ -114,19 +114,29 @@ std::string MBLookup::httpGet(const std::string& url) {
 }
 
 // ─── JSON parsing ─────────────────────────────────────────────────────────────
-MBRelease MBLookup::parseJson(const std::string& json_str) {
-    MBRelease result;
+std::vector<MBRelease> MBLookup::parseDiscIdJson(const std::string& json_str,
+                                                 std::size_t* truncated_out) {
+    std::vector<MBRelease> out;
+    if (truncated_out) *truncated_out = 0;
     try {
         auto j = nlohmann::json::parse(json_str);
 
-        // MusicBrainz returns releases array — pick first
+        // EVERY release, not releases[0]. A disc ID names a piece of plastic and
+        // several releases legitimately share one; which of them a user means is
+        // a decision, not a lookup, and this parser used to make it silently.
         auto& releases = j.at("releases");
-        if (releases.empty()) return result;
-        auto& rel = releases[0];
+        if (releases.empty()) return out;
+        if (releases.size() > kMaxDiscIdCandidates && truncated_out)
+            *truncated_out = releases.size() - kMaxDiscIdCandidates;
 
-        result.mb_id  = rel.value("id", "");
-        result.title  = rel.value("title", "");
-        result.date   = rel.value("date", "");
+        for (auto& rel : releases) {
+        if (out.size() >= kMaxDiscIdCandidates) break;
+        MBRelease result;
+
+        result.mb_id          = rel.value("id", "");
+        result.title          = rel.value("title", "");
+        result.date           = rel.value("date", "");
+        result.disambiguation = rel.value("disambiguation", "");
 
         // Artist credit
         if (rel.contains("artist-credit") && !rel["artist-credit"].empty())
@@ -169,13 +179,15 @@ MBRelease MBLookup::parseJson(const std::string& json_str) {
                 }
             }
         }
+        out.push_back(std::move(result));
+        }
     } catch (...) {}
-    return result;
+    return out;
 }
 
 // ─── Worker thread ────────────────────────────────────────────────────────────
 void MBLookup::worker(int first_track, int last_track,
-                       std::vector<uint32_t> offsets, MBCallback cb) {
+                       std::vector<uint32_t> offsets, MBDiscIdCallback cb) {
     // Rate limiting — enforce 1 req/sec
     {
         std::lock_guard<std::mutex> lk(rate_mutex_);
@@ -214,20 +226,28 @@ void MBLookup::worker(int first_track, int last_track,
         return;
     }
 
-    MBRelease release = parseJson(body);
-    if (release.title.empty() && release.tracks.empty()) {
+    std::size_t dropped = 0;
+    std::vector<MBRelease> releases = parseDiscIdJson(body, &dropped);
+    if (releases.empty()) {
         if (cb) cb(false, {}, "Could not parse MusicBrainz response");
         active_.store(false);
         return;
     }
 
-    if (cb) cb(true, release, "");
+    // NO SILENT CAP. If the disc resolved to more releases than the list will
+    // show, the list says so rather than looking complete.
+    std::string note;
+    if (dropped)
+        note = "showing " + std::to_string(releases.size()) + " of "
+             + std::to_string(releases.size() + dropped) + " matching releases";
+
+    if (cb) cb(true, std::move(releases), note);
     active_.store(false);
 }
 
 // ─── Public API ──────────────────────────────────────────────────────────────
 bool MBLookup::lookup(int first_track, int last_track,
-                      const std::vector<uint32_t>& offsets, MBCallback cb) {
+                      const std::vector<uint32_t>& offsets, MBDiscIdCallback cb) {
     if (active_.load()) return false;
     active_.store(true);
     cancel_.store(false);
@@ -270,6 +290,7 @@ std::vector<MBSearchResult> MBLookup::parseSearchJson(const std::string& json_st
             r.title       = rel.value("title", "");
             r.date        = rel.value("date", "");
             r.country     = rel.value("country", "");
+            r.disambiguation = rel.value("disambiguation", "");
             r.track_count = rel.value("track-count", 0);
             if (rel.contains("artist-credit") && !rel["artist-credit"].empty())
                 r.artist = rel["artist-credit"][0]["artist"].value("name", "");
@@ -417,9 +438,10 @@ void MBLookup::mbidWorker(std::string mbid, MBCallback cb) {
     MBRelease release;
     try {
         auto j = nlohmann::json::parse(body);
-        release.mb_id  = j.value("id", mbid);
-        release.title  = j.value("title", "");
-        release.date   = j.value("date", "");
+        release.mb_id          = j.value("id", mbid);
+        release.title          = j.value("title", "");
+        release.date           = j.value("date", "");
+        release.disambiguation = j.value("disambiguation", "");
         if (j.contains("artist-credit") && !j["artist-credit"].empty())
             release.artist = j["artist-credit"][0]["artist"].value("name", "");
         if (j.contains("media")) {

@@ -109,8 +109,8 @@ inline MapResult toTocIndices(const std::vector<std::string>& marked_paths,
 // sheet, the album ReplayGain and the CUETools verdict that a whole-disc rip has
 // always got. Reading m.htoa here instead would make a full selection look
 // partial and silently strip all three.
-inline bool isWholeDiscSelection(const MapResult& m, int disc_total) {
-    return m.toc_indices.empty() || (int)m.toc_indices.size() >= disc_total;
+inline bool isWholeDiscSelection(const MapResult& m, int toc_track_count) {
+    return m.toc_indices.empty() || (int)m.toc_indices.size() >= toc_track_count;
 }
 
 // Did the user ask for nothing at all? The rip has three shapes and this

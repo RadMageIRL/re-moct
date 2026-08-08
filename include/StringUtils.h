@@ -159,55 +159,98 @@ inline bool parseCDPath(const std::string& p, std::string& drive, int& track_num
     return true;
 }
 
-// Replace common Unicode punctuation with ASCII equivalents for terminal display
-inline std::string sanitizeForDisplay(const std::string& s) {
+// ─── The display fold ────────────────────────────────────────────────────────
+// THE CONTRACT. For each codepoint, in order:
+//
+//   1. REJECT    - bytes that are not a well-formed UTF-8 sequence become one
+//                  '?', and scanning resumes at the NEXT BYTE.
+//   2. NORMALIZE - a codepoint in the table below becomes its ASCII equivalent,
+//                  which may be the empty string.
+//   3. PASS      - everything else is emitted verbatim.
+//
+// BYTE LENGTH IS NEVER A CRITERION. That one sentence is the whole rule, and it
+// is exactly what the previous version got wrong: it passed 2-byte sequences
+// through and replaced every 3- and 4-byte sequence with '?', so 水田直志 drew
+// as "????" on a line where Björk came through intact.
+//
+// It was right when it was written. The fold predates the wide draw path by one
+// day (b17bc0f 2026-06-18 vs 6cb4544 2026-06-19) and the column-aware helpers by
+// ten (341719f 2026-06-28); back then the narrow draw functions could not decode
+// UTF-8 at all and '?' was the honest output. Both have been untrue for months.
+//
+// What it normalizes is TYPOGRAPHY - characters that exist to look right in
+// print, mapped to the ASCII a terminal can always show, with no loss of
+// linguistic content. "Don’t" -> "Don't" is the same word.
+//
+// What it no longer touches is LANGUAGE. Accented Latin letters used to be
+// stripped by a hand-written list of seventeen (é->e, ü->u) that never covered
+// ö, ñ, å or ř - so "Müller" lost its umlaut on a line where "Ångström" kept
+// both of its. That list is gone. A letter keeps its diacritic, whatever the
+// letter, on the same screen that now shows CJK, Cyrillic and Greek.
+//
+// DISPLAY ONLY, and that is load-bearing. Identity and outbound paths take the
+// RAW string: the library index stores tags unfolded (LibraryIndex.h), the CD
+// scrobble path reads the raw MBRelease (UIManager::updateScrobbler), and
+// LocalFileSource / StreamSource keep raw text so the scrobblers, the OS media
+// card, Discord and the tag editor get what the tag actually says. Folding on
+// the way IN is lossy; this is the lossy end and nothing downstream of it is.
+inline std::string foldForDisplay(const std::string& s) {
     std::string out;
     out.reserve(s.size());
     size_t i = 0;
     while (i < s.size()) {
         unsigned char c = (unsigned char)s[i];
-        if (c < 0x80) { out += s[i++]; continue; }
-        uint32_t cp = 0; size_t n = 1;
-        if      ((c & 0xE0) == 0xC0) { cp = c & 0x1F; n = 2; }
-        else if ((c & 0xF0) == 0xE0) { cp = c & 0x0F; n = 3; }
-        else if ((c & 0xF8) == 0xF0) { cp = c & 0x07; n = 4; }
-        else { out += '?'; i++; continue; }
-        for (size_t j = 1; j < n && i+j < s.size(); ++j)
-            cp = (cp << 6) | ((unsigned char)s[i+j] & 0x3F);
+        if (c < 0x80) { out += s[i++]; continue; }   // ASCII verbatim, controls included
+
+        // Strict decode. Malformed input yields '?' and advances ONE byte, so a
+        // bad sequence can never swallow the good text following it.
+        uint32_t cp; size_t n; uint32_t min_cp;
+        if      ((c & 0xE0) == 0xC0) { n = 2; cp = c & 0x1F; min_cp = 0x80;    }
+        else if ((c & 0xF0) == 0xE0) { n = 3; cp = c & 0x0F; min_cp = 0x800;   }
+        else if ((c & 0xF8) == 0xF0) { n = 4; cp = c & 0x07; min_cp = 0x10000; }
+        else { out += '?'; ++i; continue; }                   // stray continuation / bad lead
+        if (i + n > s.size()) { out += '?'; ++i; continue; }  // truncated tail
+        bool ok = true;
+        for (size_t j = 1; j < n; ++j) {
+            unsigned char cc = (unsigned char)s[i + j];
+            if ((cc & 0xC0) != 0x80) { ok = false; break; }   // bad continuation
+            cp = (cp << 6) | (cc & 0x3F);
+        }
+        // Overlong forms, surrogate halves and out-of-range values are not
+        // well-formed UTF-8 either. The old length rule rejected them only as a
+        // side effect of their byte count; now that length decides nothing they
+        // must be rejected ON PURPOSE, or invalid bytes reach the terminal - and,
+        // since this text also feeds the scrobblers, the wire.
+        if (!ok || cp < min_cp || cp > 0x10FFFF || (cp >= 0xD800 && cp <= 0xDFFF)) {
+            out += '?'; ++i; continue;
+        }
+
         switch (cp) {
+            // ── quotes and primes ─────────────────────────────────────────────
             case 0x2018: case 0x2019: case 0x201A: case 0x201B: out += '\''; break;
             case 0x2032:                                        out += '\''; break;  // prime
             case 0x201C: case 0x201D: case 0x201E: case 0x201F: out += '"';  break;
             case 0x2033:                                        out += '"';  break;  // double prime
-            // Dash / hyphen variants — all fold to ASCII '-'. Previously only
-            // U+2013/U+2014 were handled, so look-alike dashes such as U+2010,
-            // U+2011, U+2012, U+2015 and U+2212 fell through to the '?' catch-all
-            // below (the "Prep-School" -> "Prep?School" bug).
+            // ── dash / hyphen variants ────────────────────────────────────────
+            // All of them, not just U+2013/U+2014: the look-alikes used to fall
+            // through to the '?' catch-all (the "Prep-School" -> "Prep?School" bug).
             case 0x2010: case 0x2011: case 0x2012: case 0x2013: case 0x2014:
             case 0x2015: case 0x2212: case 0x00AD:              out += '-'; break;
             case 0x2026: out += '.'; break;                                          // ellipsis
             case 0x2022: out += '*'; break;                                          // bullet
-            // Space variants -> plain space; zero-width forms are dropped.
+            // ── space variants -> plain space; zero-width forms are dropped ────
+            // U+3000 is the ideographic space: punctuation, not a letter, so it
+            // normalizes with the rest of them even now that CJK passes through.
             case 0x00A0: case 0x2002: case 0x2003: case 0x2009: case 0x200A:
             case 0x202F: case 0x205F: case 0x3000:              out += ' '; break;
             case 0x200B: case 0x200C: case 0x200D: case 0xFEFF: break;               // zero-width
+            // ── ligatures ─────────────────────────────────────────────────────
             case 0x0153: out += "oe"; break;
             case 0x0152: out += "OE"; break;
             case 0x00E6: out += "ae"; break;
             case 0x00C6: out += "AE"; break;
-            case 0x00E9: case 0x00E8: case 0x00EA: case 0x00EB: out += 'e'; break;
-            case 0x00E0: case 0x00E2: out += 'a'; break;
-            case 0x00E7: out += 'c'; break;
-            case 0x00EE: case 0x00EF: out += 'i'; break;
-            case 0x00F4: case 0x00F8: out += 'o'; break;
-            case 0x00FC: case 0x00FB: case 0x00F9: out += 'u'; break;
-            case 0x00C9: case 0x00C8: out += 'E'; break;
-            case 0x00C0: out += 'A'; break;
-            default:
-                if (cp >= 0x20 && cp < 0x80) out += (char)cp;
-                else if (n == 2) { out += s[i]; out += s[i+1]; }
-                else out += '?';
-                break;
+            // ── everything else is language: verbatim ─────────────────────────
+            default: out.append(s, i, n); break;
         }
         i += n;
     }
@@ -219,8 +262,8 @@ inline std::string sanitizeForDisplay(const std::string& s) {
 // (UCRT's wchar_t is 16-bit and its wcwidth unreliable; this keeps the Linux port
 // byte-identical too). Width is 0 for combining/zero-width marks, 2 for East-Asian
 // wide glyphs and most emoji, 1 otherwise. These power column-correct truncation,
-// padding and marquee scrolling feeding the wide ncurses API. They do NOT fold to
-// ASCII — sanitizeForDisplay is the lossy fallback; these preserve the codepoints.
+// padding and marquee scrolling feeding the wide ncurses API. They do NOT fold at
+// all — foldForDisplay normalizes typography, these preserve every codepoint.
 
 // Decode one UTF-8 codepoint at s[i], advancing i past it. Malformed bytes return
 // the raw byte as a codepoint and advance by one, so callers always make progress.

@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <string>
 #include <vector>
+#include <map>
 #include <array>
 #include <filesystem>
 #include <chrono>
@@ -31,6 +32,7 @@
 #include "Mp4Chapters.h"
 #include "AwesomeThemes.h"
 #include "CoverArtRender.h"
+#include "CoverArt.h"      // CaaImage - the art picker's rows
 #include "ArtMissCache.h"   // time-bounded art negative cache (radio-art-refresh-fix)
 #include "GainScan.h"       // batch ReplayGain over a folder (batch-r128)
 #include "ConvertJob.h"     // convert-core: decode -> IEncoder batch convert engine
@@ -48,7 +50,7 @@ enum class RightPane { Playlist, Visualizer, Help, TrackInfo, Bookmarks, Lyrics,
 enum class SearchSource { Playlist, Browser };   // which list \-search targets (from focus_)
 
 // Modal overlays drawn on top of the normal layout
-enum class UIOverlay { None, RipConfirm, MBSearch, RecPanel, ConvertScope, ConvertConfirm, PlaylistFormat, PodcastPlayConflict, PodcastIndexCreds, LibraryRoot };
+enum class UIOverlay { None, RipConfirm, MBSearch, MBPick, ArtPick, RecPanel, ConvertScope, ConvertConfirm, PlaylistFormat, PodcastPlayConflict, PodcastIndexCreds, LibraryRoot };
 
 class UIManager {
 public:
@@ -83,6 +85,9 @@ public:
     // move/size loop, so the marquee/spectrum keep animating during a title-bar
     // move (WM_MOVE never fires the resize callback). Renders one tickFrame().
     void onWinguiPaintTick();
+    // Raised from the WM_MOVING subclass (remoctWndProc). Flag only - a held drag
+    // starves WM_TIMER completely, so the timer alone cannot repaint a move.
+    void onWinguiLiveMove();
     const std::string& currentDir() const { return current_dir_; }
 #ifdef PDCURSES
     // wingui only (Alt+Enter): toggle a borderless window that fills the monitor,
@@ -267,8 +272,15 @@ private:
     bool vizStripShown() const;   // Awesome + strip actually on screen (win_viz_ != null)
     bool running_       = false;
     std::atomic<bool> redraw_needed_ { true };
+    // wingui move-drag: WM_MOVING (app-side subclass) only RAISES this. The paint
+    // happens on the loop/paint-tick side, and never touches geometry.
+    std::atomic<bool> live_move_pending_ { false };
     int  help_scroll_   = 0;   // scroll position in help pane
     void resizeWindows();
+    // Repaints the animated subset for a raised WM_MOVING. Throttled, and
+    // structurally incapable of calling resizeWindows() - a move has no geometry
+    // change. Unlike a resize, a move has no synchronous rebuild to piggyback on.
+    void servicePendingMove();
 
     // Time display mode
     bool show_remaining_ = false;
@@ -431,6 +443,11 @@ private:
     std::vector<short> art_pairs_;       // pair index per cell, parallel to the owning grid
     void refreshInfoArt(const std::string& path, int box_cols, int box_rows);
     bool allocArtColorPairs(const cover::Rendered& art, std::vector<short>& out_pairs);
+    // The ONE place a rendered grid reaches the screen. Owns the shared pair
+    // table's key protocol so the Info pane, the confirm modal and the art
+    // picker cannot each invent their own.
+    void drawArtGrid(WINDOW* w, const cover::Rendered& art, int y, int x,
+                     const std::string& key);
 
     // Async local-file cover decode: the file read (TagLib) + stb decode run on a
     // worker so drawTrackInfo NEVER blocks the UI thread (a synchronous decode
@@ -550,7 +567,6 @@ private:
     MBLookup    mb_lookup_;
     std::atomic<bool> mb_fetching_ { false };
     std::string mb_error_;    // protected by mb_mutex_
-    std::string mb_album_;    // protected by mb_mutex_
     MBRelease   mb_release_;  // cached full release for ripping, protected by mb_mutex_
     std::mutex  mb_mutex_;
     // Set true by a worker callback once mb_release_ is cached; the run loop then
@@ -558,7 +574,175 @@ private:
     // ever be touched by the UI thread (its entries_ vector is unsynchronised),
     // so worker callbacks never call playlist_ methods directly.
     std::atomic<bool> mb_titles_pending_ { false };
-    void applyReleaseTitles(const MBRelease& rel);   // UI thread only
+    // Returns the pick it applied, so the run loop can open the medium stage
+    // when the disc was assumed rather than determined. Computing it twice would
+    // be two chances to disagree.
+    DiscPick applyReleaseTitles(const MBRelease& rel);   // UI thread only
+
+    // ── The identity the ROWS were titled from ───────────────────────────────
+    // RAW artist/title/album, keyed by CD track number, written by
+    // applyReleaseTitles at the moment it resolves a medium and titles the
+    // playlist from it. The scrobbler, the OS media card and Discord read THIS
+    // instead of resolving a medium of their own.
+    //
+    // There used to be a fifth resolution site: updateScrobbler() called
+    // pickDiscForTrackCount directly. It missed the user's disc override (so a
+    // chosen disc 2 scrobbled disc 1's track), and - worse - it paired a STALE
+    // release with a LIVE playlist row count. That pairing does not fail, it
+    // SUCCEEDS WRONGLY: it finds whichever medium of the old release happens to
+    // have the new disc's track count. A 10-row playlist against a stale
+    // 7-medium release resolved medium 7 and scrobbled a track by a composer who
+    // is on no other disc of the set.
+    //
+    // Binding the identity to the ROWS closes both, because the rows are rebuilt
+    // on every disc open. Empty means "we do not know what this is", and nothing
+    // outbound may be sent from a guess.
+    struct CdIdentity { std::string title, artist, album; };
+    std::map<int, CdIdentity> cd_identity_;   // key = CD track number (0 = hidden)
+
+    // Was the medium these identities came from ASSUMED rather than determined?
+    // Recorded from the very DiscPick that built them, so it cannot drift from
+    // what the screen is warning about, and it is already false once the user
+    // has chosen a medium (DiscPick::user clears ambiguous()).
+    //
+    // A display guess is fine - it is visible, it carries a red warning, and it
+    // is gone on the next track. A SCROBBLE IS PERMANENT. So this suppresses
+    // Last.fm and ListenBrainz only; the media card and Discord still publish,
+    // because blanking them while the screen shows a title would be the worse
+    // lie and they correct themselves on the next track.
+    //
+    // Single-disc releases are never ambiguous, and neither is a unique
+    // track-count match, so the ordinary case cannot be blocked by this.
+    bool cd_identity_assumed_ = false;
+    // The CD track this was last announced for: once per TRACK, not per tick.
+    int  scrob_assumed_said_for_ = -1;
+    // UI thread only, like the rows it describes.
+    void clearCdIdentity() {
+        cd_identity_.clear();
+        cd_identity_assumed_    = false;
+        scrob_assumed_said_for_ = -1;
+    }
+
+    // ── The release / medium picker (^R), two stages in one overlay ──────────
+    // Stage 0 chooses between the releases a disc ID resolves to; stage 1
+    // chooses the medium when the chosen release cannot resolve one by track
+    // count. Each stage is skipped when it has nothing to ask: one candidate
+    // skips stage 0, an unambiguous release skips stage 1. Mellon Collie's
+    // disc 2 is the case that needs both.
+    struct MBPickState {
+        int  stage  = 0;                  // 0 = release list, 1 = medium list
+        int  cursor = 0;
+        int  n_physical = 0;              // the disc's audio track count
+        std::vector<MBRelease> cands;     // stage 0 rows (guarded by mb_mutex_)
+        MBRelease chosen;                 // stage 1's release
+        std::string note;                 // truncation notice, or ""
+    } mb_pick_;
+    WINDOW* mb_pick_win_ = nullptr;       // cached modal window
+    // Set by a worker callback, drained by the run loop: overlays are UI-thread
+    // state and a worker must never open one directly (the mb_search_close_
+    // pending_ pattern, which exists for exactly this reason).
+    std::atomic<bool> mb_pick_open_pending_ { false };
+    // The medium stage is OWED. UI-thread only, and a flag rather than an
+    // immediate open because the screen is not always free on the tick the
+    // need is discovered - a ^F pick closes its own modal in a later block of
+    // the same pass. It survives until the screen frees up.
+    bool mb_medium_pending_ = false;
+    void drawMBPick();
+    void handleMBPickInput(int ch);
+    // cursor_disc preselects a medium (1-based); 1 = today's silent fallback,
+    // which is what the forward flow wants. A re-open passes the disc in force.
+    void openMediumStage(const MBRelease& rel, int n_physical, int cursor_disc = 1);
+    void applyChosenRelease(const MBRelease& rel);   // UI thread only
+    // Adopt a release, dropping a medium chosen for a DIFFERENT one. Caller
+    // holds mb_mutex_. One rule in one place: every path that swaps the
+    // release used to clear the override unconditionally, which meant a repeat
+    // ^R returning the SAME release threw away the disc the user had chosen.
+    void adoptReleaseLocked(const MBRelease& rel);
+
+    // ── Which disc this release was adopted FOR ──────────────────────────────
+    // The MusicBrainz disc ID of whatever was in the drive when the release was
+    // taken, stamped by adoptReleaseLocked. Guarded by mb_mutex_.
+    //
+    // The question is NOT "does this release describe this disc" - that is
+    // unanswerable for a ^F pick, where choosing something outside the disc-ID
+    // candidate list is the whole point and a mismatch is the expected state.
+    // The question is "was this release adopted for THIS disc", which is always
+    // answerable and needs no special case for how it was chosen.
+    //
+    // Empty means it was adopted with no disc loaded (^F works with an empty
+    // tray), which no disc can claim: a search done before inserting a disc must
+    // not end up tagging whatever turns up.
+    std::string mb_release_disc_id_;
+    // Called after EVERY successful openCD. Drops the release cluster when the
+    // disc is not the one it was adopted for, and says so.
+    void dropReleaseIfDiscChanged();
+    // Where the picker returns when it closes. The art picker already had to
+    // solve this (it closes back to RipConfirm); the release picker closing to
+    // None would dump the user off the confirm screen, which is the screen the
+    // whole point was to stay on.
+    UIOverlay mb_pick_return_ = UIOverlay::None;
+    // `return_to` is also the ORIGIN: the never-stack-modals guard is relaxed for
+    // exactly that overlay and nothing else, so a picker still cannot open over a
+    // picker.
+    void reopenPicker(UIOverlay return_to = UIOverlay::None);
+
+    // ── Cover art: see it before ripping, change only it ────────────────────
+    // The complaint was that RE-MOCT took the automatic cover with no way to
+    // review it. The release picker turned out to fix most of that - the wrong
+    // art was usually a symptom of the wrong release - so this is the refinement
+    // for when the release is RIGHT and a different image inside it is wanted,
+    // which is the box-set case.
+    //
+    // `rip_art_bytes_` is the art in force: the automatic front until somebody
+    // chooses otherwise. It is what gets embedded and written to folder.jpg, so
+    // one choice changes both and they cannot disagree.
+    std::vector<std::uint8_t> rip_art_bytes_;
+    std::string               rip_art_label_;   // what the confirm modal calls it
+    cover::Rendered           rip_art_render_;  // the modal's preview grid
+    std::string               rip_art_key_;     // mbid|cols|rows already rendered
+    std::atomic<bool>         rip_art_active_ { false };
+    std::atomic<bool>         rip_art_done_   { false };
+    std::mutex                rip_art_mtx_;
+    std::vector<std::uint8_t> rip_art_result_;  // handed back by the worker
+    std::thread               rip_art_thread_;
+    void startRipArtFetch(const std::string& mbid, int box_cols, int box_rows);
+    void refreshRipArt(const std::string& mbid, int box_cols, int box_rows);
+
+    // The picker itself. Rows lead with the COMMENT because it is the only field
+    // that discriminates - `types` says "Medium" nineteen times on the measured
+    // release, and there are no dimensions in the index at all.
+    struct ArtPickState {
+        std::vector<CoverArt::CaaImage> images;
+        int         cursor  = 0;
+        bool        loading = false;
+        std::string note;                     // "" or why the list is empty
+        int         preview_for = -1;         // row the preview belongs to
+        cover::Rendered preview;
+    } art_pick_;
+    WINDOW*           art_pick_win_ = nullptr;
+    std::atomic<bool> art_index_done_  { false };
+    std::atomic<bool> art_thumb_done_  { false };
+    std::mutex        art_pick_mtx_;
+    std::vector<CoverArt::CaaImage> art_index_result_;
+    cover::Rendered   art_thumb_result_;
+    int               art_thumb_row_ = -1;    // row the in-flight thumb is for
+    int               art_thumb_want_ = -1;   // row the cursor has settled on
+    int               art_thumb_settle_ = 0;  // debounce ticks
+    std::thread       art_index_thread_;
+    std::thread       art_thumb_thread_;
+    void openArtPicker();
+    void drawArtPick();
+    void handleArtPickInput(int ch);
+    void serviceArtPicker();                  // run-loop drain: index + thumbs
+
+    // The medium a PERSON chose, 0 = nobody has. Guarded by mb_mutex_ and
+    // cleared wherever mb_release_ is: it describes the disc in the drive, so a
+    // stale value surviving an eject would mislabel the next one.
+    int mb_disc_override_ = 0;
+    // The pick every consumer should use: the track-count result, with the
+    // user's choice applied when there is one. One place, so the three sites
+    // that ask cannot answer differently.
+    DiscPick resolvedPick(const MBRelease& rel, int n_physical) const;
 
     // ── MusicBrainz manual search modal (Ctrl+F) ──────────────────────────────
     struct MBSearchState {

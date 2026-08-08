@@ -5,6 +5,223 @@ All notable changes to RE-MOCT are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.6.1] - 2026-08-08
+
+### Added
+
+- **Ripped tracks carry their disc number.** Ripping disc 3 of a seven-disc box
+  produced nineteen files whose only record of which disc they came from was the
+  name of the folder they sat in - move one file out and that was gone, and a
+  player asked to put the box in order had nothing to order it by. Every ripped
+  track now carries the disc number and the disc total in whichever field its
+  format uses for that, so other players and taggers read it as their own:
+  FLAC, MP3, Opus, WavPack and M4A. WAV has nowhere to put it and never did.
+  A hidden track before track 1 carries the same disc number as the tracks
+  beside it, because that is the disc it came from.
+  **A single-disc album is written as disc 1 of 1 rather than left blank.** That
+  is deliberate: a blank disc number used to mean both "this album is one disc"
+  and "nobody wrote one", and those are different facts. Now a blank one means
+  only that the file was not ripped by this version.
+  Files ripped before this version are not touched and do not change.
+
+### Fixed
+
+- **A rip that could not tell which disc it had now says so instead of guessing
+  in silence.** RE-MOCT works out which disc of a set is in the drive by counting
+  its tracks and looking for the one disc in the release with that many. When
+  exactly one matches, that is the answer. When none matches, or when two discs
+  of the same set happen to hold the same number of tracks, it assumed disc 1 -
+  and said nothing at all, in the log, in the `disc.json` sidecar or on screen.
+  Ripping disc 2 of *Mellon Collie and the Infinite Sadness*, whose two discs
+  have the same track count, wrote a full disc of titles taken from disc 1, and
+  the only way to find out was to look at the finished files. The assumption is
+  unchanged - disc 1 is still what it falls back to - but it is now stated in all
+  three places, as it happens, with the reason. Every rip log now carries a
+  `Disc :` line whether the set has seven discs or one.
+- **The rip screen shows which disc it thinks you have, before it writes
+  anything.** Ripping a box set put the files in a `Disc 3` folder, and the only
+  place that number ever appeared was the "rip complete" line after the fact -
+  by which point there was nothing to do about it. The confirm screen now names
+  the release, the year and `Disc 3 of 7`, and says plainly when the disc could
+  not be determined; the line shown as the rip starts names the same folder the
+  files will actually land in. Nothing about which disc gets chosen has changed -
+  only when you find out.
+- **The album shown in the header reads the same however you looked it up.**
+  Fetching CD metadata with `Ctrl+R` showed the album and year but never the
+  artist, while searching by name with `Ctrl+F` showed all three, so the same
+  disc was described two different ways depending on which key you had pressed.
+  Both now show artist, album, year, and the disc number on a multi-disc set.
+- **You choose which release the disc is, when there is more than one answer.**
+  A disc ID identifies a piece of plastic, and the same plastic is often sold
+  several times over - as a standalone album, as part of a box, as a reissue.
+  RE-MOCT asked MusicBrainz, received every one of those, kept the first and
+  threw the rest away without ever showing them. Fetching metadata for disc 2 of
+  *Mellon Collie* returned four releases and silently used a six-disc box.
+  When a disc matches more than one release you now get the list, with the year,
+  the edition note that separates two otherwise identical entries, and a column
+  showing which disc of that set the row would give you - or `?` when it cannot
+  tell. One match still applies straight away with nothing to dismiss.
+- **And you choose which disc of the set it is, when the track counts cannot
+  say.** If the release you picked has two discs with the same number of tracks,
+  RE-MOCT now asks instead of assuming, listing each disc with its first track -
+  which is what actually tells *Tonight, Tonight* from *Where Boys Fear to
+  Tread*. The disc you choose is recorded in `disc.json` as chosen rather than
+  guessed. Escape at either question leaves things exactly as they were rather
+  than picking for you.
+- **`F5` reopens the release and disc questions without asking the network
+  again.** The answers are already in memory, so changing your mind costs
+  nothing. It comes back to the same question it asked the first time, with the
+  cursor on the release - or the disc - you are currently using, rather than at
+  the top of the list. If the metadata came from a `Ctrl+F` search instead, the
+  list still shows what the disc itself matched, and says which release is
+  actually in force above it. Escape leaves everything exactly as it was.
+- **Pressing `Ctrl+R` twice now says that nothing changed.** It reads
+  `same release as before (4 candidates). F5 to choose.` Each press had always
+  been a fresh identical request that quietly replaced the answer with the same
+  one, which made it look like it was cycling through possibilities when it never
+  was. It also no longer discards a disc you had chosen, which re-applying the
+  same release used to do.
+- **Scrobbles, the Windows media card and Discord now name the track you are
+  actually hearing.** They worked out which disc of a set was playing on their
+  own, separately from everything on screen, and got it wrong in two ways.
+  A disc you had chosen yourself was ignored, so playing disc 2 track 5 of
+  *Mellon Collie* reported disc 1 track 5 - a different song - while the screen
+  correctly showed the right one. And if metadata from a previous disc was still
+  loaded, they would match the new disc's track count against the OLD album and
+  report whichever of its discs happened to have that many tracks: a real
+  scrobble named a track by a composer who appears on no other disc of that set.
+  They now use the same answer the playlist and the header use. **Scrobbles are
+  permanent, so a wrong one is worse than a missing one.**
+- **Metadata from a previous disc is dropped when you change discs, and it says
+  so.** Swapping a disc while playback was stopped left the old album's details
+  loaded, because that path re-reads the disc but was not clearing anything. The
+  details then got matched against the new disc by track count, which is how a
+  rip could have been filed under the wrong album entirely. Each lookup is now
+  remembered against the disc it was made for, and a disc it was not made for
+  discards it with a message rather than quietly carrying on. Re-inserting the
+  same disc keeps everything, including a release you picked by name that
+  deliberately is not what the disc alone would have matched.
+- **Nothing is scrobbled from a disc RE-MOCT only guessed at.** When a set has
+  two discs with the same number of tracks, it falls back to the first and says
+  so on screen in red - but it was still sending those guessed titles to Last.fm
+  and ListenBrainz, where they stay. It now sends nothing until you say which
+  disc it is, and tells you that is why. The Windows media card and Discord keep
+  showing the same thing the screen shows: they are replaced on the next track,
+  so blanking them would be less honest than showing what you can already see.
+  Discs that are identified normally - which is nearly all of them, including
+  every single-disc album - scrobble exactly as before.
+- **A release you choose by hand is trusted, and its track list is not checked
+  against the disc.** If you pick a release by name with `Ctrl+F`, RE-MOCT uses
+  its titles as given. That is deliberate: it is what makes searching by name a
+  usable way to fix a bad automatic match. It also means a release whose track
+  order differs from the disc will report the wrong titles, and only you can
+  tell.
+- **See the cover before you rip it, and change it without changing anything
+  else.** The rip screen now shows the artwork it is about to use as a picture
+  rather than a filename, and `P` opens the full list of images the archive holds
+  for that release - which for a box set is thirty-five, including each disc's
+  own artwork, where before only one was ever reachable. Choosing one changes the
+  art and nothing else: the release, the titles, the disc number and the folder
+  name all stay exactly as they are. The list is only fetched when you ask for
+  it, so an ordinary rip does no extra work. On a narrow window the preview is
+  left out and the screen says so.
+  `F5` on the same screen reopens the release list without leaving it - because
+  the picture is usually what tells you the release itself was wrong, and the fix
+  belongs where the problem showed up.
+  Each row shows what the person who uploaded it wrote, because that is the only
+  thing that distinguishes one from another - the archive records no image sizes
+  at all, and its own type labels disagree with those descriptions often enough
+  to be worth ignoring. Nothing links an image to a particular disc, so RE-MOCT
+  offers the list and does not guess.
+- **`Ctrl+F` metadata search works on Linux.** It was Windows-only for no reason
+  that survived inspection - the screen and its key handling were already
+  portable - so Linux had no way to correct a wrong lookup at all.
+- **Text that is not English renders as itself.** Japanese, Chinese, Korean, Greek
+  and Cyrillic titles, artists, albums and filenames were being replaced with one
+  `?` per character before they were drawn, so an album by 水田直志 listed as
+  `????` in the browser and the playlist. The line at the top of the browser
+  showing the current folder was never put through that step, which is why the
+  same name could be readable there and unreadable in the rows directly beneath
+  it. Everything now goes through the same rule, and that rule no longer decides
+  anything based on how many bytes a character takes up - which is what it had
+  been doing, and why European text survived and Asian text did not.
+  On Windows RE-MOCT chooses its own font, so text renders only if that font has
+  the characters: the bundled JetBrains Mono covers Latin, Greek and Cyrillic but
+  not Chinese, Japanese or Korean. Point `wingui_font` at a font that covers them
+  and the rows will draw. On Linux your terminal's font decides, as it always has.
+- **Accented letters keep their accents.** `Müller` was drawn as `Muller` and
+  `café` as `cafe`, from a hand-written list of seventeen letters that never
+  included `ö`, `ñ`, `å` or `ř` - so one name on screen could lose its accent
+  while the name below it kept two. The list is gone and a letter keeps its
+  accent, whichever letter it is. **An existing library changes appearance the
+  first time you run this version.** Nothing was rewritten and no file was
+  touched: the accented spelling is what your tags have said all along, and it is
+  what you were always meant to see.
+- **Scrobbles carry the real title.** Last.fm and ListenBrainz, the Windows media
+  card and Discord Rich Presence were all being sent the same flattened text that
+  was drawn on screen, so a Japanese-tagged track scrobbled as `???? - ????` and
+  stayed that way in your listening history. They now receive what the tag says.
+  This applies to files on disk and to radio alike, and all three ways a station
+  can announce a song agree with each other for the first time - one of them had
+  always sent the real title and the other two had not, so the same station could
+  scrobble differently depending on how it was streaming.
+- **The tag editor no longer writes flattened text back into your files.** Opening
+  `Ctrl+E` on the track that was playing and saving would store whatever the
+  screen had been showing - so saving an untouched field could quietly turn `café`
+  into `cafe` inside the file. The editor now starts from what the file actually
+  contains.
+- **Windows: dragging the window border no longer closes the program.** With
+  Japanese, Chinese or Korean text anywhere on screen, resizing the window by
+  dragging its edge could shut RE-MOCT down on the spot - reliably, within
+  seconds, and with no message. It needed a window wider than 89 characters and
+  a double-width character sitting exactly on the boundary where the screen is
+  drawn in sections, which is why it only appeared once this release started
+  showing those characters instead of replacing them with `?`.
+  The fault was in PDCursesMod, the library RE-MOCT uses to draw on Windows,
+  which is bundled with the program. A double-width character occupies two cells,
+  and the library repairs a redraw that begins part-way into one - but it was
+  doing that repair only for the first section of a line, and separately it
+  checked the wrong cell when deciding where a section ends. Either one, met by
+  a character straddling the boundary, stopped the program. Both are fixed in
+  `lib/pdcursesmod/pdcurses/refresh.c`, recorded in that folder's `VENDOR.md`,
+  and reported upstream so the fix can eventually come from the library itself.
+  That library fix is the whole of it: how RE-MOCT schedules its own drawing was
+  never what caused this, and nothing about resizing behaves differently as a
+  result.
+- **Windows: the screen no longer freezes while you drag the window to a new
+  place.** Holding the mouse button and moving the window stopped the display
+  dead - for a second or more at a time, worse while music was playing - and it
+  caught up only when you paused or let go. RE-MOCT was waiting on a timer that
+  Windows only delivers when nothing else is happening, and a held drag means
+  something is always happening, so the timer simply never arrived. It now
+  repaints from the message Windows sends as the window actually moves, which is
+  the same way it has always kept up with a resize, and keeps the timer for the
+  case that message does not cover: holding the button still.
+  While the window is being dragged, only the parts that can actually change are
+  redrawn - the top line, the progress bar and the spectrum. Long names in the
+  file and playlist panes stop scrolling until you let go, and if a track changes
+  mid-drag the highlight moves when the drag ends.
+  One thing this does not fix: pressing the title bar and holding still without
+  moving pauses the display for about half a second before anything happens.
+  Windows spends that time deciding whether the click was going to be a
+  double-click, and it delivers nothing to the program at all while it does -
+  every application behaves this way, it is just easier to notice in one with a
+  spectrum running. It ends the moment you move.
+
+### Changed
+
+- Recordings of a live stream are named from the station's real title, so a
+  station playing Japanese writes Japanese filenames. Characters that a filename
+  cannot legally contain are replaced as they always have been. This matches what
+  ripping a CD has always done.
+- The rip confirm screen's `Disc N tracks` line now reads `Tracks N`. It was
+  always a count of tracks, and with a real disc number beside it the old wording
+  read as a statement about discs.
+- Curly quotes, the various dashes and hyphens, ellipses, bullets and the
+  different widths of space are still folded to their plain ASCII equivalents, and
+  will stay that way. That is about typography rather than language: `Don’t` and
+  `Don't` are the same word, and a terminal can always draw the second one.
+
 ## [1.6.0] - 2026-07-27
 
 ### Added
@@ -1273,3 +1490,10 @@ boundary with a **loadable plugin architecture**.
   shipped anonymous path is unchanged when the probe is not armed.
 
 [1.0.0]: https://github.com/RadMageIRL/re-moct/releases/tag/1.0.0
+
+[1.6.1]: https://github.com/RadMageIRL/re-moct/releases/tag/1.6.1
+[1.6.0]: https://github.com/RadMageIRL/re-moct/releases/tag/1.6.0
+[1.5.0]: https://github.com/RadMageIRL/re-moct/releases/tag/v1.5.0
+[1.4.1]: https://github.com/RadMageIRL/re-moct/releases/tag/1.4.1
+[1.4.0]: https://github.com/RadMageIRL/re-moct/releases/tag/1.4.0
+[1.3.1]: https://github.com/RadMageIRL/re-moct/releases/tag/1.3.1

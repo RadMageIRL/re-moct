@@ -14,8 +14,23 @@ audio player, CD ripper, and internet-radio client. Sole dev/owner: Dos
 is the whole point; keep Classic minimal and faithful, put flair in Awesome.
 
 ## Build & run
-- Toolchain: **MSYS2 UCRT64**, GCC 15.2, CMake + Ninja, ncursesw.
-- Binary: `build\bin\remoct.exe`. Build from the repo root.
+- Toolchain: **MSYS2 UCRT64**, **GCC 16.1** (upgraded from 15.2 on 2026-08-07;
+  TagLib stayed 2.2.1 - MSYS2 has not packaged upstream 2.3.1), CMake + Ninja.
+- **Windows configure - THESE FLAGS, OR IT IS A DIFFERENT PRODUCT:**
+  `cmake -S . -B build -G Ninja -DREMOCT_PDCURSES=ON -DREMOCT_STATIC_PROBE=ON`,
+  and `CMAKE_BUILD_TYPE` stays **EMPTY** (no `-DNDEBUG`; asserts live, and that is
+  what made the CJK resize crash findable). Binary: `build\bin\remoct.exe`.
+- **READ THE CONFIGURE BANNER.** It must say `curses: PDCursesMod wingui
+  (vendored, static) - Option C` and `STATIC PROBE: preferring .a archives`, and
+  the exe must need exactly two UCRT64 DLLs (`libebur128`, `libfdk-aac-2`). A bare
+  `cmake -S . -B build` silently configures an **ncursesw** build that links 19
+  DLLs and does not run. It compiles and tests green. **A green build of the wrong
+  product is indistinguishable from a green build unless the banner is read.**
+- Linux: `cmake -S . -B build-linux -G Ninja -DCMAKE_BUILD_TYPE=Release` under WSL
+  Debian. `REMOCT_PDCURSES` is `WIN32`-gated, so `ncursesw` in the banner is
+  correct there. No `/dev/sr*`, so no CD work on Linux.
+- `ctest` needs `export PATH="/c/msys64/ucrt64/bin:$PATH"` **in the same shell**,
+  or ~22 tests fail with `0xc0000139`. Gates: Windows **56/56**, Linux **57/57**.
 - Audio/encode: miniaudio (`ma_device_*`), FDK-AAC, libFLAC, LAME, libebur128, TagLib.
 - Net: all HTTP via the `core::IHttp` seam (`include/core/IHttp.h`; WinINet impl
   `src/platform/win/HttpWinInet.cpp`) - except StreamSource's live read loop (raw
@@ -28,10 +43,13 @@ is the whole point; keep Classic minimal and faithful, put flair in Awesome.
 - Claude reads the tree, edits **surgically and additively**, and hands back
   **complete compilable drop-in files OR tight scoped diffs** - never patch
   documents or find/replace instructions.
-- **Claude cannot compile.** Loop: Claude edits → Dos builds on 7of9 → reports →
-  re-syncs. Verify with brace-balance + scoped-diff audits and standalone probes.
-- Always build on the files Dos actually uploaded this turn (stale baselines
-  silently drop prior work). Run grep/brace audits before handoff.
+- **Claude builds and gates directly** on 7of9 (Windows) and WSL Debian (Linux) -
+  both toolchains, `EXIT=0`, ctest both, warning diff against
+  `docs/warn-sweep-plan.md`, every slice. This replaced the old
+  edit→Dos-builds→report loop; do not fall back to it. Dos still does the live
+  hardware test, which is the only thing that can exercise a real disc.
+- Brace-balance + scoped-diff audits before handing anything back, and **check
+  every caller** of a signature you change rather than the ones you remember.
 - **Confirm before touching concurrency-sensitive paths** (crossfade, streaming
   machinery, ring buffer). Lay out tradeoffs explicitly; Dos engages at peer level
   and wants pushback when warranted. No speculation - confirm mechanism before code.
@@ -64,131 +82,120 @@ prime-after-seek (decode-discard ~0.18s before target to warm the bit reservoir)
 Audiobook suite (`.m4b`, chapters, `[Books]` nav). Discord Rich Presence stage 2
 (async album art). `theme.conf` theming. CoverArt module. iHeart metadata state
 machine + ring-buffer re-pin fix. Device-switching fix. Column-aware UTF-8 pipeline.
+The disc-number campaign (below). `Ctrl+F` metadata search is **common** now.
 
-## Next substantive step
-**Phases 0/1/2 COMPLETE** (seams 8/8 + boundary; `core::ISource` proven against
-all four sources; slice C declined - see roadmap Decisions log).
-**Phase 3 (Linux port) IN PROGRESS** - readiness survey + slicing approved
-(`docs/phase3-readiness.md`): strictly a PARITY port. **Slice 0 DONE**
-(`27735f5`): CI matrix live (debian:trixie container + windows msys2, both
-required green); seam stubs in `src/platform/linux/` (`platform::lnx`); WSL2
-Trixie inner loop on 7of9. **CD gate venue PROVEN: usbipd→WSL2** (GHD3N busid
-4-1 stays bound; real SG_IO READ CD verified on Relish). **Slice 1 DONE:
-the portable core compiles, links, and PLAYS on Linux** - whole-file `_WIN32`
-gates off 21 files; `include/PortUtil.h` (each helper's Windows expansion =
-the baseline call verbatim); StreamSource's sacred ICY loop moved inside
-`#ifdef _WIN32` byte-verbatim (Linux connect() refuses Continuous until the
-slice-3 twin; HLS fully portable). **Slice 2 DONE: libcurl `core::IHttp`
-(`src/platform/linux/HttpCurl.cpp` - CURLSH share-handle sessions, XFERINFO
-cancel, LOW_SPEED stall-guard timeout) + vendored MD5 both platforms
-(`lib/md5.{h,c}` byte-verbatim Openwall; LastFm one signing path); five HTTP
-tests portable; Windows 14/14, Linux 10/10; live gates = MB probe (real
-Relish TOC resolved), RadioBrowser in the TUI (KWIN 97.7), digital iHeart
-HLS PLAYED on Linux (audible, RMS-proven, nowPlaying live).**
-**Slice 3 DONE: the ICY continuous Linux twin** (curl CONNECT_ONLY +
-curl_easy_recv, pull-read shape verbatim, ALPN off, offset-0 invariant;
-Windows preprocessed TU bit-identical; new both-platform icy_pipeline_test;
-live gates: Dance Wave audible on Linux RMS 6393, titles ×2+, prompt switch).
-**The raw-transport work is complete - the Windows live read loop stays raw
-WinINet permanently, byte-verbatim.** **Slice 4 DONE: Unix-socket IIpc twin**
-(`IpcUnixSocket.cpp`; MSG_NOSIGNAL send, poll/FIONREAD waitReadable, EINTR
-retries; discovery XDG→TMPDIR→/tmp + flatpak/snap; DiscordRP zero-diff, ^D
-common; discord_ipc_test portable + new both-platform ipc_echo_test; Windows
-16/16 / Linux 13/13; live socat echo probe + REAL Discord RP from the Linux
-TUI via npiperelay bridge - title/artist + iTunes art accepted, track change,
-lazy reconnect. **100% CLOSED: Dos verified on native Debian 13 + real
-Discord install - end-to-end all good**).
-**Slice 5 DONE - CLOSED: notify-send `core::INotify` twin**
-(`NotifyNotifySend.cpp` = `platform::lnx::NotifySendNotify`; runs
-`notify-send -a RE-MOCT -- <title> <body>` via fork()+execvp(), argv-safe -
-no shell, `--` option-injection guard; argv builder in `NotifyArgv.h`,
-transport-side; new Linux-only `notify_argv_test`; Linux 14/14; kept the
-slice-2 cmdline echo as graceful degradation). Dos live-confirmed on Debian
-13 (song-to-song + ^D toasts). Follow-ups un-gating stale `#ifdef _WIN32`:
-stream connect/fail toasts (`a5b6bf6`) + Ctrl+A/Ctrl+K key cases & Ctrl+T/N
-toasts (`9cb73f5`) - both pushed (Dos live-test of the toggles outstanding).
-**Slice 6 DONE - PHASE 3 COMPLETE (2026-07-04).** SG_IO `core::ICdIo` Linux twin
-(`src/platform/linux/CdIoSgIo.cpp` + pure CDBs in `CdbSgIo.h`): READ CD 0xBE
-(want_c2 → byte-9 0x10/0x12), READ TOC 0x43, TEST UNIT READY, INQUIRY, SET CD
-SPEED 0xBB - each one `ioctl(SG_IO)`, native LBA. The full CD UI un-gated on Linux
-(drive list + `/dev/sr*` + mount points, ^Y/^R, rip overlay). **Gate PROVEN on the
-real GHD3N via usbipd→WSL2** (the ONLY valid CD venue - VMware exposes a virtual
-drive with the wrong offset): `model()`→+6, TOC LBAs identical, `readRaw`
-byte-identical to `sg_raw` READ CD and to the Windows baseline raw samples → AR CRC
-byte-identical by construction. **Every platform call is now behind a seam on both
-platforms - PHASE 3 COMPLETE.**
-**PHASE 4 (plugin-ize) IN PROGRESS** - ABI ratified in `docs/phase4-readiness.md`
-(§2 = the frozen C boundary; Boundary A = the first plugin is the STREAMING SOURCE
-entire, iHeart its headline). **Slice (a) DONE:** `include/core/remoct_plugin.h` =
-the frozen v1 SDK (one export `remoct_plugin_query` → POD `RemoctPlugin` table +
-injected `RemoctHostServices`; C linkage, noexcept, nobody frees across the line,
-major-gate + struct-size versioning); the plugin loader = the 5th platform seam
-(`IPluginLoader` + Win/Posix), policy in `PluginHost`; proven by a pure-C sine
-plugin + `plugin_loader_test`. **Slice (b) DONE (live-gated both platforms):** the
-host DRIVES the streaming source through the C ABI - StreamSource still compiled IN
-(in-process plugin via `remoct_stream_plugin_query()`; (c) flips to `loadPlugin()`).
-Cancel unified on `int32_t` (`HttpRequest::cancel` → `const int32_t*`, read via
-`std::atomic_ref`); the HTTP shim `PluginHostServices` bridges the ABI to
-`core::IHttp` (host-owned response memory, verbatim cancel); the adapter
-`StreamPluginAdapter` + driver `core::PluginSource` replace AudioManager's by-value
-`stream_source_` (audio-thread delta = one set-once indirect `readFrames` call; ring
-untouched). **Slice (c) DONE (2026-07-04, live-gated both platforms):** the streaming
-stack moved (`git mv`) to `plugins/stream/`, built as `remoct_stream.{so,dll}` exporting
-`remoct_plugin_query`; `AudioManager` acquires it via `core::loadPlugin(port::exeDir()/
-plugins/…)` (graceful on load failure); the two `core::http()` sites rewired to an injected
-`core::IHttp&` = plugin-side `HostServiceHttp` (the slice-b shim inverted over the
-`RemoctHostServices` table); the plugin links its own FDK-AAC + miniaudio (`MA_NO_DEVICE_IO`)
-+ the sacred raw ICY transport (`-lwininet`/`libcurl` - NOT the seam). Gates: Win ctest
-19/19, Linux 20/20, loaded-module round-trip both platforms, WSL live RMS (ICY 2111 + iHeart
-4412, nowPlaying + [LIVE]) + negative control, Windows live confirmed by Dos. **Slice (d) DONE
-- PHASE 4 COMPLETE (2026-07-04):** `tests/plugin_hls_parity_test.cpp` proves the LOADED
-`remoct_stream.{so,dll}` is **byte-identical PCM to compiled-in** - identical synthetic HLS/
-ADTS crosses the REAL host HTTP service (`FakeHls` → `HostServices` table → plugin
-`HostServiceHttp`) for both the compiled-in reference (`remoct_stream_plugin_query`, D4) and
-the `loadPlugin()` module; asserts `refA==refB` (determinism, in-test), `refA==loaded` (thesis),
-`rms>0.15`, `segment_gets>0`, both platforms (Win ctest 20/20, Linux 21/21). Determinism from
-fixed-point FDK decode + int16 ring + exact int16→float + head-drain-under-prebuffer; resample
-byte-identity deliberately not asserted (float-flag-sensitive), covered behaviorally.
+## 1.6.1: which disc this is - the vocabulary to keep straight
+`DiscPick` (`include/MBLookup.h`) is the one answer: `{disc, total, matches, user}`,
+`ambiguous() == !user && total > 1 && matches != 1`. **Ambiguous means disc 1 was
+ASSUMED** (no match OR a tie); `withUserDisc` clears it - a person's answer is
+determined whatever the counts say. Every reporting helper (`discLogLine`,
+`discSourceLabel`, `discAmbiguityNote`, `discColumn`, `formatCandidateRow`,
+`wrapToWidth`) is a pure function over it in that header, so the log, sidecar,
+modal and cmdline cannot drift. `resolvedPick()` is what consumers call;
+`pickDiscForTrackCount` is a thin wrapper, contract unchanged.
 
-**"Fix iHeart and ship without rebuilding the host" is literally true.** The restructure
-branch is **feature-complete** (Phases 0–4 done); merge to `dev`/`main` is Dos's call. See
-`docs/roadmap.md` (Done + Parked) + `docs/session-handoff-2026-07-04-phase4-complete.md`.
+**`toc_track_count` is the TRACK count; `total_discs` / `DiscPick::total` is the
+MEDIA count** - both were `disc_total` in one file until 2026-08-08. In
+`disc.json`, `disc.disc_total` is media and the older `selection.disc_total` is
+tracks: published in 1.5.0, deliberately NOT renamed.
 
-**2026-07-16 flight (8 slices, all on `experimental/win-pdcurses`, v1.3.0 UNRELEASED):**
-DECODE: .opus/.wv/.ogg playback via custom miniaudio backends behind
-`remoct_custom_backends()` (CustomBackends.h); native-float lossy decode; the
-R128 RG read fixed. RIP OVERHAUL COMPLETE: `IEncoder` seam (`ebfaf1c`..`2e53de7`)
-- FLAC/MP3/WAV/Opus/WavPack, modal digits 1-5, any combination, one verified
-read; `RipOptions` plumbing; quality keys (flac_level/mp3/opus_bitrate/
-wavpack_mode); R128Gain.h = the one home for the R128<->RG dialect;
-IEncoder::finalize returns bool (the 3-layer ENOSPC laundering lesson);
-rip_encoder_seam_test = frozen-inline oracle + round-trips + forced-failure
-gates. Joan Osborne gate re-proven at the seam slice (12/12 AR v2 conf 200,
-byte-identical). Next recorded: log-semantics slice (lossless=master marking).
-See `docs/session-handoff-2026-07-16-rip-overhaul-complete.md` + the five
-`docs/rip-*-plan.md` design-of-record docs.
+`disc.json` is **schema 4**: the `disc` block carries `disc_number`, `disc_total`
+and `disc_source` ∈ `unique_track_count` | `ambiguous_fallback` | `user`.
+Every taggable output carries the disc number, `1/1` included (`include/DiscTag.h`).
 
-**2026-07-17 full-day flight (12 slices + 2 fixes, all CI-green):**
-stream-record COMPLETE (R1 engine `c333428` + R2 panel/^E/[REC] `9f8c393`,
-covers `8f06fab`, split-trim hold + ad-aware routing `8038368` - the [Rec]
-panel now: format/split/hold/ads/dir, pulsing red [REC]); the MP3 tag pair
-(read `e7c3fc8` + write `8a36b4c`; smoke/subM3 = the tag contract, subM =
-legacy specimen); log-semantics `76798ad` (Formats/Master lines); radio-art
-staleness fixed `758cf3b` (shared radioArtFloor + time-bounded neg cache);
-**THE ABI OPENED ONCE `254baca`** (slice A: 4 fns appended, NO version
-bump, keep-draining = gapless pause capture, 0.00s silence across a 35s
-pause; copy/remux slice B planned+committed `c62ca85` - M4A decisively,
-AacDecoder already decodes ADTS+MP4); batch ReplayGain `7dc403b` (^O
-folder scan, rip-parity EXACT, THE HEAL fixes pre-fix MP3s library-wide).
-**Backlog = slice B only.** Handoffs: `session-handoff-2026-07-17-*.md`;
-lessons: LP64 (long) tick-math trap, TagLib RW-handle sharing trap,
-additive-ABI reach-check discipline.
+## Outbound identity - THE DISPLAY MAY GUESS, THE RECORD MAY NOT
+- `cd_identity_` is the ONE identity for anything leaving the machine: raw
+  artist/title/album by CD track, written by `applyReleaseTitles` from the medium
+  it titled the rows with, cleared with those rows (purge, every `openCD`, every
+  release clear). **Nothing outbound re-derives a disc.** A fifth site that did
+  scrobbled a chosen disc 2 as disc 1, and resolved a STALE release against a LIVE
+  row count - which does not fail, it **succeeds wrongly**: it finds whichever
+  medium of the old release matches the new disc's count.
+- **A release is stamped with the disc ID it was adopted for**
+  (`mb_release_disc_id_`, set in `adoptReleaseLocked`; every `openCD` compares).
+  The question is "adopted FOR this disc", never "matches this disc" - the latter
+  is unanswerable for a `Ctrl+F` pick by construction.
+- **An assumed medium never scrobbles** (`cd_identity_assumed_` = `pick.ambiguous()`).
+  Last.fm/ListenBrainz only; SMTC/Discord still publish - a view, not a record.
+  **A `Ctrl+F` pick IS trusted** and its tracklist is deliberately not re-checked.
+
+## LOCKED - the conversation does not happen
+`docs/LOCKED-CODE.md` is binding. **Every proposal touching the CD path opens with
+this line, verbatim, before anything else:**
+
+> This proposal touches / does not touch AR_PREGAP, ar_crc.*, or the read addressing.
+
+**If the answer is "touches": stop there and say so. Do not propose it.** No brief,
+no probe attached, no scoped exception. The rule forbids the discussion, not just
+the change. Locked: `ar_crc.*`, `AR_PREGAP=150`, the read addressing, the disc-ID
+math (`computeCDDB`/`fetchARData`/`tocOffsets`/CTDB), the audio thread,
+`CursesSeam.h`, dynamic `libfdk-aac-2.dll`, `abi_version=1`, `Ctrl+T`.
+
+**CD addressing (`docs/CD-ADDRESSING-LOCKED.md`):** TOC reports ATIME, reads address
+in LBA, `LBA = frame - 150`. `start_frame` is NEVER a read address; `lba()` is the
+only thing that goes to a read. `kMsfLeadIn` and `AR_PREGAP` both equal 150 and are
+never substituted for each other. Fixed in `f759781`; never re-litigated.
+
+## Where the project is
+**Phases 0-4 COMPLETE** (2026-07-04): every platform call behind a seam on both
+platforms, Linux port done, streaming is a real loadable plugin
+(`remoct_stream.{so,dll}`) proven byte-identical to compiled-in - so **"fix iHeart
+and ship without rebuilding the host" is literally true.** Detail in
+`docs/roadmap.md` / `docs/architecture.md`.
+
+**Released:** 1.5.0 and 1.6.0 (2026-07-27), both merged to `main` and tagged.
+1.5.0 = per-track rip selection + the 17-slice `[Library]` section + the CD
+read-addressing fix. 1.6.0 = HTOA (hidden track before track 1).
+
+**1.6.1 is UNRELEASED on `experimental/win-pdcurses`.** `Version.h` and
+`CMakeLists.txt` say 1.6.1; **`docs/index.html` deliberately still says 1.6.0** and
+reconciles at ceremony. Contents: the non-ASCII display fold, a CJK crash fix, a
+window-move repaint fix, and the disc-number campaign (disc number in tags, the
+silent tie made loud, the disc surfaced before the rip, and the release/disc
+picker with `F5` re-open). See the newest `docs/session-handoff-*.md`.
+
+## 1.6.1: the display fold - read before touching display text
+`foldForDisplay` (`include/StringUtils.h`, was `sanitizeForDisplay`). Per codepoint:
+**reject** malformed UTF-8 as `?`, **normalize** the typography table, else **pass
+through verbatim**. **Byte length is never a criterion** - that was the bug: every
+3- and 4-byte sequence became one `?`, so CJK drew as `????` while 2-byte accented
+Latin came through.
+
+**RAW IN, FOLD AT THE DRAW.** Identity and outbound paths carry raw text - the
+library index, `TrackInfo`, `now_playing_`, the CD `MBRelease`. Folding on the way
+in scrobbled `???? - ????` to Last.fm and wrote folded text back into tags from the
+editor. The fold belongs at draw sites only.
+
+**Windows font:** RE-MOCT picks its own (`wingui_font`); bundled JetBrains Mono has
+no CJK. Boxes are a missing-glyph result, not a fold failure.
+
+## 1.6.1: vendored PDCursesMod carries a patch
+`lib/pdcursesmod/pdcurses/refresh.c` - a fullwidth glyph's two cells split across a
+`MAX_PACKET_LEN` (89) chunk boundary aborted the process. **That patch is the ONLY
+thing preventing the abort; RE-MOCT-side scheduling never was. RE-APPLY IT AFTER ANY
+RE-PIN.** Filed upstream as Bill-Gray/PDCursesMod **#386**; drop it only once that
+lands. `VENDOR.md` entry 4 is the record.
+
+**wingui gotchas that cost a night:** `PDC_doupdate()` is a `PeekMessage`/
+`DispatchMessage` pump, so `doupdate()` is not a leaf and anything drawn from a
+window handler can be re-entered. `WM_TIMER` is synthesised only when the queue
+drains, so a held drag starves it to **zero** - which is why a MOVE repaints from
+`WM_MOVING` (app-side subclass, `remoctWndProc`) while a RESIZE stays synchronous on
+`WM_SIZE`. Asserts are live (`CMAKE_BUILD_TYPE` empty, no `-DNDEBUG`) and that is
+what made the crash findable - do not silence them.
+
+## Earlier flights (detail in the matching handoffs)
+**07-16:** .opus/.wv/.ogg playback; RIP OVERHAUL (`IEncoder` seam, 5 formats).
+**07-17:** stream-record (^E), MP3 tag write, THE ABI OPENED ONCE (`254baca`,
+additive, no bump), batch RG (^O).
 
 ## Deep knowledge - read the matching file when a task touches it
 - Roadmap, phases, parked items, decisions → `docs/roadmap.md`
 - Plugin/Source interface, platform abstraction, Linux port, GitHub strategy → `docs/architecture.md`
 - Hard-won lessons (AccurateRip, wide-API, ring buffer, MP3 seek, cover art) → `docs/lessons.md`
 - Streaming internals (iHeart desync, metadata machine, ICY, rabbit-hole capture) → `docs/streaming.md`
+- What may not be discussed, and the CD addressing rule → `docs/LOCKED-CODE.md`, `docs/CD-ADDRESSING-LOCKED.md`
+- Vendored PDCursesMod: local patches, re-pin procedure → `lib/pdcursesmod/VENDOR.md`
 
 Keep this file under ~200 lines (Claude Code truncates the tail silently). Put new
 detail in `docs/`, not here; update the pointer block if you add a doc.

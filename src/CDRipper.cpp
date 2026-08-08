@@ -60,6 +60,11 @@
 #include <taglib/mp4item.h>
 #include <taglib/mp4coverart.h>
 
+// The disc number, one definition per tag container — shared with disc_tag_test
+// so the writer under test is the writer that ships. Pulls its own TagLib
+// headers; listed here because it is a tagging concern.
+#include "DiscTag.h"
+
 #include <filesystem>
 #include <cstring>
 #include <ctime>
@@ -167,7 +172,7 @@ std::string CDRipper::recordingsDir() {
     return musicRoot() + kSep + "re-moct" + kSep + "recordings";
 }
 
-std::string CDRipper::buildOutputDir(const MBRelease& rel) {
+std::string CDRipper::buildOutputDir(const MBRelease& rel, int disc_number) {
     std::string music = musicRoot();
     std::string folder;
     if (!rel.title.empty()) {
@@ -179,7 +184,30 @@ std::string CDRipper::buildOutputDir(const MBRelease& rel) {
         char buf[32]; std::strftime(buf,sizeof(buf),"CD_Rip_%Y-%m-%d",tm);
         folder = buf;
     }
-    return music + kSep + "re-moct" + kSep + folder;
+    std::string dir = music + kSep + "re-moct" + kSep + folder;
+
+    // The "Disc N" nesting, MOVED HERE from the worker. It used to be appended
+    // ~300 lines into worker(), which is precisely why nothing before the rip
+    // could show it: buildOutputDir returned the parent, so the confirm modal
+    // and the pre-rip status line were structurally incapable of naming the
+    // folder the rip would actually write to. One function returns the whole
+    // path now, and all three surfaces show the same string because they call
+    // the same thing.
+    //
+    // disc_number 0 means "not resolved" and yields exactly today's output, so
+    // any caller that has no disc in hand is unchanged.
+    //
+    // The CONDITION is unchanged: nest only when the release really has more
+    // than one medium, so single-disc rips stay flat. That count comes from
+    // `rel` rather than from a second parameter - it is a property of the
+    // release, and asking the caller for it would be one more chance for the
+    // number and the folder to disagree.
+    if (disc_number >= 1) {
+        int media = 1;
+        for (const auto& t : rel.tracks) if (t.disc > media) media = t.disc;
+        if (media > 1) dir += kSep + "Disc " + std::to_string(disc_number);
+    }
+    return dir;
 }
 
 std::unique_ptr<core::ICdDevice> CDRipper::openDrive(const std::string& dl) {
@@ -705,6 +733,8 @@ void CDRipper::tagFile(const std::string&         path,
                        const MBRelease&            rel,
                        const MBTrack*              mt,
                        int                         track_num,
+                       int                         disc_num,
+                       int                         disc_total,
                        const std::vector<uint8_t>& art,
                        const ARTrackResult&        ar,
                        const RGResult&             rg,
@@ -752,6 +782,7 @@ void CDRipper::tagFile(const std::string&         path,
             tag->setArtist(TagLib::String(artist_str, TagLib::String::UTF8));
             tag->setAlbum (TagLib::String(rel.title,  TagLib::String::UTF8));
             tag->setTrack ((unsigned int)track_num);
+            disctag::writeDiscTag(tag, disc_num, disc_total);
             if (rel.date.size()>=4) try { tag->setYear((unsigned)std::stoi(rel.date.substr(0,4))); } catch(...){}
 
             // TENC is a standard ID3v2 text frame — the generic construction
@@ -810,6 +841,7 @@ void CDRipper::tagFile(const std::string&         path,
             tag->setArtist(TagLib::String(artist_str, TagLib::String::UTF8));
             tag->setAlbum (TagLib::String(rel.title,  TagLib::String::UTF8));
             tag->setTrack ((unsigned int)track_num);
+            disctag::writeDiscTag(tag, disc_num, disc_total);
             if (rel.date.size()>=4) try { tag->setYear((unsigned)std::stoi(rel.date.substr(0,4))); } catch(...){}
             tag->addField("ENCODER",TagLib::String("RE-MOCT v" REMOCT_VERSION,TagLib::String::UTF8),true);
             if (!ar_str.empty()) {
@@ -854,6 +886,7 @@ void CDRipper::tagFile(const std::string&         path,
             tag->setArtist(TagLib::String(artist_str, TagLib::String::UTF8));
             tag->setAlbum (TagLib::String(rel.title,  TagLib::String::UTF8));
             tag->setTrack ((unsigned int)track_num);
+            disctag::writeDiscTag(tag, disc_num, disc_total);
             if (rel.date.size()>=4) try { tag->setYear((unsigned)std::stoi(rel.date.substr(0,4))); } catch(...){}
             tag->addField("ENCODER",TagLib::String("RE-MOCT v" REMOCT_VERSION,TagLib::String::UTF8),true);
             if (!ar_str.empty()) {
@@ -897,6 +930,7 @@ void CDRipper::tagFile(const std::string&         path,
             tag->setArtist(TagLib::String(artist_str, TagLib::String::UTF8));
             tag->setAlbum (TagLib::String(rel.title,  TagLib::String::UTF8));
             tag->setTrack ((unsigned int)track_num);
+            disctag::writeDiscTag(tag, disc_num, disc_total);
             if (rel.date.size()>=4) try { tag->setYear((unsigned)std::stoi(rel.date.substr(0,4))); } catch(...){}
             tag->addValue("ENCODER", TagLib::String("RE-MOCT v" REMOCT_VERSION, TagLib::String::UTF8), true);
             if (!ar_str.empty()) {
@@ -937,6 +971,7 @@ void CDRipper::tagFile(const std::string&         path,
             tag->setArtist(TagLib::String(artist_str, TagLib::String::UTF8));
             tag->setAlbum (TagLib::String(rel.title,  TagLib::String::UTF8));
             tag->setTrack ((unsigned int)track_num);
+            disctag::writeDiscTag(tag, disc_num, disc_total);
             if (rel.date.size()>=4) try { tag->setYear((unsigned)std::stoi(rel.date.substr(0,4))); } catch(...){}
             auto setFree = [&](const char* name, const std::string& val) {
                 tag->setItem(std::string("----:com.apple.iTunes:") + name,
@@ -1465,6 +1500,7 @@ void CDRipper::worker(std::string          drive_letter,
                       RipMode              mode,
                       RipOptions           opt,
                       ProgressCb           cb,
+                      int                  disc_override,
                       std::unique_ptr<core::ICdDevice> dev,
                       int                  drive_offset,
                       std::string          drive_model,
@@ -1479,11 +1515,28 @@ void CDRipper::worker(std::string          drive_letter,
     // the drive by matching the physical track count to a medium, and — only
     // for true multi-disc releases — nest this disc's output in "...\Disc N\"
     // so each disc folder is self-contained. Single-disc releases stay flat.
-    const int current_disc = pickDiscForTrackCount(rel, (int)tracks.size());
-    int total_discs = 1;
-    for (const auto& t : rel.tracks) if (t.disc > total_discs) total_discs = t.disc;
-    if (total_discs > 1)
-        out_dir += kSep + "Disc " + std::to_string(current_disc);
+    // One pick, carrying its own confidence. `disc` and `total` are the same two
+    // numbers this block always computed - pickDisc's `total` replaces the loop
+    // that used to sit here - and `matches` is what makes the log line able to
+    // say whether the disc was determined or assumed.
+    // The user's medium, when the picker got one. A track count cannot
+    // contradict it - that is the point of asking - so withUserDisc also clears
+    // `ambiguous()`, which turns the log line from "ASSUMED" into "(chosen)"
+    // and disc_source into "user".
+    const DiscPick disc_pick    = disc_override >= 1
+                                ? withUserDisc(pickDisc(rel, (int)tracks.size()), disc_override)
+                                : pickDisc(rel, (int)tracks.size());
+    const int      current_disc = disc_pick.disc;
+    const int      total_discs  = disc_pick.total;
+    // P4: `out_dir` ARRIVES COMPLETE - buildOutputDir appended any "Disc N"
+    // before start() was ever called, so the modal and the status line showed
+    // this exact path. The worker still needs the NUMBER for the track-metadata
+    // scoping below, the log line and the sidecar; it no longer decides where
+    // the files go. One number, one source, two uses.
+    //
+    // The caller derives its pick from `audio_.cdSource().tracks()`, which is
+    // the very vector handed to start() and passed here, so its DiscPick and
+    // this one are the same by construction rather than by agreement.
 
     std::error_code ec;
     fs::create_directories(out_dir, ec);
@@ -1552,6 +1605,11 @@ void CDRipper::worker(std::string          drive_letter,
                     drive_letter.c_str(), drive_offset);
             fprintf(lf, "Model  : %s\n", drive_model.empty() ? "unknown" : drive_model.c_str());
             fprintf(lf, "Tracks : %d\n", (int)tracks.size());
+            // Which medium this is, and whether that was determined or assumed.
+            // Written on every rip including single-disc ones: a missing line
+            // would mean both "one disc" and "ripped before this existed".
+            fprintf(lf, "Disc   : %s\n",
+                    discLogLine(disc_pick, (int)tracks.size()).c_str());
             fprintf(lf, "Mode   : %s\n",
                 mode==RipMode::AccurateRip ? "AccurateRip"    :
                 mode==RipMode::CUETools    ? "CUETools"       :
@@ -1610,7 +1668,12 @@ void CDRipper::worker(std::string          drive_letter,
         if (cb) { RipProgress p; p.state=RipState::Ripping;
                   p.status_msg="Fetching cover art..."; cb(p); }
         // 1) Cover Art Archive by MBID — unchanged primary path for MB releases.
-        if (!rel.mb_id.empty())
+        // A choice made on the confirm screen wins outright - it was made while
+        // looking at the picture, which is better evidence than anything this
+        // path can derive.
+        if (!art_override_.empty())
+            art = art_override_;
+        if (art.empty() && !rel.mb_id.empty())
             art = CoverArt::bytesByMbid(rel.mb_id);
         // 2) Fallback ONLY if CAA gave nothing: Discogs releases (no MBID) and
         //    the occasional MB release with no CAA front cover. Open, no-auth,
@@ -1707,18 +1770,25 @@ void CDRipper::worker(std::string          drive_letter,
     // ── Per-track rip ─────────────────────────────────────────────────────
     setDriveSpeed(*dev, 0xFFFF);
     // CD-S1: TWO quantities, because this used to be one.
-    //   disc_total = how many tracks the DISC has - the AR disc ID, the chunk
-    //                filter, is_first/is_last, the multi-disc pick and CTDB all
-    //                mean this one, and all of them are wrong with any other value.
-    //   sel_count  = how many we are RIPPING - loop bounds and progress only.
+    //   toc_track_count = how many TRACKS the disc has - the AR disc ID, the
+    //                     chunk filter, is_first/is_last, the multi-disc pick
+    //                     and CTDB all mean this one, and all of them are wrong
+    //                     with any other value.
+    //   sel_count       = how many we are RIPPING - loop bounds and progress.
     // They are equal on a whole-disc rip, which is why one variable served for
     // both until a selection existed.
-    const int disc_total = (int)tracks.size();
-    const int sel_count  = (int)plan.size();
+    //
+    // WAS `disc_total` until the disc number arrived. That name read as "how
+    // many discs" and held "how many tracks", and it sat one letter-order away
+    // from `total_discs`, which really is the media count, in this same
+    // function. tagFile's `disc_total` parameter means the media count, so the
+    // one identifier meant both things in one file. It now means only that.
+    const int toc_track_count = (int)tracks.size();
+    const int sel_count       = (int)plan.size();
     // CD-S2: ONE predicate for "is this the whole disc", consulted by every
     // side-product decision below. Not re-derived by comparing counts at each
     // site - that is the defect class this codebase has closed six times now.
-    const bool whole_disc = ripsel::isWholeDisc(disc_total, plan);
+    const bool whole_disc = ripsel::isWholeDisc(toc_track_count, plan);
 
     // CTDB end-trim needs the disc audio total up front. The byte stream CTDB
     // accumulates is exactly each track's length_lba*SECTOR_BYTES in order, so
@@ -1733,11 +1803,11 @@ void CDRipper::worker(std::string          drive_letter,
     // Once detected, used for all subsequent tracks' Pass 1 and Pass 2.
     int  pressing_offset          = 0;
     bool pressing_offset_detected = false;
-    std::vector<ARTrackResult> ar_results(disc_total);
-    std::vector<RGResult>      rg_results(disc_total);
+    std::vector<ARTrackResult> ar_results(toc_track_count);
+    std::vector<RGResult>      rg_results(toc_track_count);
     // Integrated-loudness state for each KEPT track's audio, handed back from
     // ripTrack. Combined after the loop for true album gain, then destroyed.
-    std::vector<ebur128_state*> album_states(disc_total, nullptr);
+    std::vector<ebur128_state*> album_states(toc_track_count, nullptr);
     bool any_error = false;
 
     // CTDB CRC state threads across all tracks (initialized with seed 0xFFFFFFFF)
@@ -1770,7 +1840,7 @@ void CDRipper::worker(std::string          drive_letter,
 
         RGResult rg;
         ebur128_state* ebur_kept = nullptr;   // Pass 1 loudness state (kept unless Pass 2 wins)
-        ARTrackResult ar = ripTrack(*dev, trk, i, disc_total,
+        ARTrackResult ar = ripTrack(*dev, trk, i, toc_track_count,
                                     item.is_first, item.is_last,
                                     use_c2,
                                     outs, opt, rg, cb,
@@ -1960,7 +2030,7 @@ void CDRipper::worker(std::string          drive_letter,
                         if (drive_offset + p < 0) continue;
                         const auto probe_outs = withSuffix(outs, ".probe");
                         RGResult      rg_probe;
-                        ARTrackResult ar_probe = ripTrack(*dev, trk, i, disc_total,
+                        ARTrackResult ar_probe = ripTrack(*dev, trk, i, toc_track_count,
                                                           item.is_first, item.is_last,
                                                           use_c2,
                                                           probe_outs, opt,
@@ -2027,7 +2097,7 @@ void CDRipper::worker(std::string          drive_letter,
 
             RGResult      rg2;
             ebur128_state* ebur_p2 = nullptr;
-            ARTrackResult ar2 = ripTrack(*dev, trk, i, disc_total,
+            ARTrackResult ar2 = ripTrack(*dev, trk, i, toc_track_count,
                                          item.is_first, item.is_last,
                                          use_c2,
                                          tmp_outs, opt, rg2, cb,
@@ -2092,7 +2162,7 @@ void CDRipper::worker(std::string          drive_letter,
             flushDriveCache(*dev, trk.lba(), full_leadout_frame - kMsfLeadIn, use_c2);  // LBA: both are read bounds (F0-S1)
             const auto det_outs = withSuffix(outs, ".det");
             RGResult      rgd;
-            ARTrackResult ard = ripTrack(*dev, trk, i, disc_total, item.is_first, item.is_last,
+            ARTrackResult ard = ripTrack(*dev, trk, i, toc_track_count, item.is_first, item.is_last,
                                          use_c2, det_outs, opt, rgd, cb,
                                          log_path, mode, drive_offset,
                                          ctdb_state.ctdb_crc, ctdb_state.ctdb_bytes,
@@ -2181,7 +2251,7 @@ void CDRipper::worker(std::string          drive_letter,
             cb(p);
         }
 
-        fetchCTDBData(ctdb_id, log_path, disc_total, ctdb_status);
+        fetchCTDBData(ctdb_id, log_path, toc_track_count, ctdb_status);
 
         if (cb) {
             RipProgress p; p.state = RipState::Ripping;
@@ -2261,7 +2331,7 @@ void CDRipper::worker(std::string          drive_letter,
 
             RGResult       hrg;
             ebur128_state* hebur = nullptr;
-            ripTrack(*dev, ht, /*track_idx=*/0, disc_total,
+            ripTrack(*dev, ht, /*track_idx=*/0, toc_track_count,
                      /*is_first=*/false, /*is_last=*/false,
                      use_c2, houts, opt, hrg, cb,
                      log_path, mode, drive_offset,
@@ -2292,8 +2362,12 @@ void CDRipper::worker(std::string          drive_letter,
                 hmt.number = 0;
                 hmt.title  = htoa_tag_title;
                 hmt.disc   = current_disc;
+                // The hidden track belongs to THIS disc, so it carries the same
+                // disc number as every numbered track beside it — it is track 0
+                // of disc 3, not a disc of its own.
                 for (const auto& o : houts)
                     tagFile(o.path, rel, &hmt, /*track_num=*/0,
+                            current_disc, total_discs,
                             art, ARTrackResult{}, hrg, mode,
                             /*ctdb_status=*/"", /*ctdb_disc_id=*/"");
             }
@@ -2401,7 +2475,8 @@ void CDRipper::worker(std::string          drive_letter,
             // unchanged (the guard is false for FLAC/MP3).
             if (const RipFormatRow* r = ripFormatRow(o.fmt); r && !r->taggable)
                 continue;
-            tagFile(o.path, rel, mt, tnum, art, ar_results[i], rg_results[i], mode,
+            tagFile(o.path, rel, mt, tnum, current_disc, total_discs,
+                    art, ar_results[i], rg_results[i], mode,
                     ctdb_status, ctdb_disc_id);
         }
     }
@@ -2562,7 +2637,7 @@ void CDRipper::worker(std::string          drive_letter,
                 fprintf(tf, "# MB ID     : %s\r\n", rel.mb_id.c_str());
             fprintf(tf, "#\r\n");
             fprintf(tf, "# Track  Start-LBA  Length-LBA  Start-MSF    Duration\r\n");
-            for (int i = 0; i < disc_total; ++i) {
+            for (int i = 0; i < toc_track_count; ++i) {
                 const CDTrack& t = tracks[i];
                 uint32_t m = t.start_frame / 75 / 60;
                 uint32_t s = (t.start_frame / 75) % 60;
@@ -2590,13 +2665,13 @@ void CDRipper::worker(std::string          drive_letter,
             uint32_t lo_j = full_leadout_frame ? (uint32_t)full_leadout_frame
                           : tracks.back().start_frame + tracks.back().length_lba;
             uint32_t id1 = 0, id2 = 0, rel_lo = lo_j - AR_PREGAP;
-            for (int i = 0; i < disc_total; ++i) {
+            for (int i = 0; i < toc_track_count; ++i) {
                 uint32_t rel = tracks[i].start_frame - AR_PREGAP;
                 id1 += rel;
                 id2 += std::max(rel, 1u) * (uint32_t)(i + 1);
             }
             id1 += rel_lo;
-            id2 += rel_lo * (uint32_t)(disc_total + 1);
+            id2 += rel_lo * (uint32_t)(toc_track_count + 1);
 
             json j;
             // CD-S2: 2 = ReplayGain values may be null (unmeasured), and a
@@ -2606,10 +2681,39 @@ void CDRipper::worker(std::string          drive_letter,
             // the old name said LBA while holding ATIME, which is the confusion
             // that produced the read-addressing defect. "leadout_lba" likewise
             // holds a frame; both are ATIME and neither is a read address.
-            j["schema_version"] = 3;
+            //
+            // 4 = the "disc" block names WHICH medium this is and HOW that was
+            // decided. Until now the sidecar recorded no disc number at all, and
+            // the fallback to disc 1 on an ambiguous match was invisible in every
+            // artefact the rip produced. `disc_source` is a discriminated
+            // encoding for the same reason the ReplayGain nulls are: "1" from a
+            // unique match and "1" from a tie are different facts, and the number
+            // alone cannot tell them apart.
+            //
+            //   unique_track_count - exactly one medium had this track count
+            //   ambiguous_fallback - none or several did; disc 1 was ASSUMED
+            //   user               - a person chose it. NOT YET REACHABLE: the
+            //                        picker that would set it is a later slice.
+            //                        Named now so the set is complete on first
+            //                        publication rather than grown afterwards.
+            //
+            // CAUTION - a JSON KEY, not a variable, still means two things here.
+            // `disc.disc_total` below is the MEDIA count. The pre-existing
+            // `selection.disc_total` (CD-S2, schema 2) is the TRACK count. The
+            // C++ variables no longer collide - the track one is
+            // `toc_track_count` now, which is why the assignment at the
+            // selection block reads oddly and honestly. `selection.disc_total`
+            // is deliberately NOT renamed: it shipped in 1.5.0 and anything
+            // already reading it would break. They are distinct paths, so a
+            // reader indexing by block is correct either way; a human skimming
+            // is the one at risk.
+            j["schema_version"] = 4;
             j["disc"] = {
                 {"artist", rel.artist}, {"album", rel.title},
-                {"date", rel.date},     {"mb_id", rel.mb_id}
+                {"date", rel.date},     {"mb_id", rel.mb_id},
+                {"disc_number", current_disc},
+                {"disc_total",  total_discs},
+                {"disc_source", discSourceLabel(disc_pick)}
             };
             j["drive"] = {
                 {"letter", drive_letter}, {"model", drive_model},
@@ -2627,7 +2731,7 @@ void CDRipper::worker(std::string          drive_letter,
             toc["pregap_frames"] = (int)tracks[0].start_frame - (int)AR_PREGAP; // 0 if standard
             toc["leadout_frame"] = (uint32_t)lo_j;   // ATIME, renamed with schema 3
             toc["data_tracks"]   = data_track_frames;
-            for (int i = 0; i < disc_total; ++i) {
+            for (int i = 0; i < toc_track_count; ++i) {
                 const CDTrack& t = tracks[i];
                 char msf[16];
                 snprintf(msf, sizeof msf, "%02u:%02u:%02u",
@@ -2657,7 +2761,7 @@ void CDRipper::worker(std::string          drive_letter,
             if (!whole_disc) {
                 json sel;
                 sel["partial"]    = true;
-                sel["disc_total"] = disc_total;
+                sel["disc_total"] = toc_track_count;
                 for (const ripsel::Item& item : plan)
                     sel["ripped"].push_back(tracks[(size_t)item.toc_index].number);
                 j["selection"] = sel;
@@ -2782,7 +2886,7 @@ void CDRipper::worker(std::string          drive_letter,
                         rg_results.empty() ? 0.0 : rg_results[0].album_gain,
                         rg_results.empty() ? 0.0 : rg_results[0].album_peak);
             } else {
-                fprintf(lf, "Partial rip: %d of %d tracks selected\n", sel_count, disc_total);
+                fprintf(lf, "Partial rip: %d of %d tracks selected\n", sel_count, toc_track_count);
                 fprintf(lf, "ReplayGain: album gain OMITTED (measured over a subset it would not\n");
                 fprintf(lf, "            describe the album). Track gain written as usual.\n");
                 fprintf(lf, "CUE sheet : SKIPPED (it reconstructs the disc's layout; over a subset\n");
@@ -2848,7 +2952,8 @@ bool CDRipper::start(AudioManager&               audio,
                      RipOptions                   opt,
                      ProgressCb                   cb,
                      const std::vector<int>&      selected_toc,
-                     bool                         rip_htoa) {
+                     bool                         rip_htoa,
+                     int                          disc_override) {
     if (active_.load()) return false;
     active_.store(true);
     cancel_.store(false);
@@ -2864,7 +2969,7 @@ bool CDRipper::start(AudioManager&               audio,
     // CD-S1: build the extraction plan HERE, so the worker never sees a bare
     // index again. Empty selection == the whole disc, and planAll reproduces
     // the exact arguments the worker used before selection existed.
-    const int disc_total = (int)tracks.size();
+    const int toc_track_count = (int)tracks.size();
     // An empty selection still means ALL - CD-S1's contract, and the whole of
     // the "nothing changed for a user who never marks" claim. The one case it
     // cannot express by itself is "only the hidden track", where no numbered
@@ -2873,8 +2978,8 @@ bool CDRipper::start(AudioManager&               audio,
     std::vector<ripsel::Item> plan =
         selected_toc.empty()
             ? (rip_htoa ? std::vector<ripsel::Item>{}      // HTOA on its own
-                        : ripsel::planAll(disc_total))     // untouched default
-            : ripsel::plan(disc_total, selected_toc);
+                        : ripsel::planAll(toc_track_count))     // untouched default
+            : ripsel::plan(toc_track_count, selected_toc);
     if (plan.empty() && !rip_htoa)
         return false;                 // nothing selected: refuse, as the format
                                       // picker already does at zero formats
@@ -2889,11 +2994,11 @@ bool CDRipper::start(AudioManager&               audio,
     // anything at all is written. CD-S3 makes the combination unselectable by
     // showing [C] unavailable while the selection is partial; this makes it
     // unexecutable. Neither half assumes the other has been done.
-    if (mode == RipMode::CUETools && !ripsel::isWholeDisc(disc_total, plan))
+    if (mode == RipMode::CUETools && !ripsel::isWholeDisc(toc_track_count, plan))
         return false;
     thread_ = std::thread(&CDRipper::worker, this,
                           dl, tracks, std::move(plan), out_dir, rel, mode, std::move(opt), cb,
-                          std::move(dev), drv_offset, drv_model,
+                          disc_override, std::move(dev), drv_offset, drv_model,
                           full_leadout, data_trk_frames, rip_htoa);
     return true;
 }

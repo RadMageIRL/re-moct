@@ -34,6 +34,63 @@ static bool looksLikeImage(const std::vector<uint8_t>& d) {
         b[8]=='W' && b[9]=='E' && b[10]=='B' && b[11]=='P') return true;     // WEBP
     return false;
 }
+// ─── The index ──────────────────────────────────────────────────────────────
+// One GET of /release/{mbid} - ~27 KB for 35 images on the measured release.
+// Deliberately NOT called on the rip path: the automatic pick still comes from
+// front-500, and this only runs when somebody asks to choose, so a listing
+// nobody opens is never fetched.
+std::vector<CaaImage> indexByMbid(const std::string& mb_id) {
+    std::vector<CaaImage> out;
+    if (mb_id.empty()) return out;
+    core::HttpRequest req;
+    req.url      = "https://coverartarchive.org/release/" + mb_id;
+    req.max_body = 4u * 1024 * 1024;      // a listing, not an image
+    req.redirect = core::RedirectPolicy::FollowSameScheme;
+    core::HttpResponse r = core::http().fetch(req);
+    if (r.status != 200 || r.body.empty()) return out;
+    try {
+        auto j = nlohmann::json::parse(r.body);
+        if (!j.contains("images") || !j["images"].is_array()) return out;
+        for (auto& im : j["images"]) {
+            CaaImage c;
+            // "id" is an integer in the JSON; keep it as text - it is a key, and
+            // nothing here does arithmetic on it.
+            if (im.contains("id")) {
+                if (im["id"].is_number_integer()) c.id = std::to_string(im["id"].get<long long>());
+                else if (im["id"].is_string())    c.id = im["id"].get<std::string>();
+            }
+            c.comment   = im.value("comment", "");
+            c.front     = im.value("front", false);
+            c.image_url = im.value("image", "");
+            if (im.contains("types") && im["types"].is_array() && !im["types"].empty()
+                && im["types"][0].is_string())
+                c.type = im["types"][0].get<std::string>();
+            if (im.contains("thumbnails") && im["thumbnails"].is_object()) {
+                const auto& t = im["thumbnails"];
+                // "250" is what every measured entry publishes; "small" is the
+                // older alias and is taken only if the numbered one is absent.
+                if (t.contains("250"))        c.thumb_url = t.value("250", "");
+                else if (t.contains("small")) c.thumb_url = t.value("small", "");
+            }
+            if (!c.image_url.empty()) out.push_back(std::move(c));
+        }
+    } catch (...) { out.clear(); }
+    return out;
+}
+
+std::vector<uint8_t> frontThumbByMbid(const std::string& mb_id) {
+    if (mb_id.empty()) return {};
+    core::HttpRequest req;
+    req.url              = "https://coverartarchive.org/release/" + mb_id + "/front-250";
+    req.max_body         = 10u * 1024 * 1024;
+    req.reject_truncated = true;
+    req.redirect         = core::RedirectPolicy::FollowSameScheme;
+    core::HttpResponse r = core::http().fetch(req);
+    if (r.status != 200) return {};
+    std::vector<uint8_t> data(r.body.begin(), r.body.end());
+    return looksLikeImage(data) ? data : std::vector<uint8_t>{};
+}
+
 std::vector<uint8_t> bytesByMbid(const std::string& mb_id) {
     if (mb_id.empty()) return {};
     for (const auto& url : {

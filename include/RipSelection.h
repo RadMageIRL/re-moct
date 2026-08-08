@@ -58,18 +58,18 @@ inline bool operator==(const Item& a, const Item& b) {
 // That last property is deliberate and matches the contract rip_sel_ already
 // keeps for formats - the rip must not depend on the order the user happened to
 // toggle things in.
-inline std::vector<Item> plan(int disc_total, const std::vector<int>& selected) {
+inline std::vector<Item> plan(int toc_track_count, const std::vector<int>& selected) {
     std::vector<Item> out;
-    if (disc_total <= 0) return out;
+    if (toc_track_count <= 0) return out;
     std::vector<int> idx;
     idx.reserve(selected.size());
     for (int i : selected)
-        if (i >= 0 && i < disc_total) idx.push_back(i);
+        if (i >= 0 && i < toc_track_count) idx.push_back(i);
     std::sort(idx.begin(), idx.end());
     idx.erase(std::unique(idx.begin(), idx.end()), idx.end());
     out.reserve(idx.size());
     for (int i : idx)
-        out.push_back(Item{ i, i == 0, i == disc_total - 1 });
+        out.push_back(Item{ i, i == 0, i == toc_track_count - 1 });
     return out;
 }
 
@@ -77,12 +77,12 @@ inline std::vector<Item> plan(int disc_total, const std::vector<int>& selected) 
 // track in TOC order. Substituted into the call sites this reproduces exactly
 // the arguments the worker passes today - toc_index == i, is_first == (i==0),
 // is_last == (i==total-1).
-inline std::vector<Item> planAll(int disc_total) {
+inline std::vector<Item> planAll(int toc_track_count) {
     std::vector<Item> out;
-    if (disc_total <= 0) return out;
-    out.reserve((std::size_t)disc_total);
-    for (int i = 0; i < disc_total; ++i)
-        out.push_back(Item{ i, i == 0, i == disc_total - 1 });
+    if (toc_track_count <= 0) return out;
+    out.reserve((std::size_t)toc_track_count);
+    for (int i = 0; i < toc_track_count; ++i)
+        out.push_back(Item{ i, i == 0, i == toc_track_count - 1 });
     return out;
 }
 
@@ -90,8 +90,8 @@ inline std::vector<Item> planAll(int disc_total) {
 // (a cue sheet, album gain and CTDB describe a DISC), and the modal's summary
 // line in CD-S3 shows nothing when this is true - so the default path draws
 // exactly as it does today.
-inline bool isWholeDisc(int disc_total, const std::vector<Item>& p) {
-    return disc_total > 0 && (int)p.size() == disc_total;
+inline bool isWholeDisc(int toc_track_count, const std::vector<Item>& p) {
+    return toc_track_count > 0 && (int)p.size() == toc_track_count;
 }
 
 } // namespace ripsel

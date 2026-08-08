@@ -160,13 +160,31 @@ public:
                RipOptions                  opt,
                ProgressCb                  cb,
                const std::vector<int>&     selected_toc = {},
-               bool                        rip_htoa     = false);
+               bool                        rip_htoa     = false,
+               // The medium a PERSON chose in the picker, 0 = nobody did. When
+               // set it overrides the track-count match and makes disc.json say
+               // `disc_source: "user"`. 0 reproduces every pre-picker rip.
+               int                         disc_override = 0);
+
+    // Art chosen on the confirm screen. Empty (the default) = fetch as always,
+    // so a user who never opens the picker gets byte-identical behaviour. Set
+    // before start(); the worker copies it and embeds THESE bytes rather than
+    // re-fetching a front cover and silently overriding the choice.
+    void setArtOverride(const std::vector<uint8_t>& bytes) { art_override_ = bytes; }
 
     void cancel();
     bool     isActive() const { return active_.load(); }
     RipState state()    const { return state_.load(); }
 
-    static std::string buildOutputDir(const MBRelease& rel);
+    // The complete output directory, "Disc N" nesting included. disc_number 0 =
+    // not resolved = no suffix = exactly the path this returned before the
+    // parameter existed. The suffix still appears only when `rel` really has
+    // more than one medium, so a single-disc rip stays flat.
+    //
+    // The nesting lived in worker() until P4. Keeping it there meant the confirm
+    // modal and the pre-rip status line could not name the folder the rip was
+    // about to use - they had the parent and nothing else.
+    static std::string buildOutputDir(const MBRelease& rel, int disc_number = 0);
     // The user's music root (extracted verbatim from buildOutputDir,
     // stream-record R1) and the stream-capture sibling of the rip output dir:
     // <music>/re-moct/recordings. One root — relocating Music moves both.
@@ -179,6 +197,7 @@ private:
     std::atomic<bool>     cancel_ { false };
     std::atomic<RipState> state_  { RipState::Idle };
     std::thread           thread_;
+    std::vector<uint8_t>  art_override_;   // see setArtOverride
 
     void worker(std::string          drive_letter,
                 std::vector<CDTrack> tracks,
@@ -188,6 +207,7 @@ private:
                 RipMode              mode,
                 RipOptions           opt,
                 ProgressCb           cb,
+                int                  disc_override,
                 std::unique_ptr<core::ICdDevice> dev,
                 int                  drive_offset,
                 std::string          drive_model,
@@ -220,10 +240,19 @@ private:
     // and one disc ID for the whole rip, written identically into every track's
     // tags the way album ReplayGain already is. Empty in every other mode, and on
     // a cancelled or failed rip, in which case no CTDB tag is written at all.
+    //
+    // disc_num / disc_total sit beside track_num because they answer the sibling
+    // question, and deliberately NOT beside ctdb_disc_id — that is a CTDB content
+    // hash, and two adjacent parameters both called "disc id" is the kind of
+    // adjacency this tree keeps getting caught by. Always written, 1/1 included
+    // (see DiscTag.h). Both come from the worker's single pickDiscForTrackCount
+    // result and its matching medium total.
     static void tagFile(const std::string&          path,
                         const MBRelease&             rel,
                         const MBTrack*               mt,
                         int                          track_num,
+                        int                          disc_num,
+                        int                          disc_total,
                         const std::vector<uint8_t>&  art,
                         const ARTrackResult&         ar,
                         const RGResult&              rg,

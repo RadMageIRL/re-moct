@@ -49,6 +49,55 @@ All tagged in-tree with `/* RE-MOCT patch: ... */`. In `wingui/pdcscrn.c`:
   keeps animating during a title-bar MOVE, which emits WM_MOVE not WM_SIZE and so
   never triggered the resize callback.
 
+In `pdcurses/refresh.c` (`PDC_transform_line_sliced`):
+- **The leading-dummy repair runs once instead of per chunk. This one is an
+  UPSTREAM DEFECT, not a local preference** - the only patch here that is.
+  Upstream repairs a refresh span that begins on `DUMMY_CHAR_NEXT_TO_FULLWIDTH`
+  (the placeholder in a fullwidth glyph's second cell) by backing up one cell onto
+  the glyph's first half. That repair sat ABOVE the `while( len)` loop, so it ran
+  for the first chunk only. The loop then cuts the span into `MAX_PACKET_LEN - 1`
+  = **89**-cell chunks, and every `srcp += i` can land the next chunk on a dummy
+  whose first half is in the chunk just drawn. When that happened the packet loop
+  computed `i == 1` with `ch == MAX_UNICODE` and
+  `assert( i > 1 || ch != MAX_UNICODE)` **aborted the process**. The same boundary
+  produces the sibling abort in `wingui/pdcdisp.c`
+  (`assert( (srcp[len-1] & A_CHARTEXT) != MAX_UNICODE)`) when the dummy lands at
+  the END of a chunk rather than the start - two faces of one defect, and the
+  patch fixes both:
+  1. **Leading dummy.** The repair moves inside the loop so every chunk gets it,
+     with the `x == 0` arm the original lacked: at column 0 there is no cell to
+     back onto, because the glyph's first half is off-line to the left, so the
+     cell is skipped (`x++, srcp++, len--`) as there is nothing to draw.
+  2. **Trailing dummy.** The trim read `ch`, which is STALE when the inner loop
+     exits on its FIRST condition (`i` reaching `MAX_PACKET_LEN - 1`): that exit
+     never evaluates `ch` for the current `i`, so `ch` holds `srcp[i-2]` and
+     `srcp[i-1]` is never examined at all. The patch tests the packet's actual
+     last cell. Behaviour is identical to upstream everywhere else - when the loop
+     exits BECAUSE `srcp[i-1]` is a dummy, `ch` is that same cell and both forms
+     trim to `i-1` - and `x`/`len`/`srcp` still advance by `i`, so the dummy is
+     consumed exactly as before.
+  The cursor-split recursion at the top of the function needs nothing: it recurses
+  back through the same loop, so both repairs cover it.
+  Upstream knows the condition is reachable: the line immediately above the assert
+  is an `fprintf(stderr, "line %d, x=%d, len=%d\n", ...)` diagnostic. Left in place
+  - still a useful canary if another path produces it.
+  **Requires a line wider than 89 cells AND a fullwidth glyph straddling a chunk
+  boundary**, which is why it only appears on wide windows showing CJK, and why
+  hundreds of automated ASCII-only resizes never reproduced it.
+  RE-MOCT only started hitting this at 1.6.1, when the display fold stopped
+  replacing CJK with `?`: before that `PDC_wcwidth` never returned 2, no dummy cell
+  ever existed, and the case was unreachable by construction. Reproduced as a hard
+  abort on a border-drag with wide glyphs on screen.
+  **THIS PATCH IS THE ONLY THING PREVENTING THE ABORT.** Nothing on the RE-MOCT
+  side protects against it and nothing should be credited with doing so. In
+  particular the 1.6.1 resize deferral did NOT fix it - the build carrying that
+  deferral still aborted, on the sibling assert - and it was removed again once it
+  was found to cost visible flicker. **A re-pin that drops this patch brings the
+  crash straight back, however drawing happens to be scheduled.**
+  **Filed upstream as Bill-Gray/PDCursesMod issue #386. DROP THIS PATCH only once
+  it lands there** - check the issue before re-pinning. Report as filed:
+  `docs/upstream-pdcursesmod-chunk-boundary.md`.
+
 Re-apply these after re-pinning; grep the tree for `RE-MOCT patch` to find them.
 
 ## Updating the pin

@@ -2743,14 +2743,22 @@ DiscPick UIManager::resolvedPick(const MBRelease& rel, int n_physical) const {
     return p;
 }
 
-// Adopt a release: cache it, drop any medium the user chose for the PREVIOUS
-// one, and ask the run loop to re-title the playlist. UI thread only.
+// A medium chosen for a DIFFERENT release means nothing about this one - but a
+// medium chosen for THIS one must survive being handed the same release again,
+// which a repeat ^R does. An empty mb_id never counts as a match: Discogs
+// releases all carry one, so comparing them would make every Discogs release
+// look like every other.
+void UIManager::adoptReleaseLocked(const MBRelease& rel) {
+    const bool same_release = !rel.mb_id.empty() && rel.mb_id == mb_release_.mb_id;
+    if (!same_release) mb_disc_override_ = 0;
+    mb_release_ = rel;
+}
+
+// Adopt a release and ask the run loop to re-title the playlist. UI thread only.
 void UIManager::applyChosenRelease(const MBRelease& rel) {
     {
         std::lock_guard<std::mutex> lk(mb_mutex_);
-        mb_release_       = rel;
-        // A choice made about a different release means nothing about this one.
-        mb_disc_override_ = 0;
+        adoptReleaseLocked(rel);
         mb_error_.clear();
     }
     mb_titles_pending_.store(true);
@@ -2821,15 +2829,94 @@ DiscPick UIManager::applyReleaseTitles(const MBRelease& rel) {
 // ^F search. It is not a sub-step of the release stage: Mellon Collie's release
 // can be perfectly correct and still leave the medium undecided, which is the
 // case a release picker alone would not have helped with.
-void UIManager::openMediumStage(const MBRelease& rel, int n_physical) {
+void UIManager::openMediumStage(const MBRelease& rel, int n_physical, int cursor_disc) {
+    std::lock_guard<std::mutex> lk(mb_mutex_);
     mb_pick_.stage      = 1;
     mb_pick_.chosen     = rel;
     mb_pick_.n_physical = n_physical;
     mb_pick_.note.clear();
     // Preselected on disc 1 - today's silent fallback - so Enter reproduces the
     // old behaviour in one keystroke. The default is PRESELECTED, not preapplied.
-    mb_pick_.cursor     = 0;
+    // A RE-OPEN passes the disc already in force instead, because showing you
+    // where you are is the whole difference between reopening and starting over.
+    mb_pick_.cursor     = cursor_disc >= 1 ? cursor_disc - 1 : 0;
     ui_overlay_         = UIOverlay::MBPick;
+    redraw_needed_.store(true);
+}
+
+// ─── F5: reopen the picker, without going back to the network ───────────────
+// The candidates are already in memory, so this is a re-entry path rather than
+// new data. It asks THE SAME QUESTION the forward flow would ask now - the skip
+// rules run in reverse - so what happens is predictable from what happened the
+// first time.
+//
+// ^R is deliberately untouched and still re-queries. Overloading it would have
+// meant an existing key quietly changing meaning, and this needed no explanation
+// on a key that already means refresh-or-reopen elsewhere in the app.
+void UIManager::reopenPicker() {
+    if (ui_overlay_ != UIOverlay::None) return;    // never stack modals
+    if (mb_fetching_.load()) {
+        showTrackToast("MB: lookup still running", "", "");
+        return;
+    }
+
+    MBRelease applied;
+    std::vector<MBRelease> cands;
+    int n_phys = 0, override_disc = 0;
+    {
+        std::lock_guard<std::mutex> lk(mb_mutex_);
+        applied       = mb_release_;
+        cands         = mb_pick_.cands;
+        n_phys        = mb_pick_.n_physical;
+        override_disc = mb_disc_override_;
+    }
+    if (applied.title.empty() && cands.empty()) {
+        showTrackToast("MB: no metadata yet - Ctrl+R looks this disc up", "", "");
+        return;
+    }
+    // The count the candidate list was BUILT against, so the disc column reads
+    // the same as it did the first time. Only derived when nothing cached it.
+    if (n_phys <= 0)
+        for (std::size_t k = 0; k < playlist_.size(); ++k)
+            if (cdTrackNumber(playlist_.at(k).path) >= 1) ++n_phys;
+
+    if (cands.size() >= 2) {
+        // Cursor on the release ALREADY IN FORCE, matched by id. Row 1 would be
+        // the server's first answer, which is exactly the arbitrary pick this
+        // whole feature removed.
+        int cur = 0;
+        for (std::size_t i = 0; i < cands.size(); ++i)
+            if (!applied.mb_id.empty() && cands[i].mb_id == applied.mb_id) {
+                cur = (int)i; break;
+            }
+        std::lock_guard<std::mutex> lk(mb_mutex_);
+        mb_pick_.stage      = 0;
+        mb_pick_.cursor     = cur;
+        mb_pick_.n_physical = n_phys;
+        ui_overlay_         = UIOverlay::MBPick;
+        redraw_needed_.store(true);
+        return;
+    }
+
+    int total = 1;
+    for (const auto& t : applied.tracks) if (t.disc > total) total = t.disc;
+    if (total > 1) {
+        // Right release, wrong disc is the common reason to come back here, so
+        // a one-row upstream question would be friction for nothing.
+        openMediumStage(applied, n_phys,
+                        override_disc >= 1 ? override_disc
+                                           : pickDisc(applied, n_phys).disc);
+        return;
+    }
+
+    // Nothing to reconsider. Said on the cmdline rather than opened as an empty
+    // modal - a dialog with one row and no alternative is a worse answer than a
+    // sentence.
+    std::lock_guard<std::mutex> lk(mb_mutex_);
+    mb_status_       = cands.size() == 1
+                     ? "Only one release matched this disc"
+                     : "Nothing to choose - one release, one disc";
+    mb_status_ticks_ = 0;
     redraw_needed_.store(true);
 }
 
@@ -7950,6 +8037,13 @@ void UIManager::handleInput(int ch) {
             showTrackToast(config_.follow_playing ? "Follow playing: ON"
                                                   : "Follow playing: OFF", "", "");
             break;
+        case KEY_F(5):    // reopen the release / disc picker (O4)
+            // Free key, checked against BOTH binding forms before it was
+            // chosen: every control code is taken except ^S/^V/^W/^X, and Tab,
+            // Enter and Backspace bind as character literals rather than as
+            // numbers, so a numeric-only scan would have called them free.
+            reopenPicker();
+            break;
         case KEY_F(6): {  // cycle iHeart re-pin mode: off -> ad-escape -> hybrid -> timed -> live-edge (persisted)
             // Feed (Ctrl+K) and re-pin behaviour are independent axes; F6 changes only
             // the re-pin half. Read live by the producer/SM, so no reconnect is needed.
@@ -8261,16 +8355,41 @@ void UIManager::handleInput(int ch) {
                             return;
                         }
                         mb_error_.clear();
+
+                        // IS THIS THE SAME ANSWER AS LAST TIME? This closes the
+                        // loop the whole feature started from: ^R was pressed
+                        // repeatedly in the belief that it cycled through
+                        // candidates, and every press silently replaced the
+                        // answer with an identical one. Nothing in the build ever
+                        // cycled - each press is a fresh identical request - and
+                        // the only honest thing to do is say so and point at the
+                        // key that DOES let you choose.
+                        bool same = rels.size() == mb_pick_.cands.size()
+                                 && !mb_release_.title.empty();
+                        if (same)
+                            for (std::size_t i = 0; i < rels.size(); ++i)
+                                if (rels[i].mb_id != mb_pick_.cands[i].mb_id) { same = false; break; }
+
                         mb_pick_.cands      = std::move(rels);
                         mb_pick_.note       = note;      // "" unless truncated
                         mb_pick_.n_physical = n_phys;
 
-                        if (mb_pick_.cands.size() == 1) {
+                        if (same) {
+                            // Re-applying would be pointless work, and on the
+                            // single-candidate path it would also re-title the
+                            // playlist under a release that has not changed. Say
+                            // nothing happened, because nothing did.
+                            mb_status_ = mb_pick_.cands.size() >= 2
+                                ? "MB: same release as before ("
+                                  + std::to_string(mb_pick_.cands.size())
+                                  + " candidates). F5 to choose."
+                                : "MB: same release as before. Nothing else matches this disc.";
+                            mb_status_ticks_ = 0;
+                        } else if (mb_pick_.cands.size() == 1) {
                             // ONE candidate: nothing to choose, so no modal. This
                             // is most discs, and a dialog on every lookup would
                             // train the user to dismiss the one that matters.
-                            mb_release_       = mb_pick_.cands.front();
-                            mb_disc_override_ = 0;
+                            adoptReleaseLocked(mb_pick_.cands.front());
                             mb_titles_pending_.store(true);
                             // The run loop still opens the MEDIUM stage if this
                             // single release cannot name a disc - Mellon Collie
@@ -12715,7 +12834,7 @@ void UIManager::drawMBPick() {
     // Snapshot under the lock: the candidate vector is written by the lookup
     // worker (same discipline drawMBSearch uses).
     int stage, cursor, n_phys;
-    std::string note;
+    std::string note, applied_title, applied_id;
     std::vector<MBRelease> cands;
     MBRelease chosen;
     {
@@ -12724,7 +12843,17 @@ void UIManager::drawMBPick() {
         n_phys = mb_pick_.n_physical;
         note   = mb_pick_.note;
         if (stage == 0) cands = mb_pick_.cands; else chosen = mb_pick_.chosen;
+        applied_title = mb_release_.title;
+        applied_id    = mb_release_.mb_id;
     }
+    // Is the release currently in force one of the rows below? After a ^F pick
+    // it is not - those candidates came from the disc ID and remain valid
+    // answers for the disc, but the user chose something outside the list. That
+    // has to be SAID: four rows, none of them the one in effect, and no
+    // indication which, is the quiet wrongness this campaign has been removing.
+    bool applied_listed = applied_title.empty();
+    for (const auto& c : cands)
+        if (!applied_id.empty() && c.mb_id == applied_id) { applied_listed = true; break; }
 
     if (!mb_pick_win_ || getmaxx(mb_pick_win_) != BOX_W
                       || getmaxy(mb_pick_win_) != BOX_H) {
@@ -12753,13 +12882,23 @@ void UIManager::drawMBPick() {
     if (stage == 0) {
         mvwprintw(w, 2, 3, "This disc (%d tracks) matches %d releases.",
                   n_phys, (int)cands.size());
-        if (!note.empty()) {
-            wattron(w, COLOR_PAIR(CP_STATUS_ERR) | A_BOLD);
-            mvwaddnstr(w, 3, 3, note.c_str(), ROW_W);
-            wattroff(w, COLOR_PAIR(CP_STATUS_ERR) | A_BOLD);
-        } else {
-            mvwaddstr(w, 3, 3, "The right-hand column is the disc each one would give.");
+        // One sub-line, by precedence: what is in force but absent from the list
+        // beats a truncation notice, which beats the standing hint. Wrapped like
+        // the ambiguity note, so a long title cannot run off the edge either.
+        std::string sub; bool warn = true;
+        if (!applied_listed)
+            sub = "current: " + foldForDisplay(applied_title) + " (not in this list)";
+        else if (!note.empty()) sub = note;
+        else { sub  = "The right-hand column is the disc each one would give.";
+               warn = false; }
+        if (warn) wattron(w, COLOR_PAIR(CP_STATUS_ERR) | A_BOLD);
+        int sy = 3;
+        for (const auto& ln : wrapToWidth(sub, ROW_W)) {
+            if (sy >= BOX_H - 4) break;
+            mvwaddnstr(w, sy++, 3, ln.c_str(), ROW_W);
         }
+        if (warn) wattroff(w, COLOR_PAIR(CP_STATUS_ERR) | A_BOLD);
+        LIST_START = sy + 1;
         const int LIST_ROWS = BOX_H - LIST_START - 3;
         int top = std::max(0, cursor - LIST_ROWS + 1);
         for (int i = 0; i < LIST_ROWS; ++i) {
@@ -13162,13 +13301,7 @@ void UIManager::handleMBSearchInput(int ch) {
                             return;
                         }
                         mb_error_.clear();
-                        mb_release_ = rel;
-                        // A medium chosen for a DIFFERENT release means
-                        // nothing about this one, and carrying it over
-                        // would silently label the new release's tracks
-                        // with the old disc. applyChosenRelease does this
-                        // for the picker's path; this is the ^F twin.
-                        mb_disc_override_ = 0;
+                        adoptReleaseLocked(rel);
                         mb_titles_pending_.store(true);   // apply titles on UI thread
                         // Same composer the indicator uses. No disc here: this
                         // runs on a worker thread and the CD track count is not
@@ -13204,8 +13337,7 @@ void UIManager::handleMBSearchInput(int ch) {
                         return;
                     }
                     mb_error_.clear();
-                    mb_release_ = rel;
-                    mb_disc_override_ = 0;   // see the Discogs twin above
+                    adoptReleaseLocked(rel);
                     mb_titles_pending_.store(true);   // apply titles on UI thread
                     mb_status_       = "MB: Metadata loaded - " + releaseLabel(rel);
                     mb_status_ticks_ = 0;

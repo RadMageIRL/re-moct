@@ -68,6 +68,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Tread*. The disc you choose is recorded in `disc.json` as chosen rather than
   guessed. Escape at either question leaves things exactly as they were rather
   than picking for you.
+- **`F5` reopens the release and disc questions without asking the network
+  again.** The answers are already in memory, so changing your mind costs
+  nothing. It comes back to the same question it asked the first time, with the
+  cursor on the release - or the disc - you are currently using, rather than at
+  the top of the list. If the metadata came from a `Ctrl+F` search instead, the
+  list still shows what the disc itself matched, and says which release is
+  actually in force above it. Escape leaves everything exactly as it was.
+- **Pressing `Ctrl+R` twice now says that nothing changed.** It reads
+  `same release as before (4 candidates). F5 to choose.` Each press had always
+  been a fresh identical request that quietly replaced the answer with the same
+  one, which made it look like it was cycling through possibilities when it never
+  was. It also no longer discards a disc you had chosen, which re-applying the
+  same release used to do.
 - **`Ctrl+F` metadata search works on Linux.** It was Windows-only for no reason
   that survived inspection - the screen and its key handling were already
   portable - so Linux had no way to correct a wrong lookup at all.

@@ -598,8 +598,16 @@ private:
     bool mb_medium_pending_ = false;
     void drawMBPick();
     void handleMBPickInput(int ch);
-    void openMediumStage(const MBRelease& rel, int n_physical);
+    // cursor_disc preselects a medium (1-based); 1 = today's silent fallback,
+    // which is what the forward flow wants. A re-open passes the disc in force.
+    void openMediumStage(const MBRelease& rel, int n_physical, int cursor_disc = 1);
     void applyChosenRelease(const MBRelease& rel);   // UI thread only
+    // Adopt a release, dropping a medium chosen for a DIFFERENT one. Caller
+    // holds mb_mutex_. One rule in one place: every path that swaps the
+    // release used to clear the override unconditionally, which meant a repeat
+    // ^R returning the SAME release threw away the disc the user had chosen.
+    void adoptReleaseLocked(const MBRelease& rel);
+    void reopenPicker();                             // F5, UI thread only
 
     // The medium a PERSON chose, 0 = nobody has. Guarded by mb_mutex_ and
     // cleared wherever mb_release_ is: it describes the disc in the drive, so a

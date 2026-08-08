@@ -166,6 +166,12 @@ public:
                // `disc_source: "user"`. 0 reproduces every pre-picker rip.
                int                         disc_override = 0);
 
+    // Art chosen on the confirm screen. Empty (the default) = fetch as always,
+    // so a user who never opens the picker gets byte-identical behaviour. Set
+    // before start(); the worker copies it and embeds THESE bytes rather than
+    // re-fetching a front cover and silently overriding the choice.
+    void setArtOverride(const std::vector<uint8_t>& bytes) { art_override_ = bytes; }
+
     void cancel();
     bool     isActive() const { return active_.load(); }
     RipState state()    const { return state_.load(); }
@@ -191,6 +197,7 @@ private:
     std::atomic<bool>     cancel_ { false };
     std::atomic<RipState> state_  { RipState::Idle };
     std::thread           thread_;
+    std::vector<uint8_t>  art_override_;   // see setArtOverride
 
     void worker(std::string          drive_letter,
                 std::vector<CDTrack> tracks,

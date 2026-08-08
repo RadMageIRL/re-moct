@@ -1668,7 +1668,12 @@ void CDRipper::worker(std::string          drive_letter,
         if (cb) { RipProgress p; p.state=RipState::Ripping;
                   p.status_msg="Fetching cover art..."; cb(p); }
         // 1) Cover Art Archive by MBID — unchanged primary path for MB releases.
-        if (!rel.mb_id.empty())
+        // A choice made on the confirm screen wins outright - it was made while
+        // looking at the picture, which is better evidence than anything this
+        // path can derive.
+        if (!art_override_.empty())
+            art = art_override_;
+        if (art.empty() && !rel.mb_id.empty())
             art = CoverArt::bytesByMbid(rel.mb_id);
         // 2) Fallback ONLY if CAA gave nothing: Discogs releases (no MBID) and
         //    the occasional MB release with no CAA front cover. Open, no-auth,

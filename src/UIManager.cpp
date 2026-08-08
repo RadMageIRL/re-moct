@@ -1807,6 +1807,7 @@ void UIManager::run() {
         // it. Deliberately AFTER the search-modal close above, so a ^F pick that
         // resolves to an ambiguous release gets asked on the very next pass
         // rather than never.
+        serviceArtPicker();   // art index + preview thumbnails, both async
         if (mb_medium_pending_ && ui_overlay_ == UIOverlay::None) {
             mb_medium_pending_ = false;
             MBRelease r;
@@ -1955,6 +1956,8 @@ void UIManager::run() {
                 handleMBSearchInput(ch);
             else if (ui_overlay_ == UIOverlay::MBPick)
                 handleMBPickInput(ch);
+            else if (ui_overlay_ == UIOverlay::ArtPick)
+                handleArtPickInput(ch);
             else
                 handleInput(ch);
             if (ui_overlay_ == UIOverlay::None)
@@ -2143,6 +2146,7 @@ void UIManager::drawOverlay() {
     if (ui_overlay_ == UIOverlay::RipConfirm) drawRipConfirm();
     else if (ui_overlay_ == UIOverlay::MBSearch) drawMBSearch();
     else if (ui_overlay_ == UIOverlay::MBPick)   drawMBPick();
+    else if (ui_overlay_ == UIOverlay::ArtPick)  drawArtPick();
     else if (ui_overlay_ == UIOverlay::RecPanel) drawRecPanel();
     else if (ui_overlay_ == UIOverlay::ConvertScope) drawConvertScope();
     else if (ui_overlay_ == UIOverlay::ConvertConfirm) drawConvertConfirm();
@@ -2348,7 +2352,7 @@ void UIManager::drawAll() {
 }
 
 void UIManager::drawRipConfirm() {   // slice 6: common (ncurses + portable CDSource)
-    const int BOX_W = 68;
+    const int kRipConfirmBaseW = 68;
     // rip-format-select: the format block is data-driven, so the box and
     // everything below it grow with the table (2 rows -> 19, 3 -> 20, ...).
     // CD-S3: one extra row for the selection summary, and ONLY when the
@@ -2361,6 +2365,16 @@ void UIManager::drawRipConfirm() {   // slice 6: common (ncurses + portable CDSo
     // things produced, and one number cannot say that.
     const bool cd_htoa    = cdHtoaMarked();
     const int BOX_H = 17 + kRipFormatCount + (cd_partial ? 1 : 0) + (cd_htoa ? 1 : 0);
+    // ART COLUMN: width is the cheap axis. Beside the text costs ~26 columns and
+    // wants a ~98-column terminal; below it would cost 11 ROWS on a modal already
+    // 23-25 tall, in an app that runs to a 9-row terminal. So it grows sideways
+    // or not at all - and never past the screen, because newwin() FAILS when the
+    // box does not fit and the caller returns, which means the confirm modal
+    // silently does not appear at all. That is pre-existing below 68x23 and this
+    // must not widen it.
+    const int  ART_W = 22, ART_H = 11;
+    const bool art_col = screen_cols_ >= kRipConfirmBaseW + ART_W + 8;
+    const int  BOX_W   = art_col ? kRipConfirmBaseW + ART_W + 4 : kRipConfirmBaseW;
     int y0 = (screen_rows_ - BOX_H) / 2;
     int x0 = (screen_cols_ - BOX_W) / 2;
     if (y0 < 0) y0 = 0;
@@ -2555,6 +2569,33 @@ void UIManager::drawRipConfirm() {   // slice 6: common (ncurses + portable CDSo
     }
 
     // Footer divider + output path
+    // ── Cover art: the picture, not a filename ───────────────────────────
+    // "Is this the right cover" is not a question a path answers. Fetched from
+    // /front-250 (~10 KB) on first draw, async - the box is briefly empty and
+    // then fills in, the same contract the Info pane's art already has.
+    {
+        std::string mbid;
+        { std::lock_guard<std::mutex> lk(mb_mutex_); mbid = mb_release_.mb_id; }
+        if (art_col) {
+            const int ax = kRipConfirmBaseW + 1, ay = 2;
+            if (!mbid.empty()) refreshRipArt(mbid, ART_W, ART_H);
+            if (rip_art_render_.ok)
+                drawArtGrid(w, rip_art_render_, ay, ax, "ripconfirm|" + mbid);
+            else
+                mvwaddstr(w, ay, ax, mbid.empty() ? "(no art source)" : "...");
+            std::string lbl = rip_art_label_.empty() ? std::string("cover art")
+                                                     : rip_art_label_;
+            if ((int)lbl.size() > ART_W) lbl.resize((std::size_t)ART_W);
+            mvwaddnstr(w, ay + ART_H + 1, ax, lbl.c_str(), ART_W);
+            mvwaddnstr(w, ay + ART_H + 2, ax, "[A] change art", ART_W);
+        } else {
+            // Degrades to nothing, and SAYS SO rather than leaving a user
+            // wondering where the picture went.
+            mvwaddnstr(w, mode_y + 5, 3,
+                       "[A] change cover art  (widen the window to preview it)",
+                       kRipConfirmBaseW - 6);
+        }
+    }
     mvwhline(w, mode_y + 6, 1, ACS_HLINE, BOX_W - 2);
     mvwprintw(w, mode_y + 7, 3, "Out  %s", disp_dir.c_str());
 
@@ -6887,6 +6928,7 @@ void UIManager::handleInput(int ch) {
     // both MB modals are live on Linux now (^F is no longer gated).
     if (ui_overlay_ == UIOverlay::MBSearch) { handleMBSearchInput(ch); return; }
     if (ui_overlay_ == UIOverlay::MBPick)   { handleMBPickInput(ch);   return; }
+    if (ui_overlay_ == UIOverlay::ArtPick)  { handleArtPickInput(ch);  return; }
     // ── Podcast Index first-use credentials modal (slice 6): [S] open the signup page,
     // [E] enter key+secret now (chains to the input bar), [Esc]/[C] cancel (nothing set).
     if (ui_overlay_ == UIOverlay::PodcastIndexCreds) {
@@ -7136,6 +7178,14 @@ void UIManager::handleInput(int ch) {
             redraw_needed_.store(true);
             return;
         }
+        // [A] the cover-art picker. NO GLOBAL KEY IS CONSUMED: art only exists
+        // in the context of a rip, and this modal is already the
+        // review-before-writing screen. Changing art changes ART - the release,
+        // the titles, the disc number and the folder name all stay as they are.
+        if (ch == 'a' || ch == 'A') {
+            openArtPicker();
+            return;
+        }
         // Digit toggles: '1'..'0'+kRipFormatCount flip a row and stay open.
         if (ch > '0' && ch <= '0' + kRipFormatCount) {
             RipFormat f = kRipFormats[ch - '1'].id;
@@ -7283,6 +7333,10 @@ void UIManager::handleInput(int ch) {
         }
         int disc_override = 0;
         { std::lock_guard<std::mutex> lk(mb_mutex_); disc_override = mb_disc_override_; }
+        // The art in force - automatic or chosen - goes to the ripper, so the
+        // worker embeds and writes THESE bytes instead of re-fetching a front
+        // cover and quietly overriding the choice. Empty = it fetches as before.
+        cd_ripper_.setArtOverride(rip_art_bytes_);
         cd_ripper_.start(audio_, tracks, out_dir, rel, chosen, std::move(opt),
             [this](const RipProgress& p) {
                 rip_status_ = p.status_msg;
@@ -12940,6 +12994,274 @@ void UIManager::drawConvertConfirm() {
 // of MBRelease, and threading a flag through both handlers would make one
 // function mean two things. What IS shared is formatCandidateRow() - the two
 // lists must look identical, because Dos already reads the ^F rows fluently.
+// ─── Cover art: the modal preview, and the picker ───────────────────────────
+// The confirm modal shows the IMAGE, not a filename, because "is this the right
+// cover" is not a question a path answers. The automatic pick is previewed from
+// /front-250 (~10 KB) rather than the index, so seeing it costs one small
+// request and the 27 KB listing is fetched only if somebody asks to choose.
+void UIManager::startRipArtFetch(const std::string& mbid, int box_cols, int box_rows) {
+    if (rip_art_active_.load()) return;
+    rip_art_active_.store(true);
+    rip_art_done_.store(false);
+    if (rip_art_thread_.joinable()) rip_art_thread_.join();
+    std::string id = mbid; int bc = box_cols, br = box_rows;
+    rip_art_thread_ = std::thread([this, id, bc, br]() {
+        std::vector<std::uint8_t> b = CoverArt::frontThumbByMbid(id);
+        { std::lock_guard<std::mutex> lk(rip_art_mtx_); rip_art_result_ = std::move(b); }
+        (void)bc; (void)br;
+        rip_art_done_.store(true);
+    });
+}
+
+// Called from the modal's draw. Never blocks: the box is empty for a beat and
+// then fills in, the same contract the Info pane's art already has.
+void UIManager::refreshRipArt(const std::string& mbid, int box_cols, int box_rows) {
+    const std::string key = mbid + "|" + std::to_string(box_cols) + "x" + std::to_string(box_rows);
+    if (rip_art_done_.exchange(false)) {
+        std::vector<std::uint8_t> b;
+        { std::lock_guard<std::mutex> lk(rip_art_mtx_); b = std::move(rip_art_result_); }
+        rip_art_active_.store(false);
+        // Only adopt the automatic art if nobody has CHOSEN any. A choice
+        // outranks the default and must not be overwritten by a late fetch.
+        if (!b.empty() && rip_art_bytes_.empty()) {
+            rip_art_bytes_ = std::move(b);
+            rip_art_label_ = "front cover (automatic)";
+        }
+        if (!rip_art_bytes_.empty())
+            rip_art_render_ = cover::render(rip_art_bytes_, box_cols, box_rows);
+        rip_art_key_ = key;
+        redraw_needed_.store(true);
+        return;
+    }
+    if (rip_art_key_ == key) return;              // already current
+    if (!rip_art_bytes_.empty()) {                // have bytes, just need this size
+        rip_art_render_ = cover::render(rip_art_bytes_, box_cols, box_rows);
+        rip_art_key_    = key;
+        return;
+    }
+    if (!mbid.empty()) startRipArtFetch(mbid, box_cols, box_rows);
+}
+
+// ─── The picker ─────────────────────────────────────────────────────────────
+void UIManager::openArtPicker() {
+    std::string mbid;
+    { std::lock_guard<std::mutex> lk(mb_mutex_); mbid = mb_release_.mb_id; }
+    if (mbid.empty()) {
+        // Discogs releases carry no MusicBrainz id, so there is no archive to
+        // list. Said rather than opening an empty box.
+        showTrackToast("No cover-art listing for this release", "", "");
+        return;
+    }
+    art_pick_ = {};
+    art_pick_.loading = true;
+    art_thumb_want_   = -1;
+    art_thumb_row_    = -1;
+    art_index_done_.store(false);
+    if (art_index_thread_.joinable()) art_index_thread_.join();
+    art_index_thread_ = std::thread([this, mbid]() {
+        std::vector<CoverArt::CaaImage> v = CoverArt::indexByMbid(mbid);
+        { std::lock_guard<std::mutex> lk(art_pick_mtx_); art_index_result_ = std::move(v); }
+        art_index_done_.store(true);
+    });
+    ui_overlay_ = UIOverlay::ArtPick;
+    redraw_needed_.store(true);
+}
+
+// Run-loop drain. Two async results land here: the index once, and a preview
+// thumbnail whenever the cursor settles. Debounced so holding an arrow key does
+// not fetch a picture per row.
+void UIManager::serviceArtPicker() {
+    if (art_index_done_.exchange(false)) {
+        std::vector<CoverArt::CaaImage> v;
+        { std::lock_guard<std::mutex> lk(art_pick_mtx_); v = std::move(art_index_result_); }
+        art_pick_.images  = std::move(v);
+        art_pick_.loading = false;
+        if (art_pick_.images.empty())
+            art_pick_.note = "The archive lists no images for this release";
+        else {
+            // Start on what the automatic path would have taken - the honest
+            // opening position, and it answers "what would I have got" before
+            // "what else is there". NOT on a row whose comment happens to start
+            // with the disc number: that would invent a link the data lacks.
+            for (std::size_t i = 0; i < art_pick_.images.size(); ++i)
+                if (art_pick_.images[i].front) { art_pick_.cursor = (int)i; break; }
+            art_thumb_want_ = art_pick_.cursor;
+        }
+        redraw_needed_.store(true);
+    }
+    if (art_thumb_done_.exchange(false)) {
+        cover::Rendered r; int row;
+        { std::lock_guard<std::mutex> lk(art_pick_mtx_); r = std::move(art_thumb_result_); row = art_thumb_row_; }
+        // Only show it if the cursor is still on the row it was fetched for -
+        // otherwise a slow fetch would paint a stale neighbour's picture.
+        if (row == art_pick_.cursor) { art_pick_.preview = std::move(r); art_pick_.preview_for = row; }
+        art_thumb_row_ = -1;
+        redraw_needed_.store(true);
+    }
+    if (ui_overlay_ != UIOverlay::ArtPick) return;
+    if (art_thumb_want_ >= 0 && art_thumb_want_ != art_pick_.preview_for
+        && art_thumb_row_ < 0) {
+        if (++art_thumb_settle_ < 3) return;        // ~a quarter second of rest
+        art_thumb_settle_ = 0;
+        const int row = art_thumb_want_;
+        if (row < 0 || row >= (int)art_pick_.images.size()) return;
+        if (art_thumb_thread_.joinable()) art_thumb_thread_.join();
+        art_thumb_row_ = row;
+        const std::string url = art_pick_.images[(std::size_t)row].thumb_url;
+        art_thumb_thread_ = std::thread([this, url]() {
+            std::vector<std::uint8_t> b = CoverArt::bytesByUrl(url);
+            cover::Rendered r;
+            if (!b.empty()) r = cover::render(b, 22, 11);
+            { std::lock_guard<std::mutex> lk(art_pick_mtx_); art_thumb_result_ = std::move(r); }
+            art_thumb_done_.store(true);
+        });
+    }
+}
+
+// Draw a rendered art grid at (y, x) in `w`, allocating the shared colour-pair
+// table for it first. THE TABLE IS ONE GLOBAL RESOURCE with an ownership key
+// (art_pairs_key_) - the Info pane, the confirm modal and the art picker all
+// draw through here so only one protocol touches it, and whoever drew last owns
+// it. A different key simply re-allocates on the next draw, which is what the
+// key was built to do.
+void UIManager::drawArtGrid(WINDOW* w, const cover::Rendered& art,
+                            int y, int x, const std::string& key) {
+    if (!w || !art.ok || art.cells.empty()) return;
+    if (key != art_pairs_key_) {
+        art_pairs_.clear();
+        if (allocArtColorPairs(art, art_pairs_)) art_pairs_key_ = key;
+        else { art_pairs_key_.clear(); return; }
+    }
+    if (art_pairs_.size() < art.cells.size()) return;
+    for (int cy = 0; cy < art.rows; ++cy)
+        for (int cx = 0; cx < art.cols; ++cx) {
+            cchar_t cc; wchar_t s[2] = { (wchar_t)0x2580, 0 };   // UPPER HALF BLOCK
+            setcchar(&cc, s, A_NORMAL,
+                     art_pairs_[(std::size_t)cy * art.cols + cx], nullptr);
+            mvwadd_wch(w, y + cy, x + cx, &cc);
+        }
+}
+
+void UIManager::drawArtPick() {
+    const int BOX_W = std::min(screen_cols_ - 4, 78);
+    const int BOX_H = std::min(screen_rows_ - 4, 20);
+    int y0 = (screen_rows_ - BOX_H) / 2, x0 = (screen_cols_ - BOX_W) / 2;
+    if (y0 < 0) y0 = 0;
+    if (x0 < 0) x0 = 0;
+    if (!art_pick_win_ || getmaxx(art_pick_win_) != BOX_W || getmaxy(art_pick_win_) != BOX_H) {
+        if (art_pick_win_) { delwin(art_pick_win_); art_pick_win_ = nullptr; }
+        art_pick_win_ = newwin(BOX_H, BOX_W, y0, x0);
+    } else mvwin(art_pick_win_, y0, x0);
+    WINDOW* w = art_pick_win_;
+    if (!w) return;
+    wbkgd(w, config_.awesome_mode ? COLOR_PAIR(CP_DIM) : COLOR_PAIR(0));
+    werase(w);
+    const char* title = " COVER ART ";
+    panelFrame(w, title, true);
+    if (!config_.awesome_mode)
+        mvwaddstr(w, 0, (BOX_W - (int)strlen(title)) / 2, title);
+
+    // The preview column only exists if the box is wide enough for it. The list
+    // is the feature and the picture is the aid, so the list never gives up room.
+    const int ART_W = 22;
+    const bool art_col = BOX_W >= 44 + ART_W + 4;
+    const int  list_w  = (art_col ? BOX_W - ART_W - 6 : BOX_W - 4);
+
+    if (art_pick_.loading) {
+        mvwaddstr(w, 2, 3, "Fetching the cover-art listing...");
+    } else if (art_pick_.images.empty()) {
+        mvwaddnstr(w, 2, 3, art_pick_.note.c_str(), list_w);
+    } else {
+        mvwprintw(w, 2, 3, "%d images. The comment is whoever uploaded it talking.",
+                  (int)art_pick_.images.size());
+        const int LIST_START = 4;
+        const int LIST_ROWS  = BOX_H - LIST_START - 3;
+        int top = art_pick_.cursor - LIST_ROWS + 1;
+        if (top < 0) top = 0;
+        for (int i = 0; i < LIST_ROWS; ++i) {
+            const int idx = top + i;
+            if (idx >= (int)art_pick_.images.size()) break;
+            const CoverArt::CaaImage& im = art_pick_.images[(std::size_t)idx];
+            // Type is a NARROW hint and never the wide column: it reads "Medium"
+            // for nineteen rows on the measured release, several of whose
+            // comments say Booklet or Tracklist. No dimensions column - the
+            // index has no such field. No size column - it is constant.
+            std::string ty = foldForDisplay(im.type);
+            if (ty.size() > 8) ty.resize(8);
+            std::string cm = foldForDisplay(im.comment);
+            if (cm.empty()) cm = "-";
+            char head[24];
+            std::snprintf(head, sizeof head, "%-8s ", ty.c_str());
+            std::string line = head + cm;
+            if (im.front) line += "   (automatic)";
+            const bool hi = (idx == art_pick_.cursor);
+            if (hi) wattron(w, COLOR_PAIR(CP_SELECTED) | A_BOLD);
+            mvwaddnstr(w, LIST_START + i, 2, line.c_str(), list_w);
+            if (hi) wattroff(w, COLOR_PAIR(CP_SELECTED) | A_BOLD);
+        }
+        if (art_col) {
+            const int ax = BOX_W - ART_W - 3, ay = 4;
+            if (art_pick_.preview.ok && art_pick_.preview_for == art_pick_.cursor)
+                drawArtGrid(w, art_pick_.preview, ay, ax,
+                            "artpick|" + art_pick_.images[(std::size_t)art_pick_.cursor].id);
+            else
+                mvwaddstr(w, ay, ax, "...");
+        }
+    }
+    mvwhline(w, BOX_H - 2, 1, ACS_HLINE, BOX_W - 2);
+    mvwaddstr(w, BOX_H - 1, 2, "Up/Down:choose   Enter:use this art   Esc:keep the current");
+    wrefresh(w);
+}
+
+void UIManager::handleArtPickInput(int ch) {
+    auto close = [&]() {
+        if (art_pick_win_) { delwin(art_pick_win_); art_pick_win_ = nullptr; }
+        ui_overlay_ = UIOverlay::RipConfirm;   // back to where it was opened from
+        redraw_needed_.store(true);
+    };
+    if (ch == 27) { close(); return; }
+    if (ch < 32 && ch != '\n' && ch != '\r') { close(); handleInput(ch); return; }
+    if (art_pick_.images.empty()) {
+        if (ch == '\n' || ch == '\r' || ch == KEY_ENTER) close();
+        return;
+    }
+    if (ch == KEY_UP) {
+        if (art_pick_.cursor > 0) {
+            --art_pick_.cursor; art_thumb_want_ = art_pick_.cursor;
+            art_thumb_settle_ = 0; redraw_needed_.store(true);
+        }
+        return;
+    }
+    if (ch == KEY_DOWN) {
+        if (art_pick_.cursor < (int)art_pick_.images.size() - 1) {
+            ++art_pick_.cursor; art_thumb_want_ = art_pick_.cursor;
+            art_thumb_settle_ = 0; redraw_needed_.store(true);
+        }
+        return;
+    }
+    if (ch != '\n' && ch != '\r' && ch != KEY_ENTER) return;
+
+    // Chosen. The FULL image is fetched now - the 250px preview is for looking
+    // at, not for embedding.
+    const CoverArt::CaaImage im = art_pick_.images[(std::size_t)art_pick_.cursor];
+    std::vector<std::uint8_t> full = CoverArt::bytesByUrl(im.image_url);
+    if (full.empty()) {
+        showTrackToast("That image could not be downloaded", "keeping the current art", "");
+        close();
+        return;
+    }
+    // ONE set of bytes. folder.jpg and every embedded tag come from this, so a
+    // choice cannot leave them disagreeing.
+    rip_art_bytes_ = std::move(full);
+    rip_art_label_ = im.comment.empty()
+                   ? (im.type.empty() ? std::string("chosen") : foldForDisplay(im.type))
+                   : foldForDisplay(im.comment);
+    rip_art_key_.clear();          // force the confirm modal to re-render it
+    rip_art_render_ = cover::Rendered{};
+    showTrackToast("Cover art: " + rip_art_label_, "", "");
+    close();
+}
+
 void UIManager::drawMBPick() {
     const int BOX_W = std::min(screen_cols_ - 4, 76);
     const int BOX_H = std::min(screen_rows_ - 4, 22);

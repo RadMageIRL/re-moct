@@ -117,6 +117,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   usable way to fix a bad automatic match. It also means a release whose track
   order differs from the disc will report the wrong titles, and only you can
   tell.
+- **See the cover before you rip it, and change it without changing anything
+  else.** The rip screen now shows the artwork it is about to use as a picture
+  rather than a filename, and `A` opens the full list of images the archive holds
+  for that release - which for a box set is thirty-five, including each disc's
+  own artwork, where before only one was ever reachable. Choosing one changes the
+  art and nothing else: the release, the titles, the disc number and the folder
+  name all stay exactly as they are. The list is only fetched when you ask for
+  it, so an ordinary rip does no extra work. On a narrow window the preview is
+  left out and the screen says so.
+  Each row shows what the person who uploaded it wrote, because that is the only
+  thing that distinguishes one from another - the archive records no image sizes
+  at all, and its own type labels disagree with those descriptions often enough
+  to be worth ignoring. Nothing links an image to a particular disc, so RE-MOCT
+  offers the list and does not guess.
 - **`Ctrl+F` metadata search works on Linux.** It was Windows-only for no reason
   that survived inspection - the screen and its key handling were already
   portable - so Linux had no way to correct a wrong lookup at all.

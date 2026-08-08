@@ -32,6 +32,7 @@
 #include "Mp4Chapters.h"
 #include "AwesomeThemes.h"
 #include "CoverArtRender.h"
+#include "CoverArt.h"      // CaaImage - the art picker's rows
 #include "ArtMissCache.h"   // time-bounded art negative cache (radio-art-refresh-fix)
 #include "GainScan.h"       // batch ReplayGain over a folder (batch-r128)
 #include "ConvertJob.h"     // convert-core: decode -> IEncoder batch convert engine
@@ -49,7 +50,7 @@ enum class RightPane { Playlist, Visualizer, Help, TrackInfo, Bookmarks, Lyrics,
 enum class SearchSource { Playlist, Browser };   // which list \-search targets (from focus_)
 
 // Modal overlays drawn on top of the normal layout
-enum class UIOverlay { None, RipConfirm, MBSearch, MBPick, RecPanel, ConvertScope, ConvertConfirm, PlaylistFormat, PodcastPlayConflict, PodcastIndexCreds, LibraryRoot };
+enum class UIOverlay { None, RipConfirm, MBSearch, MBPick, ArtPick, RecPanel, ConvertScope, ConvertConfirm, PlaylistFormat, PodcastPlayConflict, PodcastIndexCreds, LibraryRoot };
 
 class UIManager {
 public:
@@ -442,6 +443,11 @@ private:
     std::vector<short> art_pairs_;       // pair index per cell, parallel to the owning grid
     void refreshInfoArt(const std::string& path, int box_cols, int box_rows);
     bool allocArtColorPairs(const cover::Rendered& art, std::vector<short>& out_pairs);
+    // The ONE place a rendered grid reaches the screen. Owns the shared pair
+    // table's key protocol so the Info pane, the confirm modal and the art
+    // picker cannot each invent their own.
+    void drawArtGrid(WINDOW* w, const cover::Rendered& art, int y, int x,
+                     const std::string& key);
 
     // Async local-file cover decode: the file read (TagLib) + stb decode run on a
     // worker so drawTrackInfo NEVER blocks the UI thread (a synchronous decode
@@ -671,6 +677,55 @@ private:
     // disc is not the one it was adopted for, and says so.
     void dropReleaseIfDiscChanged();
     void reopenPicker();                             // F5, UI thread only
+
+    // ── Cover art: see it before ripping, change only it ────────────────────
+    // The complaint was that RE-MOCT took the automatic cover with no way to
+    // review it. The release picker turned out to fix most of that - the wrong
+    // art was usually a symptom of the wrong release - so this is the refinement
+    // for when the release is RIGHT and a different image inside it is wanted,
+    // which is the box-set case.
+    //
+    // `rip_art_bytes_` is the art in force: the automatic front until somebody
+    // chooses otherwise. It is what gets embedded and written to folder.jpg, so
+    // one choice changes both and they cannot disagree.
+    std::vector<std::uint8_t> rip_art_bytes_;
+    std::string               rip_art_label_;   // what the confirm modal calls it
+    cover::Rendered           rip_art_render_;  // the modal's preview grid
+    std::string               rip_art_key_;     // mbid|cols|rows already rendered
+    std::atomic<bool>         rip_art_active_ { false };
+    std::atomic<bool>         rip_art_done_   { false };
+    std::mutex                rip_art_mtx_;
+    std::vector<std::uint8_t> rip_art_result_;  // handed back by the worker
+    std::thread               rip_art_thread_;
+    void startRipArtFetch(const std::string& mbid, int box_cols, int box_rows);
+    void refreshRipArt(const std::string& mbid, int box_cols, int box_rows);
+
+    // The picker itself. Rows lead with the COMMENT because it is the only field
+    // that discriminates - `types` says "Medium" nineteen times on the measured
+    // release, and there are no dimensions in the index at all.
+    struct ArtPickState {
+        std::vector<CoverArt::CaaImage> images;
+        int         cursor  = 0;
+        bool        loading = false;
+        std::string note;                     // "" or why the list is empty
+        int         preview_for = -1;         // row the preview belongs to
+        cover::Rendered preview;
+    } art_pick_;
+    WINDOW*           art_pick_win_ = nullptr;
+    std::atomic<bool> art_index_done_  { false };
+    std::atomic<bool> art_thumb_done_  { false };
+    std::mutex        art_pick_mtx_;
+    std::vector<CoverArt::CaaImage> art_index_result_;
+    cover::Rendered   art_thumb_result_;
+    int               art_thumb_row_ = -1;    // row the in-flight thumb is for
+    int               art_thumb_want_ = -1;   // row the cursor has settled on
+    int               art_thumb_settle_ = 0;  // debounce ticks
+    std::thread       art_index_thread_;
+    std::thread       art_thumb_thread_;
+    void openArtPicker();
+    void drawArtPick();
+    void handleArtPickInput(int ch);
+    void serviceArtPicker();                  // run-loop drain: index + thumbs
 
     // The medium a PERSON chose, 0 = nobody has. Guarded by mb_mutex_ and
     // cleared wherever mb_release_ is: it describes the disc in the drive, so a

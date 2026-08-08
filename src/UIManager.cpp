@@ -1324,6 +1324,7 @@ void UIManager::ejectDrive(const std::string& drive_entry) {
             std::lock_guard<std::mutex> lk(mb_mutex_);
             mb_error_.clear();
             mb_release_ = {};
+            mb_release_disc_id_.clear();   // the stamp describes the release; it goes too
             // Disc-scoped: a medium chosen for THIS disc says nothing about the next
             // one, and a stale override would silently mislabel it.
             mb_disc_override_ = 0;
@@ -1390,6 +1391,11 @@ bool UIManager::reopenCDForAction(const std::string& drive) {
             if (attempt > 1)
                 Log::writef("cd", "reopen %s: recovered on attempt %d/3 (transient)",
                             drive.c_str(), attempt);
+            // THE SILENT-SWAP HOLE. This path re-reads the TOC of whatever is in
+            // the drive now, and cleared nothing - so a disc changed while
+            // stopped kept the previous disc's release, which then resolved a
+            // medium of the wrong album by track count.
+            dropReleaseIfDiscChanged();
             return true;
         }
         auto fail = audio_.cdSource().lastOpenFail();
@@ -1433,6 +1439,7 @@ bool UIManager::reopenCDForAction(const std::string& drive) {
         std::lock_guard<std::mutex> lk(mb_mutex_);
         mb_error_.clear();
         mb_release_ = {};
+        mb_release_disc_id_.clear();   // the stamp describes the release; it goes too
         // Disc-scoped: a medium chosen for THIS disc says nothing about the next
         // one, and a stale override would silently mislabel it.
         mb_disc_override_ = 0;
@@ -1724,6 +1731,7 @@ void UIManager::run() {
                 std::lock_guard<std::mutex> lk(mb_mutex_);
                 mb_error_.clear();
                 mb_release_ = {};
+                mb_release_disc_id_.clear();   // the stamp describes the release; it goes too
                 // Disc-scoped: a medium chosen for THIS disc says nothing about the next
                 // one, and a stale override would silently mislabel it.
                 mb_disc_override_ = 0;
@@ -2757,6 +2765,64 @@ void UIManager::adoptReleaseLocked(const MBRelease& rel) {
     const bool same_release = !rel.mb_id.empty() && rel.mb_id == mb_release_.mb_id;
     if (!same_release) mb_disc_override_ = 0;
     mb_release_ = rel;
+    // STAMP IT WITH THE DISC IT IS BEING ADOPTED FOR. Every route in comes
+    // through here - ^R auto-apply, the picker, both ^F fetches - so there is
+    // one place the stamp can be forgotten, and it is this one.
+    //
+    // Reads tocOffsets() and calls computeDiscId with the arguments the ^R
+    // lookup already passes. Neither is modified; this is a read of the disc-ID
+    // math, not a change to it.
+    mb_release_disc_id_.clear();
+    const auto& cd = audio_.cdSource();
+    if (!cd.tracks().empty())
+        mb_release_disc_id_ = MBLookup::computeDiscId(cd.tracks().front().number,
+                                                      cd.tracks().back().number,
+                                                      cd.tocOffsets());
+}
+
+// ─── Is the loaded disc the one the release was adopted for? ─────────────────
+// Called after every successful openCD. A disc swapped while STOPPED goes
+// through reopenCDForAction, which re-reads the TOC and previously carried the
+// old release straight onto the new disc - the cause behind the wrong-medium
+// scrobbles, and the one open path that clears nothing on its own.
+//
+// The disc ID is a pure function of the TOC, so re-opening the same disc yields
+// the same string and nothing is dropped: MEASURED, four opens of one disc and
+// two of another, byte-identical each time and distinct between them. That
+// property is what makes this safe to run on every open - a spurious drop would
+// cost a choice the user made.
+//
+// No debounce is needed and none is used. The drop empties the release, and the
+// drop only happens when there IS a release, so it can fire at most once per
+// adoption however many times the disc is opened afterwards.
+void UIManager::dropReleaseIfDiscChanged() {
+    std::string loaded;
+    {
+        const auto& cd = audio_.cdSource();
+        if (cd.tracks().empty()) return;          // nothing identifiable yet
+        loaded = MBLookup::computeDiscId(cd.tracks().front().number,
+                                         cd.tracks().back().number,
+                                         cd.tocOffsets());
+    }
+    bool dropped = false;
+    {
+        std::lock_guard<std::mutex> lk(mb_mutex_);
+        const bool have_release = !mb_release_.title.empty() || !mb_release_.mb_id.empty();
+        if (!have_release || mb_release_disc_id_ == loaded) return;
+        mb_release_       = {};
+        mb_release_disc_id_.clear();
+        mb_disc_override_ = 0;
+        mb_pick_.cands.clear();
+        mb_status_        = "MB: different disc - previous metadata dropped "
+                            "(Ctrl+R to look this one up)";
+        mb_status_ticks_  = 0;
+        dropped = true;
+    }
+    if (dropped) {
+        // The row identities described the OLD disc's medium. They go with it.
+        clearCdIdentity();
+        redraw_needed_.store(true);
+    }
 }
 
 // Adopt a release and ask the run loop to re-title the playlist. UI thread only.
@@ -10375,6 +10441,7 @@ void UIManager::activateDrive(const std::string& drive_entry) {
             playlist_.removeIf([&](const PlaylistEntry& e) {
                 return e.path.substr(0, prefix.size()) == prefix;
             });
+            dropReleaseIfDiscChanged();   // same disc -> keeps the choice; new disc -> drops it
             cd_drive_letter_ = letter;
             cd_poll_ticks_   = 0;
             cd_fail_count_   = 0;
@@ -10440,6 +10507,7 @@ void UIManager::activateDrive(const std::string& drive_entry) {
             playlist_.removeIf([&](const PlaylistEntry& e) {
                 return e.path.substr(0, prefix.size()) == prefix;
             });
+            dropReleaseIfDiscChanged();   // see the Windows twin above
             cd_drive_letter_ = spec;
             cd_poll_ticks_   = 0;
             cd_fail_count_   = 0;

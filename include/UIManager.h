@@ -631,6 +631,24 @@ private:
     // release used to clear the override unconditionally, which meant a repeat
     // ^R returning the SAME release threw away the disc the user had chosen.
     void adoptReleaseLocked(const MBRelease& rel);
+
+    // ── Which disc this release was adopted FOR ──────────────────────────────
+    // The MusicBrainz disc ID of whatever was in the drive when the release was
+    // taken, stamped by adoptReleaseLocked. Guarded by mb_mutex_.
+    //
+    // The question is NOT "does this release describe this disc" - that is
+    // unanswerable for a ^F pick, where choosing something outside the disc-ID
+    // candidate list is the whole point and a mismatch is the expected state.
+    // The question is "was this release adopted for THIS disc", which is always
+    // answerable and needs no special case for how it was chosen.
+    //
+    // Empty means it was adopted with no disc loaded (^F works with an empty
+    // tray), which no disc can claim: a search done before inserting a disc must
+    // not end up tagging whatever turns up.
+    std::string mb_release_disc_id_;
+    // Called after EVERY successful openCD. Drops the release cluster when the
+    // disc is not the one it was adopted for, and says so.
+    void dropReleaseIfDiscChanged();
     void reopenPicker();                             // F5, UI thread only
 
     // The medium a PERSON chose, 0 = nobody has. Guarded by mb_mutex_ and

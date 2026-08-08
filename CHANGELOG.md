@@ -93,6 +93,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   They now use the same answer the playlist and the header use, and when there is
   no confident answer they send nothing rather than a guess. **Scrobbles are
   permanent, so a wrong one is worse than a missing one.**
+- **Metadata from a previous disc is dropped when you change discs, and it says
+  so.** Swapping a disc while playback was stopped left the old album's details
+  loaded, because that path re-reads the disc but was not clearing anything. The
+  details then got matched against the new disc by track count, which is how a
+  rip could have been filed under the wrong album entirely. Each lookup is now
+  remembered against the disc it was made for, and a disc it was not made for
+  discards it with a message rather than quietly carrying on. Re-inserting the
+  same disc keeps everything, including a release you picked by name that
+  deliberately is not what the disc alone would have matched.
 - **`Ctrl+F` metadata search works on Linux.** It was Windows-only for no reason
   that survived inspection - the screen and its key handling were already
   portable - so Linux had no way to correct a wrong lookup at all.

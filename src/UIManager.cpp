@@ -3848,6 +3848,31 @@ static std::string fileTypeTag(const std::string& path) {
     return "";   // unknown extension: no tag (safer than guessing)
 }
 
+// ─── Per-character sparkle phase (Awesome) ──────────────────────────────────
+//
+// A STABLE pseudo-random offset per (playlist row, character), so neighbouring
+// characters sit at unrelated points in the twinkle cycle.
+//
+// Why not `+1` per column: a straight ramp makes the cycle TRAVEL along the row -
+// a wave, which reads as one effect moving rather than many characters twinkling
+// independently. Scrambling the index is what turns it into glitter.
+//
+// STABLE is the other half, and it matters as much: the offset must depend only on
+// where the character IS, never on the frame. A hash that changed per frame would
+// re-roll every cell every step and read as static/noise, not as light catching a
+// surface. Only the shared beat moves; the pattern underneath is fixed.
+//
+// Keyed on the PLAYLIST INDEX rather than the screen row, so two sparkling rows
+// decorrelate from each other and neither pattern crawls when the pane scrolls.
+//
+// Bit-mix is the usual xorshift-multiply; the constants are arbitrary odd values.
+// This is decoration, so the only requirement is that it looks unpatterned.
+static inline unsigned sparkleCellPhase(std::size_t row, std::size_t col) {
+    unsigned h = (unsigned)row * 2654435761u ^ (unsigned)col * 2246822519u;
+    h ^= h >> 13; h *= 3266489917u; h ^= h >> 16;
+    return h;
+}
+
 void UIManager::drawPlaylist() {
     werase(win_playlist_);
     int rows, cols;
@@ -3932,6 +3957,21 @@ void UIManager::drawPlaylist() {
     // once before the loop - the accessor scans the playlist, so a per-row call
     // would be O(n^2) on the draw path.
     const std::optional<std::size_t> now_row = nowPlayingRow();
+    // Most-played sparkle. The winner set is cached (see sparkleWinners()); empty is
+    // the common answer and costs a bool test per row.
+    //
+    // THE BEAT IS ALREADY RUNNING. text_scroll_offset_ advances every ~300ms and sets
+    // redraw_needed_ unconditionally (tickFrame), which drives a full drawAll() - so
+    // this pane already repaints ~3.3 times a second in both modes, playing or idle,
+    // and the shimmer costs NO new frames. drawAnimatedPanes deliberately excludes
+    // this pane, so the 80ms marquee tick is not what animates it and forcing redraws
+    // there to go faster would buy a strobe, not a shimmer.
+    const std::unordered_set<std::string>& sparkle = sparkleWinners();
+    // HALF the text-scroll rate, same source: the offset steps every ~300ms, the
+    // sparkle advances every OTHER step (~600ms). Both modes take the halving -
+    // Classic's whole-row pulse read as a flash at 1.7Hz and reads as a breath at
+    // 0.83Hz, which is what a pulse should do.
+    const unsigned sparkle_phase = (unsigned)(text_scroll_offset_ / 2);
     for (int i = 0; i < visible; ++i) {
         size_t idx = (size_t)(pl_scroll_ + i);
         if (idx >= playlist_.size()) break;
@@ -3943,6 +3983,28 @@ void UIManager::drawPlaylist() {
         else if (cursor)            { rpair = CP_SELECTED_UNFOCUSED; rattr = A_BOLD; }
         else if (playing)           { rpair = CP_STATUS_OK; rattr = A_BOLD; }
         else                        { rpair = CP_DIM;       rattr = A_BOLD; }
+        // Sparkle rides ON TOP of the pair the precedence chain just chose, and never
+        // competes for the mark cell (already contended by "> ", the CD "* " and the
+        // Nerd play glyph). Vanishing exactly when the row is under the cursor or
+        // playing - when someone is most likely to be looking at it - is the worst
+        // behaviour available, so the cursor/playing rows shimmer by ATTRIBUTE while
+        // keeping their colour.
+        bool twinkle = false;
+        if (!sparkle.empty() && sparkle.count(libidx::detail::foldPathKey(e.path))) {
+            if (aw && !cursor && !playing) {
+                // Awesome: PER CHARACTER, drawn in the twinkle loop below - the row
+                // does not change colour as a unit, each character rides its own
+                // phase. That is what makes the two modes read as different idioms
+                // rather than one effect tinted twice.
+                twinkle = true;
+            } else {
+                // Classic, and any cursor/playing row: a whole-row intensity pulse,
+                // which is what a CGA program would do and which composes with any
+                // pair. NOT A_BLINK - depending on PDCursesMod wingui's handling of
+                // it is not something to build a feature on.
+                rattr = (sparkle_phase % 2) ? A_NORMAL : A_BOLD;
+            }
+        }
         wattron(win_playlist_, COLOR_PAIR(rpair) | rattr);
         const bool ico = config_.nerd_icons;
         std::string mark = (playing && !ico) ? "> " : "  ";
@@ -3972,7 +4034,40 @@ void UIManager::drawPlaylist() {
         std::string ftcol = ftw ? (padToWidth(ftype, 4) + " ") : "";
         std::string line = " " + mark + name + " " + ftcol + dur + " ";
         std::wstring wline = utf8_to_wide(padToWidth(line, cw));
-        mvwaddnwstr(win_playlist_, i+1, cx, wline.c_str(), (int)wline.size());
+        if (twinkle) {
+            // Awesome per-character sparkle. The ramp rests at the ROW'S OWN pair for
+            // three beats (-1), then rises through the theme's viz hues and falls back
+            // - so at any instant most characters sit at the row colour and a scatter
+            // of them are lit. A cycle with no rest would put every character on some
+            // viz hue at once, which is confetti rather than glitter, and it would
+            // cost the title its readability.
+            //
+            // _B variants and CP_VIZ_TIP ONLY. The solid CP_VIZ_* pairs are fg==bg and
+            // would paint the row out; these are the same hues on the base bg.
+            static const short kTwinkle[8] = {
+                -1, -1, -1, CP_VIZ_LOW_B, CP_VIZ_MID_B, CP_VIZ_HIGH_B,
+                CP_VIZ_TIP, CP_VIZ_MID_B };
+            // wmove ONCE, then wadd_wch sequentially: curses advances the cursor by
+            // each glyph's OWN width, so this stays correct for fullwidth CJK.
+            // Indexing columns by codepoint would not - the two diverge the moment a
+            // title holds a wide glyph, and that is the column-vs-byte trap this
+            // codebase already paid for once.
+            //
+            // The padding spaces take a pair too and are unaffected by it: every pair
+            // here shares CP_DIM's base bg in Awesome, and a space paints bg only. So
+            // the twinkle shows on glyphs and nowhere else, which is what "per
+            // character" should mean.
+            wmove(win_playlist_, i+1, cx);
+            for (std::size_t k = 0; k < wline.size(); ++k) {
+                const unsigned ph = (sparkle_phase + sparkleCellPhase(idx, k)) % 8u;
+                const short    tp = kTwinkle[ph];
+                cchar_t cc; wchar_t s[2] = { wline[k], 0 };
+                setcchar(&cc, s, rattr, (tp < 0) ? rpair : tp, nullptr);
+                if (wadd_wch(win_playlist_, &cc) == ERR) break;   // ran out of row
+            }
+        } else {
+            mvwaddnwstr(win_playlist_, i+1, cx, wline.c_str(), (int)wline.size());
+        }
         if (ico && playing) {   // play glyph on the reserved mark cell
             cchar_t cc;
             wchar_t s[2] = { L'\uf04b', 0 };  // play
@@ -11573,6 +11668,54 @@ const std::unordered_map<std::string, libidx::PlayStat>& UIManager::playStats() 
         play_stats_dirty_ = false;
     }
     return play_stats_;
+}
+
+// ─── Most-played sparkle: which playlist rows win ────────────────────────────
+//
+// See the header for the scope, floor and tie-cap rulings. This is the one place
+// that decides, so the draw loop only asks "is this row in the set".
+//
+// Every lookup goes through libidx::lookupPlayStat / foldPathKey, NEVER a raw path
+// compare: track_stats keys are case-split on Windows, and on the reference config
+// 17 files hold two entries whose counts are split between them. A byte-exact join
+// would rank on half a track's plays.
+const std::unordered_set<std::string>& UIManager::sparkleWinners() {
+    const std::uint64_t rev = playlist_.contentRevision();
+    if (!sparkle_dirty_ && rev == sparkle_pl_rev_) return sparkle_winners_;
+    sparkle_pl_rev_ = rev;
+    sparkle_dirty_  = false;
+    sparkle_winners_.clear();
+
+    // Still loading: the answer changes on every drain tick, and a directory load is
+    // exactly when the playlist is largest - the one case this cache exists to avoid.
+    // Re-arm rather than cache the empty answer, or the final drain would leave this
+    // holding "nothing sparkles" until the next mutation.
+    if (playlist_.isLoading()) { sparkle_dirty_ = true; return sparkle_winners_; }
+
+    const auto& ps = playStats();   // hoisted: the accessor is cheap but not free
+    std::int64_t best = 0;
+    std::vector<std::size_t> win;   // indices, by value - no subscript escapes
+    for (std::size_t i = 0; i < playlist_.size(); ++i) {
+        const auto& e = playlist_.at(i);
+        // AUDIOBOOKS NEVER SPARKLE. recordPlay fires on every current-track change,
+        // so RESUMING a book inflates it: a book reopened forty times would outrank a
+        // song someone loves, and the annotation would be lying. isSavedBook is a scan
+        // over <=200 entries - fine once, here, and not fine per row per frame, which
+        // is the other reason this is computed once into a cached set.
+        if (config_.isSavedBook(e.path)) continue;
+        // Radio and CD rows need no test: recordPlay skips streams (the caller checks
+        // isStreamPath) and returns early on isCDTrackPath, so their count is always
+        // 0 and the floor below excludes them for free. Podcast episodes are ordinary
+        // files on the normal transport path, so they count and they may win.
+        const std::int64_t n = libidx::lookupPlayStat(ps, e.path).play_count;
+        if (n <= 0) continue;                       // THE FLOOR
+        if (n > best) { best = n; win.clear(); }
+        if (n == best) win.push_back(i);
+    }
+    if (win.empty() || win.size() > kSparkleMaxTies) return sparkle_winners_;  // THE TIE CAP
+    for (std::size_t i : win)
+        sparkle_winners_.insert(libidx::detail::foldPathKey(playlist_.at(i).path));
+    return sparkle_winners_;
 }
 
 // ─── [Library] genres (slice 10) ─────────────────────────────────────────────

@@ -132,6 +132,7 @@ std::size_t PlaylistManager::addIndexedTrack(const std::string& path,
     entry.display_title = displayTitleFor(path, artist, title);
     entry.duration_sec  = duration_sec;
     entries_.push_back(std::move(entry));
+    ++content_rev_;                 // membership changed; see contentRevision()
     rebuildShuffleOrder();
     return entries_.size() - 1;
 }
@@ -166,6 +167,7 @@ std::size_t PlaylistManager::addStream(const std::string& url, const std::string
     entry.display_title = title;
     entry.duration_sec  = 0;                        // live stream — continuous
     entries_.push_back(std::move(entry));
+    ++content_rev_;                 // membership changed; see contentRevision()
     rebuildShuffleOrder();
     return entries_.size() - 1;
 }
@@ -192,6 +194,7 @@ std::size_t PlaylistManager::addTrack(const std::string& path) {
     entry.path = path;
     populateMetadata(entry);
     entries_.push_back(std::move(entry));
+    ++content_rev_;                 // membership changed; see contentRevision()
     rebuildShuffleOrder();
     return entries_.size() - 1;
 }
@@ -204,6 +207,7 @@ std::size_t PlaylistManager::addCDTrack(const std::string& fake_path,
     e.display_title = title;
     e.duration_sec  = duration_sec;
     entries_.push_back(e);
+    ++content_rev_;                 // membership changed; see contentRevision()
     rebuildShuffleOrder();
     return entries_.size() - 1;
 }
@@ -224,6 +228,7 @@ void PlaylistManager::addDirectory(const std::string& dir_path) {
 void PlaylistManager::removeAt(std::size_t index) {
     if (index >= entries_.size()) return;
     entries_.erase(entries_.begin() + (std::ptrdiff_t)index);
+    ++content_rev_;                 // membership changed; see contentRevision()
     if (current_ > index) --current_;              // deleted above playing -> shift its index down
     if (current_ >= entries_.size() && !entries_.empty())
         current_ = entries_.size() - 1;            // clamp if playing was last (or was deleted)
@@ -232,6 +237,7 @@ void PlaylistManager::removeAt(std::size_t index) {
 
 void PlaylistManager::clear() {
     entries_.clear();
+    ++content_rev_;                 // membership changed; see contentRevision()
     current_ = 0;
     shuffle_order_.clear();
 }
@@ -755,7 +761,10 @@ bool PlaylistManager::drainPending() {
         // Dedup check — skip if path already in playlist. Slice 15: the same rule
         // as every other add. This one matters twice over, because the worker
         // cannot check entries_ and a batch can contain its own duplicates.
-        if (indexOfPath(e.path) == std::string::npos) entries_.push_back(std::move(e));
+        if (indexOfPath(e.path) == std::string::npos) {
+            entries_.push_back(std::move(e));
+            ++content_rev_;         // membership changed; see contentRevision()
+        }
     }
     rebuildShuffleOrder();
     return true;

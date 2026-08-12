@@ -69,8 +69,9 @@ is the whole point; keep Classic minimal and faithful, put flair in Awesome.
   data callback guards on `seeking_`.
 - **Free-key scan** before assigning a new key: check `case` *and* `if (ch == ...)`
   binding forms.
-- Color pairs are slots 1–14 (`CP_*` enum in UIManager.h); viz pairs are fg==bg
-  solid fills, `CP_VIZ_TIP` (14) is peak-fg-on-default-bg for sub-cell glyphs.
+- Color pairs: slots 1–18 (`CP_*` in UIManager.h) + art pairs from `kArtPairBase` (20).
+  Viz pairs are fg==bg fills; `_B`/`CP_VIZ_TIP` are those hues on a real bg (text-safe).
+  **A widget takes the pair for its row's ROLE** - `docs/lessons.md` "Colour-pair roles".
 
 ## Current state (working & verified)
 Awesome-mode comet progress bar (proportional gradient tail, breathing 1↔2↔3-cell
@@ -185,9 +186,8 @@ drains, so a held drag starves it to **zero** - which is why a MOVE repaints fro
 what made the crash findable - do not silence them.
 
 ## Earlier flights (detail in the matching handoffs)
-**07-16:** .opus/.wv/.ogg playback; RIP OVERHAUL (`IEncoder` seam, 5 formats).
-**07-17:** stream-record (^E), MP3 tag write, THE ABI OPENED ONCE (`254baca`,
-additive, no bump), batch RG (^O).
+**07-16:** .opus/.wv/.ogg playback; RIP OVERHAUL (`IEncoder` seam, 5 formats). **07-17:**
+stream-record (^E), MP3 tag write, THE ABI OPENED ONCE (`254baca`, additive, no bump), batch RG (^O).
 
 ## Deep knowledge - read the matching file when a task touches it
 - Roadmap, phases, parked items, decisions → `docs/roadmap.md`

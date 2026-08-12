@@ -1227,3 +1227,72 @@ runtime-discoverable, not compile-discoverable; a green build proves nothing abo
   a structural insert re-read the exact region to confirm placement. File-based
   trace milestones (fopen/fprintf to a fixed path, fflush) beat stderr for a
   wingui crash where stdio may not reach the pipe.
+
+## Colour-pair roles - 2026-08-11
+
+**A widget takes the pair for ITS ROW'S ROLE. Borrowing the viz pairs for anything
+that is not the visualizer is the recurring defect, and it is invisible in review
+because the borrowed pairs ARE theme-driven** - so the widget looks correct by the
+usual test ("does it consult the theme?") while drawing the wrong vocabulary.
+
+**The radio KITT scanner** (`UIManager::drawProgress`) drew its `█▓▒░` sweep in
+`CP_VIZ_PEAK/HIGH/MID/LOW` in *both* modes, so Classic got a white->cyan->yellow->green
+gradient across a stream bar whose only other colour is `CP_TITLE`. Two things made it
+findable, and neither was the colours themselves:
+
+1. **It was the only per-cell-coloured animation in that row.** Everything else in
+   `drawProgress` is a single `wattron` for the whole draw.
+2. **Awesome's own comet bar is monochrome.** Its gradient is *glyph density* inside
+   one `COLOR_PAIR(CP_PROGRESS)`. So is `[#---]`. **The mode difference in RE-MOCT's
+   progress row has never been colour count** - and once that is seen, the Classic fix
+   is not a taste call: same sweep, same glyph ramp, one pair (`CP_TITLE`).
+
+**It had no `awesome_mode` gate at all, because the stream branch RETURNS above the
+mode branch.** A `grep awesome_mode` shows `drawProgress` as gated. It is, for the two
+paths below the early return. **When auditing "is this mode-aware", check what returns
+before the gate, not just whether the gate exists.**
+
+`CP_PROGRESS` was wrong for the Classic scanner for a reason worth keeping: it is
+white-on-**blue** there, and these are solid-block glyphs, so it would have painted a
+slab across the idle gap - a bar where there is no bar. **A pair's bg matters as much as
+its fg the moment a widget draws blocks rather than text.** Same trap in reverse for the
+sparkle: the solid viz pairs are fg==bg, so text drawn in them is invisible. The
+`_B` variants and `CP_VIZ_TIP` exist precisely as the text-safe form of those hues.
+
+**No 14th theme role was added.** `theme.conf` names 13 semantic roles; a palette entry
+for one widget is the wrong trade, and the technique (shade by glyph, not by hue) was
+already in the file twice.
+
+### The remaining borrow - NOT fixed, deliberately
+
+**`drawEq` (`UIManager.cpp` ~`:5037-5046`) overloads `CP_VIZ_HIGH`/`LOW`/`MID`/`PEAK`
+to mean selected / boost / cut / disabled.** Static, not animated, so it was out of the
+scope that found it. Its comment is the live hazard: it hard-codes the *default* Classic
+colours into prose - *"sel=cyan-on-cyan, boost=green-on-green, disabled=white-on-white"* -
+which stops being true the moment anyone edits `theme.conf` or presses `Ctrl+T`. A future
+session reads that and believes it. **If the EQ is ever touched, this is the thing to
+fix, and the comment before the code.**
+
+### Per-character animation: stable scramble, not a ramp
+
+When the same effect runs across many cells, **the offset between cells decides what
+the effect IS**, more than the effect does:
+
+- **`+1` per column is a WAVE.** The cycle travels along the row and reads as one thing
+  moving, which is the opposite of many things twinkling independently.
+- **A hash re-rolled per frame is STATIC.** Every cell jumps somewhere unrelated every
+  step and it reads as noise on a broken signal.
+- **Glitter is a STABLE pseudo-random offset per cell, with only the shared beat
+  moving.** The pattern underneath must be fixed - it is light catching a fixed
+  surface, and the surface is what makes it read as a surface.
+
+Key the scramble on a **stable identity, not the screen position**: the playlist index,
+not the visible row, or the pattern crawls when the pane scrolls.
+
+**Leave rests in the cycle.** A ramp with every step lit puts every character on some
+hue at once - confetti, and the text stops being readable. Three rest beats at the row's
+own pair out of eight, and a scatter of characters are lit at any instant.
+
+**Per-cell drawing and fullwidth glyphs:** `wmove` ONCE then `wadd_wch` sequentially, and
+let curses advance the cursor by each glyph's own width. Computing `column = cx + codepoint_index`
+is the column-vs-byte trap in a new costume - the two diverge on the first wide glyph.

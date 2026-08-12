@@ -6052,21 +6052,37 @@ void UIManager::drawProgress() {
             if (steps > 0) scanner_last_ = now;
             if (scanner_pos_ < 0) scanner_pos_ = 0;      // window shrank since last frame
 
-            // Bright head (viz_peak) + a long gradient tail (viz_high -> mid -> low)
-            // trailing kScannerTail cells in the travel direction. viz pairs paint
-            // solid theme-coloured cells, so each palette gets its own scanner and it
-            // rhymes with the spectrum.
+            // Bright head + a long gradient tail trailing kScannerTail cells in the
+            // travel direction. THE GLYPH RAMP IS THE GRADIENT and is identical in
+            // both modes; only the colour differs.
+            //
+            // Awesome: the four solid viz pairs, so the sweep rhymes with the
+            // spectrum strip drawn right beneath it. Unchanged.
+            //
+            // Classic: ONE pair, shaded by glyph alone - the technique the [#---] bar
+            // and Awesome's own comet already use (that comet's whole gradient is
+            // glyph density inside a single CP_PROGRESS attron, below). Taking the
+            // four viz pairs in BOTH modes made this the only per-cell-coloured thing
+            // in a row that is otherwise one pair, so Classic drew white->cyan->
+            // yellow->green across a stream bar whose only other colour is CP_TITLE -
+            // green and yellow appear nowhere else in that row. The stream branch
+            // returns above the awesome_mode branch, which is why it had no mode gate
+            // at all. CP_TITLE and not CP_PROGRESS: CP_PROGRESS is white-on-blue in
+            // Classic and solid blocks would paint a slab across the idle gap, a bar
+            // where there is no bar. Classic gets no 14th theme role for one widget.
+            const bool aw_scan = config_.awesome_mode;
             for (int i = 0; i < track_w; ++i) {
                 const int behind = (scanner_dir_ > 0) ? (scanner_pos_ - i) : (i - scanner_pos_);
                 if (behind < 0 || behind > kScannerTail) continue;   // ahead of head / past the tail
-                wchar_t g; short pair;
-                if (behind == 0) { g = 0x2588; pair = CP_VIZ_PEAK; }             // █ head
+                wchar_t g; short vpair;
+                if (behind == 0) { g = 0x2588; vpair = CP_VIZ_PEAK; }            // █ head
                 else {
                     const float f = (float)behind / (kScannerTail + 1);          // 0..1 down the tail
-                    if      (f < 0.34f) { g = 0x2593; pair = CP_VIZ_HIGH; }      // ▓ near
-                    else if (f < 0.67f) { g = 0x2592; pair = CP_VIZ_MID;  }      // ▒ mid
-                    else                { g = 0x2591; pair = CP_VIZ_LOW;  }      // ░ far
+                    if      (f < 0.34f) { g = 0x2593; vpair = CP_VIZ_HIGH; }     // ▓ near
+                    else if (f < 0.67f) { g = 0x2592; vpair = CP_VIZ_MID;  }     // ▒ mid
+                    else                { g = 0x2591; vpair = CP_VIZ_LOW;  }     // ░ far
                 }
+                const short pair = aw_scan ? vpair : CP_TITLE;
                 cchar_t cc; wchar_t s[2] = { g, 0 };
                 setcchar(&cc, s, A_NORMAL, pair, nullptr);
                 mvwadd_wch(win_progress_, 0, track_x0 + i, &cc);

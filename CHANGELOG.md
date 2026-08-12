@@ -5,6 +5,47 @@ All notable changes to RE-MOCT are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.6.2] - 2026-08-11
+
+Surfacing and polish. Nothing changes about how anything is played, ripped or
+recorded; both items are about what you can see.
+
+### Added
+
+- **The playlist shows which track you play the most.** Play counts have been
+  kept for a long time and the only place they surfaced was the `[Library]`
+  statistics view, which meant leaving the playlist to find out. The most-played
+  track in the playlist now shimmers gently in place - no key to press, no mode
+  to switch into. If two or three tracks are tied, all of them shimmer; there is
+  no tiebreak, because there is no winner.
+  It looks like what each theme would do. In Classic the row pulses brighter and
+  dimmer, the way a CGA program marked something; in Awesome each character
+  twinkles on its own through the palette's colours, so the row glitters rather
+  than blinks.
+  **Nothing shimmers when the answer would not mean anything.** A playlist where
+  nothing has been played yet has no most-played track, so nothing shimmers - and
+  an album you have played straight through eight times has every track tied at
+  eight, where a shimmer on all forty rows says exactly as much as a shimmer on
+  none, so that is left alone too. Radio stations and CD tracks never carry play
+  counts and never shimmer. **Audiobooks never shimmer either**, and that one is
+  deliberate: reopening a book to carry on where you left off counts as playing
+  it, so a book you have picked up forty times would outrank a song you love, and
+  the shimmer would be telling you something untrue.
+
+### Fixed
+
+- **The radio scanner in Classic mode now uses Classic's colours.** The sweeping
+  bar that fills the empty space on the radio status line - the one that runs back
+  and forth while a station plays - was drawing itself in four colours borrowed
+  from the spectrum analyser, in both modes. In Awesome that is right, and it is
+  unchanged: the sweep sits directly above the spectrum strip and matches it. In
+  Classic it meant a stripe of white, cyan, yellow and green ran across a line
+  where nothing else is anything but cyan, and green and yellow appear nowhere
+  else on that row at all. Classic's sweep is now a single colour, shaded light to
+  dark by the block characters themselves - which is exactly how Classic's own
+  progress bar has always worked. The sweep, its speed and its shape are
+  unchanged; only the colour is.
+
 ## [1.6.1] - 2026-08-08
 
 ### Added
@@ -1491,6 +1532,7 @@ boundary with a **loadable plugin architecture**.
 
 [1.0.0]: https://github.com/RadMageIRL/re-moct/releases/tag/1.0.0
 
+[1.6.2]: https://github.com/RadMageIRL/re-moct/releases/tag/1.6.2
 [1.6.1]: https://github.com/RadMageIRL/re-moct/releases/tag/1.6.1
 [1.6.0]: https://github.com/RadMageIRL/re-moct/releases/tag/1.6.0
 [1.5.0]: https://github.com/RadMageIRL/re-moct/releases/tag/v1.5.0

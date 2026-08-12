@@ -144,16 +144,16 @@ platforms, Linux port done, streaming is a real loadable plugin
 and ship without rebuilding the host" is literally true.** Detail in
 `docs/roadmap.md` / `docs/architecture.md`.
 
-**Released:** 1.5.0 and 1.6.0 (2026-07-27), both merged to `main` and tagged.
-1.5.0 = per-track rip selection + the 17-slice `[Library]` section + the CD
-read-addressing fix. 1.6.0 = HTOA (hidden track before track 1).
+**Released:** 1.5.0, 1.6.0 (2026-07-27), **1.6.1 (2026-08-08)** - all merged to `main`
+and tagged. 1.5.0 = per-track rip selection + the 17-slice `[Library]` section + the CD
+read-addressing fix. 1.6.0 = HTOA (hidden track before track 1). 1.6.1 = the display
+fold, a CJK crash fix, a window-move repaint fix, the disc-number campaign, and cover
+art previewed before writing (**`[P]`, because `[A]` was already AccurateRip there**).
 
-**1.6.1 is UNRELEASED on `experimental/win-pdcurses`.** `Version.h` and
-`CMakeLists.txt` say 1.6.1; **`docs/index.html` deliberately still says 1.6.0** and
-reconciles at ceremony. Contents: the non-ASCII display fold, a CJK crash fix, a
-window-move repaint fix, and the disc-number campaign (disc number in tags, the
-silent tie made loud, the disc surfaced before the rip, and the release/disc
-picker with `F5` re-open). See the newest `docs/session-handoff-*.md`.
+**1.6.2 is UNRELEASED on `experimental/win-pdcurses`** - `Version.h`, `CMakeLists.txt` and
+`docs/index.html` say 1.6.2; NOT merged to `dev`/`main`, NOT tagged. Surfacing only, no
+behaviour change: the Classic radio scanner stopped borrowing the viz palette; the
+most-played playlist row shimmers. **Read the newest `docs/session-handoff-*.md`.**
 
 ## 1.6.1: the display fold - read before touching display text
 `foldForDisplay` (`include/StringUtils.h`, was `sanitizeForDisplay`). Per codepoint:

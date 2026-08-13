@@ -371,6 +371,19 @@
   `art_candidates_test` would need folded fixtures too. That is a slice of its
   own. **If it ever bites a real title, it becomes that slice** rather than a
   surprise, which is the only reason this entry exists.
+- **A success code says the call returned, not that you got what you asked for -
+  and this is the second subsystem where that has bitten.** `ma_device_init` with
+  `shareMode = exclusive` returns `MA_SUCCESS` while silently resampling: measured
+  2026-08-12, an exclusive request for f32/2/44100 came up **s16 @ 48000**,
+  converting rate *and* format, on hardware whose endpoints do not offer 44.1.
+  An implementation that lights up "bit-perfect" off that return value lies. The
+  only thing that means anything is comparing the device's `internalFormat` /
+  `internalChannels` / `internalSampleRate` against what was requested, after init.
+  **Same shape as AccurateRip:** a match proves the stream you checksummed is
+  correct, not the file you kept - the confirmation is about the thing you
+  measured, never about the thing you wanted. **When an API hands back "OK",
+  ask what it is OK about**, and if the answer is "the call", measure the result
+  separately.
 - **A function whose name describes half of what it does will be reused for the
   half it does not.** `StreamSource::ringClear()` read as "flush the ring". It
   also snapped the now-playing label and dropped the scheduled-publish queue -

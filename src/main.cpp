@@ -243,6 +243,9 @@ int main(int argc, char* argv[]) {
         audio.crossfade_secs = config.crossfade_secs;
         playlist.setRepeat(static_cast<RepeatMode>(config.repeat_mode));
         playlist.setShuffle(config.shuffle);
+        // Bit-perfect: config-only, no key and no menu, so it is applied here and
+        // never written back — nothing in the UI can change it (DESIGN-bit-perfect).
+        audio.setBitPerfect(config.bit_perfect);
         // Restore EQ
         audio.setEqEnabled(config.eq_enabled);
         for (int b = 0; b < AudioManager::EQ_BANDS; ++b)

@@ -1,5 +1,6 @@
 #define MINIAUDIO_IMPLEMENTATION
 #include "AudioManager.h"
+#include "AudioExts.h"    // audioext::isLosslessPath — bit-perfect scope gate
 #include "StringUtils.h"
 #include "CustomBackends.h" // AAC/Opus/WavPack backends (used by detectBpm's analysis decoder)
 #include "PortUtil.h"     // port::exeDir — resolve the streaming plugin beside the binary (slice c)
@@ -300,6 +301,43 @@ bool AudioManager::initDevice() {
     cfg.pUserData         = this;
     if (has_selected_device_)
         cfg.playback.pDeviceID = &selected_device_id_;
+
+    // ── Bit-perfect attempt (docs/DESIGN-bit-perfect.md) ────────────────────
+    // LOSSLESS LOCAL FILES ONLY. Lossy sources have already discarded what there
+    // would be to be faithful to, and both of this tree's device-format scars -
+    // the forced 44100 in LocalFileSource::open_decoder and the warm-up device
+    // above - are on the FDK-AAC path, which this scope excludes by construction
+    // rather than by workaround. That path is untouched here.
+    //
+    // THE CHECK IS THE FEATURE. ma_device_init returning success means "a device
+    // was opened", NOT "you got what you asked for": measured on this machine, an
+    // exclusive request for 44100/f32 succeeds and comes up s16 @ 48000, silently
+    // converting rate AND format. Claiming bit-perfect off a success code would
+    // be a lie in the UI. So the device's INTERNAL format is compared against
+    // what was asked, and anything short of an exact match is torn down.
+    bit_perfect_active_.store(false);
+    if (bit_perfect_pref_.load() && file_src_ && audioext::isLosslessPath(file_src_->info().path)) {
+        ma_device_config ex = cfg;
+        ex.playback.shareMode = ma_share_mode_exclusive;
+        ma_device probe {};
+        if (ma_device_init(nullptr, &ex, &probe) == MA_SUCCESS) {
+            const bool exact = probe.playback.internalFormat     == ex.playback.format
+                            && probe.playback.internalChannels   == ex.playback.channels
+                            && probe.playback.internalSampleRate == ex.sampleRate;
+            if (exact) {
+                device_             = probe;      // keep it: this one really is exact
+                device_initialised_ = true;
+                bit_perfect_active_.store(true);
+                ma_device_set_master_volume(&device_, volume_.load());
+                return true;
+            }
+            ma_device_uninit(&probe);             // converts -> not what was asked for
+        }
+        // Falling through is the NORMAL case on hardware whose endpoints do not
+        // offer the source's rate, not an error. The indicator says which
+        // happened; nothing is logged as a failure and no toast fires.
+    }
+
     if (ma_device_init(nullptr, &cfg, &device_) != MA_SUCCESS) return false;
     device_initialised_ = true;
     return true;
@@ -322,8 +360,42 @@ std::vector<AudioManager::DeviceInfo> AudioManager::enumerateDevices() const {
     return result;
 }
 
+// The endpoint's shared-mode mix rate — what the DAC actually runs at, which is
+// NOT what miniaudio reports as the device's internal rate in shared mode. See
+// the header for why. One context init, cached; setDevice() clears the cache.
+uint32_t AudioManager::endpointMixRate() const {
+    if (uint32_t cached = endpoint_rate_.load()) return cached;
+    ma_context ctx {};
+    if (ma_context_init(nullptr, 0, nullptr, &ctx) != MA_SUCCESS) return 0;
+    uint32_t rate = 0;
+    ma_device_info info {};
+    const ma_device_id* id = has_selected_device_ ? &selected_device_id_ : nullptr;
+    if (id) {
+        if (ma_context_get_device_info(&ctx, ma_device_type_playback, id, &info) == MA_SUCCESS
+            && info.nativeDataFormatCount > 0)
+            rate = info.nativeDataFormats[0].sampleRate;
+    } else {
+        // No explicit selection: find the default endpoint and ask about that one.
+        ma_device_info* pPlayback = nullptr; ma_uint32 n = 0;
+        if (ma_context_get_devices(&ctx, &pPlayback, &n, nullptr, nullptr) == MA_SUCCESS) {
+            for (ma_uint32 i = 0; i < n; ++i) {
+                if (!pPlayback[i].isDefault) continue;
+                if (ma_context_get_device_info(&ctx, ma_device_type_playback,
+                                               &pPlayback[i].id, &info) == MA_SUCCESS
+                    && info.nativeDataFormatCount > 0)
+                    rate = info.nativeDataFormats[0].sampleRate;
+                break;
+            }
+        }
+    }
+    ma_context_uninit(&ctx);
+    endpoint_rate_.store(rate);
+    return rate;
+}
+
 void AudioManager::setDevice(const ma_device_id* id) {
     std::lock_guard<std::mutex> lock(state_mutex_);
+    endpoint_rate_.store(0);          // different endpoint, different mix rate
     if (id) {
         selected_device_id_  = *id;
         has_selected_device_ = true;

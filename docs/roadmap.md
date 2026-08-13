@@ -1085,6 +1085,52 @@ convert / art slices), kept here so they are not re-scoped by accident:
   small standalone fix; the newer convert path already writes the true MIME.
 
 ## Decisions log
+- **BUILT 2026-08-12, ONE PATH UNTESTABLE HERE: bit-perfect playback.** Indicator
+  and verification shipped together; the achieved (`=`) state **cannot be reached
+  on any hardware Dos owns.** Measured: all 11 WASAPI endpoints report native
+  48000 and none offers 44100, so the exactness check rejects every 44.1 file on
+  every device and the fallback is the normal path. **Testable here:** the
+  `-> 48` indicator, the fallback, and that nothing false is claimed.
+  **Not testable here:** the `=` state, which needs a DAC that accepts 44.1.
+  Third entry on the built-but-partly-unverified list, with the art picker's
+  fallback rows and the C2 SG_IO question - **the list is kept visible on
+  purpose.** Design and measurements: `docs/DESIGN-bit-perfect.md`.
+- **SCOPE (2026-08-12): bit-perfect playback, LOSSLESS LOCAL FILES ONLY.**
+  FLAC, WavPack, WAV. Everything else is out **by scope, not by workaround**: lossy
+  sources (audiobooks, MP3, AAC) have already discarded what there would be to be
+  faithful to; radio and streams are a lossy transcode at a rate the station picked,
+  and an exclusive device cannot be held across reconnects and rate changes from a
+  source we do not control; CD is 44.1/16 by definition and already hard-coded.
+  That scope is also what every other player does - audiophile players do
+  bit-perfect on local lossless and none do it on radio or spoken word.
+  **The scope dissolves most of the gapless problem** (`docs/RECON-bit-perfect.md`
+  B-R4): a folder of CD rips is all 44.1, so gapless never meets a rate change.
+  **Crossfade across a rate change stays structurally impossible** - one device has
+  one rate - and the feature says so rather than pretending otherwise.
+  **It also clears the two scars**, which is the burden this feature had to
+  discharge: `LocalFileSource.cpp:161` forces 44100 because opening at a file's
+  native rate caused chirp-then-silence on *a 24 kHz mono audiobook*, and the
+  warm-up device in `initDevice` exists for the same class of failure on the
+  **FDK-AAC** path. Both scars are on the lossy path, which this scope excludes.
+  Recon: `docs/RECON-bit-perfect.md`. Proposal: `docs/DESIGN-bit-perfect.md`.
+- **OPEN BUG: 24 kHz m4b audiobooks chirp, cut out, and play at the wrong pitch and
+  speed (reported 2026-08-12). Separate from bit-perfect; needs its own recon on
+  Dos's hardware.**
+  **Not a decode bug**, and that is measured rather than assumed: probes against the
+  real `AacDecoder` through the production decoder config decode all three of his
+  books with duration preserved to three decimals, a correct mono upmix (L==R on
+  every frame), and zero seek drift at 36000 s into a ten-hour file
+  (`docs/RECON-bit-perfect.md` B-R2). **An out-of-tree decode probe cannot see a
+  device bring-up failure**, which is where the remaining suspicion sits.
+  **All three symptoms may be one bug.** A device that comes up at the wrong rate
+  while being fed 44100 sounds exactly like wrong pitch and speed, and
+  chirp-then-cut is the signature the warm-up device in `AudioManager::initDevice`
+  already exists to work around - documented there as *"a chirp then nothing"* when
+  the first WASAPI bring-up coincides with the FDK-AAC decoder. **If that workaround
+  has stopped holding, it affects every AAC file and every stream, not just
+  audiobooks**, which is why this is its own job and not a footnote to a feature.
+  Ruled out: loudness. Sherlock opens ~30 dB below the Alice file, and that is
+  normal per-recording variation in the source.
 - **HLS segment resume on reconnect: reported and DECLINED (2026-08-12).** After a
   network drop, `hlsConnect()` discards `hls_ = HlsState{}` as its first act, so
   `last_seq` - the highest `EXT-X-MEDIA-SEQUENCE` consumed - is never consulted and

@@ -6105,6 +6105,28 @@ void UIManager::drawProgress() {
         if (!meta.empty()) meta += "  ";
         meta += std::to_string(track.sample_rate/1000)+"."+
                 std::to_string((track.sample_rate%1000)/100)+" kHz";
+        // ── What actually reaches the DAC (docs/DESIGN-bit-perfect.md) ──────
+        // The number above is the FILE's rate, read from its tags. It has never
+        // said anything about the output, and on hardware whose endpoints do not
+        // offer that rate the two differ on every single track - measured here,
+        // all 11 WASAPI endpoints report 48000 and none offers 44100, so every
+        // 44.1 rip is resampled by Windows before it is heard.
+        //
+        // THE MISMATCH IS NOT GATED behind the bit_perfect flag. It is true
+        // whether or not anyone asked for it, it costs the same three characters,
+        // and making someone opt in to learn that their music is resampled buries
+        // the one fact that applies to the hardware they actually own. The claims
+        // ARE gated, because a claim is only meaningful about a mode you chose.
+        // ASCII "->" and "=", not an arrow glyph: this row is drawn with the
+        // NARROW curses calls, which do not decode UTF-8 (the 1.6.1 fold work).
+        const uint32_t out_rate = audio_.endpointMixRate();
+        if (audio_.bitPerfectActive()) {
+            meta += " =";                            // verified exact, nothing between
+        } else if (audio_.bitPerfectRequested() && audio_.dspActive()) {
+            meta += " -> dsp";                       // scaling: no claim can hold
+        } else if (out_rate > 0 && (int)out_rate != track.sample_rate) {
+            meta += " -> " + std::to_string(out_rate / 1000);   // "44.1 kHz -> 48"
+        }
     }
     if (track.channels > 0) {
         if (!meta.empty()) meta += "  ";

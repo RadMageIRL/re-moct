@@ -1727,7 +1727,14 @@ void StreamSource::producerWorker() {
             playing_.store(false);
             break;
         }
-        prebuffered_.store(false);                     // re-buffer after the gap
+        // prebuffered_ is deliberately NOT cleared here. It used to be, and that
+        // is what made every drop audible: it gated readFrames into silence the
+        // instant the producer decided to reconnect, so the ~6 s already in the
+        // ring was never played. readFrames ALREADY handles this correctly on its
+        // own - its underrun arm drops back to buffering when the ring genuinely
+        // runs dry. Letting it do that drains the cushion first, which covers a
+        // short outage completely: the retry starts at 500 ms and the ring holds
+        // seconds, so the listener never learns it happened.
         port::sleepMs(500 * reconnect_attempts);               // linear backoff
         if (stop_.load()) break;
         if (!connect() || !initDecoder()) continue;    // keep retrying until cap
@@ -1806,7 +1813,8 @@ void StreamSource::producerWorkerAAC() {
                     playing_.store(false);
                     break;
                 }
-                prebuffered_.store(false);
+                // Not cleared here either — see producerWorker: readFrames drains
+                // the cushion and drops to buffering on real underrun by itself.
                 port::sleepMs(500 * reconnect_attempts);
                 if (stop_.load()) break;
                 if (!connect()) continue;

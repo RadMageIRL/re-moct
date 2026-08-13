@@ -1099,6 +1099,14 @@ convert / art slices), kept here so they are not re-scoped by accident:
   describes the file against the DAC - different properties sharing a vocabulary.
   On the built-but-partly-unverified list with the art picker's fallback rows and
   the C2 SG_IO question - **kept visible on purpose.**
+  **Common code, both platforms - no `#ifdef` anywhere in the feature**, and
+  miniaudio implements `nativeDataFormats` and `shareMode` for ALSA as well as
+  WASAPI. Measured on Linux under WSLg's PulseAudio: the exclusive attempt comes
+  back EXACT there, so **the `=` state is reachable on Linux and the check does
+  fire** - but that endpoint is a virtual RDP sink with no DAC behind it, so it
+  verifies the mechanism and **not** real Linux audio hardware. **That leaves
+  Linux-on-real-hardware as the unverified half**, which is a smaller gap than
+  "Windows-only" and belongs on this list rather than reading as unimplemented.
   Design and measurements: `docs/DESIGN-bit-perfect.md`.
 - **SCOPE (2026-08-12): bit-perfect playback, LOSSLESS LOCAL FILES ONLY.**
   FLAC, WavPack, WAV. Everything else is out **by scope, not by workaround**: lossy

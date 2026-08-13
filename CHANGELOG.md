@@ -50,15 +50,19 @@ that are not true.
   it, so a book you have picked up forty times would outrank a song you love, and
   the shimmer would be telling you something untrue.
 
-- **The player now tells you when Windows is resampling your music, which it
-  probably is.** The rate shown while a track plays has always been the rate of the
-  *file*, and it never said anything about what reached your speakers. On this
-  machine every single audio output - the GoXLR, the monitors, the headset, all
-  eleven of them - runs at 48 kHz and none of them accepts 44.1, so every CD rip
-  has been quietly converted by Windows before you heard it. That now shows on the
-  status line as `44.1 kHz -> 48`. Nothing about the sound has changed; what
-  changed is that you can see it. This appears whether or not you turn anything
-  on, because it is true either way.
+- **The player now tells you when your music is being resampled on the way out.**
+  The rate shown while a track plays has always been the rate of the *file*, and it
+  never said anything about what reached your speakers. If your sound output runs
+  at a different rate from the track, something converts it first - and until now
+  nothing said so. The status line shows it as `44.1 kHz -> 48`. Nothing about the
+  sound has changed; what changed is that you can see it. It appears whether or not
+  you turn anything on, because it is true either way.
+  It is worth checking on your own machine, because the answer is often not the one
+  you would guess. On the machine this was developed on, all eleven outputs - the
+  USB mixer, the monitors, the headset - run at 48 kHz and none accepts 44.1, so
+  every CD rip had been quietly converted for years. A 48 kHz Opus file on the same
+  machine shows nothing at all, because it already matches: **the lossy file was
+  reaching the hardware untouched while the lossless ones never had.**
 
 - **Bit-perfect playback, for people who have the hardware for it** - a
   `bit_perfect=1` line in `remoct.conf`, off by default and deliberately with no
@@ -66,13 +70,15 @@ that are not true.
   and hand it your file's samples untouched, for lossless files only (FLAC,
   WavPack, WAV). Lossy files, radio and CDs are excluded on purpose: an MP3 or an
   audiobook has already thrown away what there would be to preserve.
-  **It checks rather than assumes.** Windows will happily grant exclusive access
-  and then convert anyway, so RE-MOCT compares what the device is actually running
-  against what it asked for, and if they differ it hands the device back and plays
-  normally. **On hardware that cannot do 44.1 that is every time**, and the status
-  line says so rather than claiming something untrue. It shows `=` only when the
-  output really is untouched, and `-> dsp` if the equaliser or ReplayGain is on,
-  since either of those changes the samples by definition.
+  **It checks rather than assumes.** An audio system will happily grant exclusive
+  access and then convert anyway, so RE-MOCT compares what the device is actually
+  running against what it asked for, and if they differ it hands the device back
+  and plays normally. **On hardware that cannot take the track's rate that is every
+  time**, and the status line says so rather than claiming something untrue. It
+  shows `=` only when the output really is untouched, and `-> dsp` if the equaliser
+  or ReplayGain is on, since either of those changes the samples by definition.
+  Windows and Linux both, by the same code - there is no platform-specific version
+  of any of this.
 
 - **The About screen says where the project lives.** Press `A` and it now shows
   `github.com/RadMageIRL/re-moct` and `re-moct.app`, along with the licence.

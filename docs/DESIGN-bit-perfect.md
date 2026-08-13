@@ -268,3 +268,40 @@ It has a practical edge too: if Dos ever wants an untouched path for his CD rips
 44.1-capable DAC or resampling the library to 48 once, deliberately, rather than letting Windows do
 it silently on every play. **Not a recommendation — just the shape of the choice, now that it is
 visible.**
+
+### Platform coverage — common code, and measured on both
+
+**Asked after the fact and worth stating plainly: none of this is Windows-only.**
+
+**No platform gate exists anywhere in the feature.** `endpointMixRate()`, the exclusive attempt, the
+`internal*` exactness check and the indicator contain zero `#ifdef`. Both mechanisms are implemented
+by miniaudio for every backend:
+
+- **`nativeDataFormats`** — the ALSA backend fills it at `miniaudio.h:29013-29018`, enumerating
+  supported rates through `snd_pcm_hw_params_test_rate`. It is not a WASAPI field.
+- **`shareMode`** — `ma_context_open_pcm__alsa` takes it (`:28687`) and selects `hw:`-style device
+  names for exclusive (`:28718`), which is the ALSA no-conversion device. `:29250` threads it through
+  device init.
+- **`internalFormat` / `internalChannels` / `internalSampleRate`** are generic `ma_device` fields
+  every backend populates.
+
+**Measured on Linux, 2026-08-12** — WSL turned out to have audio after all, via WSLg's PulseAudio
+"RDP Sink", so this is a live result rather than an inspection:
+
+```
+backend: PulseAudio        RDP Sink [DEFAULT]   native: s16 2ch 44100
+shared    f32/2/44100  ->  internal s16 2ch 44100   (format converted, rate not)
+exclusive f32/2/44100  ->  internal f32 2ch 44100   <= EXACT
+```
+
+**So the `=` state IS reachable on Linux and the exactness check does fire there** — the code path is
+verified, not merely compiled. **What that does NOT verify is the audio path:** the RDP Sink is a
+virtual endpoint that streams to Windows over RDP, so there is no DAC behind it. It proves the
+mechanism works and proves nothing about real Linux hardware.
+
+**One thing the Linux result exposes about the indicator's scope**, worth being explicit about: the
+mismatch indicator compares **rate only**. On this Linux endpoint a 44.1 file shows no indicator —
+correctly, the rate matches — while the shared path still converts f32 to s16. That is by design:
+absence of `-> NN` means *the rate matches*, not *nothing was touched*. **Only `=` claims exactness**,
+and it is the only state that checks format and channels as well. If the rate indicator ever needs to
+mean more than rate, that is a different indicator and should be named differently.

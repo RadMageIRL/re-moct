@@ -355,6 +355,22 @@
   drive for a dropped parameter**). Keep "can the device" and "does our code ask"
   as separate questions - collapsing them is what put a wrong sentence in the rip
   log for the life of the feature.
+- **`formatCandidateRow` truncates by BYTE, and "ASCII by contract" describes the
+  test fixtures rather than the live data.** `cut()` uses `substr`, so a title
+  long enough to be cut can be split mid-character - and `foldForDisplay` passes
+  CJK through verbatim since 1.6.1, so the data reaching it is genuinely
+  multi-byte. It affects `^F`, `^R` and now the art picker's iTunes/Deezer rows,
+  which reuse the same formatter deliberately (three lists that must look alike
+  beat three formatters that drift). **Accepted, not fixed, 2026-08-12.**
+  **What it costs:** a cut CJK title draws a replacement glyph at the cut. Nobody
+  has hit it - the truncation only fires on titles longer than the column, and
+  the rows most at risk are the ones where a `>` already says text was dropped.
+  **What fixing it takes:** measure and cut by display COLUMNS with the
+  StringUtils helpers, which means the header stops being dependency-free and the
+  layout can no longer be asserted with plain ASCII - so `disc_pick_test` and
+  `art_candidates_test` would need folded fixtures too. That is a slice of its
+  own. **If it ever bites a real title, it becomes that slice** rather than a
+  surprise, which is the only reason this entry exists.
 - **Before changing an output string, grep the docs for it - output strings are
   sometimes acceptance criteria.** Changing the rip log's `C2 support: no` turned
   up `docs/phase3-slice6-design.md`, where that exact line is one of the fields the

@@ -216,16 +216,27 @@ inline std::vector<std::string> wrapToWidth(const std::string& s, int width) {
     return out;
 }
 
-// ─── The candidate row, shared by both lists ─────────────────────────────────
-// ^F (text search) and ^R (disc-ID picker) draw candidate lists that MUST look
-// identical - Dos already reads the ^F rows fluently, and two formatters would
-// drift the first time one of them was adjusted. They carry different types
-// (MBSearchResult vs MBRelease), so what is shared is the LAYOUT, below, and
-// each caller fills the fields.
+// ─── The candidate row, shared by THREE lists ────────────────────────────────
+// ^F (text search), ^R (disc-ID picker) and the art picker's iTunes/Deezer rows
+// draw candidate lists that MUST look identical - Dos already reads the ^F rows
+// fluently, and two formatters would drift the first time one of them was
+// adjusted. They carry different types (MBSearchResult, MBRelease,
+// art::Candidate), so what is shared is the LAYOUT, below, and each caller fills
+// the fields.
 //
 // Strings arrive ALREADY FOLDED. The fold belongs at the draw site (1.6.1), and
 // keeping it out of here means this header needs nothing from StringUtils and
 // the layout can be asserted with plain ASCII.
+//
+// KNOWN LIMIT, accepted rather than fixed (2026-08-12): `cut` truncates by BYTE
+// with substr, and "ASCII by contract" describes the TEST fixtures, not the live
+// data. foldForDisplay passes CJK through verbatim since 1.6.1, so a title long
+// enough to be cut can be split mid-character and draw a replacement glyph.
+// Pre-existing in ^F and ^R; the art picker is now a third list exposed to it.
+// Fixing it means measuring and cutting by display COLUMNS (StringUtils has the
+// helpers) and giving up the plain-ASCII layout assertions, or teaching the test
+// to fold - a slice of its own, and worth doing only if it bites a real title.
+// docs/lessons.md, "Colour-pair roles" section neighbours, records the same.
 
 // The right-hand column. On a single-medium release it is the track count,
 // which is what ^F has always effectively shown; on a set it is the disc this
@@ -246,6 +257,12 @@ struct CandidateRow {
     std::string country;     // 2 chars or ""
     std::string right;       // discColumn(), or "19t" for a ^F track count
     bool        from_discogs = false;
+    // Short source tag for lists that mix services, rendered as " [tag]" after
+    // the [D] slot. Empty on the release lists, which have one source each.
+    // DELIBERATELY NOT the [D] bool: [D] already means Discogs in the lists Dos
+    // reads, and one bracket must not mean two things across two lists - which
+    // is why the art picker's Deezer rows are "[dz]" and not "[D]".
+    std::string source_tag;
 };
 
 // One row, truncated to `width` columns. ASCII by contract (see above), so byte
@@ -262,6 +279,7 @@ inline std::string formatCandidateRow(int idx, const CandidateRow& r, int width)
     if (!r.country.empty()) tail += "  " + r.country;
     if (!r.right.empty())   tail += "  " + r.right;
     if (r.from_discogs)     tail += " [D]";
+    if (!r.source_tag.empty()) tail += " [" + r.source_tag + "]";
 
     const int fixed = (int)s.size() + (int)tail.size();
     int room = width - fixed;

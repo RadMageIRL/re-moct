@@ -32,7 +32,7 @@
 #include "Mp4Chapters.h"
 #include "AwesomeThemes.h"
 #include "CoverArtRender.h"
-#include "CoverArt.h"      // CaaImage - the art picker's rows
+#include "CoverArt.h"      // CaaImage + art::Candidate - the art picker's two row sources
 #include "ArtMissCache.h"   // time-bounded art negative cache (radio-art-refresh-fix)
 #include "GainScan.h"       // batch ReplayGain over a folder (batch-r128)
 #include "ConvertJob.h"     // convert-core: decode -> IEncoder batch convert engine
@@ -711,19 +711,48 @@ private:
     // The picker itself. Rows lead with the COMMENT because it is the only field
     // that discriminates - `types` says "Medium" nineteen times on the measured
     // release, and there are no dimensions in the index at all.
+    //
+    // TWO ROW SOURCES, NEVER BOTH AT ONCE. `images` is the Cover Art Archive
+    // listing; `texts` is the iTunes/Deezer fallback, filled only when the
+    // archive had nothing to list (no MBID at all, or an MB release with no CAA
+    // entry) - which is the same condition the ripper's own fallback runs on, so
+    // the picker and the rip agree about which source is in play. That mutual
+    // exclusion is why the two row LAYOUTS can differ without either looking
+    // broken: a CAA row leads with the uploader's comment, a text row is the
+    // candidate row Dos already reads in ^F and ^R.
     struct ArtPickState {
-        std::vector<CoverArt::CaaImage> images;
+        std::vector<CoverArt::CaaImage>  images;
+        std::vector<art::Candidate>      texts;
+        int         disc_tracks = 0;          // the disc's OWN count, for the header
         int         cursor  = 0;
         bool        loading = false;
         std::string note;                     // "" or why the list is empty
         int         preview_for = -1;         // row the preview belongs to
         cover::Rendered preview;
+        int  rows() const {
+            return images.empty() ? (int)texts.size() : (int)images.size();
+        }
+        // The 250px preview URL for a row, whichever source it came from. All
+        // three services publish that size, so the preview pane is identical.
+        std::string thumbUrl(int i) const {
+            if (i < 0 || i >= rows()) return {};
+            return images.empty() ? texts[(std::size_t)i].thumb_url
+                                  : images[(std::size_t)i].thumb_url;
+        }
+        // Stable per-row key for the art-grid cache.
+        std::string rowKey(int i) const {
+            if (i < 0 || i >= rows()) return {};
+            return images.empty() ? ("txt|" + texts[(std::size_t)i].source + "|"
+                                     + texts[(std::size_t)i].image_url)
+                                  : images[(std::size_t)i].id;
+        }
     } art_pick_;
     WINDOW*           art_pick_win_ = nullptr;
     std::atomic<bool> art_index_done_  { false };
     std::atomic<bool> art_thumb_done_  { false };
     std::mutex        art_pick_mtx_;
     std::vector<CoverArt::CaaImage> art_index_result_;
+    std::vector<art::Candidate>     art_text_result_;
     cover::Rendered   art_thumb_result_;
     int               art_thumb_row_ = -1;    // row the in-flight thumb is for
     int               art_thumb_want_ = -1;   // row the cursor has settled on

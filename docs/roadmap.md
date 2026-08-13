@@ -1085,6 +1085,39 @@ convert / art slices), kept here so they are not re-scoped by accident:
   small standalone fix; the newer convert path already writes the true MIME.
 
 ## Decisions log
+- **OPEN VERIFICATION: the art picker's iTunes/Deezer rows have never run against
+  a real disc (2026-08-12). Shipped gated, not live-tested.**
+  **This is open, not decided.** The feature is built, both toolchains green, and
+  its pure half is unit-tested against captured real API responses
+  (`tests/art_candidates_test.cpp`) - but **the path that matters has never
+  executed on hardware**, because reaching it needs a disc that does not exist in
+  this collection.
+
+  **What is untested and what is not:**
+
+  - **Untested:** the fallback rows themselves. Reaching them requires a disc
+    where the Cover Art Archive comes up empty - either a **Discogs-sourced
+    release** (no MBID, so CAA is never queried) or an **MB release with no CAA
+    front cover**. Dos has neither to hand, confirmed 2026-08-12. So nothing has
+    ever exercised `CoverArt::candidatesByText` live, nor the picker drawing
+    `art::Candidate` rows, nor choosing one and embedding it.
+  - **Tested and green:** the CAA half is unchanged and behaves as before - the
+    picker on a normal disc still shows comment-led archive rows. The parsing,
+    the artist gate, the automatic marker and the row layout are all pinned by
+    unit tests against responses captured from the live APIs.
+
+  **What would settle it, and nothing less will:** a rip on a disc that resolves
+  to a Discogs release, or to an MB release whose CAA entry has no front cover.
+  One screen decides it - open the picker (`P` on the confirm modal) and see a
+  list of albums with `[iT]` / `[dz]` tags and a starred automatic row, where the
+  picker used to refuse to open. **A synthetic test cannot substitute:** the
+  untested part is precisely the live search, the live thumbnails and the
+  picker's behaviour when a real release has no archive entry.
+
+  **Until then, treat the fallback path as unproven.** Same standing as the C2
+  hardware question below: recorded rather than chased, harmless while nobody
+  relies on it, and **not** to be cited as working. Design and the four row
+  decisions: the untracked `docs/DESIGN-art-picker-fallback-rows.md`.
 - **C2 error pointers: recon'd and DECLINED (2026-08-12). Do not re-open without
   new information.** Both drives in hand support C2 and one was proven to deliver
   it - measured, not assumed: MODE SENSE page 2Ah and GET CONFIGURATION 001Eh both

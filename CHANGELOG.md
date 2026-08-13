@@ -5,12 +5,30 @@ All notable changes to RE-MOCT are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.6.2] - 2026-08-11
+## [1.6.2] - 2026-08-12
 
 Surfacing and polish. Nothing changes about how anything is played, ripped or
-recorded; both items are about what you can see.
+recorded - every item is about what you can see, and about not being told things
+that are not true.
 
 ### Added
+
+- **Choosing the cover now works on the discs where it matters most.** The cover
+  picker listed images from the Cover Art Archive, and on a disc the archive does
+  not cover it had nothing to show - on a disc identified through Discogs it
+  refused to open at all. Those are exactly the discs where the cover RE-MOCT
+  picks by itself is least likely to be right: obscure pressings, bootlegs,
+  anything without an archive entry. The picker now falls back to the same two
+  searches the ripper would have run anyway and lists what they found, so there
+  is a choice where there used to be one image and no way to change it.
+  Each row shows the album, the year and country where the service publishes them,
+  and **how many tracks that release has** - which is usually the only thing
+  separating a standard album from its expanded edition. The disc's own track
+  count is on the line above, so the comparison is right there. Rows are marked
+  `[iT]` or `[dz]` for where they came from, and the one RE-MOCT would have picked
+  on its own is starred, so the first question answered is "what was I about to
+  get". Choosing one previews it before anything is written, exactly as the
+  archive rows already do.
 
 - **The playlist shows which track you play the most.** Play counts have been
   kept for a long time and the only place they surfaced was the `[Library]`
@@ -33,6 +51,17 @@ recorded; both items are about what you can see.
   the shimmer would be telling you something untrue.
 
 ### Fixed
+
+- **The rip log no longer says your drive cannot do something it was never asked
+  to do.** Every rip log carried the line `C2 support : no`, and the screen said
+  *"C2 not supported by drive"*. Both were untrue about the drives here: both of
+  them support C2 error pointers, and one was measured delivering them. The
+  reason RE-MOCT saw nothing is that on Windows it never asked - the request has
+  no way through the interface Windows provides for this, so the answer was
+  always going to be "no" whatever drive was in the tray. The log now says
+  **`C2 support : not queried`**, and names the reason as the platform rather
+  than your hardware. Nothing about how a disc is read has changed, and on Linux,
+  where the request is genuinely made, the wording is exactly as it was.
 
 - **The radio scanner in Classic mode now uses Classic's colours.** The sweeping
   bar that fills the empty space on the radio status line - the one that runs back

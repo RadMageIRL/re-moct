@@ -13234,23 +13234,38 @@ void UIManager::refreshRipArt(const std::string& mbid, int box_cols, int box_row
 
 // ─── The picker ─────────────────────────────────────────────────────────────
 void UIManager::openArtPicker() {
-    std::string mbid;
-    { std::lock_guard<std::mutex> lk(mb_mutex_); mbid = mb_release_.mb_id; }
-    if (mbid.empty()) {
-        // Discogs releases carry no MusicBrainz id, so there is no archive to
-        // list. Said rather than opening an empty box.
-        showTrackToast("No cover-art listing for this release", "", "");
-        return;
+    std::string mbid, artist, album;
+    {
+        std::lock_guard<std::mutex> lk(mb_mutex_);
+        mbid   = mb_release_.mb_id;
+        artist = mb_release_.artist;
+        album  = mb_release_.title;
     }
+    // A Discogs release carries no MusicBrainz id, so there is no archive to
+    // list - this used to refuse to open at all, which left the discs with the
+    // LEAST trustworthy automatic pick as the only ones with no way to change
+    // it. The free-text search that the ripper would run anyway now runs here
+    // instead, and its candidates become the rows.
     art_pick_ = {};
     art_pick_.loading = true;
+    art_pick_.disc_tracks = (int)audio_.cdSource().tracks().size();
     art_thumb_want_   = -1;
     art_thumb_row_    = -1;
     art_index_done_.store(false);
     if (art_index_thread_.joinable()) art_index_thread_.join();
-    art_index_thread_ = std::thread([this, mbid]() {
-        std::vector<CoverArt::CaaImage> v = CoverArt::indexByMbid(mbid);
-        { std::lock_guard<std::mutex> lk(art_pick_mtx_); art_index_result_ = std::move(v); }
+    art_index_thread_ = std::thread([this, mbid, artist, album]() {
+        std::vector<CoverArt::CaaImage> v;
+        std::vector<art::Candidate>     t;
+        if (!mbid.empty()) v = CoverArt::indexByMbid(mbid);
+        // The SAME condition the ripper's own fallback uses (CDRipper.cpp: only
+        // when CAA gave nothing), so the picker never offers a source the rip
+        // would not have reached.
+        if (v.empty()) t = CoverArt::candidatesByText(artist, album);
+        {
+            std::lock_guard<std::mutex> lk(art_pick_mtx_);
+            art_index_result_ = std::move(v);
+            art_text_result_  = std::move(t);
+        }
         art_index_done_.store(true);
     });
     ui_overlay_ = UIOverlay::ArtPick;
@@ -13263,18 +13278,30 @@ void UIManager::openArtPicker() {
 void UIManager::serviceArtPicker() {
     if (art_index_done_.exchange(false)) {
         std::vector<CoverArt::CaaImage> v;
-        { std::lock_guard<std::mutex> lk(art_pick_mtx_); v = std::move(art_index_result_); }
+        std::vector<art::Candidate>     t;
+        {
+            std::lock_guard<std::mutex> lk(art_pick_mtx_);
+            v = std::move(art_index_result_);
+            t = std::move(art_text_result_);
+        }
         art_pick_.images  = std::move(v);
+        art_pick_.texts   = std::move(t);
         art_pick_.loading = false;
-        if (art_pick_.images.empty())
-            art_pick_.note = "The archive lists no images for this release";
+        if (art_pick_.rows() == 0)
+            art_pick_.note = "No cover art found for this release";
         else {
             // Start on what the automatic path would have taken - the honest
             // opening position, and it answers "what would I have got" before
             // "what else is there". NOT on a row whose comment happens to start
             // with the disc number: that would invent a link the data lacks.
-            for (std::size_t i = 0; i < art_pick_.images.size(); ++i)
-                if (art_pick_.images[i].front) { art_pick_.cursor = (int)i; break; }
+            // Both sources mark that row; only the field differs.
+            if (art_pick_.images.empty()) {
+                for (std::size_t i = 0; i < art_pick_.texts.size(); ++i)
+                    if (art_pick_.texts[i].automatic) { art_pick_.cursor = (int)i; break; }
+            } else {
+                for (std::size_t i = 0; i < art_pick_.images.size(); ++i)
+                    if (art_pick_.images[i].front) { art_pick_.cursor = (int)i; break; }
+            }
             art_thumb_want_ = art_pick_.cursor;
         }
         redraw_needed_.store(true);
@@ -13294,10 +13321,10 @@ void UIManager::serviceArtPicker() {
         if (++art_thumb_settle_ < 3) return;        // ~a quarter second of rest
         art_thumb_settle_ = 0;
         const int row = art_thumb_want_;
-        if (row < 0 || row >= (int)art_pick_.images.size()) return;
+        if (row < 0 || row >= art_pick_.rows()) return;
         if (art_thumb_thread_.joinable()) art_thumb_thread_.join();
         art_thumb_row_ = row;
-        const std::string url = art_pick_.images[(std::size_t)row].thumb_url;
+        const std::string url = art_pick_.thumbUrl(row);
         art_thumb_thread_ = std::thread([this, url]() {
             std::vector<std::uint8_t> b = CoverArt::bytesByUrl(url);
             cover::Rendered r;
@@ -13359,31 +13386,75 @@ void UIManager::drawArtPick() {
 
     if (art_pick_.loading) {
         mvwaddstr(w, 2, 3, "Fetching the cover-art listing...");
-    } else if (art_pick_.images.empty()) {
+    } else if (art_pick_.rows() == 0) {
         mvwaddnstr(w, 2, 3, art_pick_.note.c_str(), list_w);
     } else {
-        mvwprintw(w, 2, 3, "%d images. The comment is whoever uploaded it talking.",
-                  (int)art_pick_.images.size());
+        const bool caa = !art_pick_.images.empty();
+        if (caa) {
+            mvwprintw(w, 2, 3, "%d images. The comment is whoever uploaded it talking.",
+                      (int)art_pick_.images.size());
+        } else {
+            // The disc's OWN track count, stated ONCE. It belongs to the disc,
+            // not to any candidate, and saying it here lets every row's "20t"
+            // be compared without RE-MOCT ranking on it. No match tick: a
+            // 12-track DIFFERENT album matches a 12-track disc just as exactly,
+            // so a tick would read as verification the data cannot support.
+            if (art_pick_.disc_tracks > 0)
+                mvwprintw(w, 2, 3,
+                          "%d albums. This disc has %d tracks.  * = the automatic pick.",
+                          (int)art_pick_.texts.size(), art_pick_.disc_tracks);
+            else
+                mvwprintw(w, 2, 3, "%d albums.  * = the automatic pick.",
+                          (int)art_pick_.texts.size());
+        }
         const int LIST_START = 4;
         const int LIST_ROWS  = BOX_H - LIST_START - 3;
         int top = art_pick_.cursor - LIST_ROWS + 1;
         if (top < 0) top = 0;
         for (int i = 0; i < LIST_ROWS; ++i) {
             const int idx = top + i;
-            if (idx >= (int)art_pick_.images.size()) break;
-            const CoverArt::CaaImage& im = art_pick_.images[(std::size_t)idx];
-            // Type is a NARROW hint and never the wide column: it reads "Medium"
-            // for nineteen rows on the measured release, several of whose
-            // comments say Booklet or Tracklist. No dimensions column - the
-            // index has no such field. No size column - it is constant.
-            std::string ty = foldForDisplay(im.type);
-            if (ty.size() > 8) ty.resize(8);
-            std::string cm = foldForDisplay(im.comment);
-            if (cm.empty()) cm = "-";
-            char head[24];
-            std::snprintf(head, sizeof head, "%-8s ", ty.c_str());
-            std::string line = head + cm;
-            if (im.front) line += "   (automatic)";
+            if (idx >= art_pick_.rows()) break;
+            std::string line;
+            if (caa) {
+                const CoverArt::CaaImage& im = art_pick_.images[(std::size_t)idx];
+                // Type is a NARROW hint and never the wide column: it reads
+                // "Medium" for nineteen rows on the measured release, several of
+                // whose comments say Booklet or Tracklist. No dimensions column -
+                // the index has no such field. No size column - it is constant.
+                std::string ty = foldForDisplay(im.type);
+                if (ty.size() > 8) ty.resize(8);
+                std::string cm = foldForDisplay(im.comment);
+                if (cm.empty()) cm = "-";
+                char head[24];
+                std::snprintf(head, sizeof head, "%-8s ", ty.c_str());
+                line = head + cm;
+                if (im.front) line += "   (automatic)";
+            } else {
+                // THE SAME ROW AS ^F AND ^R. These candidates have no comment and
+                // no type, but they do have what those lists show - title, year,
+                // country, track count - so this reuses the shared formatter
+                // rather than inventing a third grammar. Folded HERE, because
+                // formatCandidateRow takes strings already folded (MBLookup.h).
+                const art::Candidate& c = art_pick_.texts[(std::size_t)idx];
+                CandidateRow r;
+                r.artist     = foldForDisplay(c.artist);
+                r.title      = foldForDisplay(c.title);
+                r.year       = c.year;          // "" on Deezer - omitted, not padded
+                r.country    = c.country;       // "" on Deezer - likewise
+                r.right      = art::trackCell(c.tracks);
+                // The automatic pick is marked INSIDE the tag - "[iT*]" - and the
+                // header line says what the star means. The CAA list appends the
+                // word "(automatic)", which cannot work here: formatCandidateRow
+                // pads to exactly `width` and right-aligns the tail, so an
+                // appended word is past the edge and mvwaddnstr cuts it off. The
+                // fix of reserving 12 columns for it was measured and rejected -
+                // with the preview column the list is 50 wide, and the reserve
+                // truncated "Relish (Expanded Edition)" to "Relish>", destroying
+                // THE ONE FIELD THAT DISTINGUISHES THESE ROWS. A star costs one
+                // column and keeps every other column aligned.
+                r.source_tag = c.automatic ? c.source + "*" : c.source;
+                line = formatCandidateRow(idx, r, list_w);
+            }
             const bool hi = (idx == art_pick_.cursor);
             if (hi) wattron(w, COLOR_PAIR(CP_SELECTED) | A_BOLD);
             mvwaddnstr(w, LIST_START + i, 2, line.c_str(), list_w);
@@ -13393,7 +13464,7 @@ void UIManager::drawArtPick() {
             const int ax = BOX_W - ART_W - 3, ay = 4;
             if (art_pick_.preview.ok && art_pick_.preview_for == art_pick_.cursor)
                 drawArtGrid(w, art_pick_.preview, ay, ax,
-                            "artpick|" + art_pick_.images[(std::size_t)art_pick_.cursor].id);
+                            "artpick|" + art_pick_.rowKey(art_pick_.cursor));
             else
                 mvwaddstr(w, ay, ax, "...");
         }
@@ -13411,7 +13482,7 @@ void UIManager::handleArtPickInput(int ch) {
     };
     if (ch == 27) { close(); return; }
     if (ch < 32 && ch != '\n' && ch != '\r') { close(); handleInput(ch); return; }
-    if (art_pick_.images.empty()) {
+    if (art_pick_.rows() == 0) {
         if (ch == '\n' || ch == '\r' || ch == KEY_ENTER) close();
         return;
     }
@@ -13423,7 +13494,7 @@ void UIManager::handleArtPickInput(int ch) {
         return;
     }
     if (ch == KEY_DOWN) {
-        if (art_pick_.cursor < (int)art_pick_.images.size() - 1) {
+        if (art_pick_.cursor < art_pick_.rows() - 1) {
             ++art_pick_.cursor; art_thumb_want_ = art_pick_.cursor;
             art_thumb_settle_ = 0; redraw_needed_.store(true);
         }
@@ -13432,9 +13503,24 @@ void UIManager::handleArtPickInput(int ch) {
     if (ch != '\n' && ch != '\r' && ch != KEY_ENTER) return;
 
     // Chosen. The FULL image is fetched now - the 250px preview is for looking
-    // at, not for embedding.
-    const CoverArt::CaaImage im = art_pick_.images[(std::size_t)art_pick_.cursor];
-    std::vector<std::uint8_t> full = CoverArt::bytesByUrl(im.image_url);
+    // at, not for embedding. Both sources publish a full-size URL, so the two
+    // row kinds differ only in what the choice is CALLED afterwards.
+    std::string url, label;
+    if (!art_pick_.images.empty()) {
+        const CoverArt::CaaImage& im = art_pick_.images[(std::size_t)art_pick_.cursor];
+        url   = im.image_url;
+        label = im.comment.empty()
+              ? (im.type.empty() ? std::string("chosen") : foldForDisplay(im.type))
+              : foldForDisplay(im.comment);
+    } else {
+        const art::Candidate& c = art_pick_.texts[(std::size_t)art_pick_.cursor];
+        url = c.image_url;
+        // The title is what distinguishes these rows, so it is what the confirm
+        // modal should call the choice - "Relish (Expanded Edition)" says which
+        // one was taken in a way "chosen" never could.
+        label = c.title.empty() ? std::string("chosen") : foldForDisplay(c.title);
+    }
+    std::vector<std::uint8_t> full = CoverArt::bytesByUrl(url);
     if (full.empty()) {
         showTrackToast("That image could not be downloaded", "keeping the current art", "");
         close();
@@ -13443,9 +13529,7 @@ void UIManager::handleArtPickInput(int ch) {
     // ONE set of bytes. folder.jpg and every embedded tag come from this, so a
     // choice cannot leave them disagreeing.
     rip_art_bytes_ = std::move(full);
-    rip_art_label_ = im.comment.empty()
-                   ? (im.type.empty() ? std::string("chosen") : foldForDisplay(im.type))
-                   : foldForDisplay(im.comment);
+    rip_art_label_ = label;
     rip_art_key_.clear();          // force the confirm modal to re-render it
     rip_art_render_ = cover::Rendered{};
     showTrackToast("Cover art: " + rip_art_label_, "", "");

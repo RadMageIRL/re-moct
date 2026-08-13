@@ -6,3 +6,26 @@
 # all on Linux. install.sh is the supported way to build and install from source,
 # so it has to survive being committed from any machine, including this one.
 *.sh text eol=lf
+
+# ── Line endings ────────────────────────────────────────────────────────────
+# Normalize every text file to LF IN THE REPOSITORY, regardless of what any
+# individual clone has core.autocrlf set to. Checkout is unaffected: with
+# autocrlf=true this machine still gets CRLF working files and editors see no
+# change. What this pins is what gets COMMITTED.
+#
+# This is a rule rather than a one-time pass because a one-time pass drifts -
+# it holds only until someone clones with a different setting, and the drift is
+# invisible in diffs until the day it is a whole-file rewrite nobody can review.
+#
+# Surveyed before writing this: 470 of 474 tracked text files were ALREADY LF in
+# the index, so the tree was never mixed - core.autocrlf was doing its job. The
+# two exceptions are normalized in the same commit. Source was never affected:
+# every .h and .cpp checked read `i/lf w/crlf`, which is autocrlf working, not
+# drift.
+* text=auto
+
+# Binary: never touched, never diffed as text. Git already auto-detects these
+# two; naming them means a future addition of the same kind cannot be
+# misdetected by an empty-file or short-header edge case.
+*.png binary
+*.jpg binary

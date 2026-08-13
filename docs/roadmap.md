@@ -1085,37 +1085,36 @@ convert / art slices), kept here so they are not re-scoped by accident:
   small standalone fix; the newer convert path already writes the true MIME.
 
 ## Decisions log
-- **BUILT AND CONFIRMED 2026-08-12, ONE STATE UNREACHABLE HERE: bit-perfect
-  playback.** Indicator and verification shipped together. **Three of the four
-  states are hardware-confirmed** by Dos: `-> 48` on a FLAC rip, `-> dsp` with the
-  EQ on and independently with ReplayGain on, and *no indicator at all* on a
-  48 kHz Opus file. **The achieved (`=`) state cannot be reached on any hardware
-  Dos owns** - all 11 WASAPI endpoints report native 48000 and none offers 44100,
-  so the exactness check rejects every 44.1 file and the fallback is the normal
-  path. It needs a DAC that accepts 44.1; nothing short of that will exercise it.
-  **The Opus result is the finding worth keeping:** a 48 kHz lossy file reaches
-  the DAC untouched on this hardware while the lossless 44.1 rips never have,
-  because *lossless* describes the file against its master and *untouched*
-  describes the file against the DAC - different properties sharing a vocabulary.
-  On the built-but-partly-unverified list with the art picker's fallback rows and
-  the C2 SG_IO question - **kept visible on purpose.**
-  **Common code, both platforms - no `#ifdef` anywhere in the feature**, and
-  miniaudio implements `nativeDataFormats` and `shareMode` for ALSA as well as
-  WASAPI. **Confirmed on real Linux hardware 2026-08-12, and the result is the
-  MIRROR IMAGE of Windows:** `48.0 kHz -> 44` on an Opus file, blank on a FLAC -
-  there the rips convert and the Opus does not, here the rips are untouched and
-  the Opus converts. Same code, same library, opposite answers, **which is the
-  clearest demonstration that this reports the output device rather than the
-  files.**
-  **What is left unverified is now one specific test, and it looks reachable.**
-  The `=` state has never fired anywhere: on Windows it cannot, since no endpoint
-  offers 44.1. But the Linux box's endpoint evidently runs at 44.1 (a 44.1 FLAC
-  shows no mismatch there), so **setting `bit_perfect=1` on that machine and
-  playing a FLAC is expected to produce `=`** - the first real-hardware exercise
-  of the exactness check. Untested only because the live runs so far were with the
-  flag off. Under WSLg's PulseAudio the exclusive attempt already returns EXACT,
-  so the mechanism is proven; what that run could not prove was a real DAC behind
-  it, and the Linux box supplies one.
+- **DONE, FULLY VERIFIED ON HARDWARE (2026-08-13): bit-perfect playback.**
+  Indicator and verification shipped together, and **all four states have now
+  fired on real hardware**: `-> 48` on a FLAC rip, `-> dsp` with the EQ on and
+  independently with ReplayGain on, *no indicator* on a 48 kHz Opus file, and
+  **`=` on a 44.1 FLAC on the Linux box with `bit_perfect=1`** - the exactness
+  check confirming an untouched path to a real DAC. **This is off the
+  unverified list**, which is now two: the art picker's fallback rows and the
+  C2 SG_IO question.
+  **Two findings worth keeping, neither of them the feature.**
+  **1 - The two machines answer oppositely.** Windows: rips read `44.1 kHz -> 48`,
+  Opus blank. Linux: rips blank, Opus reads `48.0 kHz -> 44`. Same code, same
+  library, inverted - **because this reports the output device, not the
+  collection.** On the Windows box a lossy file reached the DAC untouched while
+  the lossless rips never did, since *lossless* describes the file against its
+  master and *untouched* describes it against the DAC: different properties
+  sharing a vocabulary.
+  **2 - The check is the feature, and it earned that.** `ma_device_init` with
+  exclusive share mode returns success while silently converting - measured, an
+  exclusive 44100/f32 request comes up s16/48000 on the Windows hardware. Only
+  comparing `internalFormat`/`internalChannels`/`internalSampleRate` after init
+  means anything. `docs/lessons.md` carries it as the AccurateRip shape.
+  **Common code, no `#ifdef` anywhere in the feature**; miniaudio implements
+  `nativeDataFormats` and `shareMode` for ALSA as well as WASAPI.
+  **Scope limit to remember:** the mismatch indicator compares **rate only**, so a
+  blank means the rates match, not that nothing was touched - format and channel
+  conversion can still happen underneath. Only `=` checks all three.
+  **Not delivered, and not a defect:** a 48 or 96 kHz lossless file is still
+  decoded to 44.1 before the attempt, so it cannot reach `=` yet. Native-rate
+  decoding for non-44.1 lossless is the follow-up, and it is the part that would
+  reach `open_decoder`'s forced format - and therefore the two scars.
   Design and measurements: `docs/DESIGN-bit-perfect.md`.
 - **SCOPE (2026-08-12): bit-perfect playback, LOSSLESS LOCAL FILES ONLY.**
   FLAC, WavPack, WAV. Everything else is out **by scope, not by workaround**: lossy

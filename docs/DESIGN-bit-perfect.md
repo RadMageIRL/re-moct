@@ -321,7 +321,15 @@ indicator actually reports: **a property of the output device, not of the collec
 retires any lingering reading of the Windows result as "lossless is somehow disadvantaged" — the
 Windows endpoints simply happen to be 48 kHz, and endpoints that happen to be 44.1 invert it.
 
-**One test remains and it is now expected to succeed rather than expected to be impossible.** The
-Linux endpoint runs at 44.1 (a 44.1 FLAC shows no mismatch there), so `bit_perfect=1` on that machine
-playing a FLAC should produce `=` — the first firing of the exactness check against a real DAC. Every
-live run so far has been with the flag off, which is why it has not happened yet.
+**That last test was run on 2026-08-13 and it fired.** `bit_perfect=1` on the Linux box, playing a
+44.1 FLAC, produced **`=`** — the exactness check confirming an untouched path to a real DAC, on real
+hardware, for the first time. **All four states are now hardware-verified and nothing about this
+feature is left unexercised**, save the follow-up named below.
+
+**What that closes, precisely:** the exclusive attempt, the `internal*` comparison, the claim, and the
+fallback are all now proven against real audio hardware on both platforms. **What it does not
+close:** a 48 or 96 kHz lossless file is still decoded to 44.1 before the attempt, so it fails the
+check and falls back like anything else. Native-rate decoding for non-44.1 lossless remains the
+follow-up — and it is the piece that would reach `open_decoder`'s forced format, and therefore the
+two scars this scope was built to avoid. **That is a separate slice with its own declaration to
+make**, not an omission in this one.

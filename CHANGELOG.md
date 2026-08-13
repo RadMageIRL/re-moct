@@ -57,12 +57,19 @@ that are not true.
   nothing said so. The status line shows it as `44.1 kHz -> 48`. Nothing about the
   sound has changed; what changed is that you can see it. It appears whether or not
   you turn anything on, because it is true either way.
-  It is worth checking on your own machine, because the answer is often not the one
-  you would guess. On the machine this was developed on, all eleven outputs - the
-  USB mixer, the monitors, the headset - run at 48 kHz and none accepts 44.1, so
-  every CD rip had been quietly converted for years. A 48 kHz Opus file on the same
-  machine shows nothing at all, because it already matches: **the lossy file was
-  reaching the hardware untouched while the lossless ones never had.**
+  It is worth checking on your own machine, because the answer depends on the
+  hardware rather than on the music. The same library was played on two machines
+  during development and gave **opposite** answers. On the Windows box every one of
+  its eleven outputs runs at 48 kHz and none accepts 44.1, so the CD rips read
+  `44.1 kHz -> 48` and had been quietly converted for years, while a 48 kHz Opus
+  file showed nothing at all because it already matched. On the Linux box it is the
+  exact reverse: the FLACs are untouched and the Opus reads `48.0 kHz -> 44`. Same
+  files, same code, opposite results - **because this is a fact about your output
+  device, not about your collection.**
+  **A blank means the rates match, not that nothing was touched.** Sample format
+  and channel count can still be converted underneath without the rate changing,
+  and the indicator does not check those. Only the `=` below claims that nothing at
+  all was altered.
 
 - **Bit-perfect playback, for people who have the hardware for it** - a
   `bit_perfect=1` line in `remoct.conf`, off by default and deliberately with no

@@ -305,3 +305,23 @@ correctly, the rate matches — while the shared path still converts f32 to s16.
 absence of `-> NN` means *the rate matches*, not *nothing was touched*. **Only `=` claims exactness**,
 and it is the only state that checks format and channels as well. If the rate indicator ever needs to
 mean more than rate, that is a different indicator and should be named differently.
+
+### REAL LINUX HARDWARE, 2026-08-12 — the mirror image
+
+Dos ran it on a real Linux machine. **The results invert the Windows ones exactly:**
+
+| | Windows box | Linux box |
+|---|---|---|
+| 44.1 FLAC rip | `44.1 kHz -> 48` — converted | **blank** — rate matches |
+| 48 kHz Opus | **blank** — rate matches | `48.0 kHz -> 44` — converted |
+
+**Same code, same library, opposite answers.** On one machine the lossless files are the converted
+ones; on the other it is the lossy file. That is the cleanest possible statement of what the
+indicator actually reports: **a property of the output device, not of the collection.** It also
+retires any lingering reading of the Windows result as "lossless is somehow disadvantaged" — the
+Windows endpoints simply happen to be 48 kHz, and endpoints that happen to be 44.1 invert it.
+
+**One test remains and it is now expected to succeed rather than expected to be impossible.** The
+Linux endpoint runs at 44.1 (a 44.1 FLAC shows no mismatch there), so `bit_perfect=1` on that machine
+playing a FLAC should produce `=` — the first firing of the exactness check against a real DAC. Every
+live run so far has been with the flag off, which is why it has not happened yet.

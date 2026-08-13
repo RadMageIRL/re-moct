@@ -1101,12 +1101,21 @@ convert / art slices), kept here so they are not re-scoped by accident:
   the C2 SG_IO question - **kept visible on purpose.**
   **Common code, both platforms - no `#ifdef` anywhere in the feature**, and
   miniaudio implements `nativeDataFormats` and `shareMode` for ALSA as well as
-  WASAPI. Measured on Linux under WSLg's PulseAudio: the exclusive attempt comes
-  back EXACT there, so **the `=` state is reachable on Linux and the check does
-  fire** - but that endpoint is a virtual RDP sink with no DAC behind it, so it
-  verifies the mechanism and **not** real Linux audio hardware. **That leaves
-  Linux-on-real-hardware as the unverified half**, which is a smaller gap than
-  "Windows-only" and belongs on this list rather than reading as unimplemented.
+  WASAPI. **Confirmed on real Linux hardware 2026-08-12, and the result is the
+  MIRROR IMAGE of Windows:** `48.0 kHz -> 44` on an Opus file, blank on a FLAC -
+  there the rips convert and the Opus does not, here the rips are untouched and
+  the Opus converts. Same code, same library, opposite answers, **which is the
+  clearest demonstration that this reports the output device rather than the
+  files.**
+  **What is left unverified is now one specific test, and it looks reachable.**
+  The `=` state has never fired anywhere: on Windows it cannot, since no endpoint
+  offers 44.1. But the Linux box's endpoint evidently runs at 44.1 (a 44.1 FLAC
+  shows no mismatch there), so **setting `bit_perfect=1` on that machine and
+  playing a FLAC is expected to produce `=`** - the first real-hardware exercise
+  of the exactness check. Untested only because the live runs so far were with the
+  flag off. Under WSLg's PulseAudio the exclusive attempt already returns EXACT,
+  so the mechanism is proven; what that run could not prove was a real DAC behind
+  it, and the Linux box supplies one.
   Design and measurements: `docs/DESIGN-bit-perfect.md`.
 - **SCOPE (2026-08-12): bit-perfect playback, LOSSLESS LOCAL FILES ONLY.**
   FLAC, WavPack, WAV. Everything else is out **by scope, not by workaround**: lossy

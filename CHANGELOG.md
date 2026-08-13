@@ -50,6 +50,14 @@ that are not true.
   it, so a book you have picked up forty times would outrank a song you love, and
   the shimmer would be telling you something untrue.
 
+- **The About screen says where the project lives.** Press `A` and it now shows
+  `github.com/RadMageIRL/re-moct` and `re-moct.app`, along with the licence.
+  Terminals do not make links clickable, so both are written to be read and typed:
+  no `https://` prefix, which costs eight columns and tells you nothing you did not
+  already know. They sit directly under the feature summary rather than at the very
+  bottom, so a short window drops the "press ? for keybindings" hint before it drops
+  the address of the project - the hint tells you to press a key you can just press.
+
 ### Changed
 
 - **Housekeeping with nothing to see, noted because it affects anyone working from
@@ -86,6 +94,12 @@ that are not true.
   live.** After recovering, the leftover buffered audio was played again first, so
   you heard a few seconds over twice before catching up. That audio is now used
   once, while reconnecting, and discarded when live resumes.
+
+- **The About screen names the right graphics library on Windows.** It said
+  "ncurses" on both platforms; the Windows build has not used ncurses since 1.6.1
+  and renders through PDCursesMod instead. It now says so - which is also the
+  credit PDCursesMod is owed, since RE-MOCT carries its own patches against it and
+  one of those has been contributed back upstream.
 
 - **The rip log no longer says your drive cannot do something it was never asked
   to do.** Every rip log carried the line `C2 support : no`, and the screen said

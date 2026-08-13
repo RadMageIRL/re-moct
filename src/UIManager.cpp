@@ -5046,7 +5046,18 @@ void UIManager::drawAbout() {
     static const Line info[] = {
         { "Music On Console Terminal",      true  },
         { "",                               false },
-#ifdef _WIN32
+        // The curses library named here is the one actually LINKED. It said
+        // "ncurses" on both platforms, which was false for every shipped Windows
+        // build: that is PDCursesMod wingui, vendored, and REMOCT_PDCURSES is the
+        // same switch CMake gates the link on. Naming it is also the whole of the
+        // PDCursesMod credit - RE-MOCT vendors it, patches it (refresh.c, the
+        // fullwidth-glyph abort) and has one fix upstream as #386, which earns a
+        // mention; a separate credit line would cost a row to say something this
+        // line can say by being correct. The other dozen dependencies stay
+        // unnamed, as they already were.
+#if defined(_WIN32) && defined(REMOCT_PDCURSES)
+        { "Version v" REMOCT_VERSION "-win  |  C++20  |  PDCursesMod  |  miniaudio  |  TagLib", false },
+#elif defined(_WIN32)
         { "Version v" REMOCT_VERSION "-win  |  C++20  |  ncurses  |  miniaudio  |  TagLib", false },
 #else
         { "Version v" REMOCT_VERSION "-linux  |  C++20  |  ncurses  |  miniaudio  |  TagLib", false },
@@ -5057,20 +5068,42 @@ void UIManager::drawAbout() {
         { "crossfade, visualizer, lyrics, BPM detection and bookmarks.", false },
         { "goto path navigation with tab complete", false },
         { "",                               false },
+        // ABOVE "Press ?" ON PURPOSE. The loop below stops at the pane's last row,
+        // so whatever sits lowest is what a short terminal drops first - and the
+        // repo link is the thing this screen was missing, while the keybinding
+        // hint is discoverable by pressing the key it names.
+        //
+        // No "https://" on either: it costs 8 columns for no information, the
+        // pane is only HALF the screen wide, and it would make these two
+        // inconsistent since re-moct.app has no scheme. Both are here to be read
+        // and typed, and both work typed as they stand.
+        { "github.com/RadMageIRL/re-moct",  false },
+        { "re-moct.app  |  MIT licensed",   false },
+        { "",                               false },
         { "Press ? for keybindings",        false },
     };
 
     int row = logo_rows + 3;
     for (const auto& line : info) {
         if (row >= rows - 1) break;
-        int tx = std::max(1, (cols - (int)strlen(line.text)) / 2);
+        // Centre by DISPLAY COLUMNS, not bytes. Every line here is ASCII today so
+        // the two agree, but this pane shares its width machinery with the rest of
+        // the UI and byte length is the trap that produced the 1.6.1 fold work.
+        int tx = std::max(1, (cols - dispWidth(line.text)) / 2);
+        // BOUNDED. mvwaddstr wraps at the right margin rather than stopping, so a
+        // line wider than the pane spilled onto the row below and pushed the
+        // layout apart. That is reachable today and not new: the pane is HALF the
+        // screen, so the version line needs a ~134-column terminal to fit and the
+        // logo ~128. Bounding turns a wrap into a clean cut at the border.
+        const int room = cols - tx - 1;
+        if (room <= 0) { ++row; continue; }
         if (line.bold) {
             wattron(w, COLOR_PAIR(CP_TITLE) | A_BOLD);
-            mvwaddstr(w, row, tx, line.text);
+            mvwaddnstr(w, row, tx, line.text, room);
             wattroff(w, COLOR_PAIR(CP_TITLE) | A_BOLD);
         } else if (line.text[0]) {
             wattron(w, COLOR_PAIR(CP_DIM) | A_BOLD);
-            mvwaddstr(w, row, tx, line.text);
+            mvwaddnstr(w, row, tx, line.text, room);
             wattroff(w, COLOR_PAIR(CP_DIM) | A_BOLD);
         }
         ++row;

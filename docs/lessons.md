@@ -371,6 +371,19 @@
   `art_candidates_test` would need folded fixtures too. That is a slice of its
   own. **If it ever bites a real title, it becomes that slice** rather than a
   surprise, which is the only reason this entry exists.
+- **A function whose name describes half of what it does will be reused for the
+  half it does not.** `StreamSource::ringClear()` read as "flush the ring". It
+  also snapped the now-playing label and dropped the scheduled-publish queue -
+  correct for the live-edge re-pin it was written for, and invisible from the call
+  site. Reusing it on the network-loss reconnect therefore shipped a worse bug
+  than the one being fixed: `np_pub_q_` is fed only by the iHeart path, so on ICY
+  nothing advances `np_published_`, and setting it made the station title freeze
+  at whatever played before the drop **for the rest of the session**.
+  `icy_pipeline_test` caught it, reproducibly. **The fix was to split the name, not
+  to add a flag**: `ringFlush()` is the ring half and `ringClear()` is that plus the
+  label snap, so the re-pin call sites are untouched and byte-identical. **When
+  reaching for an existing helper on a new path, read its body, not its name** -
+  and if the body does two things, that is the finding.
 - **Before changing an output string, grep the docs for it - output strings are
   sometimes acceptance criteria.** Changing the rip log's `C2 support: no` turned
   up `docs/phase3-slice6-design.md`, where that exact line is one of the fields the

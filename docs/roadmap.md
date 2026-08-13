@@ -1085,6 +1085,28 @@ convert / art slices), kept here so they are not re-scoped by accident:
   small standalone fix; the newer convert path already writes the true MIME.
 
 ## Decisions log
+- **HLS segment resume on reconnect: reported and DECLINED (2026-08-12).** After a
+  network drop, `hlsConnect()` discards `hls_ = HlsState{}` as its first act, so
+  `last_seq` - the highest `EXT-X-MEDIA-SEQUENCE` consumed - is never consulted and
+  every reconnect re-anchors to the live edge. The segment-oriented resume HLS
+  makes possible is therefore **available in principle and not implemented**, and
+  that is now a decision rather than an omission.
+  **The band argument is the reason, and it is what stops this being re-derived:**
+  the ring cushion already covers outages up to roughly six seconds *invisibly*
+  (the drain landed 2026-08-12), and an HLS live window is only about three
+  segments at `EXT-X-TARGETDURATION` - roughly thirty seconds - beyond which the
+  server has nothing left to resume into. **So resume can only pay between about
+  6 s and 30 s.** Inside even that band it buys continuity of *content*, not of
+  *time*: the listener falls behind live by the length of the outage and stays
+  behind, on a live radio stream, which is arguably not what they want.
+  **The placement problem is the second reason.** `hlsConnect` is shared by first
+  connect, ad re-pin and network reconnect, and only the third wants this - so it
+  needs a reason-for-connecting parameter that does not exist, threaded through the
+  re-pin machinery, which is off limits by standing ruling.
+  **Reopen only on new information:** a measured complaint about the 6-30 s band
+  specifically, or a change that gives `hlsConnect` a caller-intent parameter for
+  some other reason. Recon: `docs/RECON-stream-network-recovery.md` S-R3; proposal
+  and the rest of the slice: `docs/DESIGN-stream-recovery.md`.
 - **OPEN VERIFICATION: the art picker's iTunes/Deezer rows have never run against
   a real disc (2026-08-12). Shipped gated, not live-tested.**
   **This is open, not decided.** The feature is built, both toolchains green, and

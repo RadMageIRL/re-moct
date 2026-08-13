@@ -52,6 +52,30 @@ that are not true.
 
 ### Fixed
 
+- **A radio stream that dies now stops and says so, instead of looking like it is
+  still loading.** When the network dropped for good, RE-MOCT tried to reconnect
+  ten times and then quietly gave up - but nothing on screen changed. The bar kept
+  saying `[BUFFERING]`, the scanner kept sweeping, and the player still thought it
+  was playing, so a dead stream was indistinguishable from a slow one and stayed
+  that way until you did something about it. It now stops properly and tells you
+  what happened. The reason was always there; it just had no way of reaching you.
+  **If you were recording at the time, the recording is now finished off properly
+  as well** - previously it was left open and unfinalized, because nothing ever
+  told it the stream was gone.
+
+- **Short network drops are now usually silent - as in, you do not hear them.**
+  RE-MOCT keeps several seconds of audio buffered ahead of what you are listening
+  to, and it was throwing that away the instant it noticed a problem: playback went
+  quiet immediately, before the reconnect had even been attempted. It now plays
+  what it already has while it reconnects behind the scenes, so a brief drop can
+  pass without interrupting the music at all. `[BUFFERING]` is now honest too - it
+  appears when the audio really has run out, not the moment something went wrong.
+
+- **Reconnecting no longer replays the last few seconds before jumping back to
+  live.** After recovering, the leftover buffered audio was played again first, so
+  you heard a few seconds over twice before catching up. That audio is now used
+  once, while reconnecting, and discarded when live resumes.
+
 - **The rip log no longer says your drive cannot do something it was never asked
   to do.** Every rip log carried the line `C2 support : no`, and the screen said
   *"C2 not supported by drive"*. Both were untrue about the drives here: both of

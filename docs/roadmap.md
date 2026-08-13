@@ -1085,6 +1085,67 @@ convert / art slices), kept here so they are not re-scoped by accident:
   small standalone fix; the newer convert path already writes the true MIME.
 
 ## Decisions log
+- **C2 error pointers: recon'd and DECLINED (2026-08-12). Do not re-open without
+  new information.** Both drives in hand support C2 and one was proven to deliver
+  it - measured, not assumed: MODE SENSE page 2Ah and GET CONFIGURATION 001Eh both
+  advertise it on the ASUS SDRW-08U7M-U and the HL-DT-ST GHD3N, and READ CD (0xBE)
+  with flag byte 0x12 issued via SPTI returned 2646 bytes/sector on the GHD3N. The
+  same drive, disc and sector through `IOCTL_CDROM_RAW_READ` with a 2646-byte
+  buffer returned 2352, because that IOCTL has no C2 field - so `probeC2` has
+  always returned false on Windows and the rip log's *"C2 not supported by drive"*
+  names the hardware for a limitation of the path. **That is now a stated fact in
+  the source, not a discovery waiting to be re-made** (`readRaw` in
+  `src/platform/win/CdIoWin.cpp`, and the seam contract in `include/core/ICdIo.h`
+  - both comments said the opposite until this date and were corrected here).
+  **Declined anyway, for three reasons that are independent of the above:** no
+  reference ripper wants it (cdparanoia and whipper decline C2 outright; EAC's own
+  guidance is to leave it **off** even on capable drives, because no test can
+  establish that a drive reports *all* uncorrectable errors); **no test material**
+  (every disc in hand is in good condition, so the error paths cannot be
+  exercised, and buying a damaged disc to test a feature nobody asked for is the
+  wrong order); and **no complaint driving it** - it was raised as a question, not
+  a want. The dead remnants (`total_c2_errors`, `RipProgress::using_c2`) were
+  deleted the same day, and the rip log stopped reporting a drive failure it
+  never tested for - **on Windows it now says "not queried", the same shape as
+  CD-S4's `ARStatus::NotQueried`** ("never asked" is not "asked, and no"); the
+  Linux text is character-identical to what it always was. The working C2 request
+  on the SG_IO side (`CdbSgIo.h`, CDB byte 9) is untouched and still correct.
+  **Reopen only on new information: a damaged disc to test against, or a reference
+  implementation changing its mind.** Full recon in the untracked
+  `docs/RECON-c2-capability.md` / `docs/RECON-c2-integration.md`.
+  **One question the decline does NOT close - see the next entry.**
+- **OPEN HARDWARE QUESTION: does the GHD3N answer C2 over SG_IO? Unverified, and
+  the reasoning that said it was safe rested on something false (2026-08-12).**
+  **This is open, not decided.** It sits here because it is a consequence of the
+  C2 recon above and this is where a future session already has to look - but it
+  is not covered by that decline, and declining C2 does not answer it.
+
+  `docs/phase3-slice6-design.md` §2 accepted an honest limit on the premise that
+  **"GHD3N is non-C2 (baseline prints 'C2 support: no')"**. That premise was never
+  a drive fact. Both platforms produced `probe false`, and the doc read the
+  agreement as two mechanisms converging on a property of the drive:
+
+  - **Windows arm - now known to prove nothing.** `IOCTL_CDROM_RAW_READ` discards
+    `want_c2`, so `got == 2352` was guaranteed for any drive, C2-capable or not.
+  - **Linux arm - unverified.** It claims byte 9 = `0x12` produced CHECK CONDITION
+    *because the drive is non-C2*. The drive is **not** non-C2: it advertises C2 on
+    both MMC queries and delivered 2646 bytes to a direct `READ CD` over SPTI.
+
+  **Why it matters:** if the CHECK CONDITION had some other cause, then on real
+  Linux with this drive `probeC2` returns **true**, `use_c2` is **true**, and the
+  rip runs the C2 de-interleave in `readSectors` - **a path that has never executed
+  on hardware on any platform.** It is reachable code reached by a real
+  configuration, not dead code. Nothing depends on it while C2 stays declined and
+  no Linux box here has a drive, which is exactly why it is recorded rather than
+  chased.
+
+  **What would settle it, and nothing less will:** RE-MOCT on a real Linux install
+  with the GHD3N attached (not a hypervisor's virtual CD - see the lessons.md
+  "CD transport / SG_IO" entry on why a virtualized drive is a different drive).
+  Run a rip and read one line: `C2 support  : yes` means the premise was wrong and
+  the de-interleave is live and untested; `: no` means it holds, and the *reason*
+  should then be captured from the sense data rather than assumed again. Either
+  answer closes this; neither can be reached from Windows or from WSL as it stands.
 - **Hidden-audio survey closed: two of three cases need no build (2026-07-24).**
   Between-tracks gap audio is already captured correctly as append-to-previous
   (the dBpoweramp/AccurateRip convention, verified byte-exact on *Hello Nasty*),

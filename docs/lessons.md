@@ -338,6 +338,40 @@
   `cd_drive_letter_` (one source of truth instead of two that can desync). "The brief
   is wrong" is a valid, expected outcome; where the tree and the brief disagree, the
   tree wins.
+- **"Untested" and "untestable without a production change" are different findings,
+  and collapsing them hides the real one.** The C2 de-interleave in `CDRipper.cpp`
+  reads as an ordinary coverage gap. It is not: the function is file-`static` in a
+  TU no test links against, and the one CD fake in the suite drives `CDSource`,
+  which passes `want_c2=false` unconditionally. **No test-only change can reach it** -
+  covering it means changing production code first. Before writing "untested" in a
+  report, check reachability; the answer changes what anyone can do about it.
+- **Query the device, never infer capability from the model number - and take more
+  than one statement.** The C2 recon collected three independent facts (the MODE
+  SENSE bit, the GET CONFIGURATION feature descriptor, and an actual 2646-byte
+  delivery) and the defect was located in the **disagreement between the drive and
+  the OS path**, not in any one of them. Either statement alone produces a
+  confident wrong answer: the advertised bit alone says "supported" (true, and
+  useless); our own `probeC2` alone says "not supported" (false, **and blames the
+  drive for a dropped parameter**). Keep "can the device" and "does our code ask"
+  as separate questions - collapsing them is what put a wrong sentence in the rip
+  log for the life of the feature.
+- **Before changing an output string, grep the docs for it - output strings are
+  sometimes acceptance criteria.** Changing the rip log's `C2 support: no` turned
+  up `docs/phase3-slice6-design.md`, where that exact line is one of the fields the
+  Linux SG_IO port had to match **byte-identically against the Windows baseline**.
+  The gate was closed, so nothing broke - but the same grep showed the doc asserts
+  *"GHD3N is non-C2"*, which is false, and that false premise is what its accepted
+  limit rests on. **The grep that protects the change is also the one that audits
+  the reasoning behind it.**
+- **A `constexpr`-gated message is proven by the binary, not the source.** `strings`
+  each build and confirm the other platform's claim is absent: source shows intent,
+  the fold is what ships. Cheap, and it catches a gate that compiled but did not
+  select.
+- **A warning inventory built from compiler output under-reports its own subject.**
+  `total_c2_errors` (a local) warned; `RipProgress::using_c2` - the same dead store,
+  same feature, written twice and read nowhere - did not, because it is a struct
+  field and GCC does not track those. Both were deleted on 2026-08-12. A sweep
+  scoped to "what the compiler flags" is a sample, not a census.
 - **Additive-only.** Full-file replacements built on a stale baseline silently drop
   prior work. Build on the files Dos uploads in the same turn; prefer tight diffs when
   the base isn't re-uploaded.
@@ -479,6 +513,16 @@
   dump code before crying "mismatch": remoct packs samples as `(R<<16)|L`
   (CDRipper.cpp), so a naive `L,R` printf looks word-swapped though the bytes are
   identical.
+- **`IOCTL_CDROM_RAW_READ` cannot request C2, and buffer size is not a request
+  (measured 2026-08-12).** `RAW_READ_INFO` has no C2 field; `TrackMode=CDDA`
+  delivers 2352 B/sector whatever `out_size` says. On the GHD3N, one probe run,
+  same disc and sector: READ CD (0xBE) flag byte `0x12` **via SPTI** returned 2646
+  bytes; the IOCTL with a 2646-byte buffer returned 2352. So `ICdDevice::readRaw`'s
+  `want_c2` is honoured on SG_IO (`CdbSgIo.h`, CDB byte 9 = `0x12`) and **discarded
+  on Windows** - `CDRipper::probeC2` has always returned false there, and the rip
+  log's *"C2 not supported by drive"* is about the path, not the drive. **C2 was
+  recon'd and declined**; see the roadmap Decisions log for why, before proposing
+  anything that depends on it.
 - **usbipd attach needs a RUNNING WSL2 distro** ("There is no WSL 2 distribution
   running") - start a background keep-alive (`wsl -d Debian -e bash -lc "sleep N"`)
   first, then `"C:\Program Files\usbipd-win\usbipd.exe" attach --wsl --busid 4-1`.

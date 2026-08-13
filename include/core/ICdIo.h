@@ -66,11 +66,12 @@ public:
     // Read `sectors` raw CDDA sectors starting at `lba` into out (out_size bytes),
     // reporting the byte count actually delivered in `got`. want_c2 requests
     // 2352 audio + 294 C2 error bytes per sector, interleaved [audio][c2] — the
-    // SCSI READ CD layout. The flag is advisory on Windows (IOCTL_CDROM_RAW_READ
-    // returns C2 iff the drive supports it and out_size is 2646/sector — the
-    // baseline's exact call shape, buffer passed through untouched); it exists so
-    // the SG_IO impl can set the CDB error-field bits, which buffer size alone
-    // cannot express. Callers detect C2 delivery from `got`, as the baseline did.
+    // SCSI READ CD layout. Honoured by the SG_IO impl, which sets the CDB
+    // error-field bits (byte 9 = 0x12). DISCARDED by the Windows impl:
+    // IOCTL_CDROM_RAW_READ has no C2 field and out_size does not request one —
+    // measured, not assumed (see readRaw in src/platform/win/CdIoWin.cpp). So
+    // `got` reports what arrived, never what was asked for, and on Windows it is
+    // 2352/sector on every drive, C2-capable or not.
     virtual bool readRaw(uint32_t lba, uint32_t sectors, bool want_c2,
                          void* out, std::size_t out_size, std::size_t& got) = 0;
 

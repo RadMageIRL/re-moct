@@ -2948,12 +2948,17 @@ void CDRipper::worker(std::string          drive_letter,
         if (cb) { RipProgress p; p.state=RipState::Error;
                   p.status_msg="Rip error -- check disc."; cb(p); }
     } else {
-        // Build summary
-        int ar_v2=0, ar_v1=0, ar_none=0;
+        // Build summary. Only the two MATCHED counts, because only they are
+        // said: the completion message reports v2 and v1 against sel_count and
+        // has never named a third number. A no-match tally was counted here and
+        // discarded - not the same variable as the ar_none in the log block
+        // above, which IS printed and stays. The log is where the fuller
+        // accounting belongs, and it already draws CD-S4's distinction between
+        // "asked, no match" and "never asked" that this loop cannot.
+        int ar_v2=0, ar_v1=0;
         for (auto& r : ar_results) {
             if (r.status==ARStatus::Matched_v2) ++ar_v2;
             else if (r.status==ARStatus::Matched_v1) ++ar_v1;
-            else ++ar_none;
         }
         state_.store(RipState::Done);
         if (cb) {

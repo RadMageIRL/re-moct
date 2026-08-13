@@ -166,6 +166,14 @@ public:
     bool     takeStreamConnected() { return stream_just_connected_.exchange(false); }
     bool     takeStreamFailed()    { return stream_just_failed_.exchange(false); }
     bool     streamBuffering()   const { return stream_plugin_.buffering(); }
+    // A stream that was playing and has now failed for good. NOT a latch: it is
+    // a state, and stop() clears it by leaving stream mode - a latch would need
+    // clearing rules that stop() already provides. Deliberately not folded into
+    // streamBuffering(): that marker means "wait a moment", and a dead stream is
+    // the one thing it must never be able to mean.
+    bool     streamLost()        const { return stream_mode_.load()
+                                             && !stream_plugin_.lastError().empty(); }
+    std::string streamLastError() const { return stream_plugin_.lastError(); }
     std::string streamNowPlaying() const { return stream_plugin_.nowPlaying(); }
     std::string streamArtUrl()     const { return stream_plugin_.currentArtUrl(); } // iHeart digital cover ("" -> use logo)
     std::string streamUrl()      const { return stream_plugin_.url(); }   // URL actually streaming

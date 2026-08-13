@@ -45,7 +45,7 @@ bool StreamSource::open(const std::string& url) {
     close();                       // ensure any prior session is fully torn down
 
     url_ = url;
-    last_error_.clear();
+    setLastError("");
     setStop(false);                // clears stop_ + the HTTP-cancel mirror
     paused_.store(false);
     prebuffered_.store(false);
@@ -73,7 +73,7 @@ bool StreamSource::open(const std::string& url) {
     }
 
     if (!connect()) {              // initial connection on the caller thread
-        last_error_ = "connection failed";
+        setLastError("connection failed");
         slog("open: connect FAILED url=%s", url.c_str());
         disconnect();
         return false;
@@ -1663,7 +1663,7 @@ ma_result StreamSource::onSeek(ma_decoder* /*dec*/, ma_int64 /*offset*/, ma_seek
 
 void StreamSource::producerWorker() {
     if (!initDecoder()) {
-        last_error_ = "decoder init failed";
+        setLastError("decoder init failed");
         slog("producer: initDecoder FAILED");
         disconnect();
         playing_.store(false);
@@ -1723,7 +1723,7 @@ void StreamSource::producerWorker() {
         disconnect();
 
         if (++reconnect_attempts > 10) {
-            last_error_ = "stream lost (max reconnect attempts)";
+            setLastError("stream lost (max reconnect attempts)");
             playing_.store(false);
             break;
         }
@@ -1743,7 +1743,7 @@ void StreamSource::producerWorker() {
 void StreamSource::producerWorkerAAC() {
     aac_dec_ = aacDecoder_Open(TT_MP4_ADTS, 1);
     if (!aac_dec_) {
-        last_error_ = "aacDecoder_Open failed";
+        setLastError("aacDecoder_Open failed");
         slog("producerAAC: aacDecoder_Open FAILED");
         disconnect();
         playing_.store(false);
@@ -1787,7 +1787,7 @@ void StreamSource::producerWorkerAAC() {
                 tee_discont_.store(true, std::memory_order_relaxed);   // copy tee resyncs
                 disconnect();
                 if (++reconnect_attempts > 10) {
-                    last_error_ = "stream lost (max reconnect attempts)";
+                    setLastError("stream lost (max reconnect attempts)");
                     playing_.store(false);
                     break;
                 }

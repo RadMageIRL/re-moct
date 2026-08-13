@@ -148,7 +148,19 @@ public:
     // (double per core::ISource; the stored value is whole seconds.)
     double positionSec() const override { return (double)position_sec_.load(); }
     // Last error string (set on hard failure). Empty == none.
-    std::string lastError() const { return last_error_; }
+    // "" while healthy; non-empty ONLY after a terminal failure (connect refused,
+    // decoder init, or the reconnect budget exhausted). open() clears it, so
+    // non-empty while the host is in stream mode means the stream is DEAD - not
+    // slow, not retrying. That distinction is the one buffering() cannot make,
+    // and it is why this is the signal the host polls for a lost stream.
+    //
+    // Guarded: written by the producer thread, read by the UI thread. It was an
+    // unsynchronised std::string until the host started reading it - the kind of
+    // race that survives every test and shows up as a corrupt toast once a month.
+    std::string lastError() const {
+        std::lock_guard<std::mutex> lk(error_mtx_);
+        return last_error_;
+    }
 
     // ── core::ISource (Phase 2 slice A) ─────────────────────────────────────
     // A live stream: not seekable, no known end/duration. Declared, not faked.
@@ -288,7 +300,12 @@ private:
     static std::string hlsResolveUrl(const std::string& base, const std::string& ref);
 
     std::string             url_;
+    mutable std::mutex      error_mtx_;        // guards last_error_ (producer writes, UI reads)
     std::string             last_error_;
+    void setLastError(const std::string& e) {  // the ONLY writer; every site goes through it
+        std::lock_guard<std::mutex> lk(error_mtx_);
+        last_error_ = e;
+    }
 
     // ICY de-interleaving state (producer thread)
     int                     icy_metaint_ = 0;   // bytes between metadata blocks (0 = none)

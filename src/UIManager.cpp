@@ -1629,6 +1629,23 @@ void UIManager::run() {
         if (audio_.takeStreamFailed())
             showTrackToast("Radio stream connect FAILED", "", "");
 
+        // A stream that was playing and has now died for good. The producer
+        // exhausts its reconnect budget and returns; nothing else moved, so the
+        // app sat in stream mode showing [BUFFERING] forever - indistinguishable
+        // from a stream that is merely slow, which is the one thing that marker
+        // must never be able to mean. Poll here rather than latch: takeStreamFailed
+        // is the CONNECT worker's latch and giving it a second meaning would make
+        // its name untrue.
+        //
+        // stop() rather than bespoke teardown, and the order matters: its first
+        // act is endRecording(), so a stream that dies mid-recording finalizes the
+        // capture instead of leaving the file open forever.
+        if (audio_.streamLost()) {
+            const std::string why = audio_.streamLastError();
+            audio_.stop();                       // clears stream mode -> this cannot re-fire
+            showTrackToast("Stream lost", why, "");
+        }
+
         // Windows-console size poll + forced ~80ms repaint. This whole heartbeat is
         // a Windows-ONLY workaround: ConPTY (Windows Terminal/conhost) doesn't
         // deliver KEY_RESIZE reliably, so we poll the window rect and force a full

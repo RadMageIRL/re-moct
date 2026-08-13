@@ -221,9 +221,8 @@ The `=` and `-> dsp` states stay gated, because a claim is only meaningful about
 ruling said lossy files are "unchanged in every respect", and also that a rate mismatch is reported
 always. Those collide for a 44.1 MP3. I read "unchanged" as *playback and device behaviour* - no
 exclusive attempt, no format change, nothing touching the FDK-AAC path - and let the indicator apply
-to every local file, because the mismatch is a property of the DEVICE, not of the file's lossiness,
-and it is equally true for an MP3. **If that reading is wrong it is a one-line change** to gate the
-indicator on `isLosslessPath` too.
+to every local file, because the mismatch is a property of the DEVICE, not of the file's lossiness.
+**Dos confirmed that reading on 2026-08-12 and it stands.**
 
 **Scope actually delivered.** The exclusive attempt is made at the decoder's output format, which for
 a 44.1 lossless file already equals its native format - so Dos's whole library is covered without
@@ -239,3 +238,33 @@ and that nothing false is claimed.
 
 **The ASCII arrow is deliberate** - `->`, not `→`. That row draws with the narrow curses calls, which
 do not decode UTF-8; an arrow glyph there is the 1.6.1 fold trap in a new costume.
+
+### CONFIRMED ON HARDWARE 2026-08-12 — all four states, and one finding nobody predicted
+
+Dos ran it. Every state behaves as designed:
+
+| state | seen on | verdict |
+|---|---|---|
+| `44.1 kHz -> 48` | a FLAC rip | correct — the resample that was always happening, now visible |
+| `-> dsp` | EQ on, **and independently** ReplayGain on | correct — either one trips it, as designed |
+| *(nothing)* | **a 48 kHz Opus file** | correct, and see below |
+| `=` | — | **unreachable on this hardware**, as predicted |
+
+**THE FINDING: a 48 kHz Opus file shows no indicator, because its rate already matches the endpoint.
+It is reaching the DAC untouched. The FLAC rips never have.**
+
+Nobody predicted that and it inverts the intuition the whole feature was built on. The lossy format
+is the one getting an unmodified path to the hardware today, and the lossless one is the one being
+silently converted — **because "lossless" describes the file's relationship to its master, and
+"untouched" describes the file's relationship to the DAC, and those are different properties that
+happen to share a vocabulary.** A 48 kHz Opus on a 48 kHz endpoint is bit-perfect *as a signal path*
+while being lossy *as a recording*; a 44.1 FLAC on the same endpoint is the reverse.
+
+**This is also the strongest argument for the indicator having shipped ungated.** Gated behind
+`bit_perfect=1` on lossless files only, this fact would have been structurally unobservable — the
+one file type that demonstrates it is the one type the flag excludes.
+
+It has a practical edge too: if Dos ever wants an untouched path for his CD rips, the options are a
+44.1-capable DAC or resampling the library to 48 once, deliberately, rather than letting Windows do
+it silently on every play. **Not a recommendation — just the shape of the choice, now that it is
+visible.**

@@ -1085,16 +1085,21 @@ convert / art slices), kept here so they are not re-scoped by accident:
   small standalone fix; the newer convert path already writes the true MIME.
 
 ## Decisions log
-- **BUILT 2026-08-12, ONE PATH UNTESTABLE HERE: bit-perfect playback.** Indicator
-  and verification shipped together; the achieved (`=`) state **cannot be reached
-  on any hardware Dos owns.** Measured: all 11 WASAPI endpoints report native
-  48000 and none offers 44100, so the exactness check rejects every 44.1 file on
-  every device and the fallback is the normal path. **Testable here:** the
-  `-> 48` indicator, the fallback, and that nothing false is claimed.
-  **Not testable here:** the `=` state, which needs a DAC that accepts 44.1.
-  Third entry on the built-but-partly-unverified list, with the art picker's
-  fallback rows and the C2 SG_IO question - **the list is kept visible on
-  purpose.** Design and measurements: `docs/DESIGN-bit-perfect.md`.
+- **BUILT AND CONFIRMED 2026-08-12, ONE STATE UNREACHABLE HERE: bit-perfect
+  playback.** Indicator and verification shipped together. **Three of the four
+  states are hardware-confirmed** by Dos: `-> 48` on a FLAC rip, `-> dsp` with the
+  EQ on and independently with ReplayGain on, and *no indicator at all* on a
+  48 kHz Opus file. **The achieved (`=`) state cannot be reached on any hardware
+  Dos owns** - all 11 WASAPI endpoints report native 48000 and none offers 44100,
+  so the exactness check rejects every 44.1 file and the fallback is the normal
+  path. It needs a DAC that accepts 44.1; nothing short of that will exercise it.
+  **The Opus result is the finding worth keeping:** a 48 kHz lossy file reaches
+  the DAC untouched on this hardware while the lossless 44.1 rips never have,
+  because *lossless* describes the file against its master and *untouched*
+  describes the file against the DAC - different properties sharing a vocabulary.
+  On the built-but-partly-unverified list with the art picker's fallback rows and
+  the C2 SG_IO question - **kept visible on purpose.**
+  Design and measurements: `docs/DESIGN-bit-perfect.md`.
 - **SCOPE (2026-08-12): bit-perfect playback, LOSSLESS LOCAL FILES ONLY.**
   FLAC, WavPack, WAV. Everything else is out **by scope, not by workaround**: lossy
   sources (audiobooks, MP3, AAC) have already discarded what there would be to be

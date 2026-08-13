@@ -425,5 +425,6 @@ private:
     int  ringAvailable() const;
     void ringWrite(const int16_t* data, int samples);
     int  ringRead(int16_t* dst, int samples);
-    void ringClear();   // producer-side flush (re-pin): drop buffered audio, jump to live
+    void ringFlush();   // producer-side: drop buffered audio ONLY. Safe on any transport
+    void ringClear();   // ringFlush + the HLS-only label snap (re-pin). NOT for ICY - see impl
 };

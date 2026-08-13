@@ -1731,6 +1731,21 @@ void StreamSource::producerWorker() {
         port::sleepMs(500 * reconnect_attempts);               // linear backoff
         if (stop_.load()) break;
         if (!connect() || !initDecoder()) continue;    // keep retrying until cap
+        // Reconnected: drop whatever the ring still holds from before the drop,
+        // so live audio does not resume behind up to ~6 s of replayed history.
+        //
+        // AT RECONNECT, NOT AT TEARDOWN, and the difference is the whole point.
+        // The ad re-pin path above clears at teardown because it has no outage -
+        // it chose to jump, and its buffered audio is the ad being skipped. A
+        // network drop DOES have an outage, and its buffered audio is the last
+        // few seconds of the programme, which the listener has not heard yet and
+        // has every reason to want. Same invariant in both places (the ring never
+        // carries audio across a discontinuity into live playback); different
+        // moment, because the events differ in exactly that way.
+        //
+        // ringFlush, NOT ringClear: the latter also snaps the now-playing label,
+        // which is an HLS re-pin concern and freezes an ICY title permanently.
+        ringFlush();
     }
 
     uninitDecoder();
@@ -1796,6 +1811,7 @@ void StreamSource::producerWorkerAAC() {
                 if (stop_.load()) break;
                 if (!connect()) continue;
                 bytes_in_buf = 0;            // fresh connection — drop stale partial frame
+                ringFlush();                 // and drop pre-drop audio: see producerWorker
                 continue;
             }
             bytes_in_buf += (UINT)got;
@@ -1934,17 +1950,28 @@ int StreamSource::ringRead(int16_t* dst, int samples) {
     return n;
 }
 
-void StreamSource::ringClear() {
-    // Producer-side flush, used on a live-edge re-pin to discard buffered audio so
-    // we restart at the live edge rather than replaying the stale (pre-ad) buffer.
-    // Safe here: the consumer is gated off (prebuffered_=false) during the re-pin,
-    // so it isn't touching ring_read_ concurrently. Snapping read up to write makes
-    // the ring read as empty, which clears the producer's backpressure wait and
-    // avoids the full-ring / not-prebuffered deadlock that silenced playback.
+void StreamSource::ringFlush() {
+    // The RING half, and nothing else. Producer-side; safe because the consumer is
+    // gated off (prebuffered_=false) at every call site, so it isn't touching
+    // ring_read_ concurrently. Snapping read up to write makes the ring read as
+    // empty, which clears the producer's backpressure wait and avoids the
+    // full-ring / not-prebuffered deadlock that silenced playback.
     ring_read_.store(ring_write_.load(std::memory_order_acquire), std::memory_order_release);
-    // The buffer just jumped to the live edge; drop labels scheduled against the
-    // discarded buffer and snap the published label to the current one so the
-    // display follows the jump instead of lagging ~a buffer behind.
+}
+
+void StreamSource::ringClear() {
+    // Flush + the LABEL half. Used on a live-edge re-pin: the buffer jumped to the
+    // live edge, so labels scheduled against the discarded buffer are wrong, and
+    // the published label snaps to the current one instead of lagging ~a buffer.
+    //
+    // THE LABEL HALF IS HLS-ONLY, and that is why it is not in ringFlush(). np_pub_q_
+    // is fed exclusively by the iHeart now-playing commit path; on ICY nothing ever
+    // pushes to it, so np_published_ stays empty and nowPlaying() falls through to
+    // now_playing_, which parseIcyMetadata keeps current. Setting np_published_ on an
+    // ICY stream makes it permanently non-empty with nothing left to advance it - the
+    // title would freeze at whatever was playing, forever. Measured: calling this from
+    // the network-loss reconnect froze icy_pipeline_test's title at the pre-drop one.
+    ringFlush();
     std::lock_guard<std::mutex> lk(now_playing_mtx_);
     np_pub_q_.clear();
     np_published_ = now_playing_;

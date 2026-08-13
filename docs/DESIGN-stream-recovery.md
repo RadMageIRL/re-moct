@@ -277,5 +277,7 @@ Everything else landed as written. Item 3 changed no line of the audio thread an
 change was the declared one. Item 4 is recorded as declined in `docs/roadmap.md` with the band
 argument. The four timeout constants are named and all still 8000.
 
-**Not yet live-tested** — the hardware test is Dos's: pull the network mid-stream on ICY and on
-iHeart HLS, short drop and long drop, and kill a stream while recording.
+**LIVE-TESTED AND CONFIRMED by Dos, 2026-08-12** — network pulled mid-stream on ICY and on iHeart
+HLS, short drop and long drop, and a stream killed while recording. All four behaviours hold. This
+one is not carrying an untested caveat: unlike the art picker's fallback rows, nothing here needed
+material that was unavailable.

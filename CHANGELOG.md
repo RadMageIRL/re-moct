@@ -50,6 +50,17 @@ that are not true.
   it, so a book you have picked up forty times would outrank a song you love, and
   the shimmer would be telling you something untrue.
 
+### Changed
+
+- **Housekeeping with nothing to see, noted because it affects anyone working from
+  a copy of the source.** Line endings are now settled by the repository itself
+  rather than by whatever each clone happens to have configured, so checking the
+  project out on a different machine can no longer produce a diff that looks like
+  every file was rewritten. Alongside that, three counters left behind by features
+  that were never finished have been removed - they were tallied and never read -
+  which puts the compiler's warning count back where it was before the toolchain
+  was last upgraded.
+
 ### Fixed
 
 - **A radio stream that dies now stops and says so, instead of looking like it is

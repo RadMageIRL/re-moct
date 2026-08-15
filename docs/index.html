@@ -333,8 +333,9 @@
 <h1>RE-MOCT <span class="version">v1.6.2</span></h1>
 
 <div class="note" style="margin-bottom:24px">
-  <strong>1.6.2 released - the radio scanner keeps to the colours of the mode it is in,
-  and the playlist shows you what you play most.</strong>
+  <strong>1.6.2 released - RE-MOCT now tells you what your hardware is doing to your
+  music, offers a choice of cover art where there was none, and recovers from a dropped
+  radio stream without pretending it is still playing.</strong>
   RE-MOCT runs on <strong>Windows</strong> and <strong>Linux</strong>. Grab a build from the
   <a href="https://github.com/RadMageIRL/re-moct/releases">GitHub Releases page</a>, or build
   from source - see <a href="#build">Build</a>. Its streaming source ships as a loadable
@@ -343,7 +344,7 @@
 
 <div class="badge-row">
   <div class="badge"><b>C++20</b></div>
-  <div class="badge"><b>ncurses</b></div>
+  <div class="badge"><b>PDCursesMod / ncursesw</b></div>
   <div class="badge"><b>miniaudio</b></div>
   <div class="badge"><b>TagLib</b></div>
   <div class="badge"><b>Windows + Linux</b></div>
@@ -855,7 +856,7 @@ ctest --test-dir build --output-on-failure</pre>
 <p>The single-header dependencies (miniaudio, nlohmann/json) and the vendored MD5 are checked into the repo - no separate download step. Binary output: <code>build/bin/remoct</code> (or <code>remoct.exe</code>), with the streaming plugin beside it in <code>build/bin/plugins/</code>.</p>
 
 <hr>
-<p style="font-size:11px; color:var(--muted); text-align:center">RE-MOCT v1.6.2 &nbsp;·&nbsp; C++20 &nbsp;·&nbsp; Built with ncurses, miniaudio, TagLib &nbsp;·&nbsp; <a href="https://github.com/RadMageIRL/re-moct" style="color:var(--accent)">github.com/RadMageIRL/re-moct</a></p>
+<p style="font-size:11px; color:var(--muted); text-align:center">RE-MOCT v1.6.2 &nbsp;·&nbsp; C++20 &nbsp;·&nbsp; Built with PDCursesMod (Windows) / ncursesw (Linux), miniaudio, TagLib &nbsp;·&nbsp; <a href="https://github.com/RadMageIRL/re-moct" style="color:var(--accent)">github.com/RadMageIRL/re-moct</a></p>
 
 </main>
 </div>

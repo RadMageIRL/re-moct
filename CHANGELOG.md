@@ -5,11 +5,13 @@ All notable changes to RE-MOCT are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.6.2] - 2026-08-12
+## [1.6.2] - 2026-08-13
 
-Surfacing and polish. Nothing changes about how anything is played, ripped or
-recorded - every item is about what you can see, and about not being told things
-that are not true.
+Mostly about being told the truth: what your hardware is doing to your music,
+which cover you are about to embed, and when a stream has actually died rather
+than merely paused. Two things do change how playback behaves - a short network
+drop is now usually inaudible, and a stream that dies stops instead of hanging -
+and both are described below.
 
 ### Added
 
@@ -82,8 +84,9 @@ that are not true.
   running against what it asked for, and if they differ it hands the device back
   and plays normally. **On hardware that cannot take the track's rate that is every
   time**, and the status line says so rather than claiming something untrue. It
-  shows `=` only when the output really is untouched, and `-> dsp` if the equaliser
-  or ReplayGain is on, since either of those changes the samples by definition.
+  shows `=` only when the output really is untouched, and `-> dsp` if the equaliser,
+  ReplayGain or the balance control is doing anything, since each of those changes
+  the samples by definition.
   Windows and Linux both, by the same code - there is no platform-specific version
   of any of this.
 

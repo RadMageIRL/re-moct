@@ -1136,7 +1136,7 @@ convert / art slices), kept here so they are not re-scoped by accident:
   Recon: `docs/RECON-bit-perfect.md`. Proposal: `docs/DESIGN-bit-perfect.md`.
 - **OPEN BUG, NOT REPRODUCIBLE, NOT IN 1.6.2: 24 kHz m4b audiobooks chirp, cut
   out, and play at the wrong pitch and speed (reported 2026-08-12; recon
-  2026-08-13, `docs/RECON-m4b-chirp.md`).**
+  2026-08-15, `docs/RECON-m4b-chirp.md`).**
   **Deliberately left out of 1.6.2 because it is UNLOCATED, not because it is
   large.** A fix now would be a guess dressed as a change, and the two workarounds
   already in the tree are what guessing at this failure produced last time.
@@ -1155,7 +1155,7 @@ convert / art slices), kept here so they are not re-scoped by accident:
     triggered.
   - **Varispeed.** `speed_` survives a track change (`teardown()` resets the
     resampler residual, not the speed), so it was a live candidate. Confirmed
-    2026-08-13: `[+16%]` was on screen and playback sounded correct *at that
+    2026-08-15: `[+16%]` was on screen and playback sounded correct *at that
     speed*. **Varispeed works as intended and does not explain the symptom** - and
     it does not survive a restart, which the symptom's absence after restart also
     does not distinguish it by.

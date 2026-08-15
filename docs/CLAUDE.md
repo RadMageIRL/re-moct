@@ -148,7 +148,7 @@ and ship without rebuilding the host" is literally true.** Detail in
 + the CD read-addressing fix. 1.6.0 = HTOA. 1.6.1 = the display fold, a CJK crash fix, the
 disc-number campaign, cover art previewed before writing (`[P]`, `[A]` was AccurateRip).
 
-**1.6.2 (tag `1.6.2`, merge `a1d2698`, 2026-08-13; all three branches in sync):** the
+**1.6.2 (tag `1.6.2`, merge `a1d2698`, 2026-08-15; all three branches in sync):** the
 output-rate indicator + **bit-perfect playback** (`bit_perfect=1`, config-only, lossless
 local files, verified against `internal*` - `ma_device_init` returns success while silently
 converting); art-picker rows from iTunes/Deezer where CAA has none; stream recovery (dead

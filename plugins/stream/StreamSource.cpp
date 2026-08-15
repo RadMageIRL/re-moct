@@ -39,13 +39,40 @@ static void slog(const char* fmt, ...) {
     Log::write("stream", buf);
 }
 
+// ─── Network timeouts: four bounds that used to be one number ─────────────────
+// Every one of these was a bare 8000 in six places. The value was chosen once,
+// for connect(), and its comment says what for: "so a dead or wedged station
+// can't block the connect worker (and thus a queued station switch)
+// indefinitely" - that is UI responsiveness during a station SWITCH. The other
+// sites then mirrored it verbatim ("the WinINet CONNECT_TIMEOUT twin", "mirror
+// connect() timeouts"). No site ever chose 8 s as a mid-stream loss threshold;
+// they inherited it as a connect bound.
+//
+// Named separately because no single value can be right for all four, and while
+// they shared one literal it was impossible to change any of them alone. On
+// Windows the read-idle bound was not even separately expressible: one DWORD set
+// CONNECT, RECEIVE and SEND together.
+//
+// ALL FOUR ARE DELIBERATELY STILL 8000. This split changes no behaviour; it only
+// makes the next change possible. Lowering kIcyReadIdleMs is the promising one -
+// a Shoutcast server sends continuously, so a multi-second gap is already
+// abnormal, and detection currently costs more than the whole ring cushion.
+// Lowering kHlsFetchMs is the dangerous one: it bounds a SEGMENT DOWNLOAD of
+// roughly ten seconds of audio, so on a slow link a shorter bound manufactures
+// stalls, and each one burns an attempt from a budget of ten. Measure real fetch
+// durations before touching that one.
+static constexpr int kConnectTimeoutMs = 8000;  // TCP + TLS connect only
+static constexpr int kHandshakeIoMs    = 8000;  // ICY request send + response-header read
+static constexpr int kIcyReadIdleMs    = 8000;  // mid-stream: dry socket -> treat as stream end
+static constexpr int kHlsFetchMs       = 8000;  // manifest / segment GET
+
 // ─── Lifecycle ────────────────────────────────────────────────────────────────
 
 bool StreamSource::open(const std::string& url) {
     close();                       // ensure any prior session is fully torn down
 
     url_ = url;
-    last_error_.clear();
+    setLastError("");
     setStop(false);                // clears stop_ + the HTTP-cancel mirror
     paused_.store(false);
     prebuffered_.store(false);
@@ -73,7 +100,7 @@ bool StreamSource::open(const std::string& url) {
     }
 
     if (!connect()) {              // initial connection on the caller thread
-        last_error_ = "connection failed";
+        setLastError("connection failed");
         slog("open: connect FAILED url=%s", url.c_str());
         disconnect();
         return false;
@@ -136,7 +163,7 @@ bool icySendAll(CURL* h, const std::string& data, const std::atomic<bool>& stop)
         if (rc == CURLE_OK) { off += sent; continue; }
         if (rc != CURLE_AGAIN) return false;
         if (stop.load()) return false;
-        if ((long)(port::tickMs() - start) >= 8000) return false;
+        if ((long)(port::tickMs() - start) >= kHandshakeIoMs) return false;
         icyWaitSocket(h, POLLOUT, 100);
     }
     return true;
@@ -157,7 +184,7 @@ bool icyHop(const std::string& url, const std::atomic<bool>& stop, IcyHop& out) 
     if (!h) return false;
     curl_easy_setopt(h, CURLOPT_URL, url.c_str());
     curl_easy_setopt(h, CURLOPT_CONNECT_ONLY, 1L);        // TCP + TLS (for https), no HTTP
-    curl_easy_setopt(h, CURLOPT_CONNECTTIMEOUT_MS, 8000L);// the WinINet CONNECT_TIMEOUT twin
+    curl_easy_setopt(h, CURLOPT_CONNECTTIMEOUT_MS, (long)kConnectTimeoutMs);  // the WinINet CONNECT_TIMEOUT twin
     curl_easy_setopt(h, CURLOPT_NOSIGNAL, 1L);
     // ALPN OFF: with it on, a CDN edge (cloudflare) negotiates HTTP/2 and the
     // hand-written HTTP/1.x request below is protocol garbage on that
@@ -212,7 +239,7 @@ bool icyHop(const std::string& url, const std::atomic<bool>& stop, IcyHop& out) 
         size_t got = 0;
         rc = curl_easy_recv(h, buf, sizeof(buf), &got);
         if (rc == CURLE_AGAIN) {
-            if (stop.load() || (long)(port::tickMs() - start) >= 8000) {
+            if (stop.load() || (long)(port::tickMs() - start) >= kHandshakeIoMs) {
                 curl_easy_cleanup(h);
                 return false;
             }
@@ -290,11 +317,13 @@ bool StreamSource::connect() {
     if (!hInet_) return false;
 
     // Bound the connect/receive so a dead or wedged station can't block the
-    // connect worker (and thus a queued station switch) indefinitely.
-    DWORD to = 8000;  // ms
-    InternetSetOptionA(hInet_, INTERNET_OPTION_CONNECT_TIMEOUT, &to, sizeof(to));
-    InternetSetOptionA(hInet_, INTERNET_OPTION_RECEIVE_TIMEOUT, &to, sizeof(to));
-    InternetSetOptionA(hInet_, INTERNET_OPTION_SEND_TIMEOUT,    &to, sizeof(to));
+    // connect worker (and thus a queued station switch) indefinitely. RECEIVE is
+    // the mid-stream read-idle bound and is now named as such: one DWORD used to
+    // set all three, so this bound could not be moved without moving connect too.
+    DWORD to_conn = kConnectTimeoutMs, to_recv = kIcyReadIdleMs, to_send = kHandshakeIoMs;
+    InternetSetOptionA(hInet_, INTERNET_OPTION_CONNECT_TIMEOUT, &to_conn, sizeof(to_conn));
+    InternetSetOptionA(hInet_, INTERNET_OPTION_RECEIVE_TIMEOUT, &to_recv, sizeof(to_recv));
+    InternetSetOptionA(hInet_, INTERNET_OPTION_SEND_TIMEOUT,    &to_send, sizeof(to_send));
 
     // InternetOpenUrlA parses the scheme; https is negotiated with TLS automatically
     // (same path the MusicBrainz/Discogs lookups already use).
@@ -376,7 +405,7 @@ bool StreamSource::hlsEnsureSession() {
     if (hls_session_) return true;
     core::HttpSessionConfig cfg;
     cfg.user_agent = "";     // impl default == the exact UA the raw handle used
-    cfg.timeout_ms = 8000;   // mirror connect() timeouts (connect/receive/send)
+    cfg.timeout_ms = kHlsFetchMs;   // manifest/segment GET bound - see the constants above
     hls_session_ = http_->openSession(cfg);   // slice c: injected host services (was core::http())
     if (!hls_session_) { slog("hlsEnsureSession: openSession FAILED"); return false; }
     return true;
@@ -1443,7 +1472,7 @@ uint32_t StreamSource::rawRead(void* dst, uint32_t want) {
                 raw_buf_.clear(); raw_pos_ = 0;
                 return 0;
             }
-            if (stop_.load() || (long)(port::tickMs() - start) >= 8000) {
+            if (stop_.load() || (long)(port::tickMs() - start) >= kIcyReadIdleMs) {
                 raw_buf_.clear(); raw_pos_ = 0;
                 return 0;
             }
@@ -1663,7 +1692,7 @@ ma_result StreamSource::onSeek(ma_decoder* /*dec*/, ma_int64 /*offset*/, ma_seek
 
 void StreamSource::producerWorker() {
     if (!initDecoder()) {
-        last_error_ = "decoder init failed";
+        setLastError("decoder init failed");
         slog("producer: initDecoder FAILED");
         disconnect();
         playing_.store(false);
@@ -1723,14 +1752,36 @@ void StreamSource::producerWorker() {
         disconnect();
 
         if (++reconnect_attempts > 10) {
-            last_error_ = "stream lost (max reconnect attempts)";
+            setLastError("stream lost (max reconnect attempts)");
             playing_.store(false);
             break;
         }
-        prebuffered_.store(false);                     // re-buffer after the gap
+        // prebuffered_ is deliberately NOT cleared here. It used to be, and that
+        // is what made every drop audible: it gated readFrames into silence the
+        // instant the producer decided to reconnect, so the ~6 s already in the
+        // ring was never played. readFrames ALREADY handles this correctly on its
+        // own - its underrun arm drops back to buffering when the ring genuinely
+        // runs dry. Letting it do that drains the cushion first, which covers a
+        // short outage completely: the retry starts at 500 ms and the ring holds
+        // seconds, so the listener never learns it happened.
         port::sleepMs(500 * reconnect_attempts);               // linear backoff
         if (stop_.load()) break;
         if (!connect() || !initDecoder()) continue;    // keep retrying until cap
+        // Reconnected: drop whatever the ring still holds from before the drop,
+        // so live audio does not resume behind up to ~6 s of replayed history.
+        //
+        // AT RECONNECT, NOT AT TEARDOWN, and the difference is the whole point.
+        // The ad re-pin path above clears at teardown because it has no outage -
+        // it chose to jump, and its buffered audio is the ad being skipped. A
+        // network drop DOES have an outage, and its buffered audio is the last
+        // few seconds of the programme, which the listener has not heard yet and
+        // has every reason to want. Same invariant in both places (the ring never
+        // carries audio across a discontinuity into live playback); different
+        // moment, because the events differ in exactly that way.
+        //
+        // ringFlush, NOT ringClear: the latter also snaps the now-playing label,
+        // which is an HLS re-pin concern and freezes an ICY title permanently.
+        ringFlush();
     }
 
     uninitDecoder();
@@ -1743,7 +1794,7 @@ void StreamSource::producerWorker() {
 void StreamSource::producerWorkerAAC() {
     aac_dec_ = aacDecoder_Open(TT_MP4_ADTS, 1);
     if (!aac_dec_) {
-        last_error_ = "aacDecoder_Open failed";
+        setLastError("aacDecoder_Open failed");
         slog("producerAAC: aacDecoder_Open FAILED");
         disconnect();
         playing_.store(false);
@@ -1787,15 +1838,17 @@ void StreamSource::producerWorkerAAC() {
                 tee_discont_.store(true, std::memory_order_relaxed);   // copy tee resyncs
                 disconnect();
                 if (++reconnect_attempts > 10) {
-                    last_error_ = "stream lost (max reconnect attempts)";
+                    setLastError("stream lost (max reconnect attempts)");
                     playing_.store(false);
                     break;
                 }
-                prebuffered_.store(false);
+                // Not cleared here either — see producerWorker: readFrames drains
+                // the cushion and drops to buffering on real underrun by itself.
                 port::sleepMs(500 * reconnect_attempts);
                 if (stop_.load()) break;
                 if (!connect()) continue;
                 bytes_in_buf = 0;            // fresh connection — drop stale partial frame
+                ringFlush();                 // and drop pre-drop audio: see producerWorker
                 continue;
             }
             bytes_in_buf += (UINT)got;
@@ -1934,17 +1987,28 @@ int StreamSource::ringRead(int16_t* dst, int samples) {
     return n;
 }
 
-void StreamSource::ringClear() {
-    // Producer-side flush, used on a live-edge re-pin to discard buffered audio so
-    // we restart at the live edge rather than replaying the stale (pre-ad) buffer.
-    // Safe here: the consumer is gated off (prebuffered_=false) during the re-pin,
-    // so it isn't touching ring_read_ concurrently. Snapping read up to write makes
-    // the ring read as empty, which clears the producer's backpressure wait and
-    // avoids the full-ring / not-prebuffered deadlock that silenced playback.
+void StreamSource::ringFlush() {
+    // The RING half, and nothing else. Producer-side; safe because the consumer is
+    // gated off (prebuffered_=false) at every call site, so it isn't touching
+    // ring_read_ concurrently. Snapping read up to write makes the ring read as
+    // empty, which clears the producer's backpressure wait and avoids the
+    // full-ring / not-prebuffered deadlock that silenced playback.
     ring_read_.store(ring_write_.load(std::memory_order_acquire), std::memory_order_release);
-    // The buffer just jumped to the live edge; drop labels scheduled against the
-    // discarded buffer and snap the published label to the current one so the
-    // display follows the jump instead of lagging ~a buffer behind.
+}
+
+void StreamSource::ringClear() {
+    // Flush + the LABEL half. Used on a live-edge re-pin: the buffer jumped to the
+    // live edge, so labels scheduled against the discarded buffer are wrong, and
+    // the published label snaps to the current one instead of lagging ~a buffer.
+    //
+    // THE LABEL HALF IS HLS-ONLY, and that is why it is not in ringFlush(). np_pub_q_
+    // is fed exclusively by the iHeart now-playing commit path; on ICY nothing ever
+    // pushes to it, so np_published_ stays empty and nowPlaying() falls through to
+    // now_playing_, which parseIcyMetadata keeps current. Setting np_published_ on an
+    // ICY stream makes it permanently non-empty with nothing left to advance it - the
+    // title would freeze at whatever was playing, forever. Measured: calling this from
+    // the network-loss reconnect froze icy_pipeline_test's title at the pre-drop one.
+    ringFlush();
     std::lock_guard<std::mutex> lk(now_playing_mtx_);
     np_pub_q_.clear();
     np_published_ = now_playing_;

@@ -69,8 +69,9 @@ is the whole point; keep Classic minimal and faithful, put flair in Awesome.
   data callback guards on `seeking_`.
 - **Free-key scan** before assigning a new key: check `case` *and* `if (ch == ...)`
   binding forms.
-- Color pairs are slots 1–14 (`CP_*` enum in UIManager.h); viz pairs are fg==bg
-  solid fills, `CP_VIZ_TIP` (14) is peak-fg-on-default-bg for sub-cell glyphs.
+- Color pairs: slots 1–18 (`CP_*` in UIManager.h) + art pairs from `kArtPairBase` (20).
+  Viz pairs are fg==bg fills; `_B`/`CP_VIZ_TIP` are those hues on a real bg (text-safe).
+  **A widget takes the pair for its row's ROLE** - `docs/lessons.md` "Colour-pair roles".
 
 ## Current state (working & verified)
 Awesome-mode comet progress bar (proportional gradient tail, breathing 1↔2↔3-cell
@@ -143,16 +144,16 @@ platforms, Linux port done, streaming is a real loadable plugin
 and ship without rebuilding the host" is literally true.** Detail in
 `docs/roadmap.md` / `docs/architecture.md`.
 
-**Released:** 1.5.0 and 1.6.0 (2026-07-27), both merged to `main` and tagged.
-1.5.0 = per-track rip selection + the 17-slice `[Library]` section + the CD
-read-addressing fix. 1.6.0 = HTOA (hidden track before track 1).
+**Released:** 1.5.0, 1.6.0 (2026-07-27), **1.6.1 (2026-08-08)** - all merged to `main`
+and tagged. 1.5.0 = per-track rip selection + the 17-slice `[Library]` section + the CD
+read-addressing fix. 1.6.0 = HTOA (hidden track before track 1). 1.6.1 = the display
+fold, a CJK crash fix, a window-move repaint fix, the disc-number campaign, and cover
+art previewed before writing (**`[P]`, because `[A]` was already AccurateRip there**).
 
-**1.6.1 is UNRELEASED on `experimental/win-pdcurses`.** `Version.h` and
-`CMakeLists.txt` say 1.6.1; **`docs/index.html` deliberately still says 1.6.0** and
-reconciles at ceremony. Contents: the non-ASCII display fold, a CJK crash fix, a
-window-move repaint fix, and the disc-number campaign (disc number in tags, the
-silent tie made loud, the disc surfaced before the rip, and the release/disc
-picker with `F5` re-open). See the newest `docs/session-handoff-*.md`.
+**1.6.2 is UNRELEASED on `experimental/win-pdcurses`** - `Version.h`, `CMakeLists.txt` and
+`docs/index.html` say 1.6.2; NOT merged to `dev`/`main`, NOT tagged. Surfacing only, no
+behaviour change: the Classic radio scanner stopped borrowing the viz palette; the
+most-played playlist row shimmers. **Read the newest `docs/session-handoff-*.md`.**
 
 ## 1.6.1: the display fold - read before touching display text
 `foldForDisplay` (`include/StringUtils.h`, was `sanitizeForDisplay`). Per codepoint:
@@ -185,9 +186,8 @@ drains, so a held drag starves it to **zero** - which is why a MOVE repaints fro
 what made the crash findable - do not silence them.
 
 ## Earlier flights (detail in the matching handoffs)
-**07-16:** .opus/.wv/.ogg playback; RIP OVERHAUL (`IEncoder` seam, 5 formats).
-**07-17:** stream-record (^E), MP3 tag write, THE ABI OPENED ONCE (`254baca`,
-additive, no bump), batch RG (^O).
+**07-16:** .opus/.wv/.ogg playback; RIP OVERHAUL (`IEncoder` seam, 5 formats). **07-17:**
+stream-record (^E), MP3 tag write, THE ABI OPENED ONCE (`254baca`, additive, no bump), batch RG (^O).
 
 ## Deep knowledge - read the matching file when a task touches it
 - Roadmap, phases, parked items, decisions → `docs/roadmap.md`

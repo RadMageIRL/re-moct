@@ -36,6 +36,16 @@ struct DigiConfig {
     bool                     toast_enabled    = false;
     // EQ state
     bool  eq_enabled = false;
+    // Bit-perfect playback: attempt an EXCLUSIVE output device at the file's own
+    // format for LOSSLESS LOCAL FILES ONLY (.flac/.wv/.wav), and fall back to the
+    // ordinary shared 44100/2 path on any mismatch. Config-only by design - no key
+    // and no menu, set once like `library=`.
+    //
+    // Off by default, and on most hardware it will FALL BACK EVERY TIME: measured
+    // 2026-08-12, all 11 WASAPI endpoints on the dev machine report native 48000
+    // and none supports 44100, so a CD rip cannot reach the DAC at its own rate.
+    // That is not a failure state - see docs/DESIGN-bit-perfect.md.
+    bool  bit_perfect = false;
     float eq_gains[10] {};
 
     // Discord Rich Presence toggle (Ctrl+D)

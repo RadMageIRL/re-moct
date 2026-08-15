@@ -166,6 +166,14 @@ public:
     bool     takeStreamConnected() { return stream_just_connected_.exchange(false); }
     bool     takeStreamFailed()    { return stream_just_failed_.exchange(false); }
     bool     streamBuffering()   const { return stream_plugin_.buffering(); }
+    // A stream that was playing and has now failed for good. NOT a latch: it is
+    // a state, and stop() clears it by leaving stream mode - a latch would need
+    // clearing rules that stop() already provides. Deliberately not folded into
+    // streamBuffering(): that marker means "wait a moment", and a dead stream is
+    // the one thing it must never be able to mean.
+    bool     streamLost()        const { return stream_mode_.load()
+                                             && !stream_plugin_.lastError().empty(); }
+    std::string streamLastError() const { return stream_plugin_.lastError(); }
     std::string streamNowPlaying() const { return stream_plugin_.nowPlaying(); }
     std::string streamArtUrl()     const { return stream_plugin_.currentArtUrl(); } // iHeart digital cover ("" -> use logo)
     std::string streamUrl()      const { return stream_plugin_.url(); }   // URL actually streaming
@@ -197,6 +205,33 @@ public:
     // Output device selection
     struct DeviceInfo { std::string name; ma_device_id id; };
     std::vector<DeviceInfo> enumerateDevices() const;
+
+    // ── Bit-perfect (docs/DESIGN-bit-perfect.md) ─────────────────────────────
+    // The endpoint's SHARED-MODE MIX RATE, 0 when unknown. Deliberately NOT
+    // device_.playback.internalSampleRate: in shared mode WASAPI accepts our
+    // 44100 client stream and resamples to the endpoint's mix format BELOW
+    // miniaudio's visibility, so internalSampleRate reports the 44100 we asked
+    // for and tells us nothing about what the DAC receives. Measured 2026-08-12:
+    // all 11 endpoints on this machine report native 48000 and none offers
+    // 44100, so every 44.1 rip has always been resampled by Windows, invisibly.
+    // Cached - ma_context_init per call would be far too expensive to poll.
+    uint32_t endpointMixRate() const;
+
+    // True only when the output device was opened EXCLUSIVELY at exactly the
+    // source's format - verified against internalFormat/Channels/SampleRate
+    // after init, never inferred from ma_device_init returning success. It
+    // returns success while silently converting; measured, that is exactly what
+    // an exclusive 44100 request does on this hardware (it comes up s16/48000).
+    bool bitPerfectActive() const { return bit_perfect_active_.load(); }
+    void setBitPerfect(bool on)   { bit_perfect_pref_.store(on); }
+    bool bitPerfectRequested() const { return bit_perfect_pref_.load(); }
+    // Any sample-scaling stage that is currently on. A claim of bit-perfect
+    // cannot survive one, and ReplayGain always scales when enabled - it applies
+    // a fixed +6 dB preamp, so its gain is ~1.995 even for an untagged track.
+    bool dspActive() const {
+        return replaygain_enabled_.load() || eq_enabled_.load()
+            || balance_.load() != 0.0f    || muted_.load();
+    }
     void setDevice(const ma_device_id* id);   // nullptr = default
     int  selectedDeviceIndex() const { return selected_device_idx_; }
     void setSelectedDeviceIndex(int i) { selected_device_idx_ = i; }
@@ -401,6 +436,9 @@ private:
     // Selected output device (nullptr = default)
     ma_device_id selected_device_id_ {};
     bool         has_selected_device_ = false;
+    std::atomic<bool>     bit_perfect_pref_   { false };  // config: attempt it
+    std::atomic<bool>     bit_perfect_active_ { false };  // verified, this device
+    mutable std::atomic<uint32_t> endpoint_rate_ { 0 };   // cache; 0 = not yet queried
     int          selected_device_idx_ = -1;  // -1 = default
 
     void teardown();

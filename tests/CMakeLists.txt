@@ -1133,6 +1133,16 @@ target_include_directories(disc_pick_test PRIVATE ${CMAKE_SOURCE_DIR}/include)
 add_test(NAME disc_pick_test COMMAND disc_pick_test)
 set_tests_properties(disc_pick_test PROPERTIES TIMEOUT 60)
 
+# The free-text cover-art candidate rows. Header-only like disc_pick_test, plus
+# lib/ for the vendored json.hpp that ArtCandidatesJson.h parses with. Fixtures
+# are captured real API responses, so no network at test time.
+add_executable(art_candidates_test art_candidates_test.cpp)
+target_include_directories(art_candidates_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/lib)
+add_test(NAME art_candidates_test COMMAND art_candidates_test)
+set_tests_properties(art_candidates_test PROPERTIES TIMEOUT 60)
+
 # ── The grouping target: `cmake --build build --target remoct_tests` ─────────
 # What install.sh --tests-only builds. Rather than list forty-odd names here -
 # a list that would go stale the first time a slice forgets to update it - ask

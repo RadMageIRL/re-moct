@@ -338,6 +338,82 @@
   `cd_drive_letter_` (one source of truth instead of two that can desync). "The brief
   is wrong" is a valid, expected outcome; where the tree and the brief disagree, the
   tree wins.
+- **"Untested" and "untestable without a production change" are different findings,
+  and collapsing them hides the real one.** The C2 de-interleave in `CDRipper.cpp`
+  reads as an ordinary coverage gap. It is not: the function is file-`static` in a
+  TU no test links against, and the one CD fake in the suite drives `CDSource`,
+  which passes `want_c2=false` unconditionally. **No test-only change can reach it** -
+  covering it means changing production code first. Before writing "untested" in a
+  report, check reachability; the answer changes what anyone can do about it.
+- **Query the device, never infer capability from the model number - and take more
+  than one statement.** The C2 recon collected three independent facts (the MODE
+  SENSE bit, the GET CONFIGURATION feature descriptor, and an actual 2646-byte
+  delivery) and the defect was located in the **disagreement between the drive and
+  the OS path**, not in any one of them. Either statement alone produces a
+  confident wrong answer: the advertised bit alone says "supported" (true, and
+  useless); our own `probeC2` alone says "not supported" (false, **and blames the
+  drive for a dropped parameter**). Keep "can the device" and "does our code ask"
+  as separate questions - collapsing them is what put a wrong sentence in the rip
+  log for the life of the feature.
+- **`formatCandidateRow` truncates by BYTE, and "ASCII by contract" describes the
+  test fixtures rather than the live data.** `cut()` uses `substr`, so a title
+  long enough to be cut can be split mid-character - and `foldForDisplay` passes
+  CJK through verbatim since 1.6.1, so the data reaching it is genuinely
+  multi-byte. It affects `^F`, `^R` and now the art picker's iTunes/Deezer rows,
+  which reuse the same formatter deliberately (three lists that must look alike
+  beat three formatters that drift). **Accepted, not fixed, 2026-08-12.**
+  **What it costs:** a cut CJK title draws a replacement glyph at the cut. Nobody
+  has hit it - the truncation only fires on titles longer than the column, and
+  the rows most at risk are the ones where a `>` already says text was dropped.
+  **What fixing it takes:** measure and cut by display COLUMNS with the
+  StringUtils helpers, which means the header stops being dependency-free and the
+  layout can no longer be asserted with plain ASCII - so `disc_pick_test` and
+  `art_candidates_test` would need folded fixtures too. That is a slice of its
+  own. **If it ever bites a real title, it becomes that slice** rather than a
+  surprise, which is the only reason this entry exists.
+- **A success code says the call returned, not that you got what you asked for -
+  and this is the second subsystem where that has bitten.** `ma_device_init` with
+  `shareMode = exclusive` returns `MA_SUCCESS` while silently resampling: measured
+  2026-08-12, an exclusive request for f32/2/44100 came up **s16 @ 48000**,
+  converting rate *and* format, on hardware whose endpoints do not offer 44.1.
+  An implementation that lights up "bit-perfect" off that return value lies. The
+  only thing that means anything is comparing the device's `internalFormat` /
+  `internalChannels` / `internalSampleRate` against what was requested, after init.
+  **Same shape as AccurateRip:** a match proves the stream you checksummed is
+  correct, not the file you kept - the confirmation is about the thing you
+  measured, never about the thing you wanted. **When an API hands back "OK",
+  ask what it is OK about**, and if the answer is "the call", measure the result
+  separately.
+- **A function whose name describes half of what it does will be reused for the
+  half it does not.** `StreamSource::ringClear()` read as "flush the ring". It
+  also snapped the now-playing label and dropped the scheduled-publish queue -
+  correct for the live-edge re-pin it was written for, and invisible from the call
+  site. Reusing it on the network-loss reconnect therefore shipped a worse bug
+  than the one being fixed: `np_pub_q_` is fed only by the iHeart path, so on ICY
+  nothing advances `np_published_`, and setting it made the station title freeze
+  at whatever played before the drop **for the rest of the session**.
+  `icy_pipeline_test` caught it, reproducibly. **The fix was to split the name, not
+  to add a flag**: `ringFlush()` is the ring half and `ringClear()` is that plus the
+  label snap, so the re-pin call sites are untouched and byte-identical. **When
+  reaching for an existing helper on a new path, read its body, not its name** -
+  and if the body does two things, that is the finding.
+- **Before changing an output string, grep the docs for it - output strings are
+  sometimes acceptance criteria.** Changing the rip log's `C2 support: no` turned
+  up `docs/phase3-slice6-design.md`, where that exact line is one of the fields the
+  Linux SG_IO port had to match **byte-identically against the Windows baseline**.
+  The gate was closed, so nothing broke - but the same grep showed the doc asserts
+  *"GHD3N is non-C2"*, which is false, and that false premise is what its accepted
+  limit rests on. **The grep that protects the change is also the one that audits
+  the reasoning behind it.**
+- **A `constexpr`-gated message is proven by the binary, not the source.** `strings`
+  each build and confirm the other platform's claim is absent: source shows intent,
+  the fold is what ships. Cheap, and it catches a gate that compiled but did not
+  select.
+- **A warning inventory built from compiler output under-reports its own subject.**
+  `total_c2_errors` (a local) warned; `RipProgress::using_c2` - the same dead store,
+  same feature, written twice and read nowhere - did not, because it is a struct
+  field and GCC does not track those. Both were deleted on 2026-08-12. A sweep
+  scoped to "what the compiler flags" is a sample, not a census.
 - **Additive-only.** Full-file replacements built on a stale baseline silently drop
   prior work. Build on the files Dos uploads in the same turn; prefer tight diffs when
   the base isn't re-uploaded.
@@ -479,6 +555,16 @@
   dump code before crying "mismatch": remoct packs samples as `(R<<16)|L`
   (CDRipper.cpp), so a naive `L,R` printf looks word-swapped though the bytes are
   identical.
+- **`IOCTL_CDROM_RAW_READ` cannot request C2, and buffer size is not a request
+  (measured 2026-08-12).** `RAW_READ_INFO` has no C2 field; `TrackMode=CDDA`
+  delivers 2352 B/sector whatever `out_size` says. On the GHD3N, one probe run,
+  same disc and sector: READ CD (0xBE) flag byte `0x12` **via SPTI** returned 2646
+  bytes; the IOCTL with a 2646-byte buffer returned 2352. So `ICdDevice::readRaw`'s
+  `want_c2` is honoured on SG_IO (`CdbSgIo.h`, CDB byte 9 = `0x12`) and **discarded
+  on Windows** - `CDRipper::probeC2` has always returned false there, and the rip
+  log's *"C2 not supported by drive"* is about the path, not the drive. **C2 was
+  recon'd and declined**; see the roadmap Decisions log for why, before proposing
+  anything that depends on it.
 - **usbipd attach needs a RUNNING WSL2 distro** ("There is no WSL 2 distribution
   running") - start a background keep-alive (`wsl -d Debian -e bash -lc "sleep N"`)
   first, then `"C:\Program Files\usbipd-win\usbipd.exe" attach --wsl --busid 4-1`.
@@ -1227,3 +1313,72 @@ runtime-discoverable, not compile-discoverable; a green build proves nothing abo
   a structural insert re-read the exact region to confirm placement. File-based
   trace milestones (fopen/fprintf to a fixed path, fflush) beat stderr for a
   wingui crash where stdio may not reach the pipe.
+
+## Colour-pair roles - 2026-08-11
+
+**A widget takes the pair for ITS ROW'S ROLE. Borrowing the viz pairs for anything
+that is not the visualizer is the recurring defect, and it is invisible in review
+because the borrowed pairs ARE theme-driven** - so the widget looks correct by the
+usual test ("does it consult the theme?") while drawing the wrong vocabulary.
+
+**The radio KITT scanner** (`UIManager::drawProgress`) drew its `█▓▒░` sweep in
+`CP_VIZ_PEAK/HIGH/MID/LOW` in *both* modes, so Classic got a white->cyan->yellow->green
+gradient across a stream bar whose only other colour is `CP_TITLE`. Two things made it
+findable, and neither was the colours themselves:
+
+1. **It was the only per-cell-coloured animation in that row.** Everything else in
+   `drawProgress` is a single `wattron` for the whole draw.
+2. **Awesome's own comet bar is monochrome.** Its gradient is *glyph density* inside
+   one `COLOR_PAIR(CP_PROGRESS)`. So is `[#---]`. **The mode difference in RE-MOCT's
+   progress row has never been colour count** - and once that is seen, the Classic fix
+   is not a taste call: same sweep, same glyph ramp, one pair (`CP_TITLE`).
+
+**It had no `awesome_mode` gate at all, because the stream branch RETURNS above the
+mode branch.** A `grep awesome_mode` shows `drawProgress` as gated. It is, for the two
+paths below the early return. **When auditing "is this mode-aware", check what returns
+before the gate, not just whether the gate exists.**
+
+`CP_PROGRESS` was wrong for the Classic scanner for a reason worth keeping: it is
+white-on-**blue** there, and these are solid-block glyphs, so it would have painted a
+slab across the idle gap - a bar where there is no bar. **A pair's bg matters as much as
+its fg the moment a widget draws blocks rather than text.** Same trap in reverse for the
+sparkle: the solid viz pairs are fg==bg, so text drawn in them is invisible. The
+`_B` variants and `CP_VIZ_TIP` exist precisely as the text-safe form of those hues.
+
+**No 14th theme role was added.** `theme.conf` names 13 semantic roles; a palette entry
+for one widget is the wrong trade, and the technique (shade by glyph, not by hue) was
+already in the file twice.
+
+### The remaining borrow - NOT fixed, deliberately
+
+**`drawEq` (`UIManager.cpp` ~`:5037-5046`) overloads `CP_VIZ_HIGH`/`LOW`/`MID`/`PEAK`
+to mean selected / boost / cut / disabled.** Static, not animated, so it was out of the
+scope that found it. Its comment is the live hazard: it hard-codes the *default* Classic
+colours into prose - *"sel=cyan-on-cyan, boost=green-on-green, disabled=white-on-white"* -
+which stops being true the moment anyone edits `theme.conf` or presses `Ctrl+T`. A future
+session reads that and believes it. **If the EQ is ever touched, this is the thing to
+fix, and the comment before the code.**
+
+### Per-character animation: stable scramble, not a ramp
+
+When the same effect runs across many cells, **the offset between cells decides what
+the effect IS**, more than the effect does:
+
+- **`+1` per column is a WAVE.** The cycle travels along the row and reads as one thing
+  moving, which is the opposite of many things twinkling independently.
+- **A hash re-rolled per frame is STATIC.** Every cell jumps somewhere unrelated every
+  step and it reads as noise on a broken signal.
+- **Glitter is a STABLE pseudo-random offset per cell, with only the shared beat
+  moving.** The pattern underneath must be fixed - it is light catching a fixed
+  surface, and the surface is what makes it read as a surface.
+
+Key the scramble on a **stable identity, not the screen position**: the playlist index,
+not the visible row, or the pattern crawls when the pane scrolls.
+
+**Leave rests in the cycle.** A ramp with every step lit puts every character on some
+hue at once - confetti, and the text stops being readable. Three rest beats at the row's
+own pair out of eight, and a scatter of characters are lit at any instant.
+
+**Per-cell drawing and fullwidth glyphs:** `wmove` ONCE then `wadd_wch` sequentially, and
+let curses advance the cursor by each glyph's own width. Computing `column = cx + codepoint_index`
+is the column-vs-byte trap in a new costume - the two diverge on the first wide glyph.

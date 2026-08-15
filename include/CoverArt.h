@@ -1,4 +1,5 @@
 #pragma once
+#include "ArtCandidates.h"      // art::Candidate — pure, no json.hpp
 #include <string>
 #include <vector>
 #include <cstdint>
@@ -51,6 +52,26 @@ std::vector<uint8_t> frontThumbByMbid(const std::string& mb_id);
 std::vector<uint8_t> bytesByMbid(const std::string& mb_id);                  // Cover Art Archive
 std::vector<uint8_t> bytesByText(const std::string& artist,
                                  const std::string& album);                  // iTunes -> Deezer fallback
+
+// ─── The free-text INDEX, for the picker ────────────────────────────────────
+// The same two searches bytesByText runs, KEEPING every candidate instead of
+// resolving to one. For the art picker on discs the Cover Art Archive cannot
+// cover - Discogs releases (no MBID, so CAA is never queried) and MB releases
+// with no CAA front. That is also where the automatic pick is least trustworthy.
+//
+// TWO GETs, the same endpoints and terms bytesByText already uses. It is a
+// separate function rather than an out-parameter on bytesByText because the
+// automatic path must not change shape: this runs at PICKER time, from the
+// confirm screen, whereas bytesByText runs inside the rip worker afterwards.
+//
+// One consequence, accepted deliberately: opening the picker and choosing
+// nothing leaves the ripper to search again. Choosing anything sets the art
+// override, and then bytesByText never runs at all.
+//
+// Rows arrive in SERVICE ORDER, iTunes then Deezer - mirroring bytesByText's own
+// precedence - and are NOT re-sorted. Empty on total failure. BLOCKING.
+std::vector<art::Candidate> candidatesByText(const std::string& artist,
+                                             const std::string& album);
 
 // Download an already-resolved cover URL to image bytes. Returns {} unless the
 // body is a real raster image (guards against HTML/JSON error pages served 200).

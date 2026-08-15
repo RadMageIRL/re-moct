@@ -80,11 +80,17 @@ public:
 
     bool readRaw(uint32_t lba, uint32_t sectors, bool /*want_c2*/,
                  void* out, std::size_t out_size, std::size_t& got) override {
-        // want_c2 has no Windows expression: IOCTL_CDROM_RAW_READ returns C2 iff the
-        // drive supports it AND the output buffer is sized 2646/sector — the caller's
-        // buffer size, passed through untouched, IS the request (the baseline's exact
-        // shape). The flag exists for the SG_IO impl (Phase 3), where C2 must be
-        // requested via CDB bits. Callers detect C2 delivery from `got`.
+        // want_c2 is DISCARDED, and cannot be honoured through this IOCTL. The
+        // older comment here claimed buffer size WAS the request; that was false.
+        // RAW_READ_INFO has no C2 field and TrackMode=CDDA delivers 2352 B/sector
+        // whatever out_size says. Measured 2026-08-09, HL-DT-ST GHD3N, one probe
+        // run, same disc and sector: READ CD (0xBE) with flag byte 0x12 issued
+        // directly via SPTI returned 2646 bytes; this call with a 2646-byte buffer
+        // returned 2352. The drive advertises C2 in MODE SENSE page 2Ah and in
+        // GET CONFIGURATION feature 001Eh — the path lacks C2, not the hardware.
+        // CDRipper::probeC2 therefore always returns false on Windows.
+        // C2 was recon'd and DECLINED 2026-08-12 — docs/roadmap.md, Decisions log.
+        // The flag is live for the SG_IO impl (CdbSgIo.h, CDB byte 9), which asks.
         RAW_READ_INFO info {};
         // Windows quirk: DiskOffset uses 2048-byte sector scale even for audio.
         info.DiskOffset.QuadPart = (ULONGLONG)lba * 2048;

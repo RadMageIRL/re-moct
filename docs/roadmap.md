@@ -1134,24 +1134,49 @@ convert / art slices), kept here so they are not re-scoped by accident:
   warm-up device in `initDevice` exists for the same class of failure on the
   **FDK-AAC** path. Both scars are on the lossy path, which this scope excludes.
   Recon: `docs/RECON-bit-perfect.md`. Proposal: `docs/DESIGN-bit-perfect.md`.
-- **OPEN BUG: 24 kHz m4b audiobooks chirp, cut out, and play at the wrong pitch and
-  speed (reported 2026-08-12). Separate from bit-perfect; needs its own recon on
-  Dos's hardware.**
-  **Not a decode bug**, and that is measured rather than assumed: probes against the
-  real `AacDecoder` through the production decoder config decode all three of his
-  books with duration preserved to three decimals, a correct mono upmix (L==R on
-  every frame), and zero seek drift at 36000 s into a ten-hour file
-  (`docs/RECON-bit-perfect.md` B-R2). **An out-of-tree decode probe cannot see a
-  device bring-up failure**, which is where the remaining suspicion sits.
-  **All three symptoms may be one bug.** A device that comes up at the wrong rate
-  while being fed 44100 sounds exactly like wrong pitch and speed, and
-  chirp-then-cut is the signature the warm-up device in `AudioManager::initDevice`
-  already exists to work around - documented there as *"a chirp then nothing"* when
-  the first WASAPI bring-up coincides with the FDK-AAC decoder. **If that workaround
-  has stopped holding, it affects every AAC file and every stream, not just
-  audiobooks**, which is why this is its own job and not a footnote to a feature.
-  Ruled out: loudness. Sherlock opens ~30 dB below the Alice file, and that is
-  normal per-recording variation in the source.
+- **OPEN BUG, NOT REPRODUCIBLE, NOT IN 1.6.2: 24 kHz m4b audiobooks chirp, cut
+  out, and play at the wrong pitch and speed (reported 2026-08-12; recon
+  2026-08-13, `docs/RECON-m4b-chirp.md`).**
+  **Deliberately left out of 1.6.2 because it is UNLOCATED, not because it is
+  large.** A fix now would be a guess dressed as a change, and the two workarounds
+  already in the tree are what guessing at this failure produced last time.
+  **RULED OUT so far, each by measurement rather than argument:**
+  - **Decode.** All three books decode with duration preserved to three decimals,
+    a correct mono upmix (L==R on every frame) and zero seek drift at 36000 s into
+    a ten-hour file (`docs/RECON-bit-perfect.md` B-R2).
+  - **Device bring-up, on the isolated production path.** A probe linking the real
+    `LocalFileSource` and replicating `initDevice` including the warm-up device
+    could not reproduce it in five runs across three files, warm-up on **and** off,
+    from zero and from Dos's own resume positions. Device came up 44100 → internal
+    44100 every time, zero under-fills, device never self-stopped.
+  - **The pitch reading, on the healthy path.** A device at 48 kHz fed 44.1 kHz
+    audio would consume **+8.8%**; measured consumption was **+0.7%**. Note this
+    measures the healthy case only - it cannot speak to a failure nobody has
+    triggered.
+  - **Varispeed.** `speed_` survives a track change (`teardown()` resets the
+    resampler residual, not the speed), so it was a live candidate. Confirmed
+    2026-08-13: `[+16%]` was on screen and playback sounded correct *at that
+    speed*. **Varispeed works as intended and does not explain the symptom** - and
+    it does not survive a restart, which the symptom's absence after restart also
+    does not distinguish it by.
+  - **Loudness.** Sherlock opens ~30 dB below Alice; normal per-recording variation.
+  - **The rate indicator.** Reads `24.0 kHz -> 48` on an m4b, which is the
+    indicator working correctly - the endpoint is 48 and the file is 24 - and is
+    true whether or not the bug is present. **Not a symptom.**
+  **Both workarounds are confirmed firing:** the warm-up device inits/starts/stops
+  cleanly before the AAC decoder opens, and the forced 44100 is in effect (every
+  book reports `2 ch 44100 Hz` from a 24000/mono source).
+  **THE ONE QUESTION LEFT, for the next occurrence:** *is it the first file played
+  after launch, or only after something else played first?* That distinguishes a
+  first-bring-up failure and a per-track teardown/reinit failure - the two
+  candidates a fix would NOT have to reach the audio thread for - from the callback
+  body and crossfade arming, which it might. **Whether this needs a locked-code
+  ruling cannot be answered until it reproduces**, and that is why it is parked
+  rather than scoped.
+  **If the warm-up has stopped holding it affects every AAC file and every stream**,
+  not just audiobooks - the reason this is its own job rather than a footnote.
+  The probe is reusable: `scratchpad/m4b_play.cpp`, with `--no-warmup`,
+  `--first <file>` and `--seek <sec>`.
 - **HLS segment resume on reconnect: reported and DECLINED (2026-08-12).** After a
   network drop, `hlsConnect()` discards `hls_ = HlsState{}` as its first act, so
   `last_seq` - the highest `EXT-X-MEDIA-SEQUENCE` consumed - is never consulted and

@@ -32,7 +32,7 @@
 #include "Mp4Chapters.h"
 #include "AwesomeThemes.h"
 #include "CoverArtRender.h"
-#include "CoverArt.h"      // CaaImage - the art picker's rows
+#include "CoverArt.h"      // CaaImage + art::Candidate - the art picker's two row sources
 #include "ArtMissCache.h"   // time-bounded art negative cache (radio-art-refresh-fix)
 #include "GainScan.h"       // batch ReplayGain over a folder (batch-r128)
 #include "ConvertJob.h"     // convert-core: decode -> IEncoder batch convert engine
@@ -711,19 +711,48 @@ private:
     // The picker itself. Rows lead with the COMMENT because it is the only field
     // that discriminates - `types` says "Medium" nineteen times on the measured
     // release, and there are no dimensions in the index at all.
+    //
+    // TWO ROW SOURCES, NEVER BOTH AT ONCE. `images` is the Cover Art Archive
+    // listing; `texts` is the iTunes/Deezer fallback, filled only when the
+    // archive had nothing to list (no MBID at all, or an MB release with no CAA
+    // entry) - which is the same condition the ripper's own fallback runs on, so
+    // the picker and the rip agree about which source is in play. That mutual
+    // exclusion is why the two row LAYOUTS can differ without either looking
+    // broken: a CAA row leads with the uploader's comment, a text row is the
+    // candidate row Dos already reads in ^F and ^R.
     struct ArtPickState {
-        std::vector<CoverArt::CaaImage> images;
+        std::vector<CoverArt::CaaImage>  images;
+        std::vector<art::Candidate>      texts;
+        int         disc_tracks = 0;          // the disc's OWN count, for the header
         int         cursor  = 0;
         bool        loading = false;
         std::string note;                     // "" or why the list is empty
         int         preview_for = -1;         // row the preview belongs to
         cover::Rendered preview;
+        int  rows() const {
+            return images.empty() ? (int)texts.size() : (int)images.size();
+        }
+        // The 250px preview URL for a row, whichever source it came from. All
+        // three services publish that size, so the preview pane is identical.
+        std::string thumbUrl(int i) const {
+            if (i < 0 || i >= rows()) return {};
+            return images.empty() ? texts[(std::size_t)i].thumb_url
+                                  : images[(std::size_t)i].thumb_url;
+        }
+        // Stable per-row key for the art-grid cache.
+        std::string rowKey(int i) const {
+            if (i < 0 || i >= rows()) return {};
+            return images.empty() ? ("txt|" + texts[(std::size_t)i].source + "|"
+                                     + texts[(std::size_t)i].image_url)
+                                  : images[(std::size_t)i].id;
+        }
     } art_pick_;
     WINDOW*           art_pick_win_ = nullptr;
     std::atomic<bool> art_index_done_  { false };
     std::atomic<bool> art_thumb_done_  { false };
     std::mutex        art_pick_mtx_;
     std::vector<CoverArt::CaaImage> art_index_result_;
+    std::vector<art::Candidate>     art_text_result_;
     cover::Rendered   art_thumb_result_;
     int               art_thumb_row_ = -1;    // row the in-flight thumb is for
     int               art_thumb_want_ = -1;   // row the cursor has settled on
@@ -1080,9 +1109,41 @@ private:
     // per-frame rebuild over the stat map is work with a constant answer.
     // Invalidated by recordPlay, which is the only thing that changes the source.
     const std::unordered_map<std::string, libidx::PlayStat>& playStats();
-    void invalidatePlayStats() { play_stats_dirty_ = true; }
+    void invalidatePlayStats() { play_stats_dirty_ = true; sparkle_dirty_ = true; }
     std::unordered_map<std::string, libidx::PlayStat> play_stats_;
     bool play_stats_dirty_ = true;
+
+    // ── Most-played sparkle (playlist pane) ──────────────────────────────────
+    //
+    // The playlist rows tied for the highest play count, held as FOLDED paths so a
+    // reorder cannot invalidate them - which is why PlaylistManager::contentRevision()
+    // deliberately ignores sorts and moves. Empty means NOTHING SPARKLES, and that is
+    // a real answer, not a miss: see the two rules below.
+    //
+    // PLAYLIST-SCOPED, not library-scoped, and the reason is a fact rather than a
+    // preference. Config::track_stats counts any file played through the transport;
+    // LibraryIndex only covers configured [Library] roots after a scan. A library-
+    // scoped winner would be absent from most playlists, and would do nothing at all,
+    // silently, for anyone who never set [Library] up.
+    //
+    // THE FLOOR is max > 0: a fresh playlist is all zeros, so every row would tie.
+    // No higher threshold - a new user seeing nothing for weeks with no explanation
+    // is the worse failure.
+    //
+    // THE TIE CAP is the same failure at the other end. An album played through eight
+    // times has every row tied at 8, and forty shimmering rows carry exactly as much
+    // information as none. Above kSparkleMaxTies the annotation is suppressed whole.
+    // This is NOT a tiebreak: it never picks a winner among tied tracks. Two or three
+    // tied rows all sparkle.
+    //
+    // Cached because the scan folds a path per entry and foldPathKey allocates; at
+    // ~3.3 full redraws a second (the text-scroll beat) a 5000-row playlist would be
+    // 5000 allocations per frame on the draw path. Same shape as play_stats_ above.
+    const std::unordered_set<std::string>& sparkleWinners();
+    std::unordered_set<std::string> sparkle_winners_;
+    std::uint64_t sparkle_pl_rev_ = 0;
+    bool          sparkle_dirty_  = true;   // also set by invalidatePlayStats()
+    static constexpr std::size_t kSparkleMaxTies = 3;
     // Cap on rendered results, and on the stat views for the same reason: never-played
     // is ~89% of the collection (1,921 rows measured). The true count is shown alongside
     // when it bites, so a capped list never reads as a complete answer - a one-character

@@ -1,7 +1,8 @@
 # RE-MOCT - Music On Console Terminal
 
 **RE-MOCT** is a terminal music player, CD ripper, internet-radio client, and podcast
-client for **Windows and Linux**, written in C++20 on ncurses, miniaudio, TagLib, libFLAC, LAME,
+client for **Windows and Linux**, written in C++20 on PDCursesMod (Windows) / ncursesw (Linux),
+miniaudio, TagLib, libFLAC, LAME,
 libebur128, FDK-AAC, libopus, libvorbis, and libwavpack.
 
 It is a homage to [MOC](http://moc.daper.net/) (Music On Console) with a twist. In
@@ -242,6 +243,7 @@ shuffle=0
 awesome_mode=1
 awesome_theme=0
 eq_enabled=0
+bit_perfect=0
 nerd_icons=1
 follow_playing=1
 rip_formats=flac,mp3
@@ -260,6 +262,16 @@ seconds and `0` turns it off. `awesome_theme` is an index into the palette list 
 `F7`/`F8` cycles. `rip_formats` is a comma-separated list, and each format's quality
 lives in its own key (`flac_level`, `mp3`, `opus_bitrate`, and so on), with the `rec_`
 prefixed twins holding the same settings for stream recording.
+
+`bit_perfect` has no key and no menu on purpose - it is set here or not at all. With it
+on, RE-MOCT tries to take exclusive control of the output device and hand it a lossless
+file's samples untouched (FLAC, WavPack and WAV only; lossy sources, radio and CDs are
+excluded, since the encode already discarded what there would be to preserve). It
+verifies rather than assumes: if the device turns out to be converting anyway it hands
+it back and plays normally, which on hardware that cannot take the track's own rate is
+every time. The status line says which happened - `=` when the output really is
+untouched, `-> 48` when the rate is being converted on the way out. **That `-> 48` shows
+whether or not this is switched on**, because it is true either way.
 
 ## Fonts and Nerd Font icons
 

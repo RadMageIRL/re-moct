@@ -218,13 +218,33 @@ std::unique_ptr<core::ICdDevice> CDRipper::openDrive(const std::string& dl) {
 }
 
 // ─── C2 Error Pointer probe ───────────────────────────────────────────────────
+// Whether asking for C2 is even possible on this platform. NOT a drive property:
+// SG_IO sets the READ CD CDB's error field (CdbSgIo.h, byte 9 = 0x12) and so does
+// ask, while IOCTL_CDROM_RAW_READ has no C2 field at all and discards want_c2
+// (see readRaw in src/platform/win/CdIoWin.cpp — measured, on a drive that
+// demonstrably delivers C2 by another route). So on Windows probeC2 is not a
+// query, and its `false` says nothing whatsoever about the drive.
+//
+// This is CD-S4's distinction again: "never asked" is not the same fact as
+// "asked, and no" — the reason ARStatus::NotQueried has its own bucket. Reporting
+// them as one is what made the rip log say "C2 not supported by drive" about two
+// drives that support C2.
+#ifdef _WIN32
+static constexpr bool C2_QUERYABLE = false;
+#else
+static constexpr bool C2_QUERYABLE = true;
+#endif
+
 // Attempt a single-sector read in C2+data mode.
-// Returns true if drive supports C2 (non-zero C2 bytes returned cleanly).
+// Returns true iff C2 data actually came back — which requires BOTH that the
+// platform asked (C2_QUERYABLE) and that the drive answered. It is not a
+// capability query; do not read a false as "the drive cannot do C2".
 bool CDRipper::probeC2(core::ICdDevice& dev) {
-    // The raw-read TrackMode doesn't have a C2 mode — C2 comes back iff the drive
-    // supports it and the buffer is sized for it. Simplest probe: read sector 0
-    // (always readable) with a C2-sized buffer and check if exactly
-    // SECTOR_BYTES_C2 bytes come back; a non-C2 drive returns SECTOR_BYTES.
+    // Read sector 0 (always readable) with a C2-sized buffer and check whether
+    // exactly SECTOR_BYTES_C2 bytes come back; anything else means no C2 data
+    // arrived. Buffer size does NOT request C2 — that claim was in this comment
+    // until 2026-08-12 and is false; the request lives in the CDB, which only the
+    // SG_IO impl builds.
     uint8_t buf[SECTOR_BYTES_C2] = {};
     std::size_t got = 0;
     bool ok = dev.readRaw(0, 1, /*want_c2=*/true, buf, SECTOR_BYTES_C2, got);
@@ -1215,7 +1235,6 @@ ARTrackResult CDRipper::ripTrack(core::ICdDevice&   dev,
     uint32_t remaining = (uint32_t)track.length_lba;   // always full track length
     bool  ok        = true;
     uint32_t done_secs = 0;
-    int   total_c2_errors = 0;
     auto  rip_start = std::chrono::steady_clock::now();
 
     // ── One read, one buffer, two consumers (F0-S1, matching whipper) ──────
@@ -1251,7 +1270,6 @@ ARTrackResult CDRipper::ripTrack(core::ICdDevice&   dev,
                                   account ? &account->filled : nullptr)) {
             ok = false; break;
         }
-        total_c2_errors += c2_errs;
 
         int samples = (int)this_read * SECTOR_SAMPLES;
         const int16_t* src = reinterpret_cast<const int16_t*>(raw_buf);
@@ -1360,7 +1378,6 @@ ARTrackResult CDRipper::ripTrack(core::ICdDevice&   dev,
             p.track    = track_idx + 1;
             p.total    = total_tracks;
             p.pct      = pct;
-            p.using_c2 = use_c2;
             std::ostringstream ss;
             ss << "Track " << (track_idx+1) << "/" << total_tracks
                << "  [" << pct << "%]";
@@ -1632,7 +1649,13 @@ void CDRipper::worker(std::string          drive_letter,
     {
         FILE* lf = port::fopenUtf8(log_path, "a");
         if (lf) {
-            fprintf(lf, "C2 support  : %s\n", use_c2 ? "yes" : "no");
+            // Three outcomes, not two — see C2_QUERYABLE above. On a platform that
+            // asks, this line is character-identical to what it has always been;
+            // only the never-asked case is new, and it replaces a sentence that
+            // was wrong about the hardware.
+            fprintf(lf, "C2 support  : %s\n",
+                    !C2_QUERYABLE ? "not queried (no C2 request path on this platform)"
+                                  : use_c2 ? "yes" : "no");
             fprintf(lf, "Drive cache : defeated via 4 MB seek-flush before re-reads\n");
             fprintf(lf, "            (read-ahead cache evicted between passes so dual-pass\n");
             fprintf(lf, "            determinism reflects the platter, not the RAM cache.)\n\n");
@@ -1640,8 +1663,10 @@ void CDRipper::worker(std::string          drive_letter,
         }
     }
     if (cb) {
-        RipProgress p; p.state=RipState::Ripping; p.using_c2=use_c2;
-        p.status_msg = use_c2
+        RipProgress p; p.state=RipState::Ripping;
+        p.status_msg = !C2_QUERYABLE
+            ? "C2 not queried on this platform — standard rip with retry"
+            : use_c2
             ? "Drive supports C2 error pointers — using C2-assisted rip"
             : "C2 not supported by drive — using standard rip with retry";
         cb(p);
@@ -2923,12 +2948,17 @@ void CDRipper::worker(std::string          drive_letter,
         if (cb) { RipProgress p; p.state=RipState::Error;
                   p.status_msg="Rip error -- check disc."; cb(p); }
     } else {
-        // Build summary
-        int ar_v2=0, ar_v1=0, ar_none=0;
+        // Build summary. Only the two MATCHED counts, because only they are
+        // said: the completion message reports v2 and v1 against sel_count and
+        // has never named a third number. A no-match tally was counted here and
+        // discarded - not the same variable as the ar_none in the log block
+        // above, which IS printed and stays. The log is where the fuller
+        // accounting belongs, and it already draws CD-S4's distinction between
+        // "asked, no match" and "never asked" that this loop cannot.
+        int ar_v2=0, ar_v1=0;
         for (auto& r : ar_results) {
             if (r.status==ARStatus::Matched_v2) ++ar_v2;
             else if (r.status==ARStatus::Matched_v1) ++ar_v1;
-            else ++ar_none;
         }
         state_.store(RipState::Done);
         if (cb) {

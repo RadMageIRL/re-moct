@@ -11,6 +11,7 @@
 //  refactor; this module keeps its own httpGet, matching the current per-module pattern.)
 
 #include "CoverArt.h"
+#include "ArtCandidatesJson.h"  // art::parseItunes / parseDeezer (pure, testable)
 #include "Version.h"            // REMOCT_VERSION (single source) for the cover-art UA
 #include "core/IHttp.h"         // core::IHttp seam (transport); no windows.h/wininet here
 #include "json.hpp"             // nlohmann single-header (vendored)
@@ -265,6 +266,61 @@ std::vector<uint8_t> bytesByText(const std::string& artist,
     }
 
     return {};
+}
+
+// ─── The free-text index, for the picker ────────────────────────────────────
+// Same two endpoints and terms as bytesByText above, keeping every candidate
+// instead of resolving to one. bytesByText is NOT refactored to share this:
+// changing the automatic pick was a non-goal, and the pure half (parsing,
+// matching, the automatic marker) is unit-tested in art_candidates_test against
+// captured real responses, which is what keeps the two copies honest.
+std::vector<art::Candidate> candidatesByText(const std::string& artist,
+                                             const std::string& album) {
+    if (artist.empty() && album.empty()) return {};
+
+    // Query-term encoder — identical to the one bytesByText uses.
+    auto enc = [](const std::string& s) {
+        static const char* hex = "0123456789ABCDEF";
+        std::string o;
+        for (unsigned char c : s) {
+            if ((c>='A'&&c<='Z')||(c>='a'&&c<='z')||(c>='0'&&c<='9')||
+                c=='-'||c=='_'||c=='.'||c=='~') o += (char)c;
+            else if (c==' ') o += '+';
+            else { o += '%'; o += hex[c>>4]; o += hex[c&0xF]; }
+        }
+        return o;
+    };
+
+    const std::string term = enc(artist + " " + album);
+    std::vector<art::Candidate> out;
+
+    // iTunes first, then Deezer — the order bytesByText tries them in, kept so
+    // the list's own order says which one the automatic path would have used.
+    // BOTH are queried, unlike the automatic path which stops at the first hit:
+    // the picker's whole purpose is to show what else there was.
+    {
+        std::string url = "https://itunes.apple.com/search?term=" + term
+                        + "&entity=album&limit=10";
+        std::vector<uint8_t> body;
+        if (httpGet(url, body, "RE-MOCT/" REMOCT_VERSION)) {
+            auto v = art::parseItunes(
+                         std::string((char*)body.data(), body.size()), artist);
+            out.insert(out.end(), v.begin(), v.end());
+        }
+    }
+    {
+        std::string url = "https://api.deezer.com/search/album?q=" + term
+                        + "&limit=10";
+        std::vector<uint8_t> body;
+        if (httpGet(url, body, "RE-MOCT/" REMOCT_VERSION)) {
+            auto v = art::parseDeezer(
+                         std::string((char*)body.data(), body.size()), artist);
+            out.insert(out.end(), v.begin(), v.end());
+        }
+    }
+
+    art::markAutomatic(out, album);
+    return out;
 }
 
 // URL-only variant of bytesByText: same iTunes->Deezer search and matching,

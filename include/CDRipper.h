@@ -104,7 +104,6 @@ struct RipProgress {
     int         track    = 0;
     int         total    = 0;
     int         pct      = 0;
-    bool        using_c2 = false;
     std::string status_msg;
 };
 

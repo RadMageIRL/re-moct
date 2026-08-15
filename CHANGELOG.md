@@ -5,6 +5,165 @@ All notable changes to RE-MOCT are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.6.2] - 2026-08-13
+
+Mostly about being told the truth: what your hardware is doing to your music,
+which cover you are about to embed, and when a stream has actually died rather
+than merely paused. Two things do change how playback behaves - a short network
+drop is now usually inaudible, and a stream that dies stops instead of hanging -
+and both are described below.
+
+### Added
+
+- **Choosing the cover now works on the discs where it matters most.** The cover
+  picker listed images from the Cover Art Archive, and on a disc the archive does
+  not cover it had nothing to show - on a disc identified through Discogs it
+  refused to open at all. Those are exactly the discs where the cover RE-MOCT
+  picks by itself is least likely to be right: obscure pressings, bootlegs,
+  anything without an archive entry. The picker now falls back to the same two
+  searches the ripper would have run anyway and lists what they found, so there
+  is a choice where there used to be one image and no way to change it.
+  Each row shows the album, the year and country where the service publishes them,
+  and **how many tracks that release has** - which is usually the only thing
+  separating a standard album from its expanded edition. The disc's own track
+  count is on the line above, so the comparison is right there. Rows are marked
+  `[iT]` or `[dz]` for where they came from, and the one RE-MOCT would have picked
+  on its own is starred, so the first question answered is "what was I about to
+  get". Choosing one previews it before anything is written, exactly as the
+  archive rows already do.
+
+- **The playlist shows which track you play the most.** Play counts have been
+  kept for a long time and the only place they surfaced was the `[Library]`
+  statistics view, which meant leaving the playlist to find out. The most-played
+  track in the playlist now shimmers gently in place - no key to press, no mode
+  to switch into. If two or three tracks are tied, all of them shimmer; there is
+  no tiebreak, because there is no winner.
+  It looks like what each theme would do. In Classic the row pulses brighter and
+  dimmer, the way a CGA program marked something; in Awesome each character
+  twinkles on its own through the palette's colours, so the row glitters rather
+  than blinks.
+  **Nothing shimmers when the answer would not mean anything.** A playlist where
+  nothing has been played yet has no most-played track, so nothing shimmers - and
+  an album you have played straight through eight times has every track tied at
+  eight, where a shimmer on all forty rows says exactly as much as a shimmer on
+  none, so that is left alone too. Radio stations and CD tracks never carry play
+  counts and never shimmer. **Audiobooks never shimmer either**, and that one is
+  deliberate: reopening a book to carry on where you left off counts as playing
+  it, so a book you have picked up forty times would outrank a song you love, and
+  the shimmer would be telling you something untrue.
+
+- **The player now tells you when your music is being resampled on the way out.**
+  The rate shown while a track plays has always been the rate of the *file*, and it
+  never said anything about what reached your speakers. If your sound output runs
+  at a different rate from the track, something converts it first - and until now
+  nothing said so. The status line shows it as `44.1 kHz -> 48`. Nothing about the
+  sound has changed; what changed is that you can see it. It appears whether or not
+  you turn anything on, because it is true either way.
+  It is worth checking on your own machine, because the answer depends on the
+  hardware rather than on the music. The same library was played on two machines
+  during development and gave **opposite** answers. On the Windows box every one of
+  its eleven outputs runs at 48 kHz and none accepts 44.1, so the CD rips read
+  `44.1 kHz -> 48` and had been quietly converted for years, while a 48 kHz Opus
+  file showed nothing at all because it already matched. On the Linux box it is the
+  exact reverse: the FLACs are untouched and the Opus reads `48.0 kHz -> 44`. Same
+  files, same code, opposite results - **because this is a fact about your output
+  device, not about your collection.**
+  **A blank means the rates match, not that nothing was touched.** Sample format
+  and channel count can still be converted underneath without the rate changing,
+  and the indicator does not check those. Only the `=` below claims that nothing at
+  all was altered.
+
+- **Bit-perfect playback, for people who have the hardware for it** - a
+  `bit_perfect=1` line in `remoct.conf`, off by default and deliberately with no
+  key and no menu. When on, RE-MOCT tries to take exclusive control of the output
+  and hand it your file's samples untouched, for lossless files only (FLAC,
+  WavPack, WAV). Lossy files, radio and CDs are excluded on purpose: an MP3 or an
+  audiobook has already thrown away what there would be to preserve.
+  **It checks rather than assumes.** An audio system will happily grant exclusive
+  access and then convert anyway, so RE-MOCT compares what the device is actually
+  running against what it asked for, and if they differ it hands the device back
+  and plays normally. **On hardware that cannot take the track's rate that is every
+  time**, and the status line says so rather than claiming something untrue. It
+  shows `=` only when the output really is untouched, and `-> dsp` if the equaliser,
+  ReplayGain or the balance control is doing anything, since each of those changes
+  the samples by definition.
+  Windows and Linux both, by the same code - there is no platform-specific version
+  of any of this.
+
+- **The About screen says where the project lives.** Press `A` and it now shows
+  `github.com/RadMageIRL/re-moct` and `re-moct.app`, along with the licence.
+  Terminals do not make links clickable, so both are written to be read and typed:
+  no `https://` prefix, which costs eight columns and tells you nothing you did not
+  already know. They sit directly under the feature summary rather than at the very
+  bottom, so a short window drops the "press ? for keybindings" hint before it drops
+  the address of the project - the hint tells you to press a key you can just press.
+
+### Changed
+
+- **Housekeeping with nothing to see, noted because it affects anyone working from
+  a copy of the source.** Line endings are now settled by the repository itself
+  rather than by whatever each clone happens to have configured, so checking the
+  project out on a different machine can no longer produce a diff that looks like
+  every file was rewritten. Alongside that, three counters left behind by features
+  that were never finished have been removed - they were tallied and never read -
+  which puts the compiler's warning count back where it was before the toolchain
+  was last upgraded.
+
+### Fixed
+
+- **A radio stream that dies now stops and says so, instead of looking like it is
+  still loading.** When the network dropped for good, RE-MOCT tried to reconnect
+  ten times and then quietly gave up - but nothing on screen changed. The bar kept
+  saying `[BUFFERING]`, the scanner kept sweeping, and the player still thought it
+  was playing, so a dead stream was indistinguishable from a slow one and stayed
+  that way until you did something about it. It now stops properly and tells you
+  what happened. The reason was always there; it just had no way of reaching you.
+  **If you were recording at the time, the recording is now finished off properly
+  as well** - previously it was left open and unfinalized, because nothing ever
+  told it the stream was gone.
+
+- **Short network drops are now usually silent - as in, you do not hear them.**
+  RE-MOCT keeps several seconds of audio buffered ahead of what you are listening
+  to, and it was throwing that away the instant it noticed a problem: playback went
+  quiet immediately, before the reconnect had even been attempted. It now plays
+  what it already has while it reconnects behind the scenes, so a brief drop can
+  pass without interrupting the music at all. `[BUFFERING]` is now honest too - it
+  appears when the audio really has run out, not the moment something went wrong.
+
+- **Reconnecting no longer replays the last few seconds before jumping back to
+  live.** After recovering, the leftover buffered audio was played again first, so
+  you heard a few seconds over twice before catching up. That audio is now used
+  once, while reconnecting, and discarded when live resumes.
+
+- **The About screen names the right graphics library on Windows.** It said
+  "ncurses" on both platforms; the Windows build has not used ncurses since 1.6.1
+  and renders through PDCursesMod instead. It now says so - which is also the
+  credit PDCursesMod is owed, since RE-MOCT carries its own patches against it and
+  one of those has been contributed back upstream.
+
+- **The rip log no longer says your drive cannot do something it was never asked
+  to do.** Every rip log carried the line `C2 support : no`, and the screen said
+  *"C2 not supported by drive"*. Both were untrue about the drives here: both of
+  them support C2 error pointers, and one was measured delivering them. The
+  reason RE-MOCT saw nothing is that on Windows it never asked - the request has
+  no way through the interface Windows provides for this, so the answer was
+  always going to be "no" whatever drive was in the tray. The log now says
+  **`C2 support : not queried`**, and names the reason as the platform rather
+  than your hardware. Nothing about how a disc is read has changed, and on Linux,
+  where the request is genuinely made, the wording is exactly as it was.
+
+- **The radio scanner in Classic mode now uses Classic's colours.** The sweeping
+  bar that fills the empty space on the radio status line - the one that runs back
+  and forth while a station plays - was drawing itself in four colours borrowed
+  from the spectrum analyser, in both modes. In Awesome that is right, and it is
+  unchanged: the sweep sits directly above the spectrum strip and matches it. In
+  Classic it meant a stripe of white, cyan, yellow and green ran across a line
+  where nothing else is anything but cyan, and green and yellow appear nowhere
+  else on that row at all. Classic's sweep is now a single colour, shaded light to
+  dark by the block characters themselves - which is exactly how Classic's own
+  progress bar has always worked. The sweep, its speed and its shape are
+  unchanged; only the colour is.
+
 ## [1.6.1] - 2026-08-08
 
 ### Added
@@ -1491,6 +1650,7 @@ boundary with a **loadable plugin architecture**.
 
 [1.0.0]: https://github.com/RadMageIRL/re-moct/releases/tag/1.0.0
 
+[1.6.2]: https://github.com/RadMageIRL/re-moct/releases/tag/1.6.2
 [1.6.1]: https://github.com/RadMageIRL/re-moct/releases/tag/1.6.1
 [1.6.0]: https://github.com/RadMageIRL/re-moct/releases/tag/1.6.0
 [1.5.0]: https://github.com/RadMageIRL/re-moct/releases/tag/v1.5.0

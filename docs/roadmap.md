@@ -1085,6 +1085,214 @@ convert / art slices), kept here so they are not re-scoped by accident:
   small standalone fix; the newer convert path already writes the true MIME.
 
 ## Decisions log
+- **DONE, FULLY VERIFIED ON HARDWARE (2026-08-13): bit-perfect playback.**
+  Indicator and verification shipped together, and **all four states have now
+  fired on real hardware**: `-> 48` on a FLAC rip, `-> dsp` with the EQ on and
+  independently with ReplayGain on, *no indicator* on a 48 kHz Opus file, and
+  **`=` on a 44.1 FLAC on the Linux box with `bit_perfect=1`** - the exactness
+  check confirming an untouched path to a real DAC. **This is off the
+  unverified list**, which is now two: the art picker's fallback rows and the
+  C2 SG_IO question.
+  **Two findings worth keeping, neither of them the feature.**
+  **1 - The two machines answer oppositely.** Windows: rips read `44.1 kHz -> 48`,
+  Opus blank. Linux: rips blank, Opus reads `48.0 kHz -> 44`. Same code, same
+  library, inverted - **because this reports the output device, not the
+  collection.** On the Windows box a lossy file reached the DAC untouched while
+  the lossless rips never did, since *lossless* describes the file against its
+  master and *untouched* describes it against the DAC: different properties
+  sharing a vocabulary.
+  **2 - The check is the feature, and it earned that.** `ma_device_init` with
+  exclusive share mode returns success while silently converting - measured, an
+  exclusive 44100/f32 request comes up s16/48000 on the Windows hardware. Only
+  comparing `internalFormat`/`internalChannels`/`internalSampleRate` after init
+  means anything. `docs/lessons.md` carries it as the AccurateRip shape.
+  **Common code, no `#ifdef` anywhere in the feature**; miniaudio implements
+  `nativeDataFormats` and `shareMode` for ALSA as well as WASAPI.
+  **Scope limit to remember:** the mismatch indicator compares **rate only**, so a
+  blank means the rates match, not that nothing was touched - format and channel
+  conversion can still happen underneath. Only `=` checks all three.
+  **Not delivered, and not a defect:** a 48 or 96 kHz lossless file is still
+  decoded to 44.1 before the attempt, so it cannot reach `=` yet. Native-rate
+  decoding for non-44.1 lossless is the follow-up, and it is the part that would
+  reach `open_decoder`'s forced format - and therefore the two scars.
+  Design and measurements: `docs/DESIGN-bit-perfect.md`.
+- **SCOPE (2026-08-12): bit-perfect playback, LOSSLESS LOCAL FILES ONLY.**
+  FLAC, WavPack, WAV. Everything else is out **by scope, not by workaround**: lossy
+  sources (audiobooks, MP3, AAC) have already discarded what there would be to be
+  faithful to; radio and streams are a lossy transcode at a rate the station picked,
+  and an exclusive device cannot be held across reconnects and rate changes from a
+  source we do not control; CD is 44.1/16 by definition and already hard-coded.
+  That scope is also what every other player does - audiophile players do
+  bit-perfect on local lossless and none do it on radio or spoken word.
+  **The scope dissolves most of the gapless problem** (`docs/RECON-bit-perfect.md`
+  B-R4): a folder of CD rips is all 44.1, so gapless never meets a rate change.
+  **Crossfade across a rate change stays structurally impossible** - one device has
+  one rate - and the feature says so rather than pretending otherwise.
+  **It also clears the two scars**, which is the burden this feature had to
+  discharge: `LocalFileSource.cpp:161` forces 44100 because opening at a file's
+  native rate caused chirp-then-silence on *a 24 kHz mono audiobook*, and the
+  warm-up device in `initDevice` exists for the same class of failure on the
+  **FDK-AAC** path. Both scars are on the lossy path, which this scope excludes.
+  Recon: `docs/RECON-bit-perfect.md`. Proposal: `docs/DESIGN-bit-perfect.md`.
+- **OPEN BUG, NOT REPRODUCIBLE, NOT IN 1.6.2: 24 kHz m4b audiobooks chirp, cut
+  out, and play at the wrong pitch and speed (reported 2026-08-12; recon
+  2026-08-13, `docs/RECON-m4b-chirp.md`).**
+  **Deliberately left out of 1.6.2 because it is UNLOCATED, not because it is
+  large.** A fix now would be a guess dressed as a change, and the two workarounds
+  already in the tree are what guessing at this failure produced last time.
+  **RULED OUT so far, each by measurement rather than argument:**
+  - **Decode.** All three books decode with duration preserved to three decimals,
+    a correct mono upmix (L==R on every frame) and zero seek drift at 36000 s into
+    a ten-hour file (`docs/RECON-bit-perfect.md` B-R2).
+  - **Device bring-up, on the isolated production path.** A probe linking the real
+    `LocalFileSource` and replicating `initDevice` including the warm-up device
+    could not reproduce it in five runs across three files, warm-up on **and** off,
+    from zero and from Dos's own resume positions. Device came up 44100 → internal
+    44100 every time, zero under-fills, device never self-stopped.
+  - **The pitch reading, on the healthy path.** A device at 48 kHz fed 44.1 kHz
+    audio would consume **+8.8%**; measured consumption was **+0.7%**. Note this
+    measures the healthy case only - it cannot speak to a failure nobody has
+    triggered.
+  - **Varispeed.** `speed_` survives a track change (`teardown()` resets the
+    resampler residual, not the speed), so it was a live candidate. Confirmed
+    2026-08-13: `[+16%]` was on screen and playback sounded correct *at that
+    speed*. **Varispeed works as intended and does not explain the symptom** - and
+    it does not survive a restart, which the symptom's absence after restart also
+    does not distinguish it by.
+  - **Loudness.** Sherlock opens ~30 dB below Alice; normal per-recording variation.
+  - **The rate indicator.** Reads `24.0 kHz -> 48` on an m4b, which is the
+    indicator working correctly - the endpoint is 48 and the file is 24 - and is
+    true whether or not the bug is present. **Not a symptom.**
+  **Both workarounds are confirmed firing:** the warm-up device inits/starts/stops
+  cleanly before the AAC decoder opens, and the forced 44100 is in effect (every
+  book reports `2 ch 44100 Hz` from a 24000/mono source).
+  **THE ONE QUESTION LEFT, for the next occurrence:** *is it the first file played
+  after launch, or only after something else played first?* That distinguishes a
+  first-bring-up failure and a per-track teardown/reinit failure - the two
+  candidates a fix would NOT have to reach the audio thread for - from the callback
+  body and crossfade arming, which it might. **Whether this needs a locked-code
+  ruling cannot be answered until it reproduces**, and that is why it is parked
+  rather than scoped.
+  **If the warm-up has stopped holding it affects every AAC file and every stream**,
+  not just audiobooks - the reason this is its own job rather than a footnote.
+  The probe is reusable: `scratchpad/m4b_play.cpp`, with `--no-warmup`,
+  `--first <file>` and `--seek <sec>`.
+- **HLS segment resume on reconnect: reported and DECLINED (2026-08-12).** After a
+  network drop, `hlsConnect()` discards `hls_ = HlsState{}` as its first act, so
+  `last_seq` - the highest `EXT-X-MEDIA-SEQUENCE` consumed - is never consulted and
+  every reconnect re-anchors to the live edge. The segment-oriented resume HLS
+  makes possible is therefore **available in principle and not implemented**, and
+  that is now a decision rather than an omission.
+  **The band argument is the reason, and it is what stops this being re-derived:**
+  the ring cushion already covers outages up to roughly six seconds *invisibly*
+  (the drain landed 2026-08-12), and an HLS live window is only about three
+  segments at `EXT-X-TARGETDURATION` - roughly thirty seconds - beyond which the
+  server has nothing left to resume into. **So resume can only pay between about
+  6 s and 30 s.** Inside even that band it buys continuity of *content*, not of
+  *time*: the listener falls behind live by the length of the outage and stays
+  behind, on a live radio stream, which is arguably not what they want.
+  **The placement problem is the second reason.** `hlsConnect` is shared by first
+  connect, ad re-pin and network reconnect, and only the third wants this - so it
+  needs a reason-for-connecting parameter that does not exist, threaded through the
+  re-pin machinery, which is off limits by standing ruling.
+  **Reopen only on new information:** a measured complaint about the 6-30 s band
+  specifically, or a change that gives `hlsConnect` a caller-intent parameter for
+  some other reason. Recon: `docs/RECON-stream-network-recovery.md` S-R3; proposal
+  and the rest of the slice: `docs/DESIGN-stream-recovery.md`.
+- **OPEN VERIFICATION: the art picker's iTunes/Deezer rows have never run against
+  a real disc (2026-08-12). Shipped gated, not live-tested.**
+  **This is open, not decided.** The feature is built, both toolchains green, and
+  its pure half is unit-tested against captured real API responses
+  (`tests/art_candidates_test.cpp`) - but **the path that matters has never
+  executed on hardware**, because reaching it needs a disc that does not exist in
+  this collection.
+
+  **What is untested and what is not:**
+
+  - **Untested:** the fallback rows themselves. Reaching them requires a disc
+    where the Cover Art Archive comes up empty - either a **Discogs-sourced
+    release** (no MBID, so CAA is never queried) or an **MB release with no CAA
+    front cover**. Dos has neither to hand, confirmed 2026-08-12. So nothing has
+    ever exercised `CoverArt::candidatesByText` live, nor the picker drawing
+    `art::Candidate` rows, nor choosing one and embedding it.
+  - **Tested and green:** the CAA half is unchanged and behaves as before - the
+    picker on a normal disc still shows comment-led archive rows. The parsing,
+    the artist gate, the automatic marker and the row layout are all pinned by
+    unit tests against responses captured from the live APIs.
+
+  **What would settle it, and nothing less will:** a rip on a disc that resolves
+  to a Discogs release, or to an MB release whose CAA entry has no front cover.
+  One screen decides it - open the picker (`P` on the confirm modal) and see a
+  list of albums with `[iT]` / `[dz]` tags and a starred automatic row, where the
+  picker used to refuse to open. **A synthetic test cannot substitute:** the
+  untested part is precisely the live search, the live thumbnails and the
+  picker's behaviour when a real release has no archive entry.
+
+  **Until then, treat the fallback path as unproven.** Same standing as the C2
+  hardware question below: recorded rather than chased, harmless while nobody
+  relies on it, and **not** to be cited as working. Design and the four row
+  decisions: the untracked `docs/DESIGN-art-picker-fallback-rows.md`.
+- **C2 error pointers: recon'd and DECLINED (2026-08-12). Do not re-open without
+  new information.** Both drives in hand support C2 and one was proven to deliver
+  it - measured, not assumed: MODE SENSE page 2Ah and GET CONFIGURATION 001Eh both
+  advertise it on the ASUS SDRW-08U7M-U and the HL-DT-ST GHD3N, and READ CD (0xBE)
+  with flag byte 0x12 issued via SPTI returned 2646 bytes/sector on the GHD3N. The
+  same drive, disc and sector through `IOCTL_CDROM_RAW_READ` with a 2646-byte
+  buffer returned 2352, because that IOCTL has no C2 field - so `probeC2` has
+  always returned false on Windows and the rip log's *"C2 not supported by drive"*
+  names the hardware for a limitation of the path. **That is now a stated fact in
+  the source, not a discovery waiting to be re-made** (`readRaw` in
+  `src/platform/win/CdIoWin.cpp`, and the seam contract in `include/core/ICdIo.h`
+  - both comments said the opposite until this date and were corrected here).
+  **Declined anyway, for three reasons that are independent of the above:** no
+  reference ripper wants it (cdparanoia and whipper decline C2 outright; EAC's own
+  guidance is to leave it **off** even on capable drives, because no test can
+  establish that a drive reports *all* uncorrectable errors); **no test material**
+  (every disc in hand is in good condition, so the error paths cannot be
+  exercised, and buying a damaged disc to test a feature nobody asked for is the
+  wrong order); and **no complaint driving it** - it was raised as a question, not
+  a want. The dead remnants (`total_c2_errors`, `RipProgress::using_c2`) were
+  deleted the same day, and the rip log stopped reporting a drive failure it
+  never tested for - **on Windows it now says "not queried", the same shape as
+  CD-S4's `ARStatus::NotQueried`** ("never asked" is not "asked, and no"); the
+  Linux text is character-identical to what it always was. The working C2 request
+  on the SG_IO side (`CdbSgIo.h`, CDB byte 9) is untouched and still correct.
+  **Reopen only on new information: a damaged disc to test against, or a reference
+  implementation changing its mind.** Full recon in the untracked
+  `docs/RECON-c2-capability.md` / `docs/RECON-c2-integration.md`.
+  **One question the decline does NOT close - see the next entry.**
+- **OPEN HARDWARE QUESTION: does the GHD3N answer C2 over SG_IO? Unverified, and
+  the reasoning that said it was safe rested on something false (2026-08-12).**
+  **This is open, not decided.** It sits here because it is a consequence of the
+  C2 recon above and this is where a future session already has to look - but it
+  is not covered by that decline, and declining C2 does not answer it.
+
+  `docs/phase3-slice6-design.md` §2 accepted an honest limit on the premise that
+  **"GHD3N is non-C2 (baseline prints 'C2 support: no')"**. That premise was never
+  a drive fact. Both platforms produced `probe false`, and the doc read the
+  agreement as two mechanisms converging on a property of the drive:
+
+  - **Windows arm - now known to prove nothing.** `IOCTL_CDROM_RAW_READ` discards
+    `want_c2`, so `got == 2352` was guaranteed for any drive, C2-capable or not.
+  - **Linux arm - unverified.** It claims byte 9 = `0x12` produced CHECK CONDITION
+    *because the drive is non-C2*. The drive is **not** non-C2: it advertises C2 on
+    both MMC queries and delivered 2646 bytes to a direct `READ CD` over SPTI.
+
+  **Why it matters:** if the CHECK CONDITION had some other cause, then on real
+  Linux with this drive `probeC2` returns **true**, `use_c2` is **true**, and the
+  rip runs the C2 de-interleave in `readSectors` - **a path that has never executed
+  on hardware on any platform.** It is reachable code reached by a real
+  configuration, not dead code. Nothing depends on it while C2 stays declined and
+  no Linux box here has a drive, which is exactly why it is recorded rather than
+  chased.
+
+  **What would settle it, and nothing less will:** RE-MOCT on a real Linux install
+  with the GHD3N attached (not a hypervisor's virtual CD - see the lessons.md
+  "CD transport / SG_IO" entry on why a virtualized drive is a different drive).
+  Run a rip and read one line: `C2 support  : yes` means the premise was wrong and
+  the de-interleave is live and untested; `: no` means it holds, and the *reason*
+  should then be captured from the sense data rather than assumed again. Either
+  answer closes this; neither can be reached from Windows or from WSL as it stands.
 - **Hidden-audio survey closed: two of three cases need no build (2026-07-24).**
   Between-tracks gap audio is already captured correctly as append-to-previous
   (the dBpoweramp/AccurateRip convention, verified byte-exact on *Hello Nasty*),

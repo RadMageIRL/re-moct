@@ -55,6 +55,13 @@ std::string PluginSource::currentArtUrl() const {
     return self_ ? pullString(self_, plugin_->art_url) : std::string();
 }
 
+// v1 slot (remoct_plugin.h, above the appended-field block), so no reach check -
+// only the per-fn null check every v1 accessor here does. pullString handles a
+// null fn by returning "", which is also the right answer for "no error".
+std::string PluginSource::lastError() const {
+    return self_ ? pullString(self_, plugin_->last_error) : std::string();
+}
+
 double PluginSource::positionSec() const {
     return (self_ && plugin_->position_sec) ? plugin_->position_sec(self_) : 0.0;
 }

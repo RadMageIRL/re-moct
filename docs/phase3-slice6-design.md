@@ -97,6 +97,20 @@ so user-data=bit4 (0x10), C2-error-block=bits2-1 (0x02) → 0x10 / 0x12. Matches
    *Mandatory pre-check: before the rip, log Linux `model()` and confirm it
    resolves to the identical +6 offset as the Windows baseline. Check, don't assume.*
 
+> **CORRECTION 2026-08-12 - the premise of item 2 below is FALSE.** The GHD3N is **not** a non-C2
+> drive: it advertises C2 in MODE SENSE page 2Ah and GET CONFIGURATION 001Eh, and it returned 2646
+> bytes to a direct `READ CD` (0xBE) flag `0x12` over SPTI. The Windows arm of the "convergence"
+> below was never a drive fact - `IOCTL_CDROM_RAW_READ` discards `want_c2` entirely, so `got=2352`
+> was guaranteed regardless of drive. **The Linux arm's claimed mechanism (byte 9 = `0x12` →
+> CHECK CONDITION *because the drive is non-C2*) is therefore unverified against the drive's real
+> capability**, and cannot be re-tested today: the WSL box has no `/dev/sr*`. If the GHD3N does
+> answer C2 over SG_IO, `use_c2` is TRUE on Linux and the rip takes a de-interleave path that has
+> never run on hardware. **Tracked as an OPEN HARDWARE QUESTION in `docs/roadmap.md`, the entry
+> immediately after the C2 decline** - that entry is the record, including what would settle it
+> (RE-MOCT on a real Linux install with the GHD3N attached). **Item 2 below is not established; do
+> not cite it as an accepted limit until that runs.** The Windows log line changed the same day and
+> is now *"not queried"*; Linux's is unchanged.
+
 2. **The C2 probe converges by two mechanisms - accepted limit.** GHD3N is
    non-C2 (baseline prints **"C2 support: no"**). Windows: 2646 buffer →
    `got=2352` → `ok && got==2646` false. Linux: byte9=`0x12` on a non-C2 drive →

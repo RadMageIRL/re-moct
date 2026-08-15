@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <thread>
 #include <atomic>
+#include <cstdint>
 #include <functional>
 
 struct PlaylistEntry {
@@ -62,14 +63,17 @@ public:
     void removeIf(Pred pred) {
         size_t old_current = current_;
         size_t removed_before = 0;
+        size_t removed = 0;
         for (size_t i = 0; i < entries_.size(); ) {
             if (pred(entries_[i])) {
                 if (i < old_current) ++removed_before;
                 entries_.erase(entries_.begin() + (std::ptrdiff_t)i);
+                ++removed;
             } else {
                 ++i;
             }
         }
+        if (removed) ++content_rev_;   // membership changed; see contentRevision()
         if (old_current >= removed_before)
             current_ = old_current - removed_before;
         else
@@ -119,6 +123,21 @@ public:
     // Query
     std::size_t size()    const { return entries_.size(); }
     bool        empty()   const { return entries_.empty(); }
+    // ── Membership fingerprint, for caches keyed on WHICH tracks are in the list ──
+    //
+    // Bumped by every mutation that changes the SET of entries (add, remove, clear,
+    // the async drain) and DELIBERATELY NOT by a reorder - sort, move, shuffle and a
+    // display-title refresh all leave it alone, because the set is the same set.
+    //
+    // That is the contract, not an oversight: the caller this exists for (the
+    // playlist pane's most-played sparkle) caches folded PATHS, which a reorder
+    // cannot invalidate. A counter that also moved on a sort would make it recompute
+    // for an answer that cannot have changed. If a future caller needs "did the rows
+    // move", that is a different question and wants a different counter - do not
+    // widen this one, because widening it silently breaks the caller above.
+    //
+    // A dedup'd add is not a change: those paths return early, above the bump.
+    std::uint64_t contentRevision() const { return content_rev_; }
     // index identity for seek/auto-advance; UI "playing row" is UIManager::nowPlayingRow().
     std::size_t current() const { return current_; }
     const PlaylistEntry&              at(std::size_t i) const { return entries_.at(i); }
@@ -196,6 +215,7 @@ private:
     void fireRepeatChange() { if (on_repeat_change_) on_repeat_change_(repeat_); }
     std::function<void(RepeatMode)> on_repeat_change_;   // see setRepeatChanged
     std::vector<PlaylistEntry> entries_;
+    std::uint64_t content_rev_ = 0;   // see contentRevision()
     std::size_t current_ = 0;
     RepeatMode  repeat_  = RepeatMode::Off;
     bool        shuffle_ = false;

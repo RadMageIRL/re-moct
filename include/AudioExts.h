@@ -51,6 +51,16 @@ inline std::string extensionOf(const std::string& path) {
     return ext;
 }
 
+// Losslessly-encoded local formats — the ONLY scope bit-perfect playback applies
+// to (docs/DESIGN-bit-perfect.md). A lossy encode has already discarded what
+// there would be to be faithful to, so preserving its samples exactly preserves
+// the encoder's approximation, not the recording. .aiff/.aif are not listed
+// because nothing in the tree decodes them today; add them here if that changes.
+inline bool isLosslessPath(const std::string& path) {
+    const std::string ext = extensionOf(path);
+    return ext == ".flac" || ext == ".wv" || ext == ".wav";
+}
+
 inline bool isSupportedAudio(const std::string& path) {
     const std::string ext = extensionOf(path);
     if (ext.empty()) return false;

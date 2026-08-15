@@ -1629,6 +1629,23 @@ void UIManager::run() {
         if (audio_.takeStreamFailed())
             showTrackToast("Radio stream connect FAILED", "", "");
 
+        // A stream that was playing and has now died for good. The producer
+        // exhausts its reconnect budget and returns; nothing else moved, so the
+        // app sat in stream mode showing [BUFFERING] forever - indistinguishable
+        // from a stream that is merely slow, which is the one thing that marker
+        // must never be able to mean. Poll here rather than latch: takeStreamFailed
+        // is the CONNECT worker's latch and giving it a second meaning would make
+        // its name untrue.
+        //
+        // stop() rather than bespoke teardown, and the order matters: its first
+        // act is endRecording(), so a stream that dies mid-recording finalizes the
+        // capture instead of leaving the file open forever.
+        if (audio_.streamLost()) {
+            const std::string why = audio_.streamLastError();
+            audio_.stop();                       // clears stream mode -> this cannot re-fire
+            showTrackToast("Stream lost", why, "");
+        }
+
         // Windows-console size poll + forced ~80ms repaint. This whole heartbeat is
         // a Windows-ONLY workaround: ConPTY (Windows Terminal/conhost) doesn't
         // deliver KEY_RESIZE reliably, so we poll the window rect and force a full
@@ -3848,6 +3865,31 @@ static std::string fileTypeTag(const std::string& path) {
     return "";   // unknown extension: no tag (safer than guessing)
 }
 
+// ─── Per-character sparkle phase (Awesome) ──────────────────────────────────
+//
+// A STABLE pseudo-random offset per (playlist row, character), so neighbouring
+// characters sit at unrelated points in the twinkle cycle.
+//
+// Why not `+1` per column: a straight ramp makes the cycle TRAVEL along the row -
+// a wave, which reads as one effect moving rather than many characters twinkling
+// independently. Scrambling the index is what turns it into glitter.
+//
+// STABLE is the other half, and it matters as much: the offset must depend only on
+// where the character IS, never on the frame. A hash that changed per frame would
+// re-roll every cell every step and read as static/noise, not as light catching a
+// surface. Only the shared beat moves; the pattern underneath is fixed.
+//
+// Keyed on the PLAYLIST INDEX rather than the screen row, so two sparkling rows
+// decorrelate from each other and neither pattern crawls when the pane scrolls.
+//
+// Bit-mix is the usual xorshift-multiply; the constants are arbitrary odd values.
+// This is decoration, so the only requirement is that it looks unpatterned.
+static inline unsigned sparkleCellPhase(std::size_t row, std::size_t col) {
+    unsigned h = (unsigned)row * 2654435761u ^ (unsigned)col * 2246822519u;
+    h ^= h >> 13; h *= 3266489917u; h ^= h >> 16;
+    return h;
+}
+
 void UIManager::drawPlaylist() {
     werase(win_playlist_);
     int rows, cols;
@@ -3932,6 +3974,21 @@ void UIManager::drawPlaylist() {
     // once before the loop - the accessor scans the playlist, so a per-row call
     // would be O(n^2) on the draw path.
     const std::optional<std::size_t> now_row = nowPlayingRow();
+    // Most-played sparkle. The winner set is cached (see sparkleWinners()); empty is
+    // the common answer and costs a bool test per row.
+    //
+    // THE BEAT IS ALREADY RUNNING. text_scroll_offset_ advances every ~300ms and sets
+    // redraw_needed_ unconditionally (tickFrame), which drives a full drawAll() - so
+    // this pane already repaints ~3.3 times a second in both modes, playing or idle,
+    // and the shimmer costs NO new frames. drawAnimatedPanes deliberately excludes
+    // this pane, so the 80ms marquee tick is not what animates it and forcing redraws
+    // there to go faster would buy a strobe, not a shimmer.
+    const std::unordered_set<std::string>& sparkle = sparkleWinners();
+    // HALF the text-scroll rate, same source: the offset steps every ~300ms, the
+    // sparkle advances every OTHER step (~600ms). Both modes take the halving -
+    // Classic's whole-row pulse read as a flash at 1.7Hz and reads as a breath at
+    // 0.83Hz, which is what a pulse should do.
+    const unsigned sparkle_phase = (unsigned)(text_scroll_offset_ / 2);
     for (int i = 0; i < visible; ++i) {
         size_t idx = (size_t)(pl_scroll_ + i);
         if (idx >= playlist_.size()) break;
@@ -3943,6 +4000,28 @@ void UIManager::drawPlaylist() {
         else if (cursor)            { rpair = CP_SELECTED_UNFOCUSED; rattr = A_BOLD; }
         else if (playing)           { rpair = CP_STATUS_OK; rattr = A_BOLD; }
         else                        { rpair = CP_DIM;       rattr = A_BOLD; }
+        // Sparkle rides ON TOP of the pair the precedence chain just chose, and never
+        // competes for the mark cell (already contended by "> ", the CD "* " and the
+        // Nerd play glyph). Vanishing exactly when the row is under the cursor or
+        // playing - when someone is most likely to be looking at it - is the worst
+        // behaviour available, so the cursor/playing rows shimmer by ATTRIBUTE while
+        // keeping their colour.
+        bool twinkle = false;
+        if (!sparkle.empty() && sparkle.count(libidx::detail::foldPathKey(e.path))) {
+            if (aw && !cursor && !playing) {
+                // Awesome: PER CHARACTER, drawn in the twinkle loop below - the row
+                // does not change colour as a unit, each character rides its own
+                // phase. That is what makes the two modes read as different idioms
+                // rather than one effect tinted twice.
+                twinkle = true;
+            } else {
+                // Classic, and any cursor/playing row: a whole-row intensity pulse,
+                // which is what a CGA program would do and which composes with any
+                // pair. NOT A_BLINK - depending on PDCursesMod wingui's handling of
+                // it is not something to build a feature on.
+                rattr = (sparkle_phase % 2) ? A_NORMAL : A_BOLD;
+            }
+        }
         wattron(win_playlist_, COLOR_PAIR(rpair) | rattr);
         const bool ico = config_.nerd_icons;
         std::string mark = (playing && !ico) ? "> " : "  ";
@@ -3972,7 +4051,40 @@ void UIManager::drawPlaylist() {
         std::string ftcol = ftw ? (padToWidth(ftype, 4) + " ") : "";
         std::string line = " " + mark + name + " " + ftcol + dur + " ";
         std::wstring wline = utf8_to_wide(padToWidth(line, cw));
-        mvwaddnwstr(win_playlist_, i+1, cx, wline.c_str(), (int)wline.size());
+        if (twinkle) {
+            // Awesome per-character sparkle. The ramp rests at the ROW'S OWN pair for
+            // three beats (-1), then rises through the theme's viz hues and falls back
+            // - so at any instant most characters sit at the row colour and a scatter
+            // of them are lit. A cycle with no rest would put every character on some
+            // viz hue at once, which is confetti rather than glitter, and it would
+            // cost the title its readability.
+            //
+            // _B variants and CP_VIZ_TIP ONLY. The solid CP_VIZ_* pairs are fg==bg and
+            // would paint the row out; these are the same hues on the base bg.
+            static const short kTwinkle[8] = {
+                -1, -1, -1, CP_VIZ_LOW_B, CP_VIZ_MID_B, CP_VIZ_HIGH_B,
+                CP_VIZ_TIP, CP_VIZ_MID_B };
+            // wmove ONCE, then wadd_wch sequentially: curses advances the cursor by
+            // each glyph's OWN width, so this stays correct for fullwidth CJK.
+            // Indexing columns by codepoint would not - the two diverge the moment a
+            // title holds a wide glyph, and that is the column-vs-byte trap this
+            // codebase already paid for once.
+            //
+            // The padding spaces take a pair too and are unaffected by it: every pair
+            // here shares CP_DIM's base bg in Awesome, and a space paints bg only. So
+            // the twinkle shows on glyphs and nowhere else, which is what "per
+            // character" should mean.
+            wmove(win_playlist_, i+1, cx);
+            for (std::size_t k = 0; k < wline.size(); ++k) {
+                const unsigned ph = (sparkle_phase + sparkleCellPhase(idx, k)) % 8u;
+                const short    tp = kTwinkle[ph];
+                cchar_t cc; wchar_t s[2] = { wline[k], 0 };
+                setcchar(&cc, s, rattr, (tp < 0) ? rpair : tp, nullptr);
+                if (wadd_wch(win_playlist_, &cc) == ERR) break;   // ran out of row
+            }
+        } else {
+            mvwaddnwstr(win_playlist_, i+1, cx, wline.c_str(), (int)wline.size());
+        }
         if (ico && playing) {   // play glyph on the reserved mark cell
             cchar_t cc;
             wchar_t s[2] = { L'\uf04b', 0 };  // play
@@ -4934,7 +5046,18 @@ void UIManager::drawAbout() {
     static const Line info[] = {
         { "Music On Console Terminal",      true  },
         { "",                               false },
-#ifdef _WIN32
+        // The curses library named here is the one actually LINKED. It said
+        // "ncurses" on both platforms, which was false for every shipped Windows
+        // build: that is PDCursesMod wingui, vendored, and REMOCT_PDCURSES is the
+        // same switch CMake gates the link on. Naming it is also the whole of the
+        // PDCursesMod credit - RE-MOCT vendors it, patches it (refresh.c, the
+        // fullwidth-glyph abort) and has one fix upstream as #386, which earns a
+        // mention; a separate credit line would cost a row to say something this
+        // line can say by being correct. The other dozen dependencies stay
+        // unnamed, as they already were.
+#if defined(_WIN32) && defined(REMOCT_PDCURSES)
+        { "Version v" REMOCT_VERSION "-win  |  C++20  |  PDCursesMod  |  miniaudio  |  TagLib", false },
+#elif defined(_WIN32)
         { "Version v" REMOCT_VERSION "-win  |  C++20  |  ncurses  |  miniaudio  |  TagLib", false },
 #else
         { "Version v" REMOCT_VERSION "-linux  |  C++20  |  ncurses  |  miniaudio  |  TagLib", false },
@@ -4945,20 +5068,42 @@ void UIManager::drawAbout() {
         { "crossfade, visualizer, lyrics, BPM detection and bookmarks.", false },
         { "goto path navigation with tab complete", false },
         { "",                               false },
+        // ABOVE "Press ?" ON PURPOSE. The loop below stops at the pane's last row,
+        // so whatever sits lowest is what a short terminal drops first - and the
+        // repo link is the thing this screen was missing, while the keybinding
+        // hint is discoverable by pressing the key it names.
+        //
+        // No "https://" on either: it costs 8 columns for no information, the
+        // pane is only HALF the screen wide, and it would make these two
+        // inconsistent since re-moct.app has no scheme. Both are here to be read
+        // and typed, and both work typed as they stand.
+        { "github.com/RadMageIRL/re-moct",  false },
+        { "re-moct.app  |  MIT licensed",   false },
+        { "",                               false },
         { "Press ? for keybindings",        false },
     };
 
     int row = logo_rows + 3;
     for (const auto& line : info) {
         if (row >= rows - 1) break;
-        int tx = std::max(1, (cols - (int)strlen(line.text)) / 2);
+        // Centre by DISPLAY COLUMNS, not bytes. Every line here is ASCII today so
+        // the two agree, but this pane shares its width machinery with the rest of
+        // the UI and byte length is the trap that produced the 1.6.1 fold work.
+        int tx = std::max(1, (cols - dispWidth(line.text)) / 2);
+        // BOUNDED. mvwaddstr wraps at the right margin rather than stopping, so a
+        // line wider than the pane spilled onto the row below and pushed the
+        // layout apart. That is reachable today and not new: the pane is HALF the
+        // screen, so the version line needs a ~134-column terminal to fit and the
+        // logo ~128. Bounding turns a wrap into a clean cut at the border.
+        const int room = cols - tx - 1;
+        if (room <= 0) { ++row; continue; }
         if (line.bold) {
             wattron(w, COLOR_PAIR(CP_TITLE) | A_BOLD);
-            mvwaddstr(w, row, tx, line.text);
+            mvwaddnstr(w, row, tx, line.text, room);
             wattroff(w, COLOR_PAIR(CP_TITLE) | A_BOLD);
         } else if (line.text[0]) {
             wattron(w, COLOR_PAIR(CP_DIM) | A_BOLD);
-            mvwaddstr(w, row, tx, line.text);
+            mvwaddnstr(w, row, tx, line.text, room);
             wattroff(w, COLOR_PAIR(CP_DIM) | A_BOLD);
         }
         ++row;
@@ -5960,6 +6105,28 @@ void UIManager::drawProgress() {
         if (!meta.empty()) meta += "  ";
         meta += std::to_string(track.sample_rate/1000)+"."+
                 std::to_string((track.sample_rate%1000)/100)+" kHz";
+        // ── What actually reaches the DAC (docs/DESIGN-bit-perfect.md) ──────
+        // The number above is the FILE's rate, read from its tags. It has never
+        // said anything about the output, and on hardware whose endpoints do not
+        // offer that rate the two differ on every single track - measured here,
+        // all 11 WASAPI endpoints report 48000 and none offers 44100, so every
+        // 44.1 rip is resampled by Windows before it is heard.
+        //
+        // THE MISMATCH IS NOT GATED behind the bit_perfect flag. It is true
+        // whether or not anyone asked for it, it costs the same three characters,
+        // and making someone opt in to learn that their music is resampled buries
+        // the one fact that applies to the hardware they actually own. The claims
+        // ARE gated, because a claim is only meaningful about a mode you chose.
+        // ASCII "->" and "=", not an arrow glyph: this row is drawn with the
+        // NARROW curses calls, which do not decode UTF-8 (the 1.6.1 fold work).
+        const uint32_t out_rate = audio_.endpointMixRate();
+        if (audio_.bitPerfectActive()) {
+            meta += " =";                            // verified exact, nothing between
+        } else if (audio_.bitPerfectRequested() && audio_.dspActive()) {
+            meta += " -> dsp";                       // scaling: no claim can hold
+        } else if (out_rate > 0 && (int)out_rate != track.sample_rate) {
+            meta += " -> " + std::to_string(out_rate / 1000);   // "44.1 kHz -> 48"
+        }
     }
     if (track.channels > 0) {
         if (!meta.empty()) meta += "  ";
@@ -6052,21 +6219,37 @@ void UIManager::drawProgress() {
             if (steps > 0) scanner_last_ = now;
             if (scanner_pos_ < 0) scanner_pos_ = 0;      // window shrank since last frame
 
-            // Bright head (viz_peak) + a long gradient tail (viz_high -> mid -> low)
-            // trailing kScannerTail cells in the travel direction. viz pairs paint
-            // solid theme-coloured cells, so each palette gets its own scanner and it
-            // rhymes with the spectrum.
+            // Bright head + a long gradient tail trailing kScannerTail cells in the
+            // travel direction. THE GLYPH RAMP IS THE GRADIENT and is identical in
+            // both modes; only the colour differs.
+            //
+            // Awesome: the four solid viz pairs, so the sweep rhymes with the
+            // spectrum strip drawn right beneath it. Unchanged.
+            //
+            // Classic: ONE pair, shaded by glyph alone - the technique the [#---] bar
+            // and Awesome's own comet already use (that comet's whole gradient is
+            // glyph density inside a single CP_PROGRESS attron, below). Taking the
+            // four viz pairs in BOTH modes made this the only per-cell-coloured thing
+            // in a row that is otherwise one pair, so Classic drew white->cyan->
+            // yellow->green across a stream bar whose only other colour is CP_TITLE -
+            // green and yellow appear nowhere else in that row. The stream branch
+            // returns above the awesome_mode branch, which is why it had no mode gate
+            // at all. CP_TITLE and not CP_PROGRESS: CP_PROGRESS is white-on-blue in
+            // Classic and solid blocks would paint a slab across the idle gap, a bar
+            // where there is no bar. Classic gets no 14th theme role for one widget.
+            const bool aw_scan = config_.awesome_mode;
             for (int i = 0; i < track_w; ++i) {
                 const int behind = (scanner_dir_ > 0) ? (scanner_pos_ - i) : (i - scanner_pos_);
                 if (behind < 0 || behind > kScannerTail) continue;   // ahead of head / past the tail
-                wchar_t g; short pair;
-                if (behind == 0) { g = 0x2588; pair = CP_VIZ_PEAK; }             // █ head
+                wchar_t g; short vpair;
+                if (behind == 0) { g = 0x2588; vpair = CP_VIZ_PEAK; }            // █ head
                 else {
                     const float f = (float)behind / (kScannerTail + 1);          // 0..1 down the tail
-                    if      (f < 0.34f) { g = 0x2593; pair = CP_VIZ_HIGH; }      // ▓ near
-                    else if (f < 0.67f) { g = 0x2592; pair = CP_VIZ_MID;  }      // ▒ mid
-                    else                { g = 0x2591; pair = CP_VIZ_LOW;  }      // ░ far
+                    if      (f < 0.34f) { g = 0x2593; vpair = CP_VIZ_HIGH; }     // ▓ near
+                    else if (f < 0.67f) { g = 0x2592; vpair = CP_VIZ_MID;  }     // ▒ mid
+                    else                { g = 0x2591; vpair = CP_VIZ_LOW;  }     // ░ far
                 }
+                const short pair = aw_scan ? vpair : CP_TITLE;
                 cchar_t cc; wchar_t s[2] = { g, 0 };
                 setcchar(&cc, s, A_NORMAL, pair, nullptr);
                 mvwadd_wch(win_progress_, 0, track_x0 + i, &cc);
@@ -11559,6 +11742,54 @@ const std::unordered_map<std::string, libidx::PlayStat>& UIManager::playStats() 
     return play_stats_;
 }
 
+// ─── Most-played sparkle: which playlist rows win ────────────────────────────
+//
+// See the header for the scope, floor and tie-cap rulings. This is the one place
+// that decides, so the draw loop only asks "is this row in the set".
+//
+// Every lookup goes through libidx::lookupPlayStat / foldPathKey, NEVER a raw path
+// compare: track_stats keys are case-split on Windows, and on the reference config
+// 17 files hold two entries whose counts are split between them. A byte-exact join
+// would rank on half a track's plays.
+const std::unordered_set<std::string>& UIManager::sparkleWinners() {
+    const std::uint64_t rev = playlist_.contentRevision();
+    if (!sparkle_dirty_ && rev == sparkle_pl_rev_) return sparkle_winners_;
+    sparkle_pl_rev_ = rev;
+    sparkle_dirty_  = false;
+    sparkle_winners_.clear();
+
+    // Still loading: the answer changes on every drain tick, and a directory load is
+    // exactly when the playlist is largest - the one case this cache exists to avoid.
+    // Re-arm rather than cache the empty answer, or the final drain would leave this
+    // holding "nothing sparkles" until the next mutation.
+    if (playlist_.isLoading()) { sparkle_dirty_ = true; return sparkle_winners_; }
+
+    const auto& ps = playStats();   // hoisted: the accessor is cheap but not free
+    std::int64_t best = 0;
+    std::vector<std::size_t> win;   // indices, by value - no subscript escapes
+    for (std::size_t i = 0; i < playlist_.size(); ++i) {
+        const auto& e = playlist_.at(i);
+        // AUDIOBOOKS NEVER SPARKLE. recordPlay fires on every current-track change,
+        // so RESUMING a book inflates it: a book reopened forty times would outrank a
+        // song someone loves, and the annotation would be lying. isSavedBook is a scan
+        // over <=200 entries - fine once, here, and not fine per row per frame, which
+        // is the other reason this is computed once into a cached set.
+        if (config_.isSavedBook(e.path)) continue;
+        // Radio and CD rows need no test: recordPlay skips streams (the caller checks
+        // isStreamPath) and returns early on isCDTrackPath, so their count is always
+        // 0 and the floor below excludes them for free. Podcast episodes are ordinary
+        // files on the normal transport path, so they count and they may win.
+        const std::int64_t n = libidx::lookupPlayStat(ps, e.path).play_count;
+        if (n <= 0) continue;                       // THE FLOOR
+        if (n > best) { best = n; win.clear(); }
+        if (n == best) win.push_back(i);
+    }
+    if (win.empty() || win.size() > kSparkleMaxTies) return sparkle_winners_;  // THE TIE CAP
+    for (std::size_t i : win)
+        sparkle_winners_.insert(libidx::detail::foldPathKey(playlist_.at(i).path));
+    return sparkle_winners_;
+}
+
 // ─── [Library] genres (slice 10) ─────────────────────────────────────────────
 //
 // A genre row's identity is TAG TEXT, exactly like an artist or album row, so it is
@@ -13075,23 +13306,38 @@ void UIManager::refreshRipArt(const std::string& mbid, int box_cols, int box_row
 
 // ─── The picker ─────────────────────────────────────────────────────────────
 void UIManager::openArtPicker() {
-    std::string mbid;
-    { std::lock_guard<std::mutex> lk(mb_mutex_); mbid = mb_release_.mb_id; }
-    if (mbid.empty()) {
-        // Discogs releases carry no MusicBrainz id, so there is no archive to
-        // list. Said rather than opening an empty box.
-        showTrackToast("No cover-art listing for this release", "", "");
-        return;
+    std::string mbid, artist, album;
+    {
+        std::lock_guard<std::mutex> lk(mb_mutex_);
+        mbid   = mb_release_.mb_id;
+        artist = mb_release_.artist;
+        album  = mb_release_.title;
     }
+    // A Discogs release carries no MusicBrainz id, so there is no archive to
+    // list - this used to refuse to open at all, which left the discs with the
+    // LEAST trustworthy automatic pick as the only ones with no way to change
+    // it. The free-text search that the ripper would run anyway now runs here
+    // instead, and its candidates become the rows.
     art_pick_ = {};
     art_pick_.loading = true;
+    art_pick_.disc_tracks = (int)audio_.cdSource().tracks().size();
     art_thumb_want_   = -1;
     art_thumb_row_    = -1;
     art_index_done_.store(false);
     if (art_index_thread_.joinable()) art_index_thread_.join();
-    art_index_thread_ = std::thread([this, mbid]() {
-        std::vector<CoverArt::CaaImage> v = CoverArt::indexByMbid(mbid);
-        { std::lock_guard<std::mutex> lk(art_pick_mtx_); art_index_result_ = std::move(v); }
+    art_index_thread_ = std::thread([this, mbid, artist, album]() {
+        std::vector<CoverArt::CaaImage> v;
+        std::vector<art::Candidate>     t;
+        if (!mbid.empty()) v = CoverArt::indexByMbid(mbid);
+        // The SAME condition the ripper's own fallback uses (CDRipper.cpp: only
+        // when CAA gave nothing), so the picker never offers a source the rip
+        // would not have reached.
+        if (v.empty()) t = CoverArt::candidatesByText(artist, album);
+        {
+            std::lock_guard<std::mutex> lk(art_pick_mtx_);
+            art_index_result_ = std::move(v);
+            art_text_result_  = std::move(t);
+        }
         art_index_done_.store(true);
     });
     ui_overlay_ = UIOverlay::ArtPick;
@@ -13104,18 +13350,30 @@ void UIManager::openArtPicker() {
 void UIManager::serviceArtPicker() {
     if (art_index_done_.exchange(false)) {
         std::vector<CoverArt::CaaImage> v;
-        { std::lock_guard<std::mutex> lk(art_pick_mtx_); v = std::move(art_index_result_); }
+        std::vector<art::Candidate>     t;
+        {
+            std::lock_guard<std::mutex> lk(art_pick_mtx_);
+            v = std::move(art_index_result_);
+            t = std::move(art_text_result_);
+        }
         art_pick_.images  = std::move(v);
+        art_pick_.texts   = std::move(t);
         art_pick_.loading = false;
-        if (art_pick_.images.empty())
-            art_pick_.note = "The archive lists no images for this release";
+        if (art_pick_.rows() == 0)
+            art_pick_.note = "No cover art found for this release";
         else {
             // Start on what the automatic path would have taken - the honest
             // opening position, and it answers "what would I have got" before
             // "what else is there". NOT on a row whose comment happens to start
             // with the disc number: that would invent a link the data lacks.
-            for (std::size_t i = 0; i < art_pick_.images.size(); ++i)
-                if (art_pick_.images[i].front) { art_pick_.cursor = (int)i; break; }
+            // Both sources mark that row; only the field differs.
+            if (art_pick_.images.empty()) {
+                for (std::size_t i = 0; i < art_pick_.texts.size(); ++i)
+                    if (art_pick_.texts[i].automatic) { art_pick_.cursor = (int)i; break; }
+            } else {
+                for (std::size_t i = 0; i < art_pick_.images.size(); ++i)
+                    if (art_pick_.images[i].front) { art_pick_.cursor = (int)i; break; }
+            }
             art_thumb_want_ = art_pick_.cursor;
         }
         redraw_needed_.store(true);
@@ -13135,10 +13393,10 @@ void UIManager::serviceArtPicker() {
         if (++art_thumb_settle_ < 3) return;        // ~a quarter second of rest
         art_thumb_settle_ = 0;
         const int row = art_thumb_want_;
-        if (row < 0 || row >= (int)art_pick_.images.size()) return;
+        if (row < 0 || row >= art_pick_.rows()) return;
         if (art_thumb_thread_.joinable()) art_thumb_thread_.join();
         art_thumb_row_ = row;
-        const std::string url = art_pick_.images[(std::size_t)row].thumb_url;
+        const std::string url = art_pick_.thumbUrl(row);
         art_thumb_thread_ = std::thread([this, url]() {
             std::vector<std::uint8_t> b = CoverArt::bytesByUrl(url);
             cover::Rendered r;
@@ -13200,31 +13458,75 @@ void UIManager::drawArtPick() {
 
     if (art_pick_.loading) {
         mvwaddstr(w, 2, 3, "Fetching the cover-art listing...");
-    } else if (art_pick_.images.empty()) {
+    } else if (art_pick_.rows() == 0) {
         mvwaddnstr(w, 2, 3, art_pick_.note.c_str(), list_w);
     } else {
-        mvwprintw(w, 2, 3, "%d images. The comment is whoever uploaded it talking.",
-                  (int)art_pick_.images.size());
+        const bool caa = !art_pick_.images.empty();
+        if (caa) {
+            mvwprintw(w, 2, 3, "%d images. The comment is whoever uploaded it talking.",
+                      (int)art_pick_.images.size());
+        } else {
+            // The disc's OWN track count, stated ONCE. It belongs to the disc,
+            // not to any candidate, and saying it here lets every row's "20t"
+            // be compared without RE-MOCT ranking on it. No match tick: a
+            // 12-track DIFFERENT album matches a 12-track disc just as exactly,
+            // so a tick would read as verification the data cannot support.
+            if (art_pick_.disc_tracks > 0)
+                mvwprintw(w, 2, 3,
+                          "%d albums. This disc has %d tracks.  * = the automatic pick.",
+                          (int)art_pick_.texts.size(), art_pick_.disc_tracks);
+            else
+                mvwprintw(w, 2, 3, "%d albums.  * = the automatic pick.",
+                          (int)art_pick_.texts.size());
+        }
         const int LIST_START = 4;
         const int LIST_ROWS  = BOX_H - LIST_START - 3;
         int top = art_pick_.cursor - LIST_ROWS + 1;
         if (top < 0) top = 0;
         for (int i = 0; i < LIST_ROWS; ++i) {
             const int idx = top + i;
-            if (idx >= (int)art_pick_.images.size()) break;
-            const CoverArt::CaaImage& im = art_pick_.images[(std::size_t)idx];
-            // Type is a NARROW hint and never the wide column: it reads "Medium"
-            // for nineteen rows on the measured release, several of whose
-            // comments say Booklet or Tracklist. No dimensions column - the
-            // index has no such field. No size column - it is constant.
-            std::string ty = foldForDisplay(im.type);
-            if (ty.size() > 8) ty.resize(8);
-            std::string cm = foldForDisplay(im.comment);
-            if (cm.empty()) cm = "-";
-            char head[24];
-            std::snprintf(head, sizeof head, "%-8s ", ty.c_str());
-            std::string line = head + cm;
-            if (im.front) line += "   (automatic)";
+            if (idx >= art_pick_.rows()) break;
+            std::string line;
+            if (caa) {
+                const CoverArt::CaaImage& im = art_pick_.images[(std::size_t)idx];
+                // Type is a NARROW hint and never the wide column: it reads
+                // "Medium" for nineteen rows on the measured release, several of
+                // whose comments say Booklet or Tracklist. No dimensions column -
+                // the index has no such field. No size column - it is constant.
+                std::string ty = foldForDisplay(im.type);
+                if (ty.size() > 8) ty.resize(8);
+                std::string cm = foldForDisplay(im.comment);
+                if (cm.empty()) cm = "-";
+                char head[24];
+                std::snprintf(head, sizeof head, "%-8s ", ty.c_str());
+                line = head + cm;
+                if (im.front) line += "   (automatic)";
+            } else {
+                // THE SAME ROW AS ^F AND ^R. These candidates have no comment and
+                // no type, but they do have what those lists show - title, year,
+                // country, track count - so this reuses the shared formatter
+                // rather than inventing a third grammar. Folded HERE, because
+                // formatCandidateRow takes strings already folded (MBLookup.h).
+                const art::Candidate& c = art_pick_.texts[(std::size_t)idx];
+                CandidateRow r;
+                r.artist     = foldForDisplay(c.artist);
+                r.title      = foldForDisplay(c.title);
+                r.year       = c.year;          // "" on Deezer - omitted, not padded
+                r.country    = c.country;       // "" on Deezer - likewise
+                r.right      = art::trackCell(c.tracks);
+                // The automatic pick is marked INSIDE the tag - "[iT*]" - and the
+                // header line says what the star means. The CAA list appends the
+                // word "(automatic)", which cannot work here: formatCandidateRow
+                // pads to exactly `width` and right-aligns the tail, so an
+                // appended word is past the edge and mvwaddnstr cuts it off. The
+                // fix of reserving 12 columns for it was measured and rejected -
+                // with the preview column the list is 50 wide, and the reserve
+                // truncated "Relish (Expanded Edition)" to "Relish>", destroying
+                // THE ONE FIELD THAT DISTINGUISHES THESE ROWS. A star costs one
+                // column and keeps every other column aligned.
+                r.source_tag = c.automatic ? c.source + "*" : c.source;
+                line = formatCandidateRow(idx, r, list_w);
+            }
             const bool hi = (idx == art_pick_.cursor);
             if (hi) wattron(w, COLOR_PAIR(CP_SELECTED) | A_BOLD);
             mvwaddnstr(w, LIST_START + i, 2, line.c_str(), list_w);
@@ -13234,7 +13536,7 @@ void UIManager::drawArtPick() {
             const int ax = BOX_W - ART_W - 3, ay = 4;
             if (art_pick_.preview.ok && art_pick_.preview_for == art_pick_.cursor)
                 drawArtGrid(w, art_pick_.preview, ay, ax,
-                            "artpick|" + art_pick_.images[(std::size_t)art_pick_.cursor].id);
+                            "artpick|" + art_pick_.rowKey(art_pick_.cursor));
             else
                 mvwaddstr(w, ay, ax, "...");
         }
@@ -13252,7 +13554,7 @@ void UIManager::handleArtPickInput(int ch) {
     };
     if (ch == 27) { close(); return; }
     if (ch < 32 && ch != '\n' && ch != '\r') { close(); handleInput(ch); return; }
-    if (art_pick_.images.empty()) {
+    if (art_pick_.rows() == 0) {
         if (ch == '\n' || ch == '\r' || ch == KEY_ENTER) close();
         return;
     }
@@ -13264,7 +13566,7 @@ void UIManager::handleArtPickInput(int ch) {
         return;
     }
     if (ch == KEY_DOWN) {
-        if (art_pick_.cursor < (int)art_pick_.images.size() - 1) {
+        if (art_pick_.cursor < art_pick_.rows() - 1) {
             ++art_pick_.cursor; art_thumb_want_ = art_pick_.cursor;
             art_thumb_settle_ = 0; redraw_needed_.store(true);
         }
@@ -13273,9 +13575,24 @@ void UIManager::handleArtPickInput(int ch) {
     if (ch != '\n' && ch != '\r' && ch != KEY_ENTER) return;
 
     // Chosen. The FULL image is fetched now - the 250px preview is for looking
-    // at, not for embedding.
-    const CoverArt::CaaImage im = art_pick_.images[(std::size_t)art_pick_.cursor];
-    std::vector<std::uint8_t> full = CoverArt::bytesByUrl(im.image_url);
+    // at, not for embedding. Both sources publish a full-size URL, so the two
+    // row kinds differ only in what the choice is CALLED afterwards.
+    std::string url, label;
+    if (!art_pick_.images.empty()) {
+        const CoverArt::CaaImage& im = art_pick_.images[(std::size_t)art_pick_.cursor];
+        url   = im.image_url;
+        label = im.comment.empty()
+              ? (im.type.empty() ? std::string("chosen") : foldForDisplay(im.type))
+              : foldForDisplay(im.comment);
+    } else {
+        const art::Candidate& c = art_pick_.texts[(std::size_t)art_pick_.cursor];
+        url = c.image_url;
+        // The title is what distinguishes these rows, so it is what the confirm
+        // modal should call the choice - "Relish (Expanded Edition)" says which
+        // one was taken in a way "chosen" never could.
+        label = c.title.empty() ? std::string("chosen") : foldForDisplay(c.title);
+    }
+    std::vector<std::uint8_t> full = CoverArt::bytesByUrl(url);
     if (full.empty()) {
         showTrackToast("That image could not be downloaded", "keeping the current art", "");
         close();
@@ -13284,9 +13601,7 @@ void UIManager::handleArtPickInput(int ch) {
     // ONE set of bytes. folder.jpg and every embedded tag come from this, so a
     // choice cannot leave them disagreeing.
     rip_art_bytes_ = std::move(full);
-    rip_art_label_ = im.comment.empty()
-                   ? (im.type.empty() ? std::string("chosen") : foldForDisplay(im.type))
-                   : foldForDisplay(im.comment);
+    rip_art_label_ = label;
     rip_art_key_.clear();          // force the confirm modal to re-render it
     rip_art_render_ = cover::Rendered{};
     showTrackToast("Cover art: " + rip_art_label_, "", "");

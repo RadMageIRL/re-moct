@@ -35,6 +35,11 @@ public:
     void pause(bool p);
     bool paused() const { return paused_.load(); }          // host-tracked
     bool buffering() const;
+    // "" while healthy. Non-empty means the source hit a TERMINAL failure and
+    // its producer has stopped - it will not recover on its own. Distinct from
+    // buffering(), which is true both while retrying and after giving up and so
+    // cannot tell a slow stream from a dead one.
+    std::string lastError() const;
     std::string nowPlaying() const;
     std::string currentArtUrl() const;
     const std::string& url() const { return url_; }         // host-tracked

@@ -144,16 +144,16 @@ platforms, Linux port done, streaming is a real loadable plugin
 and ship without rebuilding the host" is literally true.** Detail in
 `docs/roadmap.md` / `docs/architecture.md`.
 
-**Released:** 1.5.0, 1.6.0 (2026-07-27), **1.6.1 (2026-08-08)** - all merged to `main`
-and tagged. 1.5.0 = per-track rip selection + the 17-slice `[Library]` section + the CD
-read-addressing fix. 1.6.0 = HTOA (hidden track before track 1). 1.6.1 = the display
-fold, a CJK crash fix, a window-move repaint fix, the disc-number campaign, and cover
-art previewed before writing (**`[P]`, because `[A]` was already AccurateRip there**).
+**Released, tagged, on `main`:** 1.5.0 = per-track rip selection + the 17-slice `[Library]`
++ the CD read-addressing fix. 1.6.0 = HTOA. 1.6.1 = the display fold, a CJK crash fix, the
+disc-number campaign, cover art previewed before writing (`[P]`, `[A]` was AccurateRip).
 
-**1.6.2 is UNRELEASED on `experimental/win-pdcurses`** - `Version.h`, `CMakeLists.txt` and
-`docs/index.html` say 1.6.2; NOT merged to `dev`/`main`, NOT tagged. Surfacing only, no
-behaviour change: the Classic radio scanner stopped borrowing the viz palette; the
-most-played playlist row shimmers. **Read the newest `docs/session-handoff-*.md`.**
+**1.6.2 (tag `1.6.2`, merge `a1d2698`, 2026-08-13; all three branches in sync):** the
+output-rate indicator + **bit-perfect playback** (`bit_perfect=1`, config-only, lossless
+local files, verified against `internal*` - `ma_device_init` returns success while silently
+converting); art-picker rows from iTunes/Deezer where CAA has none; stream recovery (dead
+stream stops and says why, short drops inaudible, no replayed audio); most-played shimmer;
+Classic scanner palette; C2 rip-log wording; About links. **Read the newest handoff.**
 
 ## 1.6.1: the display fold - read before touching display text
 `foldForDisplay` (`include/StringUtils.h`, was `sanitizeForDisplay`). Per codepoint:
@@ -186,8 +186,8 @@ drains, so a held drag starves it to **zero** - which is why a MOVE repaints fro
 what made the crash findable - do not silence them.
 
 ## Earlier flights (detail in the matching handoffs)
-**07-16:** .opus/.wv/.ogg playback; RIP OVERHAUL (`IEncoder` seam, 5 formats). **07-17:**
-stream-record (^E), MP3 tag write, THE ABI OPENED ONCE (`254baca`, additive, no bump), batch RG (^O).
+**07-16:** .opus/.wv/.ogg playback; RIP OVERHAUL (`IEncoder` seam, 5 formats). **07-17:** stream-record
+(^E), MP3 tag write, THE ABI OPENED ONCE (`254baca`, additive, no bump), batch RG (^O).
 
 ## Deep knowledge - read the matching file when a task touches it
 - Roadmap, phases, parked items, decisions → `docs/roadmap.md`

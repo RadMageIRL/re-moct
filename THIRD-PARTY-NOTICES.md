@@ -31,6 +31,7 @@ license texts referenced here must accompany the distribution.
 | **libebur128** | EBU R128 ReplayGain measurement | Dynamic link | MIT | https://github.com/jiixyj/libebur128 |
 | ⚠ **Fraunhofer FDK AAC** | AAC / HE-AAC decode (files + internet radio) | Dynamic link | Fraunhofer FDK AAC Codec Library License (SPDX `FDK-AAC`) | https://github.com/mstorsjo/fdk-aac |
 | **ncurses (ncursesw / panelw)** | Terminal UI | Dynamic link | X11-style (MIT-family) | https://invisible-island.net/ncurses/ |
+| PDCursesMod (Bill Gray) | TUI (Text User Interface) screen management | Static/Dynamic link (Cross-platform) | Public Domain / Open Source | [https://github.Bill-Gray/PDCursesMod](https://github.com/Bill-Gray/PDCursesMod) |
 | **libcurl** | HTTP transport on Linux (`core::IHttp`) | Dynamic link (Linux only) | curl License (MIT/X-derivative) | https://curl.se/ |
 | **Win32 system libraries** (WinINet, CryptoAPI, Shell, winmm, ws2_32, ole32, advapi32) | HTTP transport, browser launch, timing, sockets, IPC (Windows only) | Dynamic link (Windows only) | Microsoft Windows system APIs - no separate notice required | - |
 

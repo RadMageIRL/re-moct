@@ -1,12 +1,12 @@
-// LocalFileSource.cpp — Phase 2 slice B. The three file-path helpers below
+// LocalFileSource.cpp - Phase 2 slice B. The three file-path helpers below
 // (populate_track_info / open_decoder / prime_decoder) are the AudioManager.cpp
-// baselines MOVED VERBATIM (file-static, original indentation — the slice-7
+// baselines MOVED VERBATIM (file-static, original indentation - the slice-7
 // auditable-move discipline); the class methods are thin adapters over them plus
 // the seek-prime and cursor logic moved from AudioManager::seekTo/positionSec.
 #include "LocalFileSource.h"
 #include "StringUtils.h"
 #include "CustomBackends.h" // the shared AAC/Opus/WavPack backend array
-#include "R128Gain.h"       // dbFromR128 — the one home for the R128<->RG dialect
+#include "R128Gain.h"       // dbFromR128 - the one home for the R128<->RG dialect
 #include "Mp4Chapters.h"    // mp4AacChannelCount: true ASC channel count
 
 #include <taglib/fileref.h>
@@ -14,7 +14,7 @@
 #include <taglib/audioproperties.h>
 #include <taglib/tpropertymap.h>
 // mp3-rg-read: the MP3 TXXX fallback walks ID3v2 frames directly (the
-// PropertyMap can't see the legacy blob shape — see the RG block below).
+// PropertyMap can't see the legacy blob shape - see the RG block below).
 #include <taglib/mpegfile.h>
 #include <taglib/id3v2tag.h>
 #include <taglib/textidentificationframe.h>
@@ -102,14 +102,14 @@ static void populate_track_info(TrackInfo& info, const std::string& path) {
         }
         // MP3 fallback (mp3-rg-read): RE-MOCT's own rips/recordings wrote the
         // TXXX frame as ONE "KEY=value" text blob, which re-parses with the
-        // whole blob in the frame's DESCRIPTION and an empty value — so the
+        // whole blob in the frame's DESCRIPTION and an empty value - so the
         // PropertyMap above keys it as 'REPLAYGAIN_TRACK_GAIN=-6.92 DB' -> ''
         // and the lookups miss (probe-proven on the rip baseline; plan doc
         // docs/mp3-rg-read-plan.md). Walk the TXXX frames directly: match the
         // TRACK_GAIN description prefix case-insensitively, prefer the VALUE
         // field when non-empty (standard third-party files stay standard),
         // else parse the description's "=..." tail (our legacy blob). Track
-        // gain only — mode parity with the FLAC/Opus reads above. The write
+        // gain only - mode parity with the FLAC/Opus reads above. The write
         // shape is fixed in its own follow-up slice; this read handles both
         // shapes so that change can land without breaking read-back.
         if (rg_db == 0.0f && rg_ext == ".mp3") {
@@ -168,7 +168,7 @@ static bool open_decoder(const std::string& path, ma_decoder& dec,
     // non-zero channels/rate also keep miniaudio off the format-sniffer path that can
     // crash on files with bad/dual ID3 tags (previously done via TagLib hints).
     ma_decoder_config cfg = ma_decoder_config_init(ma_format_f32, 2, 44100);
-    // Plug in the custom backends (FDK-AAC, Opus, WavPack — CustomBackends.cpp)
+    // Plug in the custom backends (FDK-AAC, Opus, WavPack - CustomBackends.cpp)
     // so .aac/.m4a/.mp4/.opus/.wv decode through the same pipeline. Each fails
     // fast for non-matching input, so flac/mp3/wav still use miniaudio's built-ins.
     size_t nbackends = 0;
@@ -183,7 +183,7 @@ static bool open_decoder(const std::string& path, ma_decoder& dec,
 #endif
 }
 
-// Prime the decoder — attempt a small read to flush any bad initial frame.
+// Prime the decoder - attempt a small read to flush any bad initial frame.
 // Some dual-tag MP3s (ID3v2.3+ID3v1.1) have a zero-byte first frame that
 // causes the decoder to stall. A seek back to 0 after the probe resets it.
 static void prime_decoder(ma_decoder& dec) {
@@ -261,7 +261,7 @@ bool LocalFileSource::seekTo(double seconds) {
             ma_uint64 want = std::min<ma_uint64>(to_skip, cap);
             ma_uint64 got  = 0;
             if (ma_decoder_read_pcm_frames(&decoder_, scratch, want, &got) != MA_SUCCESS || got == 0)
-                break;                                            // EOF/short read — stop priming
+                break;                                            // EOF/short read - stop priming
             to_skip -= got;
         }
     }

@@ -1,4 +1,4 @@
-// aac_m4a_probe.cpp — PHASE-0 feasibility probe for AAC/M4A ripping.
+// aac_m4a_probe.cpp - PHASE-0 feasibility probe for AAC/M4A ripping.
 // Scope ID: aac-m4a-phase0-probe. NOT in the production build.
 //
 // Proves the two unknowns the Phase 1 encoder slice rests on:
@@ -10,7 +10,7 @@
 //            tags + a covr atom that read back, without breaking the sample table.
 //
 // Verification uses the real production decode path: src/AacDecoder.cpp registered
-// as a miniaudio custom backend, driven by ma_decoder — exactly how playback opens
+// as a miniaudio custom backend, driven by ma_decoder - exactly how playback opens
 // a file. If this opens + seeks, RE-MOCT plays it.
 //
 // The distinct-tone-per-third signal (440 / 880 / 1760 Hz) makes the seek check
@@ -161,7 +161,7 @@ struct Decoded {
     double   toneAt25 = 0, toneAt50 = 0, toneAt75 = 0;
 };
 
-// Goertzel power of a mono signal at frequency f — robust to the quantization
+// Goertzel power of a mono signal at frequency f - robust to the quantization
 // noise a zero-crossing counter trips over on decoded AAC.
 double goertzel(const std::vector<double>& x, double f, double rate) {
     double w = 2.0 * PI * f / rate, c = 2.0 * std::cos(w);
@@ -225,7 +225,7 @@ Decoded decodeVerify(const std::string& path) {
     d.framesRead = d.channels ? n / d.channels : 0;
     d.rms = n ? std::sqrt(acc / (double)n) : 0.0;
 
-    // Seek to 25 / 50 / 75% — must track the frequency-stepped thirds exactly,
+    // Seek to 25 / 50 / 75% - must track the frequency-stepped thirds exactly,
     // which is only possible if the sample table (stsc/stco/stsz/stts) is valid.
     uint64_t total = d.lengthFrames ? d.lengthFrames : d.framesRead;
     if (total > 0) {

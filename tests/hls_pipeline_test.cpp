@@ -1,4 +1,4 @@
-// hls_pipeline_test.cpp — Slice 0 (Phase 2 prep): thin replay net, HLS half.
+// hls_pipeline_test.cpp - Slice 0 (Phase 2 prep): thin replay net, HLS half.
 //
 // A FakeHttp injected via core::setHttp() drives the REAL StreamSource HLS/AAC
 // pipeline end-to-end and off-network: open() -> hlsConnect (master resolve +
@@ -17,13 +17,13 @@
 //      output silent (never dribbles broken audio)
 //   4. window resumes -> producer re-polls, refetches, prebuffer self-heals
 //   5. timed-ID3 (TIT2/TPE1) in a segment surfaces through nowPlaying()
-//   6. PROMPT CLOSE mid-fetch: stop_ rides hlsHttpGet as the cancel token — a
+//   6. PROMPT CLOSE mid-fetch: stop_ rides hlsHttpGet as the cancel token - a
 //      close() during a blocked segment fetch must return well under the old
 //      8s worst case (the headless twin of the slice-4 "mid-segment stop <1s"
 //      7of9 gate) and the fake must actually observe the cancel.
 //
 // HONEST LIMITS: the ICY/continuous path (rawRead -> InternetReadFile) is raw
-// WinINet by design — permanently outside any seam — so it CANNOT be replayed
+// WinINet by design - permanently outside any seam - so it CANNOT be replayed
 // headlessly; it stays covered by the live gates. Real network jitter, ad-pod
 // re-pin timing, and device interplay also stay with the live gates. What this
 // proves is the producer/ring/prebuffer/cancel SEMANTICS.
@@ -52,7 +52,7 @@ static int g_fail = 0;
 } while (0)
 
 // Paced drain of n frames through readFrames (the audio-callback contract),
-// via core::ISource — the slice-A interface dispatch is what's under test.
+// via core::ISource - the slice-A interface dispatch is what's under test.
 static std::vector<float> drainFrames(core::ISource& src, int frames) {
     std::vector<float> all;
     all.reserve((size_t)frames * 2);
@@ -161,7 +161,7 @@ int main() {
 
         // ── 5c. copy/remux tee (abi-cluster slice B) ──────────────────────────
         // The plugin-side byte ring: disarmed = zero reads; armed = the EXACT
-        // post-transport bytes (segment payloads, ID3 stripped — the tee'd
+        // post-transport bytes (segment payloads, ID3 stripped - the tee'd
         // stream must be a byte-aligned run of seg_audio repetitions); codec
         // reports AAC; a segment-fetch death -> reconnect -> self-heal fires
         // the discont bit the muxer resyncs on.
@@ -193,7 +193,7 @@ int main() {
             CHECK(got.size() >= fake.seg_audio.size());
             {
                 // Align the (mid-stream) start inside seg_audio, then every
-                // byte must continue the cyclic repetition — proving the tee
+                // byte must continue the cyclic repetition - proving the tee
                 // carries the broadcast bytes verbatim, ID3 never leaks.
                 const auto& seg = fake.seg_audio;
                 size_t probe = got.size() < 256 ? got.size() : 256;

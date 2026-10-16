@@ -1,10 +1,10 @@
 // Windows-only request test for group (c): drives the REAL CoverArt paths through an
-// injected FakeHttp and asserts the request each builds — the interface fields (a)/(b)
+// injected FakeHttp and asserts the request each builds - the interface fields (a)/(b)
 // never exercised: per-call UA, 10 MB reject_truncated, and the FollowSameScheme
 // redirect policy for CAA. Links CoverArt (now portable) + the WinINet impl; it is
 // if(WIN32)-guarded in tests/CMakeLists.txt so Linux CI keeps only the pure suites.
 //
-// (CDRipper's AR/CTDB requests aren't driven here — that TU pulls the full rip
+// (CDRipper's AR/CTDB requests aren't driven here - that TU pulls the full rip
 // dependency set. Their plain-HTTP no-SECURE decision is proven purely by
 // urlIsSecureScheme in http_seam_test, and AR end-to-end by the Joan Osborne rip gate.)
 #include "core/IHttp.h"

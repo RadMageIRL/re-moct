@@ -1,16 +1,16 @@
-// http_cancel_test — REAL-socket tests of the slice-4 IHttp capabilities that a
+// http_cancel_test - REAL-socket tests of the slice-4 IHttp capabilities that a
 // FakeHttp cannot prove, PORTABLE since Phase 3 slice 2 (one file, both matrix
-// jobs — a platform shim below swaps winsock/POSIX plumbing; the scenarios and
+// jobs - a platform shim below swaps winsock/POSIX plumbing; the scenarios and
 // assertions are identical against WinINet on Windows and libcurl on Linux):
-//   (A) an in-flight fetch aborts PROMPTLY when the cancel atomic flips —
+//   (A) an in-flight fetch aborts PROMPTLY when the cancel atomic flips -
 //       chunk-granularity, well under the receive timeout and nowhere near
 //       body-completion time (the "stop mid-segment must not hang 8s" gate);
 //   (B) a session reuses ONE TCP connection across fetches (keep-alive actually
-//       works — WinINet: held InternetOpen handle + KEEP_CONNECTION; libcurl:
+//       works - WinINet: held InternetOpen handle + KEEP_CONNECTION; libcurl:
 //       the CURLSH share-handle connection pool, proven here, not assumed);
 //   (C) a pre-cancelled fetch returns immediately and never touches the network.
 // Fixture: a plain-HTTP server on 127.0.0.1 (ephemeral port) driven per scenario.
-// Plain HTTP is deliberate — urlIsSecureScheme() is false, no TLS machinery.
+// Plain HTTP is deliberate - urlIsSecureScheme() is false, no TLS machinery.
 #include "core/IHttp.h"
 
 #ifdef _WIN32
@@ -68,9 +68,9 @@ static void sleepMs(unsigned ms) {
 }
 
 // Stop a LISTENING socket so a thread blocked in accept() on it wakes up.
-// Windows: closesocket() aborts a blocked accept (WSAEINTR) — the baseline
+// Windows: closesocket() aborts a blocked accept (WSAEINTR) - the baseline
 // shape. Linux: close() does NOT wake a blocked accept() (the fd stays
-// referenced by the sleeping syscall — first Linux run hung forever in
+// referenced by the sleeping syscall - first Linux run hung forever in
 // server.join()); shutdown() DOES (accept returns EINVAL), so shut down
 // first, then close.
 static void stopListener(SockT s) {
@@ -163,7 +163,7 @@ int main() {
         CHECK(session != nullptr);
 
         // The cancel flag is a plain int32 (the ABI cancel type) accessed via
-        // std::atomic_ref on both sides — the conforming way to share a POD int
+        // std::atomic_ref on both sides - the conforming way to share a POD int
         // across the (future) C boundary; no std::atomic over the same bytes.
         int32_t stop{0};
         std::thread canceller([&] {

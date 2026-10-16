@@ -1,4 +1,4 @@
-// gain_scan_test — the batch-ReplayGain engine contract (batch-r128).
+// gain_scan_test - the batch-ReplayGain engine contract (batch-r128).
 //
 // Synthetic suite (CI-safe, no artifacts needed): one sine rendered through
 // the four production encoders (FLAC/MP3/Opus/WavPack), then the REAL

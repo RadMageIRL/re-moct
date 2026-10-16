@@ -1,4 +1,4 @@
-// drive_offsets.h — AccurateRip drive offset table
+// drive_offsets.h - AccurateRip drive offset table
 // Auto-generated from accuraterip.com/driveoffsets.htm
 // 4885 drives, purged entries excluded.
 // Lookup: match drive model string (case-insensitive substring).
@@ -12,7 +12,7 @@ struct DriveOffsetEntry {
 };
 
 // HL-DT-ST is listed as "LG Electronics" in the AR database.
-// Match order matters — more specific entries first.
+// Match order matters - more specific entries first.
 static const DriveOffsetEntry kDriveOffsets[] = {
     { "- 16X12 DVD DUAL", +91 },
     { "- 16X16 DVD DUAL", +91 },
@@ -4898,7 +4898,7 @@ static constexpr int kDriveOffsetCount =
     (int)(sizeof(kDriveOffsets) / sizeof(kDriveOffsets[0]));
 
 // Look up drive read offset by model string.
-// Returns 0 if drive not found (safe default — no correction).
+// Returns 0 if drive not found (safe default - no correction).
 inline int lookupDriveOffset(const std::string& model) {
     // Case-insensitive substring search
     auto ci_contains = [](const std::string& hay, const char* needle) {

@@ -1,22 +1,22 @@
-// xfade_handoff_test.cpp — Slice 0 (Phase 2 prep): thin replay net, file-path half.
+// xfade_handoff_test.cpp - Slice 0 (Phase 2 prep): thin replay net, file-path half.
 //
 // Drives the REAL AudioManager end-to-end on generated WAVs through a REAL (muted)
 // playback device, exercising exactly the swap-adjacent machinery that Phase 2's
-// Slice B restructures — the behavior a diff audit alone cannot protect:
+// Slice B restructures - the behavior a diff audit alone cannot protect:
 //   1. gapless handoff: EOF short-read -> next_decoder_ fill -> initCrossfade swap
 //      on the audio thread -> track_swap_flag_ -> pollEvents installs
 //      current_track_ = next_track_info_ -> on_track_end fires (in that order)
 //   2. crossfade handoff: trigger window (dur - pos <= crossfade_secs), two
 //      decoders mixed in one callback, isCrossfading() visible to the UI,
 //      completion -> swap -> preload_next flag (NOT track_ended)
-//   3. clearNext() mid-crossfade: the teardownNext device-stop branch — the
+//   3. clearNext() mid-crossfade: the teardownNext device-stop branch - the
 //      in-flight next_decoder_ read must be quiesced before the free, playback
 //      of the outgoing track continues to its natural end, no swap installed
 //   4. track end with NO preload: short read -> silence tail -> track_ended,
 //      current track unchanged
 //
 // Needs a real audio device (WASAPI); output is muted + volume 0. If no device
-// can be opened the test SKIPs (exit 77) rather than fails — the pipeline tests
+// can be opened the test SKIPs (exit 77) rather than fails - the pipeline tests
 // (cd/hls) remain the always-on net. Real-time cadence is the device's own
 // callback clock, so unlike the pipeline tests this half runs at 1x and takes
 // ~15s wall clock.
@@ -66,11 +66,11 @@ static bool writeWav(const std::string& path, double secs, double freq, double a
 // copySamples() drains the last n mono samples the callback pushed. The callback
 // feeds the ring from the PROCESSED output but BEFORE the mute memset
 // (AudioManager.cpp, "Feed visualizer ... but BEFORE mute"), and setVolume() only
-// moves the device master volume — neither scales what lands here. So a muted,
+// moves the device master volume - neither scales what lands here. So a muted,
 // zero-volume run still reports true post-mix sample amplitude.
 static float vizPeak(const AudioManager& am) {
     float buf[256];
-    int n = am.copySamples(buf, 256);   // const — reads the ring, no mutation
+    int n = am.copySamples(buf, 256);   // const - reads the ring, no mutation
     float pk = 0.0f;
     for (int i = 0; i < n; ++i) { float a = std::fabs(buf[i]); if (a > pk) pk = a; }
     return pk;
@@ -193,7 +193,7 @@ int main() {
 
     // ── 5. Replace a preload mid-play: the non-crossfading teardownNext branch ─
     // preloadNext(C) while B is already preloaded discards B (un-publish first,
-    // then free — with no crossfade in flight this is the direct-free branch),
+    // then free - with no crossfade in flight this is the direct-free branch),
     // and C must be the track installed at the gapless swap.
     {
         g_end = 0; g_pre = 0;
@@ -223,7 +223,7 @@ int main() {
     // next_track_info_.duration_sec (AudioManager.cpp:382) two statements BEFORE
     // track_swap_flag_.store(true) (:384). durationSec() (:507) returns that
     // atomic directly and is the only swap-visible observable that does not
-    // require pollEvents() — currentTrack() cannot serve, since it is written
+    // require pollEvents() - currentTrack() cannot serve, since it is written
     // only inside pollEvents(). Distinct per-fixture durations make it a clean
     // discriminator: P1A 2.0s -> P1B 3.0s.
     {
@@ -277,7 +277,7 @@ int main() {
         // Pre-C1 this is P1A (the swap was cancelled by preloadNext's teardown);
         // with the flag clear merely MOVED it is P1C (a track never audible).
         CHECK(got == P1B);
-        // C1: and the payload must be coherent — current_track_'s duration field
+        // C1: and the payload must be coherent - current_track_'s duration field
         // must agree with the audio thread's cached_duration_, both describing B.
         CHECK(std::fabs((double)am.currentTrack().duration_sec - am.durationSec()) < 0.6);
         am.stop();

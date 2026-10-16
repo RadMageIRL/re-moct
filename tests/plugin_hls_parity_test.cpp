@@ -1,9 +1,9 @@
-// plugin_hls_parity_test.cpp — Phase 4 slice d: the identical-to-compiled-in gate.
+// plugin_hls_parity_test.cpp - Phase 4 slice d: the identical-to-compiled-in gate.
 //
 // Proves the LOADED remoct_stream.{so,dll} produces byte-identical PCM to the
 // compiled-in reference, given identical synthetic HLS/ADTS fed through the REAL
 // host HTTP service crossing (NOT the plugin's old core::http(), which no longer
-// exists in the plugin — grep core::http() plugins/stream/ = 0 since slice c):
+// exists in the plugin - grep core::http() plugins/stream/ = 0 since slice c):
 //
 //   FakeHls (core::IHttp)
 //     -> core::HostServices(fake).table()            (host fills RemoctHostServices)
@@ -13,7 +13,7 @@
 //
 // Both the compiled-in reference (remoct_stream_plugin_query, kept for exactly
 // this per slice-c D4) and the loaded .so cross the SAME svc.table(), so the ONLY
-// variable is compiled-in symbol vs dlopen/dlsym — a one-variable controlled
+// variable is compiled-in symbol vs dlopen/dlsym - a one-variable controlled
 // experiment. Byte-identical PCM out the far side proves the request/response
 // marshal + host-malloc/free round-trip across the C ABI is transparent, not just
 // that "some HTTP happened". segment_gets>0 makes the crossing observable.
@@ -21,7 +21,7 @@
 // Three runs, one fixture:
 //   refA, refB = compiled-in adapter (SAME descriptor)  -> DETERMINISM self-check
 //   loaded     = core::loadPlugin(REMOCT_STREAM_PATH)    -> the .so/.dll
-// If refA != refB the protocol flaked (that assert fails FIRST) — a flake can
+// If refA != refB the protocol flaked (that assert fails FIRST) - a flake can
 // never masquerade as a .so fidelity bug.
 //
 // Determinism rests on: FDK-AAC decode is fixed-point (flag-independent); the ring
@@ -54,7 +54,7 @@ static int g_fail = 0;
 
 // Flat, UNPACED drain through PluginSource::readFrames. Called only after prebuffer
 // with frames < PREBUFFER_SAMPLES, so the ring never underruns and the head window
-// is fixed decoded audio (no silence-fill) — the determinism crux.
+// is fixed decoded audio (no silence-fill) - the determinism crux.
 static std::vector<float> drainFlat(core::PluginSource& src, int frames) {
     std::vector<float> all;
     all.reserve((size_t)frames * 2);
@@ -70,7 +70,7 @@ static std::vector<float> drainFlat(core::PluginSource& src, int frames) {
 }
 
 // One run: drive `desc` through the REAL host HTTP service crossing (svc.table()).
-// NO core::setHttp — the plugin reaches HTTP only through the injected table.
+// NO core::setHttp - the plugin reaches HTTP only through the injected table.
 static std::vector<float> runOne(const RemoctPlugin* desc,
                                  const std::vector<uint8_t>& segAudio,
                                  int drainFrames, int& out_segment_gets) {

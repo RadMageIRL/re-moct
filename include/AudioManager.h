@@ -11,14 +11,14 @@
 #include <chrono>
 
 #include "miniaudio.h"
-#include "TrackInfo.h"        // hoisted from this header (slice B) — same struct, zero call-site changes
+#include "TrackInfo.h"        // hoisted from this header (slice B) - same struct, zero call-site changes
 #include "LocalFileSource.h"  // the file path as a source object (slice B)
 #include <memory>
 #include "CDSource.h"
 // Phase 4: the streaming source is driven through the plugin C ABI. The host holds
 // a PluginSource (the driver) over the plugin descriptor, plus the HTTP service
 // table it hands the plugin at create. Since slice (c) the descriptor comes from a
-// LOADED .so/.dll (core::loadPlugin) instead of the compiled-in adapter — the
+// LOADED .so/.dll (core::loadPlugin) instead of the compiled-in adapter - the
 // host no longer references any streaming-source symbol.
 #include "PluginSource.h"
 #include "PluginHostServices.h"
@@ -88,7 +88,7 @@ public:
     void  adjustSpeed(float d) { setSpeed(speed_.load() + d); }
     float speed()  const { return speed_.load(); }
 
-    // ReplayGain — apply track/album gain automatically
+    // ReplayGain - apply track/album gain automatically
     void setReplayGain(bool on) { replaygain_enabled_.store(on); }
     bool replayGain() const     { return replaygain_enabled_.load(); }
 
@@ -105,7 +105,7 @@ public:
     PlaybackState    state()        const { return state_.load(); }
     double           positionSec()  const;
     double           durationSec()  const;
-    int              bitrateKbps() const;   // TagLib nominal/average (static — see .cpp)
+    int              bitrateKbps() const;   // TagLib nominal/average (static - see .cpp)
     const TrackInfo& currentTrack() const { return current_track_; }
     int              currentBpm()   const { return live_bpm_.load(); }
 
@@ -180,7 +180,7 @@ public:
     int      streamPositionSec() const { return (int)stream_plugin_.positionSec(); }
 
     // Stream capture (stream-record R1). The engine is host-side and headless
-    // here — R2's [Rec] panel drives it through this accessor (start/stop/
+    // here - R2's [Rec] panel drives it through this accessor (start/stop/
     // onTitle/state); the audio callback taps into it in the stream branch.
     StreamRecorder& streamRecorder() { return stream_recorder_; }
     // abi-cluster slice A: recording start/stop go through these wrappers so
@@ -193,7 +193,7 @@ public:
     void endRecording();
     bool recordingDrainSupported() const { return stream_plugin_.supportsRecordActive(); }
     // abi-cluster slice B: whether the plugin offers the copy tee (drives the
-    // [Rec] panel's Copy row — greyed when false), and the live codec for its
+    // [Rec] panel's Copy row - greyed when false), and the live codec for its
     // quality column (REMOCT_CODEC_* numeric; 0 = none/unknown/not flowing).
     bool    recordingCopySupported() const { return stream_plugin_.supportsEncodedCapture(); }
     int32_t streamEncodedCaps()      const { return stream_plugin_.encodedCaps(); }
@@ -240,8 +240,8 @@ private:
     // ── Primary source + device ───────────────────────────────────────────
     // file_src_ is the current local-file source (slice B: replaces the inline
     // ma_decoder decoder_ + decoder_initialised_; "initialised" == non-null).
-    // Mutated on the main thread only in device-stopped windows — the same
-    // synchronization the plain bool relied on — EXCEPT the one audio-thread
+    // Mutated on the main thread only in device-stopped windows - the same
+    // synchronization the plain bool relied on - EXCEPT the one audio-thread
     // mutation: the initCrossfade swap.
     std::unique_ptr<LocalFileSource> file_src_;
     ma_device   device_  {};
@@ -249,8 +249,8 @@ private:
 
     // Init the ma_device_ for CD playback (44100Hz stereo f32, Red Book). Returns
     // false on ma_device_init failure. Extracted from openCD() (Slice 3) so the
-    // lazy-reopen path — which goes through openCD() after stop() tore the device
-    // down — always re-inits it and never skips ma_device_ setup. Caller must hold
+    // lazy-reopen path - which goes through openCD() after stop() tore the device
+    // down - always re-inits it and never skips ma_device_ setup. Caller must hold
     // state_mutex_ and owns cd_mode_ / cleanup on failure.
     bool initCDDevice();
 
@@ -290,7 +290,7 @@ private:
     std::atomic<std::uint64_t> play_gen_ { 0 };
     std::atomic<bool>          track_ended_flag_ { false };
     std::atomic<bool>          track_end_advanced_ { false };  // splice-advance marker, see takeTrackEndAdvanced
-    std::atomic<bool>          preload_next_flag_{ false }; // crossfade done — preload only
+    std::atomic<bool>          preload_next_flag_{ false }; // crossfade done - preload only
     std::atomic<bool>          bpm_needed_flag_  { false };
     std::atomic<bool>          seeking_ { false };
     std::atomic<bool>          repeat_one_ { false };
@@ -299,7 +299,7 @@ private:
     std::atomic<float>         balance_  { 0.0f };  // -1.0 = full left, 0 = center, 1.0 = full right
     std::atomic<double>        cached_duration_ { 0.0 };
     std::atomic<float>         speed_    { 1.0f };
-    // Varispeed (tape-speed) streaming linear resampler — audio-thread-only state.
+    // Varispeed (tape-speed) streaming linear resampler - audio-thread-only state.
     // Replaces the old in-place buffer warp that never actually changed how many
     // source frames were consumed. Produces frame_count output frames from
     // frame_count*speed source frames, carrying a residual + fractional position
@@ -315,18 +315,18 @@ private:
     CDSource                   cd_source_;
     std::atomic<bool>          stream_mode_  { false };
     // Absolute path of the streaming plugin next to the binary:
-    // <exeDir>/plugins/remoct_stream.{dll,so} (slice c). Static — used by the
+    // <exeDir>/plugins/remoct_stream.{dll,so} (slice c). Static - used by the
     // loaded_plugin_ default member initializer below.
     static std::string streamPluginPath();
 
     // The HTTP service table handed to the streaming plugin at create, backed by
     // core::http(). Declared BEFORE stream_plugin_ so it is constructed first
     // (the plugin instance is created with its table()). All three live as long as
-    // AudioManager — the ABI service-lifetime contract.
+    // AudioManager - the ABI service-lifetime contract.
     core::HostServices         host_services_{};
     // Acquisition flip (slice c): the streaming source is a LOADED .so/.dll now.
     // loaded_plugin_ owns the module + borrows the descriptor (RAII: module unloads
-    // after the descriptor). A load failure (missing / ABI-mismatch / too-small —
+    // after the descriptor). A load failure (missing / ABI-mismatch / too-small -
     // slice-(a) reject paths, now in production) leaves loaded_plugin_ null and
     // plugin_load_result_ set; PluginSource(nullptr,...) is valid()==false, so every
     // op no-ops and the host stays alive. Declaration order = init order:
@@ -339,7 +339,7 @@ private:
         loaded_plugin_ ? loaded_plugin_->plugin() : nullptr,
         host_services_.table() };
     // Stream capture (stream-record R1): the recorder the callback taps into.
-    // Inert (capturing_ false, no worker) until something calls start() — in R1
+    // Inert (capturing_ false, no worker) until something calls start() - in R1
     // only the test/harness do; the [Rec] panel arrives in R2. Every stream-
     // teardown site stops it BEFORE stream_plugin_.close() so an in-flight
     // capture finalizes its current cut instead of truncating it.
@@ -368,8 +368,8 @@ private:
     std::atomic<bool>          replaygain_enabled_ { false };
     std::atomic<float>         replaygain_gain_    { 1.0f };
     // The audio callback must never read current_track_ (a struct of std::strings
-    // that the main thread reassigns). The one field it needs — the track's
-    // ReplayGain value — is mirrored here as a lock-free atomic, published by
+    // that the main thread reassigns). The one field it needs - the track's
+    // ReplayGain value - is mirrored here as a lock-free atomic, published by
     // play()/the deferred swap.
     std::atomic<float>         current_rg_db_ { 0.0f };
     // Set by initCrossfade() on the audio thread when it swaps decoders; consumed
@@ -397,7 +397,7 @@ private:
                                   // Safe: next_decoder_initialised_ atomic acts as release/acquire fence
     std::mutex state_mutex_;
 
-    // BPM detection — runs on a background thread
+    // BPM detection - runs on a background thread
     std::thread          bpm_thread_;
     std::atomic<bool>    bpm_cancel_  { false };
     // Detected BPM lives in its own atomic, NOT in current_track_.bpm: the BPM
@@ -408,7 +408,7 @@ private:
     void                 startBpmDetection(const std::string& path, int sample_rate);
     static int           detectBpm(const std::string& path, int sample_rate,
                                    const std::atomic<bool>& cancel);
-    // Pure autocorrelation BPM over an already-decoded mono buffer — shared by the
+    // Pure autocorrelation BPM over an already-decoded mono buffer - shared by the
     // file path (detectBpm decodes then calls this) and the CD path (live audio).
     static int           detectBpmFromSamples(const std::vector<float>& mono, int sr,
                                               const std::atomic<bool>& cancel);

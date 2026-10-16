@@ -1,4 +1,4 @@
-// notify_argv_test.cpp — Linux-only unit test for the notify-send argv builder
+// notify_argv_test.cpp - Linux-only unit test for the notify-send argv builder
 // (Phase 3 slice 5). Proves the injection-safety surface HEADLESS (no daemon, no
 // spawn): buildNotifyArgv() puts title/body into argv slots VERBATIM (no shell,
 // no escaping needed) and always terminates option parsing with "--" so a
@@ -31,12 +31,12 @@ int main() {
         CHECK(a[5] == "Body");      // body
     }
 
-    // ---- (2) metadata is verbatim — quotes/apostrophes are DATA, not escaped
+    // ---- (2) metadata is verbatim - quotes/apostrophes are DATA, not escaped
     //          (execvp hands them to notify-send as argv, never to a shell) ----
     {
         auto a = buildNotifyArgv("L'Artist - Don't \"Stop\"", "Album; rm -rf /");
         CHECK(a[4] == "L'Artist - Don't \"Stop\"");
-        CHECK(a[5] == "Album; rm -rf /");   // shell metachars inert — no shell
+        CHECK(a[5] == "Album; rm -rf /");   // shell metachars inert - no shell
     }
 
     // ---- (3) accented metadata (Björk-class) passes through byte-for-byte ----
@@ -52,7 +52,7 @@ int main() {
     {
         auto a = buildNotifyArgv("--version", "-h");
         CHECK(a[3] == "--");
-        CHECK(a[4] == "--version");   // summary, not a flag — the "--" guards it
+        CHECK(a[4] == "--version");   // summary, not a flag - the "--" guards it
         CHECK(a[5] == "-h");
     }
 

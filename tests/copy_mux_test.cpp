@@ -1,6 +1,6 @@
-// copy_mux_test — abi-cluster slice B: FrameSync + the ADTS->M4A mux writer,
+// copy_mux_test - abi-cluster slice B: FrameSync + the ADTS->M4A mux writer,
 // round-tripped through the app's OWN decode path (the plan's oracle move:
-// AacDecoder already parses MP4 — the writer's correctness check exists
+// AacDecoder already parses MP4 - the writer's correctness check exists
 // in-tree, no external tool).
 //
 //   1. FrameSync unit contract: ADTS walk over a REAL FDK-encoded stream
@@ -9,7 +9,7 @@
 //      rejects), the ID3v2 syncsafe skipper.
 //   2. The full copy chain on REAL audio: encodeAdtsSine -> the recorder's
 //      copy pump (injected pull, no plugin/network) -> a tagged .m4a cut ->
-//      LocalFileSource::open (miniaudio + the FDK MP4 backend — the exact
+//      LocalFileSource::open (miniaudio + the FDK MP4 backend - the exact
 //      code playback uses) -> decoded sample count is FRAME-EXACT
 //      (1024 * AU count) and carries real energy; TagLib::MP4 reads the tag
 //      pass's fields + covr (decision #1: no untagged backlog).
@@ -165,7 +165,7 @@ int main() {
             double rms = std::sqrt(acc / (double)(total * 2));
             CHECK(rms > 0.1);                          // real sine, not silence
 
-            // TagLib::MP4 reads the tag pass (title/artist/covr) — no
+            // TagLib::MP4 reads the tag pass (title/artist/covr) - no
             // untagged backlog, per the locked container decision.
             TagLib::MP4::File f(TL_PATH(p), true);
             CHECK(f.isValid() && f.tag());

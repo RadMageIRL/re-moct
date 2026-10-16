@@ -1,9 +1,9 @@
 #define MINIAUDIO_IMPLEMENTATION
 #include "AudioManager.h"
-#include "AudioExts.h"    // audioext::isLosslessPath — bit-perfect scope gate
+#include "AudioExts.h"    // audioext::isLosslessPath - bit-perfect scope gate
 #include "StringUtils.h"
 #include "CustomBackends.h" // AAC/Opus/WavPack backends (used by detectBpm's analysis decoder)
-#include "PortUtil.h"     // port::exeDir — resolve the streaming plugin beside the binary (slice c)
+#include "PortUtil.h"     // port::exeDir - resolve the streaming plugin beside the binary (slice c)
 #include "Log.h"          // stream-plugin load diagnostics
 
 // Slice B: the file-path helpers (populate_track_info / open_decoder /
@@ -24,7 +24,7 @@
 // ─── construction ────────────────────────────────────────────────────────────
 AudioManager::AudioManager()  = default;
 
-// Streaming plugin (slice c): resolve <exeDir>/plugins/remoct_stream.{dll,so} —
+// Streaming plugin (slice c): resolve <exeDir>/plugins/remoct_stream.{dll,so} -
 // the module beside the binary. Static (used by loaded_plugin_'s default member
 // initializer). exeDir() falls back to "." if the OS query fails.
 std::string AudioManager::streamPluginPath() {
@@ -63,7 +63,7 @@ bool AudioManager::beginRecording(const RecOptions& opt, const std::string& stat
         // abi-cluster slice B: copy mode. Wire the recorder's pull callback
         // to the plugin's read_encoded and arm the tee BEFORE the pump
         // starts. The PCM tap never arms in copy mode (StreamRecorder::start
-        // owns that) — one lifecycle, one mode flag, the two tees can never
+        // owns that) - one lifecycle, one mode flag, the two tees can never
         // arm together (the design doc's hazard 5.7, closed structurally).
         if (!stream_plugin_.supportsEncodedCapture()) return false;  // old plugin:
         // the panel greys Copy pre-start; this is the belt to that suspender.
@@ -93,7 +93,7 @@ bool AudioManager::beginRecording(const RecOptions& opt, const std::string& stat
 void AudioManager::endRecording() {
     stream_recorder_.stop();               // idempotent; finalizes in-flight cut
                                            // (the copy pump joins here, BEFORE
-                                           // the tee disarms — pull-while-armed)
+                                           // the tee disarms - pull-while-armed)
     if (stream_plugin_.valid()) {
         stream_plugin_.setEncodedCapture(false); // no-op when never armed
         stream_plugin_.setRecordActive(false);   // no-op plugin-side when already off
@@ -115,7 +115,7 @@ void AudioManager::teardown() {
         ma_device_uninit(&device_);
         device_initialised_ = false;
     }
-    file_src_.reset();      // device is stopped above — no callback can be mid-read
+    file_src_.reset();      // device is stopped above - no callback can be mid-read
     retired_src_.reset();   // reap any un-reaped retired source while quiesced
     viz_buf_.fill(0.0f);
     viz_write_pos_.store(0);
@@ -129,13 +129,13 @@ void AudioManager::clearNext() {
 
 // Install a swap the audio thread has already performed, on the main thread.
 //
-// If track_swap_flag_ is set then the swap ALREADY HAPPENED — file_src_ is the new
+// If track_swap_flag_ is set then the swap ALREADY HAPPENED - file_src_ is the new
 // track and it is audible. The only question is whether the UI's identity follows.
 // Draining is therefore always correct: refusing to install can only desynchronize
 // current_track_ from what is playing.
 //
 // Called from pollEvents() (the normal tick) and from the top of teardownNext(),
-// because next_track_info_ is a SINGLE SLOT serving two roles — the payload of a
+// because next_track_info_ is a SINGLE SLOT serving two roles - the payload of a
 // swap awaiting install, and the info of a newly armed preload. preloadNext()
 // overwrites it, so any teardown must drain the pending payload BEFORE the clobber.
 // (Simply cancelling the install instead was measured: it strands the previous
@@ -150,7 +150,7 @@ void AudioManager::installPendingSwap() {
         current_track_ = next_track_info_;
         // Reap the source the audio thread retired at the swap (slice B): the
         // seq_cst exchange above synchronizes-with the flag store that followed
-        // the swap, so retired_src_ is fully written and quiescent here — the
+        // the swap, so retired_src_ is fully written and quiescent here - the
         // free happens on the main thread, never in the audio callback.
         retired_src_.reset();
     }
@@ -168,7 +168,7 @@ void AudioManager::teardownNext() {
         // un-publish alone can't protect an already-in-flight read. ma_device_stop()
         // blocks until the current callback returns and guarantees it won't be
         // re-entered, so after it the decoder is safe to free. Scope the stop to the
-        // crossfade window only — the common mid-track clearNext (no crossfade) frees
+        // crossfade window only - the common mid-track clearNext (no crossfade) frees
         // directly with no audio glitch. (device_initialised_ + is_started also guards
         // the paused-mid-crossfade case, where the device is already stopped.)
         if (crossfading_.load(std::memory_order_acquire) &&
@@ -225,7 +225,7 @@ bool AudioManager::play(const std::string& path) {
     // Open the file as a source object (slice B). LocalFileSource::open =
     // open_decoder + zero-format guard + prime_decoder + populate_track_info,
     // the baseline sequence verbatim. (The old TagLib hint pre-read is gone:
-    // open_decoder provably discarded its hints — `(void)hint_channels` — since
+    // open_decoder provably discarded its hints - `(void)hint_channels` - since
     // the forced 44100/2 config replaced hint-based sniffing.)
     auto src = std::make_unique<LocalFileSource>();
     if (!src->open(path)) return false;
@@ -261,11 +261,11 @@ bool AudioManager::initDevice() {
     // The very first ma_device_init in the process brings up the shared playback
     // backend (WASAPI/COM on Windows). When that first bring-up coincides with the
     // custom FDK-AAC ma_decoder as the active decoder, the device ends up producing
-    // silence for the rest of the session — a chirp then nothing, on every file and
+    // silence for the rest of the session - a chirp then nothing, on every file and
     // stream after it. Playing a native-backend file (FLAC/MP3) or the radio path
     // first avoids it, which is the tell: it's the *first* backend init that's
     // fragile, not the AAC file. So prime the backend once here with a throwaway
-    // fixed-format device, before any real init — now the first bring-up never
+    // fixed-format device, before any real init - now the first bring-up never
     // coincides with AAC, regardless of which file the user opens first. init/uninit
     // (no start) is enough to do the COM/WASAPI bring-up; the callback never fires.
     static bool audio_backend_warmed = false;
@@ -282,7 +282,7 @@ bool AudioManager::initDevice() {
         ma_device warm{};
         if (ma_device_init(nullptr, &wc, &warm) == MA_SUCCESS) {
             // Fully activate the WASAPI render client once (start/stop), not just
-            // init/uninit — init alone primes the backend enough for ordinary AAC
+            // init/uninit - init alone primes the backend enough for ordinary AAC
             // files but not for the first-start path some files take, so do the
             // complete bring-up here. The callback fires but file_src_ is null,
             // so it only writes a few ms of (inaudible) silence.
@@ -360,7 +360,7 @@ std::vector<AudioManager::DeviceInfo> AudioManager::enumerateDevices() const {
     return result;
 }
 
-// The endpoint's shared-mode mix rate — what the DAC actually runs at, which is
+// The endpoint's shared-mode mix rate - what the DAC actually runs at, which is
 // NOT what miniaudio reports as the device's internal rate in shared mode. See
 // the header for why. One context init, cached; setDevice() clears the cache.
 uint32_t AudioManager::endpointMixRate() const {
@@ -404,7 +404,7 @@ void AudioManager::setDevice(const ma_device_id* id) {
         selected_device_idx_ = -1;
     }
     // Live sources (radio stream / CD) keep their source alive and own ma_device_
-    // directly — hot-swap just the device endpoint without tearing down the source.
+    // directly - hot-swap just the device endpoint without tearing down the source.
     if ((stream_mode_.load() || cd_mode_.load()) && device_initialised_) {
         ma_device_stop(&device_);
         ma_device_uninit(&device_);
@@ -435,7 +435,7 @@ void AudioManager::setDevice(const ma_device_id* id) {
             file_src_ = std::move(src);
             if (initDevice()) {
                 ma_device_set_master_volume(&device_, volume_.load());
-                // Raw (unprimed) frame seek — the baseline restart shape.
+                // Raw (unprimed) frame seek - the baseline restart shape.
                 file_src_->seekToFrame((uint64_t)(pos * file_src_->sampleRate()));
                 state_.store(PlaybackState::Playing);
                 ma_device_start(&device_);
@@ -448,14 +448,14 @@ bool AudioManager::preloadNext(const std::string& path) {
     teardownNext();
     // Open the next source fully BEFORE publishing it (open = decoder +
     // zero-format guard + prime + TagLib info, the baseline sequence; the old
-    // TagLib hint pre-read is gone — its outputs were provably discarded).
+    // TagLib hint pre-read is gone - its outputs were provably discarded).
     auto src = std::make_unique<LocalFileSource>();
     if (!src->open(path)) return false;
     next_path_ = path;
     next_track_info_ = src->info();
     next_src_ = std::move(src);
     // Store with release ordering so audio thread sees fully-written next_track_info_
-    // (and, slice B, the fully-constructed next_src_ object through the pointer —
+    // (and, slice B, the fully-constructed next_src_ object through the pointer -
     // the same happens-before edge, now covering pointer + pointee).
     next_decoder_initialised_.store(true, std::memory_order_release);
     return true;
@@ -465,9 +465,9 @@ bool AudioManager::preloadNext(const std::string& path) {
 void AudioManager::initCrossfade() {
     // Acquire ordering on next_decoder_initialised_ ensures next_track_info_ is visible
     if (!next_decoder_initialised_.load(std::memory_order_acquire)) return;
-    // If repeat-one is active, don't swap — just loop the current track
+    // If repeat-one is active, don't swap - just loop the current track
     if (repeat_one_.load()) {
-        // Seek current decoder back to start instead (raw, unprimed — baseline)
+        // Seek current decoder back to start instead (raw, unprimed - baseline)
         if (file_src_) file_src_->seekToFrame(0);
         // Un-publish the armed decoder so a later pass cannot read it. Flag ONLY:
         // no reset() (that would free heap on the audio thread) and no retiring
@@ -480,7 +480,7 @@ void AudioManager::initCrossfade() {
     }
 
     // Swap sources: next becomes current. The outgoing source is RETIRED, not
-    // freed — pollEvents reaps retired_src_ on the main thread under the
+    // freed - pollEvents reaps retired_src_ on the main thread under the
     // track_swap_flag_ synchronizes-with edge below, so a UI-thread
     // positionSec() racing this swap can only ever dereference a live decoder,
     // and the audio callback no longer frees heap here. The publication
@@ -491,12 +491,12 @@ void AudioManager::initCrossfade() {
     file_src_    = std::move(next_src_);
     next_decoder_initialised_.store(false);
 
-    // Do NOT write current_track_ here — that struct (with its std::strings) is
+    // Do NOT write current_track_ here - that struct (with its std::strings) is
     // owned by the main thread. Publish what the audio thread needs via atomics and
     // hand the string-bearing install off to pollEvents() via track_swap_flag_.
     current_rg_db_.store(next_track_info_.replaygain_db);
     live_bpm_.store(0);                  // new track: clear BPM (atomic)
-    resetSpeedResampler();               // decoder swapped — drop stale varispeed residual
+    resetSpeedResampler();               // decoder swapped - drop stale varispeed residual
     cached_duration_.store((double)next_track_info_.duration_sec);
     next_path_.clear();
     track_swap_flag_.store(true);        // main thread installs current_track_ = next_track_info_
@@ -577,8 +577,8 @@ void AudioManager::seekTo(double seconds) {
     if (seconds < 0.0) seconds = 0.0;
     if (dur > 0.0 && seconds > dur) seconds = dur;
 
-    // Device/effect policy stays here; the decoder work — seek to ~180ms before
-    // the target and decode-discard up to it (the MP3 bit-reservoir prime) —
+    // Device/effect policy stays here; the decoder work - seek to ~180ms before
+    // the target and decode-discard up to it (the MP3 bit-reservoir prime) -
     // moved verbatim into LocalFileSource::seekTo. Runs while the device is
     // stopped, so the few-ms extra decode is inaudible, exactly as before.
     bool was_playing = (state_.load() == PlaybackState::Playing);
@@ -593,11 +593,11 @@ void AudioManager::seekTo(double seconds) {
 void AudioManager::seekBy(double delta) {
     if (cd_mode_.load()) {
         // (int casts: CDSource position/duration are whole seconds widened to
-        // double per core::ISource — slice A signature harmonization only.)
+        // double per core::ISource - slice A signature harmonization only.)
         int new_pos = std::clamp((int)cd_source_.positionSec() + (int)delta, 0,
                                  (int)cd_source_.durationSec());
         cd_source_.seekTo(new_pos);
-        cd_bpm_reset_.store(true);   // discontinuity — restart the BPM window
+        cd_bpm_reset_.store(true);   // discontinuity - restart the BPM window
         return;
     }
     seekTo(positionSec() + delta);
@@ -625,23 +625,23 @@ double AudioManager::durationSec() const {
     return cached_duration_.load();
 }
 
-// Displayed bitrate: TagLib's nominal/average — for VBR exactly as for CBR and
+// Displayed bitrate: TagLib's nominal/average - for VBR exactly as for CBR and
 // lossless. The "live VBR estimate" this replaces was a linear position model
 // ((pos/dur)·file_size, differentiated) whose steady-state derivative is
 // constant BY CONSTRUCTION: the file average dressed as a live reading, made
 // less accurate by tag/album-art bytes in file_size and spiking across seeks
-// (the position jump landed in one 0.5 s delta window — probe evidence in
+// (the position jump landed in one 0.5 s delta window - probe evidence in
 // roadmap's resolved entry, 2026-07-03). TagLib's number is both simpler and
 // more accurate.
 int AudioManager::bitrateKbps() const {
     if (current_track_.bitrate_kbps > 0)
         return current_track_.bitrate_kbps;
-    // Tagless fallback: a one-shot static average from size/duration — no
+    // Tagless fallback: a one-shot static average from size/duration - no
     // rolling state, derived from immutable per-track fields.
     if (file_src_ && current_track_.file_size_bytes > 0 && current_track_.duration_sec > 0)
         return (int)((double)current_track_.file_size_bytes * 8.0
                      / ((double)current_track_.duration_sec * 1000.0));
-    return current_track_.bitrate_kbps;   // 0 — the UI hides the field
+    return current_track_.bitrate_kbps;   // 0 - the UI hides the field
 }
 
 // ─── visualizer ──────────────────────────────────────────────────────────────
@@ -1100,7 +1100,7 @@ int AudioManager::detectBpm(const std::string& path, int sample_rate,
                               const std::atomic<bool>& cancel) {
     if (cancel.load()) return 0;
 
-    // Open a fresh decoder just for analysis — don't touch the playback decoder
+    // Open a fresh decoder just for analysis - don't touch the playback decoder
     ma_decoder dec {};
     ma_decoder_config cfg = ma_decoder_config_init(ma_format_f32, 1, 0); // mono f32
     size_t nbackends = 0;
@@ -1167,7 +1167,7 @@ int AudioManager::detectBpmFromSamples(const std::vector<float>& raw, int sr,
     // Autocorrelation, weighted by a perceptual tempo prior.
     // Raw autocorrelation is sub-harmonic ambiguous: a pulse near ~110 BPM also
     // produces strong peaks at its 1/2 and 2/3 sub-multiples (~55, ~73), and tiny
-    // input differences decide which one "wins" — that is exactly why the same
+    // input differences decide which one "wins" - that is exactly why the same
     // track landed on 72 from the file but 109 from the CD. Listeners feel tempo
     // around ~120 BPM, so we bias peak selection toward that range with a gentle
     // log-Gaussian weight: a clearly stronger peak elsewhere still wins, but the
@@ -1315,7 +1315,7 @@ bool AudioManager::openCD(const std::string& drive_letter) {
     current_track_ = {};
     if (!cd_source_.open(drive_letter)) return false;
     cd_mode_.store(true);
-    // Live-BPM accumulation window (mono, 44100 Hz) — sized once per CD session.
+    // Live-BPM accumulation window (mono, 44100 Hz) - sized once per CD session.
     cd_bpm_buf_.assign(CD_BPM_FRAMES, 0.0f);
     cd_bpm_fill_.store(0);
     cd_bpm_ready_.store(false);
@@ -1370,7 +1370,7 @@ void AudioManager::beginStream(const std::string& url) {
     // spawn a connect worker, and surface a failure the UI can toast. (UIManager
     // also preflights streamPluginReady() for the specific reason.)
     if (!stream_plugin_.valid()) {
-        Log::write("stream", streamPluginError() + " — ignoring beginStream");
+        Log::write("stream", streamPluginError() + " - ignoring beginStream");
         stream_just_failed_.store(true);
         return;
     }
@@ -1419,7 +1419,7 @@ void AudioManager::startStreamConnectLocked(const std::string& url) {
     // (stream_connecting_ was false), so this join is instant.
     if (stream_connect_thread_.joinable()) stream_connect_thread_.join();
     stream_connect_thread_ = std::thread([this, url]() {
-        // The slow part — connect + producer spawn — entirely off the UI thread.
+        // The slow part - connect + producer spawn - entirely off the UI thread.
         // The worker touches only stream_plugin_; the device is brought up later
         // on the main thread once this succeeds.
         bool ok = stream_plugin_.open(url);
@@ -1449,7 +1449,7 @@ void AudioManager::pollStreamConnect() {
     const bool superseded = (wgen != stream_connect_gen_.load());
 
     if (superseded) {
-        // A file/CD/newer stream started while we were connecting — discard this
+        // A file/CD/newer stream started while we were connecting - discard this
         // stream without touching the device or state the new playback now owns.
         stream_plugin_.close();
     } else if (!ok) {

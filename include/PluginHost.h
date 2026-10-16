@@ -1,10 +1,10 @@
-// PluginHost.h — the platform-neutral plugin host policy (Phase 4, slice a).
+// PluginHost.h - the platform-neutral plugin host policy (Phase 4, slice a).
 //
 // The consumer of the core::IPluginLoader seam. Where the seam does the raw OS
 // load, THIS is the policy the seam deliberately doesn't carry: resolve the one
 // exported entry (remoct_plugin_query), run the ABI version gate + descriptor
 // validation, and hold the module alive for as long as the borrowed descriptor
-// is used. Platform-free (no windows.h) — it only talks to the seam interface
+// is used. Platform-free (no windows.h) - it only talks to the seam interface
 // and the C ABI header, so it compiles on Linux CI unchanged.
 //
 // Slice (a) proves this against the disposable sine plugin; slice (b) is where
@@ -43,7 +43,7 @@ PluginLoad validatePlugin(const RemoctPlugin* d, uint32_t host_abi);
 
 // A loaded, validated plugin: owns the module (unloads on destroy) AND holds the
 // borrowed descriptor pointer (which lives inside the module, so the module must
-// outlive it — enforced by member order). Non-copyable. The descriptor's
+// outlive it - enforced by member order). Non-copyable. The descriptor's
 // function pointers are the plugin's ops the host calls.
 class LoadedPlugin {
 public:
@@ -56,7 +56,7 @@ public:
 
 private:
     // Destruction is reverse declaration order: desc_ (a trivial borrowed
-    // pointer) first, then mod_ (the FreeLibrary/dlclose) LAST — so the module
+    // pointer) first, then mod_ (the FreeLibrary/dlclose) LAST - so the module
     // is never unloaded while the descriptor could still be dereferenced.
     std::unique_ptr<ILoadedModule> mod_;
     const RemoctPlugin*            desc_;

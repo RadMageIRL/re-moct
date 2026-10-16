@@ -1,11 +1,11 @@
-// WavPackDecoder.cpp — miniaudio custom decoding backend backed by libwavpack.
+// WavPackDecoder.cpp - miniaudio custom decoding backend backed by libwavpack.
 // See WavPackDecoder.h for the contract. Decodes plain .wv (16/24/32-bit int
 // and float, lossless or hybrid-lossy without the .wvc sidecar). Output is
 // interleaved 32-bit float PCM at the file's native rate.
 //
 // Design: the whole encoded file is slurped into memory on init (the
 // AacDecoder.cpp pattern) and served to libwavpack through a
-// WavpackStreamReader64 over that buffer — so libwavpack never sees a file
+// WavpackStreamReader64 over that buffer - so libwavpack never sees a file
 // path (Windows wide paths need nothing beyond the slurp), and passing a null
 // wvc_id defers .wvc correction files structurally: a memory stream has no
 // filename to derive the sidecar from. libwavpack owns block parsing, seek

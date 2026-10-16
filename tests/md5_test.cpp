@@ -1,11 +1,11 @@
-// md5_test — pure unit test of the vendored public-domain MD5 (lib/md5.{h,c})
+// md5_test - pure unit test of the vendored public-domain MD5 (lib/md5.{h,c})
 // behind LastFm's api_sig signing (Phase 3 slice 2, one code path on BOTH
-// platforms — replaced Windows CryptoAPI + the slice-1 Linux placeholder).
+// platforms - replaced Windows CryptoAPI + the slice-1 Linux placeholder).
 //
 // Layers of proof: this file = the RFC 1321 reference vectors (mathematical
 // identity with any correct MD5, CryptoAPI included), block-boundary lengths
-// (55/56/64/65 — the padding edge cases), and a raw-UTF-8 multibyte vector in
-// the exact api_sig concatenation shape (sorted name+value pairs + secret —
+// (55/56/64/65 - the padding edge cases), and a raw-UTF-8 multibyte vector in
+// the exact api_sig concatenation shape (sorted name+value pairs + secret -
 // the "Björk" wire-fidelity class). The live scrobble round-trips on each
 // platform are the on-the-wire layer. Runs in both matrix jobs.
 extern "C" {
@@ -25,7 +25,7 @@ static int g_fail = 0;
     }                                                                         \
 } while (0)
 
-// Mirror of LastFm::md5Hex's wrapper (kept private there by design — this
+// Mirror of LastFm::md5Hex's wrapper (kept private there by design - this
 // test proves the vendored primitive + the hex shape it relies on).
 static std::string md5Hex_(const std::string& s) {
     MD5_CTX ctx;
@@ -60,7 +60,7 @@ int main() {
     }
 
     // ── Padding edge cases (55/56/64/65 bytes straddle the length-field and
-    //    block boundaries — where a broken final() shows itself) ─────────────
+    //    block boundaries - where a broken final() shows itself) ─────────────
     CHECK_EQ(std::string(55, 'x'), "04364420e25c512fd958a70738aa8f72");
     CHECK_EQ(std::string(56, 'x'), "668a72d5ba17f08e62dabcafad6db14b");
     CHECK_EQ(std::string(64, 'x'), "c1bb4f81d892b2d57947682aeb252456");
@@ -68,7 +68,7 @@ int main() {
 
     // ── Raw-UTF-8 multibyte input in the api_sig concatenation shape
     //    (sorted param name+value pairs, then the secret; bytes hashed as-is,
-    //    never widened — the group-(b) wire-fidelity rule). Expected value
+    //    never widened - the group-(b) wire-fidelity rule). Expected value
     //    computed with an independent implementation (Python hashlib). ───────
     CHECK_EQ(std::string("artistBj\xC3\xB6rktrackJ\xC3\xB3gasecret\xC3\x9F"
                          "e\xC3\xA7ret"),

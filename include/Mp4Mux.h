@@ -1,4 +1,4 @@
-// Mp4Mux.h — minimal hand-rolled MP4/ISO-BMFF writer for AAC-LC access units.
+// Mp4Mux.h - minimal hand-rolled MP4/ISO-BMFF writer for AAC-LC access units.
 //
 // Lifted VERBATIM from the aac-m4a-phase0-probe (probes/aac-m4a/Mp4Mux.h), where
 // it was proven end to end (exact length, valid sample table with 25/50/75% seek,

@@ -4,7 +4,7 @@
 // Plays an HTTP/HTTPS audio stream (internet radio) completely isolated from the
 // existing ma_decoder file path and from CDSource. A single producer thread pulls
 // encoded bytes over WinINet, decodes them via a callback-driven ma_decoder, and
-// feeds an int16 SPSC ring buffer that the audio callback drains as float PCM —
+// feeds an int16 SPSC ring buffer that the audio callback drains as float PCM -
 // the exact shape CDSource uses, so AudioManager can later branch on it the same way.
 //
 // Step 1 scope: headless. No UI, no ICY metadata, MP3 only (forced backend).
@@ -29,7 +29,7 @@
 #include <memory>
 #include <deque>
 
-#include "miniaudio.h"   // declarations only — MINIAUDIO_IMPLEMENTATION lives in AudioManager.cpp
+#include "miniaudio.h"   // declarations only - MINIAUDIO_IMPLEMENTATION lives in AudioManager.cpp
 #include <fdk-aac/aacdecoder_lib.h>
 #include "IHeartRadio.h"  // isolated iHeart now-playing service (HLS streams only)
 #include "IHeartIdentity.h"  // probe-only minted anonymous profileId (A/B handshake identity)
@@ -48,7 +48,7 @@ public:
     // Call with the canonical zc####/hls.m3u8 URL. Remove once increment 2 wires
     // the pump into rawRead(). Returns true if the full chain resolved.
     bool hlsProbeTest(const std::string& master_url);
-    // Fixed output format — matches the CD playback device so AudioManager's
+    // Fixed output format - matches the CD playback device so AudioManager's
     // streaming branch can mirror its CD branch (44100 Hz, stereo, float out).
     static constexpr int SAMPLE_RATE   = 44100;
     static constexpr int CHANNELS      = 2;
@@ -61,7 +61,7 @@ public:
     // The HTTP transport is INJECTED (Phase 4 slice c): in the plugin it is a
     // plugin::HostServiceHttp over the injected host services (the core::http()
     // global is unreachable from a loaded .so); in-tree host callers pass
-    // core::http(). No default arg — an explicit ref keeps `grep core::http()
+    // core::http(). No default arg - an explicit ref keeps `grep core::http()
     // plugins/stream/ = 0`. iheart_ + the staging lane get the same transport.
     explicit StreamSource(core::IHttp& http)
         : http_(&http), iheart_(http), ring_(RING_SIZE, 0) {}
@@ -77,7 +77,7 @@ public:
 
     // Begin streaming the given URL. Returns false if the initial connection
     // can't be opened. Audio does not flow until PREBUFFER_SEC has accumulated.
-    // (Deliberately NOT part of core::ISource — the async-connect orchestration
+    // (Deliberately NOT part of core::ISource - the async-connect orchestration
     // around this slow call belongs to AudioManager.)
     bool open(const std::string& url);
 
@@ -111,7 +111,7 @@ public:
     void pause(bool p)      { paused_.store(p); }
     bool paused()     const { return paused_.load(); }
     // abi-cluster keep-draining: while a host recording is active, a playback
-    // pause must not interrupt the broadcast pipeline — the three paused_
+    // pause must not interrupt the broadcast pipeline - the three paused_
     // gates (readFrames silence short-circuit + both producers' network
     // freeze) are bypassed and the HOST mutes its output post-tap instead.
     // Off (the default, and for every pre-cluster host): pause behavior is
@@ -120,13 +120,13 @@ public:
 
     // ── copy/remux tee (abi-cluster slice B) ─────────────────────────────────
     // A 2 MiB byte ring the producers memcpy the POST-TRANSPORT compressed
-    // stream into when armed (ICY metaint stripped, HLS segment ID3 stripped —
+    // stream into when armed (ICY metaint stripped, HLS segment ID3 stripped -
     // the one tap sits in readAudio(), where every codec/mode converges before
     // any decoder). Disarmed cost is one relaxed atomic load; the producers
     // are network threads, never the audio callback. Overflow = drop-oldest:
     // the writer never stalls, the reader detects the lap, snaps to the live
     // tail, and reports a discontinuity (the muxer resyncs on the next frame
-    // header — the same machinery the reconnect/re-pin discont uses).
+    // header - the same machinery the reconnect/re-pin discont uses).
     //
     // Threading: arm/disarm on the host/UI thread, readEncoded on the host's
     // recorder WORKER thread, teeWrite on the producer thread. tee_r_ is
@@ -170,7 +170,7 @@ public:
     double durationSec() const override { return 0.0; }
     bool   seekTo(double) override { return false; }   // live edge only
 
-    // Audio-callback contract — identical to CDSource::readFrames.
+    // Audio-callback contract - identical to CDSource::readFrames.
     // Fills dst with frame_count stereo float frames; outputs silence while
     // paused, buffering, or on underrun.
     uint32_t readFrames(float* dst, uint32_t frame_count) override;
@@ -180,7 +180,7 @@ private:
     Codec                   codec_ = Codec::MP3;   // chosen in open() from the URL
 
     // ── HLS state (increment 1: populated only by the probe; increment 2 wires
-    //    it into the live producer via a rawRead() branch). Additive — none of
+    //    it into the live producer via a rawRead() branch). Additive - none of
     //    the continuous-stream members above are affected. ───────────────────
     enum class Mode { Continuous, HLS };
     Mode                    mode_ = Mode::Continuous;   // set in open() (increment 2)
@@ -212,7 +212,7 @@ private:
     // iHeart doesn't embed song info in-band (their ID3 is only the HLS timestamp
     // PRIV frame), so for iHeart streams we poll their JSON via the isolated
     // IHeartRadio module on the producer thread's existing ~10s cadence.
-    // Injected HTTP transport (Phase 4 slice c) — plugin::HostServiceHttp over the
+    // Injected HTTP transport (Phase 4 slice c) - plugin::HostServiceHttp over the
     // host services in production; core::http() for in-tree callers. Backs the HLS
     // one-shots (hls_session_) and IHeartRadio's session. Non-owning; outlives us
     // (host services live as long as AudioManager per the ABI lifetime contract).
@@ -229,7 +229,7 @@ private:
     // Identity the CURRENT connection was opened with, set in hlsConnect, copied into
     // the deep-log record each tick. Producer-thread-owned (like hls_), no lock needed.
     std::string id_variant_ = "anon";            // "anon" | "minted"
-    std::string id_profile_tail_;                // minted profileId tail ("" for anon) — TAIL ONLY
+    std::string id_profile_tail_;                // minted profileId tail ("" for anon) - TAIL ONLY
     bool        id_mint_ok_ = false;             // a minted session was available for this connect
     // Live-edge re-pin (digital only): on an ad-onset discontinuity, request a
     // re-handshake so we rejoin the live program in step with the web player
@@ -275,8 +275,8 @@ private:
     // The coordinator (a normal is_lane_=false instance) owns ONE staging
     // StreamSource (is_lane_=true) and prebuffers it in parallel during an ad, so
     // we can blend into a session whose OWN live edge has already cleared to music
-    // — instead of hard-cutting the primary to wherever its edge happens to sit
-    // (the once-an-hour mid-song clobber). Stage A: shadow observer only — arm,
+    // - instead of hard-cutting the primary to wherever its edge happens to sit
+    // (the once-an-hour mid-song clobber). Stage A: shadow observer only - arm,
     // watch for the lane's music edge, log, tear down. No audio-path change yet;
     // the existing re-pin still drives playback. B swaps into the lane, C blends.
     bool                is_lane_ = false;
@@ -316,11 +316,11 @@ private:
     std::string             now_playing_;
     // ── Audio-aligned label publish ──────────────────────────────────────────
     // now_playing_ commits off the manifest live edge, which sits ~one buffer
-    // depth (ring + undecoded pending) AHEAD of the speaker — so the label flips
+    // depth (ring + undecoded pending) AHEAD of the speaker - so the label flips
     // to the next song / "Commercial break" while the current song's tail is still
     // audible. We hold each committed label until the audio it describes is heard:
     // on commit, enqueue it with a release tick = now + measured buffer depth; the
-    // getter publishes entries as they come due. Display-only — reconciliation,
+    // getter publishes entries as they come due. Display-only - reconciliation,
     // debounce, scrobble, and decode are untouched. Reset on ringClear() (re-pin),
     // where the buffer is flushed and the label must snap to the live jump.
     struct NpPub { uint32_t releaseTick; std::string disp; };
@@ -329,7 +329,7 @@ private:
     std::string             iheart_art_;       // album-art URL for the committed song (digital mode; "" otherwise). Guarded by now_playing_mtx_.
 
     // Raw ICY-transport handles (owned by producer thread once open() returns).
-    // ICY/continuous path ONLY — the live audio read loop (rawRead -> one raw
+    // ICY/continuous path ONLY - the live audio read loop (rawRead -> one raw
     // network read -> ring) is per-platform private transport, permanently
     // outside the IHttp seam. Windows: WinINet, byte-verbatim baseline
     // (hInet_/hConn_ are HINTERNET). Linux (slice 3): hConn_ holds the curl
@@ -343,7 +343,7 @@ private:
     void*                   hConn_ = nullptr;
 #endif
     // HLS keep-alive session (slice 4): backs the hlsHttpGet manifest/segment
-    // one-shots via the core::IHttp seam. Same lifetime the raw hInet_ had for HLS —
+    // one-shots via the core::IHttp seam. Same lifetime the raw hInet_ had for HLS -
     // created in hlsEnsureSession, dropped in disconnect(), so every re-handshake /
     // ad-onset re-pin gets a fresh session, exactly as baseline.
     std::unique_ptr<core::IHttpSession> hls_session_;
@@ -352,7 +352,7 @@ private:
     ma_decoder              decoder_{};
     bool                    decoder_ready_ = false;
 
-    // AAC (FDK) decoder + optional resampler — driven on the AAC producer thread only
+    // AAC (FDK) decoder + optional resampler - driven on the AAC producer thread only
     HANDLE_AACDECODER       aac_dec_   = nullptr;
     ma_data_converter       conv_{};
     bool                    conv_ready_   = false;
@@ -365,7 +365,7 @@ private:
     std::atomic<bool>       record_active_ { false };  // abi-cluster: drain through pause
     std::atomic<bool>       stop_        { false };
     // ABI-typed (plain int32) mirror of stop_'s cancel signal, for the HTTP cancel
-    // token (Phase 4 slice b). A plain int32 — NOT std::atomic — so it crosses the
+    // token (Phase 4 slice b). A plain int32 - NOT std::atomic - so it crosses the
     // plugin C ABI as `const int32_t*` (remoct_plugin.h) with no reinterpret, and is
     // accessed atomically via std::atomic_ref on both sides (owner writes it in
     // setStop; the transport reads it via core::httpCancelRequested), never mixing a
@@ -389,7 +389,7 @@ private:
 
     // ── copy/remux tee state (slice B; see the public section's contract) ────
     // Monotonic uint64 cursors (the recorder-ring discipline applied to bytes)
-    // — no wrap arithmetic exists to fall into the LP64 (long)(u32diff) trap.
+    // - no wrap arithmetic exists to fall into the LP64 (long)(u32diff) trap.
     // The writer only ever advances tee_w_; the reader owns tee_r_ and
     // validates AFTER copying that the writer didn't lap it mid-copy
     // (drop-oldest without a second writer on the read cursor).

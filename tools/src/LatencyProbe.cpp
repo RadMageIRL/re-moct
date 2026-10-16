@@ -1,4 +1,4 @@
-// LatencyProbe.cpp  —  standalone stream-latency probe for RE-MOCT
+// LatencyProbe.cpp - standalone stream-latency probe for RE-MOCT
 //
 // Measures how far RE-MOCT's RAW iHeart rendition (zc####/hls.m3u8) sits behind
 // the iHeart WEB PLAYER's rendition, to decompose the ~100s metadata/audio lead

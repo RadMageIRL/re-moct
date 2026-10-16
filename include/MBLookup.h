@@ -336,7 +336,7 @@ using MBDiscIdCallback =
 // cap so both lists behave alike. Truncation is REPORTED, never silent.
 inline constexpr std::size_t kMaxDiscIdCandidates = 12;
 
-// ─── Text search result (lightweight — just enough for the picker UI) ─────────
+// ─── Text search result (lightweight - just enough for the picker UI) ─────────
 struct MBSearchResult {
     std::string mbid;
     std::string title;

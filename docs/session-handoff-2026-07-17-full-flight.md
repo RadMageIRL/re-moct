@@ -1,7 +1,7 @@
-# Session handoff — 2026-07-17 ~12:45 — the full-day flight (12 slices + 2 fixes)
+# Session handoff - 2026-07-17 ~12:45 - the full-day flight (12 slices + 2 fixes)
 
 One session, everything on `experimental/win-pdcurses`, every push CI-green
-through `c62ca85` (the last two commits' runs pending at handoff — check
+through `c62ca85` (the last two commits' runs pending at handoff - check
 first thing: `7dc403b` batch-r128 and the docs commit after it; expect
 green, locals were 26/26 Win + 27/27 Linux).
 
@@ -26,11 +26,11 @@ green, locals were 26/26 Win + 27/27 Linux).
 - **Backlog = abi-cluster slice B only** (copy/remux), plan approved+committed
   (`docs/abi-cluster-slice-b-plan.md`): implement the three declared-NULL fns
   (tee ring plugin-side), FrameSync.h parser, the ADTS→M4A mux writer (the ONE
-  new piece — round-trip oracle = the app's own AacDecoder), MP3 raw-append
+  new piece - round-trip oracle = the app's own AacDecoder), MP3 raw-append
   writer, recorder pull-callback copy mode, panel third format. Dos's locked
   decisions ride: AAC copies TAGGED (M4A, not bare .aac), in-app playback
   (already exists), 2 MiB tee drop-oldest + counter.
-- **v1.3.0 still UNRELEASED** — CHANGELOG accumulating (now: decode formats,
+- **v1.3.0 still UNRELEASED** - CHANGELOG accumulating (now: decode formats,
   rip overhaul, stream recording + covers + hold + ad-aware, MP3 tag pair,
   log semantics, gapless pause, batch ReplayGain).
 - **Dos's open seals** (live/eyes-on, at leisure): slice-A gapless LISTEN
@@ -42,9 +42,9 @@ green, locals were 26/26 Win + 27/27 Linux).
 
 ## The findings that must not be re-learned (full text in lessons.md)
 
-1. **LP64 (long)(uint32-diff) inverts wrap compares on Linux** — use
+1. **LP64 (long)(uint32-diff) inverts wrap compares on Linux** - use
    (int32_t). FLAGGED unfixed: np_pub_q_'s release check uses (long).
-2. **TagLib File objects open RW by default** — a live handle silently
+2. **TagLib File objects open RW by default** - a live handle silently
    blanks a concurrent FileRef read on Windows (sharing violation swallowed
    → metadata skipped). Scope tightly.
 3. **Additive ABI growth**: no version bump; struct_size REACH-check before
@@ -60,7 +60,7 @@ green, locals were 26/26 Win + 27/27 Linux).
 - Test streams: KKJO ICY/AAC `stream.abacast.net/direct/eagleradio-kkjofmaac-ibc4`;
   real iHeart HLS `stream.revma.ihrhls.com/zc4366/hls.m3u8`; SomaFM = slow control.
 - Harness exes rebuilt-per-slice in smoke/: riprobe-txxx, probe-rgfix,
-  rgprobe, id3strip (syncsafe-correct), srec_live (build/bin — now with
+  rgprobe, id3strip (syncsafe-correct), srec_live (build/bin - now with
   pause_at/pause_len + the silence-window scan). The g++ recipe is in the
   07-17 morning handoff + memory (shell32/uuid for musicRoot).
 - **smoke/subM3/ = the MP3 tag contract; subM = the legacy-blob specimen;

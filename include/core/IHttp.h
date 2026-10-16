@@ -1,13 +1,13 @@
-// IHttp.h — platform-neutral HTTP seam (Phase 1; slices 1-3 = one-shot fetch,
+// IHttp.h - platform-neutral HTTP seam (Phase 1; slices 1-3 = one-shot fetch,
 // slice 4 = cancel token + persistent sessions for the two audio-thread sites).
 //
 // `core::IHttp` is the interface; `platform::win::WinInetHttp`
 // (src/platform/win/HttpWinInet.cpp) is the Windows/WinINet implementation. They live
-// in include/core/ + src/platform/win/ — the core/platform boundary established at the
+// in include/core/ + src/platform/win/ - the core/platform boundary established at the
 // Phase 1 reorg (consumers include "core/IHttp.h"). The interface survived that move
 // unchanged.
 //
-// This header must NOT include <windows.h> or any platform header — that is the
+// This header must NOT include <windows.h> or any platform header - that is the
 // "does core stay portable" seam test (it compiles on Linux CI as-is).
 #pragma once
 #include <atomic>
@@ -21,11 +21,11 @@
 namespace core {
 
 // Redirect handling. FollowAll is the default and maps to WinINet's automatic follow
-// with NO extra flag — byte-identical to the pre-(c) `bool follow_redirects = true`,
+// with NO extra flag - byte-identical to the pre-(c) `bool follow_redirects = true`,
 // so groups (a)/(b) are unchanged. FollowNone = don't follow (NO_AUTO_REDIRECT).
 // FollowSameScheme = follow but never cross http<->https (CoverArt/CAA: no downgrade;
 // WinINet IGNORE_REDIRECT_TO_HTTP|HTTPS). The bool genuinely couldn't express the
-// third policy — this is matching baseline, not gold-plating.
+// third policy - this is matching baseline, not gold-plating.
 enum class RedirectPolicy { FollowAll, FollowNone, FollowSameScheme };
 
 // A single HTTP request. All strings are UTF-8; the platform impl widens as needed.
@@ -46,22 +46,22 @@ struct HttpRequest {
     bool   pragma_no_cache  = false;
     // Cancel token (slice 4; Phase 4 slice b: unified on int32_t). The transport polls
     // this before opening and before each chunk read (via httpCancelRequested below)
-    // and aborts the fetch when it reads nonzero — the same per-chunk granularity as
+    // and aborts the fetch when it reads nonzero - the same per-chunk granularity as
     // StreamSource's baseline stop check, so worst-case abort latency stays one
     // receive-timeout on a stalled read, never the remaining body. Typed as a plain
     // int32_t* (was std::atomic<bool>*) so it is EXACTLY the plugin C-ABI cancel type
     // (remoct_plugin.h RemoctHttpReq::cancel): the host HTTP service shim forwards the
     // plugin's flag straight through, no reinterpret, no width/endianness question. The
     // pointee is a plain int32 the OWNER writes via std::atomic_ref<int32_t> (NOT a
-    // std::atomic over the same bytes — mixing the two is non-conforming); it only has
-    // to outlive the synchronous fetch(). nullptr = not cancellable (default — all
+    // std::atomic over the same bytes - mixing the two is non-conforming); it only has
+    // to outlive the synchronous fetch(). nullptr = not cancellable (default - all
     // one-shot sites unchanged).
     const int32_t* cancel = nullptr;
 };
 
 // Poll a cancel token (HttpRequest::cancel, i.e. the plugin ABI's const int32_t*): true
 // iff non-null and nonzero. The owner writes the flag via std::atomic_ref<int32_t>; the
-// transport reads it here the same way — the standard-correct atomic access of a plain
+// transport reads it here the same way - the standard-correct atomic access of a plain
 // POD int shared across the C boundary (const_cast is safe: the pointee is a non-const
 // flag, and we only load). Pure, header-only, both platforms.
 inline bool httpCancelRequested(const int32_t* cancel) {
@@ -81,11 +81,11 @@ struct HttpResponse {
     bool        truncated  = false;         // hit max_body before EOF
     // Aborted via req.cancel. Distinct from a transport failure so consumers with
     // reconnect/backoff logic (the HLS segment pump) never mistake their own stop
-    // for a dead stream. When set: ok=false and the partial body is CLEARED — a
+    // for a dead stream. When set: ok=false and the partial body is CLEARED - a
     // half-downloaded segment must never reach the decoder path.
     bool        cancelled  = false;
     // The body read failed partway (transport error mid-body, NOT EOF and NOT the
-    // cap). ok/body semantics are unchanged (partial kept, ok=true — the uniform
+    // cap). ok/body semantics are unchanged (partial kept, ok=true - the uniform
     // baseline of the six one-shot sites, which all used `while(read && got>0)`);
     // this flag exists because hlsHttpGet's baseline is the exception: it FAILS the
     // call on a mid-body read error, so it gates on this to keep parity.
@@ -116,7 +116,7 @@ inline void finalizeBody(HttpResponse& res, const HttpRequest& req) {
 
 // Cancel finalization a transport applies when req.cancel fired (pure; mirrors
 // finalizeBody). The response fails, is marked cancelled, and any partial body is
-// cleared — see HttpResponse::cancelled. Unit-tested off-platform.
+// cleared - see HttpResponse::cancelled. Unit-tested off-platform.
 inline void finalizeCancelled(HttpResponse& res) {
     res.body.clear();
     res.ok        = false;
@@ -132,11 +132,11 @@ struct HttpSessionConfig {
 
 // A persistent keep-alive session: connections are reused across fetches (WinINet:
 // one InternetOpen handle held for the session's lifetime + KEEP_CONNECTION per call).
-// Lifetime is the CALLER's to manage and is the parity contract — StreamSource's HLS
+// Lifetime is the CALLER's to manage and is the parity contract - StreamSource's HLS
 // session dies at disconnect() (fresh one per re-handshake/re-pin), IHeartRadio's
 // lives with the object. Requests through a session must leave user_agent/timeout_ms
 // at their defaults (the session's config wins; the impl ignores per-request values).
-// Concurrent fetch() calls on one session from different threads are allowed — both
+// Concurrent fetch() calls on one session from different threads are allowed - both
 // baselines already share their session across the producer and open-path threads.
 struct IHttpSession {
     virtual ~IHttpSession() = default;
@@ -145,14 +145,14 @@ struct IHttpSession {
 
 // Progress callback for a streaming download: (received_bytes, total_bytes). total is
 // 0 when the origin sends no Content-Length. Invoked periodically on the fetching
-// thread — keep it cheap and non-blocking (the podcast download UI just stores into
+// thread - keep it cheap and non-blocking (the podcast download UI just stores into
 // atomics the draw loop reads).
 using ProgressFn = std::function<void(std::uint64_t received, std::uint64_t total)>;
 
 struct IHttp {
     virtual ~IHttp() = default;
     virtual HttpResponse fetch(const HttpRequest& req) = 0;
-    // Open a persistent session (may return nullptr on failure — callers retry, as
+    // Open a persistent session (may return nullptr on failure - callers retry, as
     // the baselines' ensureSession did). The default implementation below is a thin
     // forwarder to fetch() (no pooling) so fakes/tests need no changes: it folds the
     // session config into each request and delegates. Real transports override it
@@ -160,12 +160,12 @@ struct IHttp {
     // The returned session must not outlive the IHttp that created it.
     virtual std::unique_ptr<IHttpSession> openSession(const HttpSessionConfig& cfg);
 
-    // Stream a GET straight to a file on disk, reporting progress — the body never
+    // Stream a GET straight to a file on disk, reporting progress - the body never
     // lands in memory, so this suits large files (podcast episodes) that fetch()'s
     // in-memory buffer would balloon. Honors req.cancel (per-chunk) and req.timeout_ms.
     // On success writes dest_path and returns ok=true (empty body, status set); on
     // cancel/error returns ok=false and removes any partial file. The default below
-    // returns ok=false (unsupported) so fakes and other impls need no change — only the
+    // returns ok=false (unsupported) so fakes and other impls need no change - only the
     // WinINet and libcurl transports override it. (Slice 4 reuses this for the queue.)
     virtual HttpResponse fetchToFile(const HttpRequest& req, const std::string& dest_path,
                                      const ProgressFn& progress);
@@ -193,13 +193,13 @@ inline HttpResponse IHttp::fetchToFile(const HttpRequest&, const std::string&,
     return HttpResponse{};
 }
 
-// TRANSITIONAL process-wide accessor. This global is a migration seam ONLY — the
+// TRANSITIONAL process-wide accessor. This global is a migration seam ONLY - the
 // endgame is dependency injection (the host hands plugins an IHttp service, per
 // docs/architecture.md). Do NOT enshrine it: where a consumer can cheaply hold an
 // `IHttp&`, prefer that over reaching for this global.
 IHttp& http();
 
-// TRANSITIONAL injection hook (same status as http() above — not the endgame).
+// TRANSITIONAL injection hook (same status as http() above - not the endgame).
 // Overrides what http() returns process-wide; pass nullptr to restore the default
 // WinINet transport. Exists so tests can inject a fake transport to inspect the
 // request a consumer builds; do NOT use it in production code.

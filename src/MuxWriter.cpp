@@ -1,4 +1,4 @@
-// MuxWriter.cpp — copy-path cut writers (abi-cluster slice B). See the header.
+// MuxWriter.cpp - copy-path cut writers (abi-cluster slice B). See the header.
 //
 // The M4A layout is the minimal ISO-BMFF shape the in-tree reader
 // (AacDecoder.cpp's Mp4Aac) parses: moov -> trak -> mdia -> { mdhd, minf ->
@@ -8,7 +8,7 @@
 // (1024 * frame count), so the round-trip sample count is deterministic.
 #include "MuxWriter.h"
 
-#include "StringUtils.h"   // utf8_to_wide — Windows paths, same as the encoders
+#include "StringUtils.h"   // utf8_to_wide - Windows paths, same as the encoders
 
 #include <cstring>
 
@@ -127,7 +127,7 @@ bool M4aMuxWriter::finalize(bool keep) {
     if (!f_) return false;
     if (!keep) { std::fclose(f_); f_ = nullptr; return true; }
     // A cut with no audio, or one mdat can't address in 32 bits, is a failed
-    // cut — declared, not papered over (stco is 32-bit by construction here).
+    // cut - declared, not papered over (stco is 32-bit by construction here).
     bool ok = frames_written_ > 0 &&
               mdat_bytes_ + 8 <= 0xFFFFFFFFull && sample_rate_ > 0;
 

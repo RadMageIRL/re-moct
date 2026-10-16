@@ -1,4 +1,4 @@
-// CustomBackends.h — the process-wide list of miniaudio custom decoding
+// CustomBackends.h - the process-wide list of miniaudio custom decoding
 // backends (FDK-AAC, Opus, WavPack, Vorbis).
 //
 // Every ma_decoder that should understand the custom formats registers THIS
@@ -6,7 +6,7 @@
 // BPM-analysis path (AudioManager::detectBpm) cannot drift: adding a codec is
 // a one-line edit in CustomBackends.cpp that every consumer inherits. The
 // consumers' ma_decoder_configs legitimately differ (forced 44100/2 playback
-// vs. native-rate mono analysis) — only the backend array is shared.
+// vs. native-rate mono analysis) - only the backend array is shared.
 #pragma once
 
 #include "miniaudio.h"

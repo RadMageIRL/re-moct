@@ -1,7 +1,7 @@
-// disc_tag_test — P5: the disc number, per container, proven rather than asserted.
+// disc_tag_test - P5: the disc number, per container, proven rather than asserted.
 //
 // RE-MOCT wrote no disc number at all until this slice. The risk in adding one is
-// not the arithmetic — it is that each container stores it in a DIFFERENT native
+// not the arithmetic - it is that each container stores it in a DIFFERENT native
 // field (ID3v2 TPOS, Xiph DISCNUMBER, APEv2 DISC, MP4 "disk"), and RE-MOCT's own
 // library reader asks TagLib for ONE key, "DISCNUMBER", through the PropertyMap
 // (readTags, src/LibraryScanner.cpp). Whether TagLib bridges each native field
@@ -17,8 +17,8 @@
 // makes, reading files this test produced. A test that re-implemented the reader
 // would only prove it agreed with itself.
 //
-// WHAT THIS DOES NOT PROVE. The writes go through disctag::writeDiscTag — the
-// function CDRipper::tagFile calls — but not through tagFile itself, which is
+// WHAT THIS DOES NOT PROVE. The writes go through disctag::writeDiscTag - the
+// function CDRipper::tagFile calls - but not through tagFile itself, which is
 // private and whose translation unit drags in CD I/O, HTTP and the whole rip
 // stack. So this pins the FORMAT and the MAPPING; that tagFile passes the right
 // disc to the right file is verified by reading the five call sites and by the
@@ -67,7 +67,7 @@ static void check(bool ok, const std::string& what, const std::string& got = "")
 }
 
 // ── Fixture: a real encoded file per taggable container ─────────────────────
-// Same construction art_embed_test uses — a deterministic noise buffer through
+// Same construction art_embed_test uses - a deterministic noise buffer through
 // the production encoder. The audio is irrelevant; the container must be real,
 // because a tag written into a fake one proves nothing about the tagger.
 static std::vector<int16_t> pcmFixture() {
@@ -168,7 +168,7 @@ static std::string mp4Disk(const std::string& p) {
     return std::to_string(pr.first) + "/" + std::to_string(pr.second);
 }
 
-// The key RE-MOCT's library reader asks for — see readTags in LibraryScanner.cpp.
+// The key RE-MOCT's library reader asks for - see readTags in LibraryScanner.cpp.
 static std::string propDiscNumber(const std::string& p) {
     TagLib::FileRef f(TL_PATH(p), false);
     if (f.isNull() || !f.file()) return {};
@@ -250,7 +250,7 @@ int main() {
     // ── 2. TagLib's PropertyMap bridges each one onto DISCNUMBER ─────────────
     // The mapping this slice cannot assert and must measure. A failure here is
     // container-specific and says exactly which native field TagLib does not
-    // bridge — which is the information needed to pick a different one.
+    // bridge - which is the information needed to pick a different one.
     std::printf("\n-- PropertyMap[\"DISCNUMBER\"] (the key LibraryScanner reads) --\n");
     for (const auto& c : kContainers) {
         const std::string got = propDiscNumber(MP(c.ext));

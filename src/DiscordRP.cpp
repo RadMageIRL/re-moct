@@ -4,7 +4,7 @@
 #include <ctime>
 #include <cstdio>
 
-// pid for the activity payload only — the pipe transport lives behind
+// pid for the activity payload only - the pipe transport lives behind
 // core::IIpc since slice 6 (Windows named pipe; Unix-socket sibling = slice 4).
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
@@ -21,7 +21,7 @@ static unsigned long rpPid() { return (unsigned long)getpid(); }
 bool DiscordRP::ensureConnected() {
     if (connected()) return true;
     if (!channel_) {
-        // Discord listens on one of ten slots — probe them in order (protocol
+        // Discord listens on one of ten slots - probe them in order (protocol
         // knowledge, so it stays here; the seam maps the name to the pipe path).
         for (int i = 0; i <= 9; ++i) {
             channel_ = ipc_->connect("discord-ipc-" + std::to_string(i));

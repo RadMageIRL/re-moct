@@ -52,7 +52,7 @@ untouched on the same screen, and consistent stripping stopped being available t
 **Renamed from `sanitizeForDisplay`** for the compile-time sweep - 104 sites, 8 files, zero
 stragglers, fully mechanical.
 
-## 2. The malformed-UTF-8 enforcement — READ THIS, it was not in the design note
+## 2. The malformed-UTF-8 enforcement - READ THIS, it was not in the design note
 
 **The old decoder only rejected invalid LEAD bytes.** Bad continuations, truncated tails, overlong
 forms and surrogate halves were never checked - they were caught only *as a side effect of their
@@ -71,7 +71,7 @@ This is the one thing in the slice that was not in the approved design. It is no
 is what "reject malformed UTF-8" costs once the length rule is gone. Named here because a future
 reader will otherwise see strictness that no brief asked for.
 
-## 3. Outbound data — the part that mattered most
+## 3. Outbound data - the part that mattered most
 
 **The brief for the design round assumed this was display-only. It was not, and the tree already
 knew.**
@@ -112,7 +112,7 @@ API), `drawRecPanel`'s title (byte `substr` + `mvwprintw`), and the marquee trig
 byte-truncating (`UIManager.cpp` `bar.resize((size_t)cols, ' ')`, and `panelFrame`'s title
 `substr`). Pre-existing, reported in the recon, out of this slice's blast radius.
 
-## 4. Astral / surrogate pairs — deliberately unaccommodated
+## 4. Astral / surrogate pairs - deliberately unaccommodated
 
 **Emoji and other codepoints above U+FFFF no longer fold to `?`.** They are 4-byte, and length is
 never a criterion, so they pass through.
@@ -129,7 +129,7 @@ live-test list for exactly that reason. `docs/lessons.md` now records the real s
 been readable as blessing the old `?` catch-all for all non-ASCII, which is part of how this lasted
 four months.
 
-## 5. Named and OUT — `LastFm::urlEncode`
+## 5. Named and OUT - `LastFm::urlEncode`
 
 `src/LastFm.cpp` gates on `std::isalnum(c)` for `unsigned char`, and `UIManager.cpp` calls
 `setlocale(LC_ALL, "")`. **`isalnum` is locale-dependent for bytes ≥ 0x80.** Under a UTF-8 locale
@@ -144,7 +144,7 @@ The hardening is one line - `c < 0x80 && std::isalnum(c)`. **It is correct indep
 work and Dos ruled it explicitly out of this slice.** Recorded here so it is not discovered later as
 fallout and mistaken for a new bug.
 
-## 6. Dos's live test — four things
+## 6. Dos's live test - four things
 
 1. **水田直志 renders in browser and playlist rows.** *Set `wingui_font` to a CJK font first* - see
    §7. Boxes with the default font are a missing-glyph result, not a fold failure.
@@ -199,7 +199,7 @@ malformed-UTF-8 cases, and an idempotence check.
 
 ---
 
-## 10. THE RESIZE CRASH — found and fixed the same night (added after §1-9)
+## 10. THE RESIZE CRASH - found and fixed the same night (added after §1-9)
 
 **1.6.1 shipped a crash and it was found within hours: on Windows, dragging the window border with
 CJK on screen aborted the process.** Reliable in seconds, three independent reproductions by Dos.
@@ -260,7 +260,7 @@ boundary** - which is why several hundred automated ASCII-only resizes never rep
 
 ---
 
-## 11. THE MOVE FREEZE — and the app-side window subclass (added after §10)
+## 11. THE MOVE FREEZE - and the app-side window subclass (added after §10)
 
 **Dragging the window to a new position froze the display for the whole drag.** Separate defect from
 the crash, found the same night, fixed and confirmed on hardware.
@@ -297,7 +297,7 @@ stationary drag (44 ticks, zero `WM_MOVING`, measured).
   cannot change mid-drag. **Accepted, documented trade:** their ROW marquees freeze for the drag and
   a mid-drag track change does not repaint the now-playing highlight. Both resolve on release.
 
-### NOT FIXED, and not ours — do not re-investigate
+### NOT FIXED, and not ours - do not re-investigate
 
 **Press the title bar and hold still: ~500 ms freeze before anything happens.** Confirmed cause:
 
@@ -320,12 +320,12 @@ anyone spends effort on it.
 
 ---
 
-## 12. THE RESIZE FLICKER — the deferral removed again (added after §11, session close)
+## 12. THE RESIZE FLICKER - the deferral removed again (added after §11, session close)
 
 **1.6.1 shipped a visual regression against 1.6.0: resizing flickered the whole way through a drag.**
 Found by Dos on hardware, fixed, confirmed smooth. Tip is `e3fcbd2`.
 
-**The cause was the deferral written in §10** — the one that was kept "because drawing from inside a
+**The cause was the deferral written in §10** - the one that was kept "because drawing from inside a
 `WM_SIZE` handler is wrong in principle." The principle holds. **It was never what aborted**, that was
 said at the time, and it turned out to cost something real.
 
@@ -337,7 +337,7 @@ shrinking. Then the tick corrected it. Stale, correct, stale = flicker.
 
 **And the servicer was on a starved clock.** Measured on the resize path directly (not carried across
 from the move): **zero `WM_TIMER` during a flooded modal size loop**, against 35 in the idle window of
-that same loop, longest gap **532 ms** — over 11x the 47 ms interval. The stale window was never
+that same loop, longest gap **532 ms** - over 11x the 47 ms interval. The stale window was never
 bounded by the interval.
 
 **`resizeWindows()`'s own comment already recorded the standard**: an intermediate frame during a live
@@ -361,7 +361,7 @@ real cause was patched at source, instead of waiting for Dos to see flicker.
 
 ---
 
-## 13. RELEASE READINESS — 1.6.1, and the three open ceremony decisions
+## 13. RELEASE READINESS - 1.6.1, and the three open ceremony decisions
 
 **1.6.1 is UNRELEASED on `experimental/win-pdcurses`.** Not merged, not tagged, deliberately.
 
@@ -385,7 +385,7 @@ CHANGELOG date on experimental -> ff `dev` -> `git merge --no-ff dev -m "Merge d
 carries direct GitHub web edits not in `dev`, so it is never ff-able - always `--no-ff`.** Stash
 untracked WIP before the main checkout. **Dos does the clean-box build and the GitHub release himself.**
 
-## 14. STILL UNTRACKED — a standing decision, not an oversight
+## 14. STILL UNTRACKED - a standing decision, not an oversight
 
 `docs/LOCKED-CODE.md` and `docs/CD-ADDRESSING-LOCKED.md` were committed this session (`7767867`).
 Still untracked, unchanged, and **Dos's call, not to be committed unasked**:
@@ -406,7 +406,7 @@ Still untracked, unchanged, and **Dos's call, not to be committed unasked**:
 | `7767867` | the two locked-policy docs into the repo |
 | `e3fcbd2` | resize deferral removed, flicker regression fixed |
 
-## 16. Process lessons from this session — the expensive ones
+## 16. Process lessons from this session - the expensive ones
 
 1. **Verify a PID is one you started before driving a window.** A launch failing silently with exit
    127 left automation driving Dos's own instance - moving it, resizing it, sending it keystrokes.

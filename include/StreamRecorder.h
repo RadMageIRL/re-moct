@@ -1,4 +1,4 @@
-// StreamRecorder.h — "rip the radio": capture the playing stream to disk,
+// StreamRecorder.h - "rip the radio": capture the playing stream to disk,
 // split on metadata-title changes, tag each cut (stream-record slice R1).
 //
 // Three isolated lanes that never block each other (the plan's governing
@@ -6,13 +6,13 @@
 //
 //   audio thread  -> capture(): ONE relaxed-atomic check + ONE bounded copy
 //                    into a preallocated SPSC ring. No lock, no allocation,
-//                    no syscall — strictly lighter than the EQ pass already
+//                    no syscall - strictly lighter than the EQ pass already
 //                    running in the same callback branch. A full ring DROPS
 //                    the incoming block and counts it (visible, never
 //                    blocking, never corrupting).
 //   worker thread -> a dedicated std::thread owned here: drains the ring,
 //                    feeds libebur128 (per-cut ReplayGain), converts f32->s16,
-//                    drives the IEncoder fan-out (Mp3Encoder/OpusRipEncoder —
+//                    drives the IEncoder fan-out (Mp3Encoder/OpusRipEncoder -
 //                    pure PCM-to-file, constructed directly), rolls to a new
 //                    cut when the split flag fires, tags finished cuts
 //                    (TagLib; R128 dialect for Opus via R128Gain.h).
@@ -27,7 +27,7 @@
 
 #include "RipFormats.h"   // RipFormat (re-encode: Mp3/Opus/M4A; + copy mode)
 
-// libebur128 for the per-cut ReplayGain state — included, not forward-declared:
+// libebur128 for the per-cut ReplayGain state - included, not forward-declared:
 // ebur128_state is an anonymous-struct typedef (the same fact CDRipper.h
 // documents for its ripTrack parameter).
 #include <ebur128.h>
@@ -45,7 +45,7 @@
 class IEncoder;
 class MuxWriter;
 
-// The capture request the caller hands to start() — copied in, like
+// The capture request the caller hands to start() - copied in, like
 // RipOptions into CDRipper::start (no mutable cross-thread state). Defaults
 // mirror RipOptions' quality literals (one quality truth; config-fed in R2).
 struct RecOptions {
@@ -78,7 +78,7 @@ struct RecOptions {
     // ── copy mode (abi-cluster slice B) ──────────────────────────────────
     // Capture the broadcast's own encoded frames instead of re-encoding
     // PCM: the worker becomes a PUMP over the injected pull callback (the
-    // recorder stays plugin-ignorant — the standing linkage norm), frame-
+    // recorder stays plugin-ignorant - the standing linkage norm), frame-
     // parses (FrameSync.h), and feeds a MuxWriter per cut. The container
     // follows the live codec: MP3 -> .mp3 raw append, AAC/ADTS -> .m4a
     // remux. formats/quality knobs are inert; split/trim/ad-aware compose
@@ -99,7 +99,7 @@ class StreamRecorder {
 public:
     static constexpr uint32_t SAMPLE_RATE = 44100;
     static constexpr uint32_t CHANNELS    = 2;
-    // Default ring: 2^19 frames ≈ 11.9 s ≈ 4 MiB of f32 stereo — generous
+    // Default ring: 2^19 frames ≈ 11.9 s ≈ 4 MiB of f32 stereo - generous
     // headroom for a worker that encodes many-times-realtime. Ctor-injectable
     // (rounded up to a power of two) so the overflow test can force drops.
     static constexpr uint32_t kDefaultRingFrames = 1u << 19;
@@ -129,7 +129,7 @@ public:
     bool start(const RecOptions& opt, const std::string& station,
                const std::string& out_dir);
     // Finalize the current cut (marked partial), join the worker. Cheap no-op
-    // when idle — teardown sites may call it unconditionally.
+    // when idle - teardown sites may call it unconditionally.
     void stop();
     // The split trigger: hand every polled now-playing CHANGE here (the caller
     // compares; passing an unchanged title is a harmless no-op). Splits at the
@@ -138,11 +138,11 @@ public:
     void onTitle(const std::string& raw_now_playing);
     // Cover art for the CURRENT song (rec-cover-art): bytes fetched by the
     // caller's existing radio-art machinery, keyed by the RAW now-playing
-    // string so it matches cut_raw_ with exact string equality — no parse in
+    // string so it matches cut_raw_ with exact string equality - no parse in
     // the loop. Validated here (JPEG/PNG magic -> MIME; anything else
     // rejected). Embedded at tag time ONLY if the key still matches the
     // closing cut: no art rather than wrong art. Never fetches, never blocks
-    // a roll — the onTitle pattern (meta_mtx_, UI <-> worker only).
+    // a roll - the onTitle pattern (meta_mtx_, UI <-> worker only).
     void onArt(const std::string& raw_now_playing, std::vector<uint8_t> bytes);
 
     // ── audio thread (lock-free; see push() for the full argument) ──────────
@@ -165,7 +165,7 @@ public:
     }
     // Index of the cut currently being written (== finished-cut count).
     int      cutIndex()      const { return cut_index_.load(std::memory_order_relaxed); }
-    // ad-aware: cuts suppressed under Discard — the trust surface for the one
+    // ad-aware: cuts suppressed under Discard - the trust surface for the one
     // mode that destroys data (shown live in the panel + the stop summary).
     int      adsSkipped()    const { return ads_skipped_.load(std::memory_order_relaxed); }
     std::string currentTitle() const;         // the title the open cut will carry
@@ -174,7 +174,7 @@ public:
 
     // "Artist - Title" per the ICY convention (the scrobbler's exact idiom:
     // first " - " splits, both sides trimmed). ok only when BOTH sides are
-    // non-empty — anything else falls back to timestamp naming, and the raw
+    // non-empty - anything else falls back to timestamp naming, and the raw
     // string still reaches the TITLE tag so no metadata is silently lost.
     struct ParsedTitle { std::string artist, title; bool ok = false; };
     static ParsedTitle parseNowPlaying(const std::string& raw);

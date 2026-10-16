@@ -1,4 +1,4 @@
-// FrameSync.h — shared MP3/ADTS frame-header parsing (abi-cluster slice B).
+// FrameSync.h - shared MP3/ADTS frame-header parsing (abi-cluster slice B).
 //
 // The copy path never decodes: the recorder's copy pump and both MuxWriters
 // work on WHOLE encoded frames, and this header is the one home for knowing
@@ -10,7 +10,7 @@
 //
 // All parsers are pure and bounds-honest: they read only the header bytes
 // they document needing and return false rather than guessing. Resync is the
-// CALLER's loop (scan forward a byte at a time until parse succeeds) — the
+// CALLER's loop (scan forward a byte at a time until parse succeeds) - the
 // same discipline both decoders already use on a mid-stream join.
 #pragma once
 
@@ -25,7 +25,7 @@ namespace framesync {
 struct FrameInfo {
     uint32_t frame_len   = 0;   // whole frame, header included (bytes)
     uint32_t samples     = 0;   // PCM frames this frame decodes to (per channel)
-    uint32_t sample_rate = 0;   // Hz, from the header — never assumed
+    uint32_t sample_rate = 0;   // Hz, from the header - never assumed
     uint32_t channels    = 0;   // MP3: 1/2 from the mode field; ADTS: chan cfg
     // ADTS only (zero for MP3): what the M4A muxer needs to build the
     // AudioSpecificConfig without re-deriving header fields.
@@ -66,7 +66,7 @@ inline bool adtsParse(const uint8_t* p, size_t n, FrameInfo& out) {
 
 // ── MP3 (MPEG-1/2/2.5 Layer III + Layer II) ───────────────────────────────
 // Needs 4 bytes. Free-format (bitrate index 0) and bad/reserved fields are
-// rejected — a broadcast stream is always a fixed-table bitrate.
+// rejected - a broadcast stream is always a fixed-table bitrate.
 inline bool mp3Parse(const uint8_t* p, size_t n, FrameInfo& out) {
     if (n < 4) return false;
     if (!(p[0] == 0xFF && (p[1] & 0xE0) == 0xE0)) return false;
@@ -111,7 +111,7 @@ inline bool mp3Parse(const uint8_t* p, size_t n, FrameInfo& out) {
 // ── ID3v2 block skipper ───────────────────────────────────────────────────
 // Returns the whole-tag byte count (10-byte header + syncsafe size + the
 // 10-byte footer when flagged) if p starts an ID3v2 tag, else 0. Callers
-// skip this many bytes before frame-syncing — an in-stream metadata tag must
+// skip this many bytes before frame-syncing - an in-stream metadata tag must
 // never reach a MuxWriter (transport metadata is not broadcast audio).
 inline uint32_t id3v2Size(const uint8_t* p, size_t n) {
     if (n < 10 || p[0] != 'I' || p[1] != 'D' || p[2] != '3') return 0;

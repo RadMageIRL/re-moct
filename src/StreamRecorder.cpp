@@ -1,4 +1,4 @@
-// StreamRecorder.cpp — the stream-capture engine (stream-record slice R1).
+// StreamRecorder.cpp - the stream-capture engine (stream-record slice R1).
 // Threading contract and lane isolation: see the header. Everything in this
 // file except push() runs on the recorder's own worker thread (or the UI
 // thread for start/stop/onTitle, which never touch audio or files).
@@ -9,7 +9,7 @@
 #include "Mp3Encoder.h"
 #include "OpusRipEncoder.h"
 #include "M4aEncoder.h"
-#include "R128Gain.h"      // r128FromDb — the one home for the R128<->RG dialect
+#include "R128Gain.h"      // r128FromDb - the one home for the R128<->RG dialect
 #include "StringUtils.h"   // sanitizePathComponent / localtimeSafe / utf8_to_wide
 #include "PortUtil.h"      // sleepMs
 #include "Version.h"
@@ -63,7 +63,7 @@ StreamRecorder::ParsedTitle StreamRecorder::parseNowPlaying(const std::string& r
     };
     trim(p.artist); trim(p.title);
     // Article de-inversion ("Shins, The" -> "The Shins"; "Tyler, The Creator"
-    // untouched) — applied HERE, not in the tag pass, so filename and tag get
+    // untouched) - applied HERE, not in the tag pass, so filename and tag get
     // the same artist (stream-record R2; shared home in StringUtils.h).
     p.artist = deinvertArtist(p.artist);
     p.ok = !p.artist.empty() && !p.title.empty();
@@ -216,7 +216,7 @@ std::vector<StreamRecorder::CutInfo> StreamRecorder::cuts() const {
 
 // ─── audio thread ─────────────────────────────────────────────────────────────
 // One bounded copy + two atomic ops; a full ring drops the WHOLE incoming
-// block (never a partial — a torn block would corrupt the stream) and counts
+// block (never a partial - a torn block would corrupt the stream) and counts
 // it. Never blocks, never allocates, never syscalls.
 void StreamRecorder::push(const float* src, uint32_t frames) {
     uint64_t w = wpos_.load(std::memory_order_relaxed);
@@ -247,7 +247,7 @@ std::string timestampNow() {
     return buf;
 }
 
-// ReplayGain string formatting — tagFile's exact formatters.
+// ReplayGain string formatting - tagFile's exact formatters.
 std::string rgStr(double gain) {
     std::ostringstream ss; ss << std::fixed << std::setprecision(2) << gain << " dB";
     return ss.str();
@@ -260,9 +260,9 @@ std::string rgPeakStr(double peak) {
 // The recorder-side tag pass. NOT CDRipper::tagFile (that signature is
 // MB/AR-shaped); these are tagFile's per-format shapes with the fields a
 // stream capture honestly has: title/artist from StreamTitle, provenance
-// comment, TRACK gain only (no album exists — absent because false). MP3
+// comment, TRACK gain only (no album exists - absent because false). MP3
 // carries the plain ReplayGain TXXX dialect; Opus carries R128 (RFC 7845)
-// via the shared R128Gain.h conversion — same homes as the rip path.
+// via the shared R128Gain.h conversion - same homes as the rip path.
 void tagCut(const std::string& path, RipFormat fmt,
             const std::string& artist, const std::string& title,
             const std::string& raw, const std::string& station,
@@ -274,7 +274,7 @@ void tagCut(const std::string& path, RipFormat fmt,
 #else
         const std::string& wp = path;        // and UTF-8 bytes elsewhere
 #endif
-        // Best available title: the parsed one, else the raw StreamTitle —
+        // Best available title: the parsed one, else the raw StreamTitle -
         // metadata is never silently dropped just because it didn't parse.
         const std::string& title_str = !title.empty() ? title : raw;
         const std::string  comment   = "Recorded from " + station + " by RE-MOCT";
@@ -294,7 +294,7 @@ void tagCut(const std::string& path, RipFormat fmt,
             };
             // TXXX = proper description/value split (mp3-rg-write, the
             // tagFile mirror): the old "KEY=value" blob was invisible to
-            // every non-RE-MOCT reader. TENC stays generic — correct for a
+            // every non-RE-MOCT reader. TENC stays generic - correct for a
             // standard text frame.
             auto addUserTxt = [&](const char* desc, const std::string& val) {
                 auto* f2 = new TagLib::ID3v2::UserTextIdentificationFrame(TagLib::String::UTF8);
@@ -383,7 +383,7 @@ void tagCut(const std::string& path, RipFormat fmt,
 }
 
 // The copy path's .m4a tag pass (abi-cluster slice B): title/artist/comment +
-// covr through TagLib::MP4 — library-supported, the reason the AAC container
+// covr through TagLib::MP4 - library-supported, the reason the AAC container
 // decision landed on M4A (plan §1). No ReplayGain by design: copy cuts carry
 // the broadcast untouched; re-encode remains the RG-bearing mode. Scoped
 // tightly (the TagLib RW-by-default lesson): the File lives only inside this
@@ -450,13 +450,13 @@ bool StreamRecorder::openCut() {
 
     // ad-aware classification: parseable-but-junk = non-song (the LIVE floor
     // is iHeart's STRUCTURAL ad signal surfacing as a string; the vocabulary
-    // is the ICY heuristic — one classifier, two signal qualities).
+    // is the ICY heuristic - one classifier, two signal qualities).
     // Unparseable titles stay songs/main, deliberately conservative: a
     // title-only station's real songs must never misroute or drop.
     cut_is_ad_ = p.ok && !looksLikeRealTrack(p.artist, p.title);
 
     if (cut_is_ad_ && opt_.ads_discard) {
-        // Suppressed cut (Discard): no encoders, no files — frames are counted
+        // Suppressed cut (Discard): no encoders, no files - frames are counted
         // (the skip is VISIBLE) but never written. The user's explicit opt-in.
         suppressed_ = true;
         outs_.clear();
@@ -470,7 +470,7 @@ bool StreamRecorder::openCut() {
     std::string base;
     if (cut_is_ad_) {
         // Save: route to <Station>/ads/ with a sortable, self-describing name.
-        // No (partial) marking — the folder's semantic is "not a song, prune".
+        // No (partial) marking - the folder's semantic is "not a song, prune".
         std::string ad_dir = station_dir_ + kSep + "ads";
         std::error_code ec;
         fs::create_directories(ad_dir, ec);
@@ -480,7 +480,7 @@ bool StreamRecorder::openCut() {
         base = cutBasePath();
     }
     // Collision: the same song returning in rotation must never overwrite an
-    // earlier cut — probe across ALL selected formats, suffix " (2)", " (3)"…
+    // earlier cut - probe across ALL selected formats, suffix " (2)", " (3)"…
     std::string chosen = base;
     for (int n = 2; ; ++n) {
         bool clash = false;
@@ -573,7 +573,7 @@ void StreamRecorder::rollCut(bool partial_tail) {
 
     if (!ok) {
         // The fflush-and-check discipline: an incomplete file is a failed cut,
-        // removed — never left looking like a full capture.
+        // removed - never left looking like a full capture.
         for (auto& o : outs_) { std::error_code ec; fs::remove(o.path, ec); }
         info.failed = true;
         {
@@ -584,7 +584,7 @@ void StreamRecorder::rollCut(bool partial_tail) {
         capturing_.store(false, std::memory_order_release);
         stop_req_.store(true, std::memory_order_release);
     } else {
-        // Per-cut ReplayGain (track gain only — no album exists). Guarded:
+        // Per-cut ReplayGain (track gain only - no album exists). Guarded:
         // integrated loudness needs real audio; silence/too-short yields -inf.
         bool   rg_valid = false;
         double rg_gain = 0.0, rg_peak = 0.0;
@@ -600,7 +600,7 @@ void StreamRecorder::rollCut(bool partial_tail) {
                 rg_valid = true;
             }
         }
-        // Cover art: key-match at tag time — the pending image embeds ONLY if
+        // Cover art: key-match at tag time - the pending image embeds ONLY if
         // it belongs to THIS cut's raw title (no art rather than wrong art;
         // an edge cut under the metadata slop may miss a cover, never carry
         // a neighbor's). The ring survives newer songs' art landing during a
@@ -666,7 +666,7 @@ void StreamRecorder::failCut(const std::string& why) {
 }
 
 void StreamRecorder::workerLoop() {
-    constexpr uint32_t CHUNK = 4096;   // ~93 ms per drain block — the split
+    constexpr uint32_t CHUNK = 4096;   // ~93 ms per drain block - the split
                                        // granularity, noise vs broadcast slop
     std::vector<float> scratch((size_t)CHUNK * CHANNELS);
     bool healthy = true;
@@ -675,14 +675,14 @@ void StreamRecorder::workerLoop() {
     // (or none is open): a relabel in place, not a split.
     auto adoptIfCutEmpty = [&]() {
         if (!split_pending_.load(std::memory_order_acquire)) return;
-        if (cut_open_ && cut_frames_ > 0) return;   // real split — handled below
+        if (cut_open_ && cut_frames_ > 0) return;   // real split - handled below
         std::lock_guard<std::mutex> lk(meta_mtx_);
         cut_raw_ = pending_raw_;
         split_pending_.store(false, std::memory_order_release);
     };
 
     // Finalize the current cut and adopt the pending title as the next cut's
-    // identity — the one roll path both the immediate (offset<=0) and the
+    // identity - the one roll path both the immediate (offset<=0) and the
     // held (offset>0, countdown expired) splits share.
     auto rollAndAdopt = [&]() {
         rollCut(false);
@@ -698,7 +698,7 @@ void StreamRecorder::workerLoop() {
         // split-trim: arm the hold when a split is detected and an offset is
         // configured. The flag STAYS SET while armed (the pending title is
         // adopted at the roll); arriving audio keeps attributing to the OLD
-        // cut until exactly offset*44.1 frames have passed — protecting the
+        // cut until exactly offset*44.1 frames have passed - protecting the
         // outro the early metadata would have guillotined. A second title
         // change during the hold overwrites the pending title (its would-be
         // cut is sub-offset-length by definition). stop() outranks the hold:
@@ -715,7 +715,7 @@ void StreamRecorder::workerLoop() {
         uint64_t w = wpos_.load(std::memory_order_acquire);
         uint64_t avail = w - r;   // SNAPSHOT: frames queued as of now
 
-        // Drain the snapshot — pre-event audio belongs to the OLD cut; under
+        // Drain the snapshot - pre-event audio belongs to the OLD cut; under
         // an armed hold the countdown decides frame-exactly where the old cut
         // ends, splitting a chunk mid-block when the boundary lands inside it.
         while (avail > 0 && healthy) {
@@ -747,8 +747,8 @@ void StreamRecorder::workerLoop() {
             avail -= n;
         }
 
-        // Immediate roll (offset<=0 — today's behavior, the regression
-        // anchor) — checked on EVERY pass including an idle ring, so a split
+        // Immediate roll (offset<=0 - today's behavior, the regression
+        // anchor) - checked on EVERY pass including an idle ring, so a split
         // can never stall waiting for the next audio block. A held split
         // rolls only through its countdown above.
         if (healthy && opt_.split_offset_ms <= 0 &&
@@ -771,7 +771,7 @@ void StreamRecorder::workerLoop() {
 // ─── copy mode (abi-cluster slice B) ──────────────────────────────────────────
 // The worker IS the pump: it polls the injected pull callback, frame-parses
 // (FrameSync.h), and feeds a MuxWriter per cut. Same cut lifecycle, split
-// triggers, ad-aware routing, and honesty surfaces as the PCM worker — the
+// triggers, ad-aware routing, and honesty surfaces as the PCM worker - the
 // unit is the encoded frame instead of the PCM chunk, so splits snap to
 // whole frames (~23-26 ms, under the broadcast metadata slop).
 
@@ -851,7 +851,7 @@ void StreamRecorder::rollCopyCut(bool partial_tail) {
 
     bool ok = copy_out_ && copy_out_->finalize(true);
     if (!ok) {
-        // Incomplete container = failed cut, removed — never left looking
+        // Incomplete container = failed cut, removed - never left looking
         // like a full capture (the fflush-and-check discipline).
         std::error_code ec;
         if (!copy_path_.empty()) fs::remove(copy_path_, ec);
@@ -873,7 +873,7 @@ void StreamRecorder::rollCopyCut(bool partial_tail) {
                       art, art_mime);
         else
             // The .mp3 copy rides the existing ID3v2 pass; rg_valid=false by
-            // design (no RG on copy — re-encode is the RG-bearing mode).
+            // design (no RG on copy - re-encode is the RG-bearing mode).
             tagCut(copy_path_, RipFormat::Mp3, cut_artist_, cut_title_, cut_raw_,
                    station_, false, 0.0, 0.0, art, art_mime);
         if (partial_tail && !cut_is_ad_ &&
@@ -917,7 +917,7 @@ void StreamRecorder::failCopyCut(const std::string& why) {
     copy_path_.clear();
     cut_open_ = false;
     cut_frames_ = 0;
-    // Same stance as failCut: a failed write is almost always persistent —
+    // Same stance as failCut: a failed write is almost always persistent -
     // stop honestly rather than looping new cuts into the same wall.
     stop_req_.store(true, std::memory_order_release);
 }
@@ -948,7 +948,7 @@ void StreamRecorder::copyLoop() {
         adoptIfCutEmpty();
 
         // split-trim: arm exactly as the PCM worker, in BROADCAST samples
-        // (copy_sr_ is nonzero whenever cut_frames_ > 0 — a frame set it).
+        // (copy_sr_ is nonzero whenever cut_frames_ > 0 - a frame set it).
         if (opt_.split_offset_ms > 0 && !hold_armed_ &&
             split_pending_.load(std::memory_order_acquire) &&
             cut_open_ && cut_frames_ > 0) {
@@ -962,7 +962,7 @@ void StreamRecorder::copyLoop() {
         if (c != 0) codec = c;
         if (disc) {
             // The gap sits at the APPEND point: buffered bytes are pre-gap
-            // and any partial frame tail will never complete — drop it; the
+            // and any partial frame tail will never complete - drop it; the
             // next frame header resyncs (the plan's discont contract).
             buf.clear();
             skip_left = 0;
@@ -1016,7 +1016,7 @@ void StreamRecorder::copyLoop() {
         }
         if (pos > 0) buf.erase(buf.begin(), buf.begin() + (ptrdiff_t)pos);
 
-        // Immediate roll (offset<=0) — checked on EVERY pass including an
+        // Immediate roll (offset<=0) - checked on EVERY pass including an
         // idle pump, so a split can never stall waiting for bytes.
         if (healthy && opt_.split_offset_ms <= 0 &&
             split_pending_.load(std::memory_order_acquire) &&

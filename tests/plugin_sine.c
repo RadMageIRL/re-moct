@@ -1,7 +1,7 @@
-/* plugin_sine.c — the disposable Phase-4 slice-(a) test plugin.
+/* plugin_sine.c - the disposable Phase-4 slice-(a) test plugin.
  *
  * A pure-C source that generates a deterministic, dependency-free waveform. Two
- * jobs: (1) prove remoct_plugin.h is genuinely C-consumable — this TU compiles
+ * jobs: (1) prove remoct_plugin.h is genuinely C-consumable - this TU compiles
  * as C, so if anything C++ had leaked into the ABI header it would fail here;
  * (2) exercise the full loader lifecycle (load -> version-gate -> create ->
  * open -> read_frames -> metadata -> config -> close -> destroy) from a real
@@ -10,7 +10,7 @@
  * Zero dependencies on purpose (no libm): a per-frame ramp (counter & 0xFF)/256
  * is deterministic and non-silent, so the loader test can assert exact sample
  * values without a math library adding a transitive dlopen at plugin-load time.
- * Throwaway — deleted (or kept as a fixture) once the real stream plugin lands.
+ * Throwaway - deleted (or kept as a fixture) once the real stream plugin lands.
  */
 #include "core/remoct_plugin.h"
 
@@ -95,7 +95,7 @@ static void sine_set_config(void* self, const char* key, const char* value) {
         s->prefer_digital = (value && value[0] == '1') ? 1 : 0;
 }
 
-/* Designated initializers (C99) — order-independent and additive-growth-friendly. */
+/* Designated initializers (C99) - order-independent and additive-growth-friendly. */
 static const RemoctPlugin SINE_PLUGIN = {
     .abi_version  = REMOCT_ABI_VERSION,
     .struct_size  = (uint32_t)sizeof(RemoctPlugin),

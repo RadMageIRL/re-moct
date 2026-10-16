@@ -55,7 +55,7 @@ enum class UIOverlay { None, RipConfirm, MBSearch, MBPick, ArtPick, RecPanel, Co
 class UIManager {
 public:
     // notify == nullptr -> the production platform notifier (core::notifier());
-    // tests inject a fake here (constructor injection — no setNotify global).
+    // tests inject a fake here (constructor injection - no setNotify global).
     // media == nullptr -> the production platform impl (core::mediaControl());
     // tests inject a fake here (constructor injection, the notify_ pattern).
     UIManager(PlaylistManager& playlist, AudioManager& audio,
@@ -425,7 +425,7 @@ private:
     enum class TagEditability { Editable, PlayingLocked, NotAFile, Empty };
     TagEditability tagEditability(const std::string& path) const;
 
-    // Track info cache — avoids TagLib re-read on every drawTrackInfo call
+    // Track info cache - avoids TagLib re-read on every drawTrackInfo call
     std::string info_cached_path_;
     TrackInfo   info_cached_track_;
 
@@ -529,7 +529,7 @@ private:
     void jumpToBrowserIndex(std::size_t idx);   // browser twin: keeps focus on DirBrowser
 
     // Slice 3: lazily reopen the CD handle for an action (play / rip / MB) on a
-    // stopped-but-loaded disc — stop() closes the handle (probe B2: holding it
+    // stopped-but-loaded disc - stop() closes the handle (probe B2: holding it
     // open idle spins the drive up audibly), so any action must reopen first.
     // Routes through audio_.openCD(), which re-reads the TOC + re-inits the
     // device. openCD can fail TRANSIENTLY right after file playback (WASAPI
@@ -798,7 +798,7 @@ private:
     // Session rip-format selection (rip-format-select): seeded ONCE from
     // config_.rip_formats in the ctor, toggled by the modal's digit keys,
     // NEVER written back to config (the conf key is the default only).
-    // Deliberately not reset on eject — user preference, not disc data.
+    // Deliberately not reset on eject - user preference, not disc data.
     std::vector<RipFormat> rip_sel_;
     // encoder-bitrate-mode: the `>` row-focus cursor for the per-row quality
     // editor (Up/Down move it, Left/Right cycle the focused row's axis, [M]
@@ -865,12 +865,12 @@ private:
     // Cmdline status line (both platforms). On Linux it is also the toast echo
     // (KEPT past slice 5): a real notify-send toast renders on a desktop with a
     // notification daemon, but headless/no-daemon Linux (WSL2, CI, SSH) shows
-    // nothing — so every showTrackToast message ALSO surfaces here for a few
+    // nothing - so every showTrackToast message ALSO surfaces here for a few
     // seconds (otherwise toast-only flows like ^B "logged in as" / ^G "approve
     // in browser" look dead). Same shape as rip_status_/rip_msg_ticks_.
     // The iHeart mode confirms (Ctrl+K feed / F6 re-pin) set it DIRECTLY on both
-    // platforms — they are in-place mode state, not a notification, so they never
-    // go through the toast path — and draw in yellow (CP_MODE) via the flag below;
+    // platforms - they are in-place mode state, not a notification, so they never
+    // go through the toast path - and draw in yellow (CP_MODE) via the flag below;
     // every other setter resets the flag so the next message goes back to the
     // normal status colour.
     std::string status_msg_;
@@ -1018,7 +1018,7 @@ private:
     std::string       discord_art_key_;            // "artist\ttrack" the result is for (guarded)
     std::string       discord_art_cache_key_;       // last resolved key (UI thread only)
     std::string       discord_art_cache_url_;       // last resolved url (UI thread only)
-    ArtMissCache      discord_art_neg_;             // radio keys whose art lookup MISSED —
+    ArtMissCache      discord_art_neg_;             // radio keys whose art lookup MISSED -
                                                     // time-bounded (radio-art-refresh-fix Fix #2:
                                                     // a transient failure self-heals after the
                                                     // TTL; a genuine no-art song stays

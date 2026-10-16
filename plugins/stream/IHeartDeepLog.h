@@ -4,11 +4,11 @@
 #include <cstddef>
 
 // ─────────────────────────────────────────────────────────────────────────────
-// IHeartDeepLog — opt-in, structured deep-capture log for iHeart now-playing
+// IHeartDeepLog - opt-in, structured deep-capture log for iHeart now-playing
 // reconciliation. Default OFF; toggled at runtime (Ctrl+A). When ON, every call
 // to StreamSource::updateIHeartNowPlaying emits one NDJSON record describing the
 // tick's inputs (manifest classification, trackHistory, staleness), the computed
-// target, the debounce state machine, AND the live audio playback position — the
+// target, the debounce state machine, AND the live audio playback position - the
 // last of which the standalone SniffIHeartRadio probe cannot capture, and which
 // is what makes the metadata-vs-audio timeline skew measurable after the fact.
 //
@@ -22,7 +22,7 @@
 // Write policy is event-driven + heartbeat: a record is written when any
 // SEMANTIC field changes, OR when the heartbeat interval (30 s) elapses with no
 // change. A metadata freeze therefore appears as identical heartbeat records
-// with a climbing thEnded / advancing mfSeq, never as an absence of data — which
+// with a climbing thEnded / advancing mfSeq, never as an absence of data - which
 // is the exact signature we need to characterise the Z100 dual-blind.
 //
 // Threading: all filesystem I/O happens on the producer thread inside emit().
@@ -38,7 +38,7 @@ struct Record {
     // identity / timing
     long        stationId = 0;
     std::string station;            // iHeart 'name'
-    double      audioSec  = 0.0;    // frames_drained_ / SAMPLE_RATE — the skew anchor
+    double      audioSec  = 0.0;    // frames_drained_ / SAMPLE_RATE - the skew anchor
     int         posSec    = 0;      // StreamSource::positionSec() (coarse)
 
     // manifest (-P): live-edge classification + raw strings
@@ -49,7 +49,7 @@ struct Record {
     bool        pdt       = false;  // manifest carries EXT-X-PROGRAM-DATE-TIME (false today)
     bool        spotPaid  = false;  // newest seg is a PAID ad (song_spot=T, real spotInstanceId)
     std::string spotInstanceId;     // newest seg's spotInstanceId ("-1" = station id/promo; real id = paid spot)
-    std::string cartcutId;          // newest seg's cartcutId — the ad's identity. Same id repeating across a
+    std::string cartcutId;          // newest seg's cartcutId - the ad's identity. Same id repeating across a
                                     // block = a STUCK loop; a sequence of distinct ids = a genuine long pod.
 
     // trackHistory (the only live now-playing endpoint; currentTrackMeta is 410)
@@ -57,7 +57,7 @@ struct Record {
     long        thEnded   = -1;     // now - endTime; climbs during a freeze
     bool        thCurrent = false;
 
-    // trackHistory guard diagnostics — scope iheart-deeplog-guarddiag
+    // trackHistory guard diagnostics - scope iheart-deeplog-guarddiag
     long        thAccMaxStart = 0;   // monotonic ceiling at tick entry
     long        thNewestStart = 0;   // newest aired startTime this poll (0 if none)
     int         thEntryCount  = 0;   // data[] length
@@ -95,9 +95,9 @@ struct Record {
     bool        digitalActive    = false;
     int         connectSeq       = 0;
 
-    // identity probe (Part A/B) — which digital-handshake identity this connect used
+    // identity probe (Part A/B) - which digital-handshake identity this connect used
     std::string idVariant;      // "anon" | "minted"
-    std::string idProfileTail;  // last 4-6 chars of minted profileId ("" for anon) — TAIL ONLY
+    std::string idProfileTail;  // last 4-6 chars of minted profileId ("" for anon) - TAIL ONLY
     bool        idMintOk = false; // a minted session was available for this connect
 };
 

@@ -1,4 +1,4 @@
-# Upstream report: PDCursesMod — fullwidth glyph split across a MAX_PACKET_LEN chunk boundary aborts
+# Upstream report: PDCursesMod - fullwidth glyph split across a MAX_PACKET_LEN chunk boundary aborts
 
 **FILED: Bill-Gray/PDCursesMod issue #386.** Nothing further needed unless upstream responds; when
 the fix lands there, drop the local patch (`VENDOR.md`, entry 4).
@@ -28,8 +28,8 @@ doupdate ()
 
 ### Cause
 
-`PDC_transform_line_sliced` repairs a span that begins on `DUMMY_CHAR_NEXT_TO_FULLWIDTH` — the
-placeholder in a fullwidth glyph's second cell — by backing up one cell onto the glyph's first
+`PDC_transform_line_sliced` repairs a span that begins on `DUMMY_CHAR_NEXT_TO_FULLWIDTH` - the
+placeholder in a fullwidth glyph's second cell - by backing up one cell onto the glyph's first
 half:
 
 ```c
@@ -50,7 +50,7 @@ half:
     }
 ```
 
-**The repair sits above the loop, so it runs once — for the first chunk only.** The loop then cuts
+**The repair sits above the loop, so it runs once - for the first chunk only.** The loop then cuts
 the span into `MAX_PACKET_LEN - 1` = 89 cell chunks, and each `srcp += i` can land the next chunk
 on a dummy whose fullwidth first half is in the chunk just drawn. The packet loop then computes
 `i == 1` with `ch == MAX_UNICODE`, and the assert fires:
@@ -67,13 +67,13 @@ assert( i > 1 || ch != MAX_UNICODE);
 
 The `fprintf` immediately above the assert suggests the case is already known to be reachable.
 
-Note the failing `x` is **non-zero** — 89, 178, … — so the existing repair would have handled it
+Note the failing `x` is **non-zero** - 89, 178, … - so the existing repair would have handled it
 correctly had it been in scope. Nothing is wrong with the repair itself; it is only in the wrong
 place.
 
 ### Second face, same boundary: the trailing-dummy trim
 
-Fixing the above left a second abort at the same boundary — this time
+Fixing the above left a second abort at the same boundary - this time
 `assert( (srcp[len - 1] & A_CHARTEXT) != MAX_UNICODE)` in `wingui/pdcdisp.c`, i.e. a chunk *ending*
 on a dummy rather than starting on one. Same cause:
 
@@ -94,7 +94,7 @@ both forms trim to `i - 1`.
 ### Cursor split
 
 `PDC_transform_line_sliced` also splits a span around the cursor and recurses. That needs no
-separate handling — the recursion re-enters the same loop, so both repairs above cover it.
+separate handling - the recursion re-enters the same loop, so both repairs above cover it.
 
 ### Reachability
 
@@ -166,5 +166,5 @@ And for the trailing case, test the packet's real last cell rather than the stal
 consumed exactly as before. The `if( draw)` guard covers `draw == 0`, which the first hunk makes
 unreachable but which would otherwise trip `assert( len)` inside `PDC_transform_line`.
 
-Verified against the reproducer — a border-drag with CJK on screen on a window wider than 89
+Verified against the reproducer - a border-drag with CJK on screen on a window wider than 89
 columns, previously a reliable abort within seconds.

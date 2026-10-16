@@ -1,4 +1,4 @@
-// CoverArt — album-cover resolution, extracted from CDRipper so any subsystem can
+// CoverArt - album-cover resolution, extracted from CDRipper so any subsystem can
 // resolve art (URL or bytes) without pulling in the CD ripper. Sources: Cover Art
 // Archive (by MusicBrainz id), iTunes and Deezer (by free-text artist/title).
 //
@@ -6,7 +6,7 @@
 //   bytesBy* -> downloaded image bytes, for embedding into ripped-file tags
 //   urlBy*   -> external image URL, for Discord Rich Presence (which takes a URL)
 //
-// All consumer-facing functions do BLOCKING HTTP (WinINet) — call off the UI thread.
+// All consumer-facing functions do BLOCKING HTTP (WinINet) - call off the UI thread.
 // (Global HTTP-helper consolidation across the tree's ~8 WinINet sites is a separate
 //  refactor; this module keeps its own httpGet, matching the current per-module pattern.)
 
@@ -151,7 +151,7 @@ std::vector<uint8_t> bytesByUrl(const std::string& url) {
 // isn't on iTunes returns a Doors "Very Best Of"). So we VERIFY: a candidate is
 // accepted only if its artist matches the requested artist, and among matching
 // candidates we pick the one whose album title best overlaps the request. If no
-// candidate's artist matches, we return {} — no art beats wrong-artist art.
+// candidate's artist matches, we return {} - no art beats wrong-artist art.
 std::vector<uint8_t> bytesByText(const std::string& artist,
                                            const std::string& album) {
     if (artist.empty() && album.empty()) return {};
@@ -278,7 +278,7 @@ std::vector<art::Candidate> candidatesByText(const std::string& artist,
                                              const std::string& album) {
     if (artist.empty() && album.empty()) return {};
 
-    // Query-term encoder — identical to the one bytesByText uses.
+    // Query-term encoder - identical to the one bytesByText uses.
     auto enc = [](const std::string& s) {
         static const char* hex = "0123456789ABCDEF";
         std::string o;
@@ -294,7 +294,7 @@ std::vector<art::Candidate> candidatesByText(const std::string& artist,
     const std::string term = enc(artist + " " + album);
     std::vector<art::Candidate> out;
 
-    // iTunes first, then Deezer — the order bytesByText tries them in, kept so
+    // iTunes first, then Deezer - the order bytesByText tries them in, kept so
     // the list's own order says which one the automatic path would have used.
     // BOTH are queried, unlike the automatic path which stops at the first hit:
     // the picker's whole purpose is to show what else there was.
@@ -434,7 +434,7 @@ std::string urlByText(const std::string& artist,
 // Resolve a cover URL for a single SONG (radio fallback path). iTunes song-entity
 // search, Deezer track search as fallback. Validates BOTH artist and title (loose,
 // substring-either-direction after normalisation) so a fuzzy text match can never
-// paint the wrong cover. "" when there is no confident hit — the caller keeps the
+// paint the wrong cover. "" when there is no confident hit - the caller keeps the
 // RE-MOCT logo in that case. Deliberately separate from urlByText: feeding
 // a bare track title into album search + album_overlap under-hits and mis-validates.
 std::string urlBySong(const std::string& artist,

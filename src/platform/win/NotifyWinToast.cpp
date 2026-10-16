@@ -1,15 +1,15 @@
-// NotifyWinToast.cpp — Windows PowerShell-toast implementation of core::INotify.
+// NotifyWinToast.cpp - Windows PowerShell-toast implementation of core::INotify.
 //
-// Lives in src/platform/win/ (header in include/core/INotify.h) — built INTO the
+// Lives in src/platform/win/ (header in include/core/INotify.h) - built INTO the
 // core/platform boundary established at slice 5, not relocated later. Compiled only
 // on Windows (guarded in CMakeLists via if(WIN32)).
 //
 // Faithful transport-only extraction of the baseline Toast.cpp (slice 7): raises a
-// Windows 11 toast by running PowerShell in a detached process — no WinRT
+// Windows 11 toast by running PowerShell in a detached process - no WinRT
 // dependency. Content (the track/status → title/body mapping, the "RE-MOCT" body
 // fallback) stayed consumer-side in Toast.h; only delivery lives here. The
 // 'RE-MOCT' CreateToastNotifier id below is platform attribution (the Linux
-// sibling's notify-send -a / notify_init app name), not content — it stays.
+// sibling's notify-send -a / notify_init app name), not content - it stays.
 #ifdef _WIN32
 
 #include "core/INotify.h"
@@ -51,7 +51,7 @@ static std::string b64encode(const unsigned char* data, size_t len) {
 // The baseline showTrackToast body, verbatim minus the content mapping (which
 // moved consumer-side to Toast.h): escape → WinRT toast script → UTF-16LE/base64
 // -EncodedCommand → detached fire-and-forget spawn. This block fixed a real
-// injection bug (see the b64encode comment) — do NOT "clean it up".
+// injection bug (see the b64encode comment) - do NOT "clean it up".
 static void showToast(const std::string& title, const std::string& body) {
     // Escape single quotes for PowerShell
     auto esc = [](std::string s) {
@@ -86,7 +86,7 @@ static void showToast(const std::string& title, const std::string& body) {
         wps.size() * sizeof(wchar_t));
     std::string cmd = "powershell -NoProfile -NonInteractive -EncodedCommand " + b64;
 
-    // Fire and forget in a detached thread — don't block the audio/UI threads
+    // Fire and forget in a detached thread - don't block the audio/UI threads
     std::thread([cmd]() {
         STARTUPINFOA si{};
         si.cb = sizeof(si);
@@ -106,7 +106,7 @@ static void showToast(const std::string& title, const std::string& body) {
 
 namespace platform::win {
 
-// Thin adapter: the seam surface over the baseline machinery above. Stateless —
+// Thin adapter: the seam surface over the baseline machinery above. Stateless -
 // each notify() copies everything its detached thread needs.
 class WinToastNotify final : public core::INotify {
 public:
@@ -119,7 +119,7 @@ public:
 
 namespace core {
 
-// Production default notifier (see INotify.h — reached by name because core code
+// Production default notifier (see INotify.h - reached by name because core code
 // can't include this TU's headers). Function-local static: thread-safe init.
 INotify& notifier() {
     static platform::win::WinToastNotify instance;

@@ -1,4 +1,4 @@
-// Mp4Chapters.cpp — see header. Reads chapters from MP4/M4A/M4B in two forms:
+// Mp4Chapters.cpp - see header. Reads chapters from MP4/M4A/M4B in two forms:
 //   1. Nero 'chpl'            : flat list at moov/udta/chpl (start in 100ns units)
 //   2. QuickTime text track   : audio trak -> tref/chap -> a 'text' trak whose
 //                               samples ARE the titles, timed by its stts against
@@ -172,7 +172,7 @@ bool buildQtStbl(const uint8_t* b, const uint8_t* e, QtStbl& T) {
 
     uint32_t sIdx = 0;
     // stsc first_chunk is strictly increasing and c increases monotonically, so the
-    // matching run only ever moves forward — a single advancing cursor makes this
+    // matching run only ever moves forward - a single advancing cursor makes this
     // O(chunks + stsc) instead of O(chunks * stsc). Mirrors the AacDecoder fix; guards
     // against a text-track muxed with ~one stsc entry per chunk freezing chapter parse.
     size_t run = 0;

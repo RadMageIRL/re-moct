@@ -1,4 +1,4 @@
-// rgcheck.cpp — scope de-risk for the M4aEncoder plan: does an MP4 ReplayGain
+// rgcheck.cpp - scope de-risk for the M4aEncoder plan: does an MP4 ReplayGain
 // freeform atom read back through the SAME generic TagLib PropertyMap path that
 // LocalFileSource uses (tryRG -> f.properties()["REPLAYGAIN_TRACK_GAIN"])?
 // If yes, rip/rec RG on .m4a needs NO decode-side change. Throwaway.

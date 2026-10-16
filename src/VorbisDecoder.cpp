@@ -1,18 +1,18 @@
-// VorbisDecoder.cpp — miniaudio custom decoding backend backed by
+// VorbisDecoder.cpp - miniaudio custom decoding backend backed by
 // libvorbisfile. See VorbisDecoder.h for the contract. Decodes Ogg Vorbis
 // (.ogg). Output is interleaved 32-bit float PCM at the file's native rate.
 //
 // Design: the whole encoded file is slurped into memory on init (the
 // AacDecoder.cpp pattern) and served to libvorbisfile through ov_open_callbacks
-// over that buffer — vorbisfile has no op_open_memory equivalent, so the
+// over that buffer - vorbisfile has no op_open_memory equivalent, so the
 // fread-shaped callbacks are hand-written. Like op_open_memory, the callbacks
 // read lazily for the life of the OggVorbis_File: the slurped buffer is
 // pinned in the backend struct, never resized after open, and ov_clear runs
-// BEFORE the struct (and buffer) are deleted — a freed-buffer read would be a
+// BEFORE the struct (and buffer) are deleted - a freed-buffer read would be a
 // use-after-free that only surfaces on seek or near EOF.
 //
 // ov_read_float is PLANAR (float** per channel, pointing into decoder-internal
-// buffers), unlike op_read_float's interleaved output — the interleave loop
+// buffers), unlike op_read_float's interleaved output - the interleave loop
 // below is the one place in the codec backends that needs it.
 //
 // The include keeps the explicit vorbis/ prefix: TagLib ships its own
@@ -67,7 +67,7 @@ int vs_seek(void* ds, ogg_int64_t offset, int whence) {
     m->pos = (size_t)np;
     return 0;
 }
-// NOTE: the ov_callbacks tell signature returns long — 32-bit on 64-bit
+// NOTE: the ov_callbacks tell signature returns long - 32-bit on 64-bit
 // Windows, so a >2 GB .ogg would misreport there. A vorbisfile API limit,
 // not ours; multi-GB Vorbis files are effectively nonexistent.
 long vs_tell(void* ds) { return (long)((MemStream*)ds)->pos; }
@@ -80,7 +80,7 @@ const ov_callbacks g_mem_callbacks = {
 struct VorbisBackend {
     ma_data_source_base ds;        // MUST be first
 
-    std::vector<uint8_t> file;     // the callbacks read from this in place —
+    std::vector<uint8_t> file;     // the callbacks read from this in place -
                                    // it must outlive vf and never reallocate
     MemStream mem;
     OggVorbis_File vf {};
@@ -104,7 +104,7 @@ ma_result vorbis_ds_read(ma_data_source* pDS, void* out, ma_uint64 frameCount, m
         if (got <= 0 || !pcm) break;           // 0 = EOF, negative = hard error
         // Planar -> interleaved: pcm[c] points into decoder-internal buffers
         // that are only valid until the next ov_read_float call. Chained
-        // streams may switch channel count per link — clamp to the CURRENT
+        // streams may switch channel count per link - clamp to the CURRENT
         // link's count so pcm[] is never indexed past its planar array.
         vorbis_info* vi = ov_info(&b->vf, bitstream);
         uint32_t src_ch = (vi && vi->channels > 0) ? (uint32_t)vi->channels : b->channels;

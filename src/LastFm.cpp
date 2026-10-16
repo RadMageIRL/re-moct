@@ -2,7 +2,7 @@
 #include "Log.h"
 #include "core/IHttp.h"
 
-// Vendored public-domain MD5 (lib/md5.{h,c}, Peslyak/Openwall — kept byte-
+// Vendored public-domain MD5 (lib/md5.{h,c}, Peslyak/Openwall - kept byte-
 // verbatim upstream, hence the extern "C" here rather than a header patch).
 extern "C" {
 #include "md5.h"
@@ -14,7 +14,7 @@ extern "C" {
 #include "json.hpp"
 
 
-// Diagnostic log — routed through the shared operational logger (Log).
+// Diagnostic log - routed through the shared operational logger (Log).
 static void lflog(const char* fmt, ...) {
     char buf[2048];
     va_list ap; va_start(ap, fmt);
@@ -27,7 +27,7 @@ static const char* kHost = "ws.audioscrobbler.com";
 static const char* kPath = "/2.0/";
 
 // ─── MD5 via the vendored public-domain implementation (lib/md5.{h,c}) ────────
-// Phase 3 slice 2: ONE signing code path on BOTH platforms — this replaced the
+// Phase 3 slice 2: ONE signing code path on BOTH platforms - this replaced the
 // Windows CryptoAPI block and the slice-1 Linux placeholder. Byte-identity with
 // the CryptoAPI output is proven by md5_test (RFC 1321 vectors) and the live
 // scrobble round-trip gates on each platform (api_sig accepted == identical

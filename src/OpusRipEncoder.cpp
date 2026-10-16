@@ -1,11 +1,11 @@
-// OpusRipEncoder.cpp — see OpusRipEncoder.h.
+// OpusRipEncoder.cpp - see OpusRipEncoder.h.
 //
 // The include keeps the explicit opus/ prefix (the decode-slice rule; the CI
-// grep gate guards opusfile/vorbisfile — opusenc has no TagLib collision but
+// grep gate guards opusfile/vorbisfile - opusenc has no TagLib collision but
 // follows the same convention).
 #include "OpusRipEncoder.h"
 
-#include "PortUtil.h"   // port::fopenUtf8 — the wide-path open, ours not the lib's
+#include "PortUtil.h"   // port::fopenUtf8 - the wide-path open, ours not the lib's
 
 #include <opus/opusenc.h>
 
@@ -59,7 +59,7 @@ bool OpusRipEncoder::writeFrames(const int16_t* interleaved, size_t frames) {
 bool OpusRipEncoder::finalize(bool ok) {
     bool completed = true;
     if (enc_) {
-        // drain flushes the final pages through the write callback — the same
+        // drain flushes the final pages through the write callback - the same
         // buffering-encoder trap as WavPack's flush: a disk-full here must
         // fail the track, not ship a truncated file marked success.
         if (ok) completed = ope_encoder_drain(enc_) == OPE_OK;
@@ -69,7 +69,7 @@ bool OpusRipEncoder::finalize(bool ok) {
     if (cmts_) { ope_comments_destroy(cmts_); cmts_ = nullptr; }
     if (f_) {
         // Same stdio-buffer layer as WavPack: the drained pages may still sit
-        // in the FILE* buffer — flush and check before declaring completion.
+        // in the FILE* buffer - flush and check before declaring completion.
         if (completed && fflush(f_) != 0) completed = false;
         fclose(f_); f_ = nullptr;
     }

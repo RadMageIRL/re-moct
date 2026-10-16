@@ -1,4 +1,4 @@
-// ArtMissCache.h — a time-bounded negative cache for cover-art lookups
+// ArtMissCache.h - a time-bounded negative cache for cover-art lookups
 // (radio-art-refresh-fix, Fix #2).
 //
 // The old shape (a session-lifetime unordered_set) permanently poisoned a
@@ -8,11 +8,11 @@
 // (only a non-empty station-art URL bypassed it). Time-bounding is the
 // smallest correct fix: a miss suppresses re-lookups for TTL_MS (a genuine
 // no-art song is still rate-limited to one attempt per window, never
-// hammered per tick), then expires — so a transient failure self-heals on
+// hammered per tick), then expires - so a transient failure self-heals on
 // the song's next rotation. Shared by the radio Info-pane path and the
 // Discord art path (they already shared the old set).
 //
-// Tick math: uint32 wrap-safe via a SIGNED 32-BIT cast — (int32_t)(a-b),
+// Tick math: uint32 wrap-safe via a SIGNED 32-BIT cast - (int32_t)(a-b),
 // deliberately NOT (long): long is 64-bit on Linux/LP64, which turns every
 // wrapped difference positive and expires everything instantly (caught by
 // art_miss_cache_test's first Linux run). Header-only so the test pins the
@@ -30,7 +30,7 @@ struct ArtMissCache {
         m_[key] = now_ms + TTL_MS;
     }
     // True while the miss is still fresh. An expired entry is erased on the
-    // way out (self-healing lookup — no sweep pass needed).
+    // way out (self-healing lookup - no sweep pass needed).
     bool hit(const std::string& key, uint32_t now_ms) {
         auto it = m_.find(key);
         if (it == m_.end()) return false;

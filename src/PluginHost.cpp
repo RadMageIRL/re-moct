@@ -1,5 +1,5 @@
-// PluginHost.cpp — the platform-neutral plugin host policy (Phase 4, slice a).
-// See PluginHost.h. No platform header — compiles on both matrix jobs.
+// PluginHost.cpp - the platform-neutral plugin host policy (Phase 4, slice a).
+// See PluginHost.h. No platform header - compiles on both matrix jobs.
 #include "PluginHost.h"
 
 #include <cstddef>   // offsetof
@@ -20,7 +20,7 @@ const char* pluginLoadName(PluginLoad r) {
     return "unknown";
 }
 
-// The REQUIRED function pointers a v1 plugin must provide — without any of these
+// The REQUIRED function pointers a v1 plugin must provide - without any of these
 // the source is undriveable. Everything after `close` (metadata/config) is
 // OPTIONAL and host-null-checked (remoct_plugin.h). See PluginHost.h.
 static bool hasRequiredFns(const RemoctPlugin* d) {

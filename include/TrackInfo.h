@@ -1,4 +1,4 @@
-// TrackInfo.h — track metadata record (Phase 2 slice B: hoisted verbatim from
+// TrackInfo.h - track metadata record (Phase 2 slice B: hoisted verbatim from
 // AudioManager.h so LocalFileSource can carry its metadata without depending on
 // the manager's header). Pure struct, no platform or library dependencies;
 // AudioManager.h includes this, so every existing consumer sees it transitively

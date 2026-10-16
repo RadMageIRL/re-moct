@@ -5,6 +5,21 @@ All notable changes to RE-MOCT are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.6.3] - 2026-10-16
+
+Two small fixes. Radio station search had quietly come to depend on a single server,
+and the rip status line used a dash that nothing else in RE-MOCT uses.
+
+### Fixed
+
+- **Radio station search no longer depends on one server.** `[Radio]` search asks
+  the radio-browser.info directory, and RE-MOCT tried three of its servers in turn.
+  Two of those have since been retired, so every search was riding on the last one:
+  had it gone too, search would have come back empty even though the directory itself
+  was up. RE-MOCT now falls back to the directory's own address for whichever servers
+  are currently running, so one server going away no longer takes search with it.
+  Saved stations and playback were never affected.
+
 ## [1.6.2] - 2026-08-15
 
 Mostly about being told the truth: what your hardware is doing to your music,
@@ -1650,6 +1665,7 @@ boundary with a **loadable plugin architecture**.
 
 [1.0.0]: https://github.com/RadMageIRL/re-moct/releases/tag/1.0.0
 
+[1.6.3]: https://github.com/RadMageIRL/re-moct/releases/tag/1.6.3
 [1.6.2]: https://github.com/RadMageIRL/re-moct/releases/tag/1.6.2
 [1.6.1]: https://github.com/RadMageIRL/re-moct/releases/tag/1.6.1
 [1.6.0]: https://github.com/RadMageIRL/re-moct/releases/tag/1.6.0

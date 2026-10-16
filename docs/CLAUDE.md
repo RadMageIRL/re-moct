@@ -30,7 +30,7 @@ is the whole point; keep Classic minimal and faithful, put flair in Awesome.
   Debian. `REMOCT_PDCURSES` is `WIN32`-gated, so `ncursesw` in the banner is
   correct there. No `/dev/sr*`, so no CD work on Linux.
 - `ctest` needs `export PATH="/c/msys64/ucrt64/bin:$PATH"` **in the same shell**,
-  or ~22 tests fail with `0xc0000139`. Gates: Windows **56/56**, Linux **57/57**.
+  or ~22 tests fail with `0xc0000139`. Gates: Windows **57/57**, Linux **58/58**.
 - Audio/encode: miniaudio (`ma_device_*`), FDK-AAC, libFLAC, LAME, libebur128, TagLib.
 - Net: all HTTP via the `core::IHttp` seam (`include/core/IHttp.h`; WinINet impl
   `src/platform/win/HttpWinInet.cpp`) - except StreamSource's live read loop (raw
@@ -147,13 +147,13 @@ and ship without rebuilding the host" is literally true.** Detail in
 **Released, tagged, on `main`:** 1.5.0 = per-track rip selection + the 17-slice `[Library]`
 + the CD read-addressing fix. 1.6.0 = HTOA. 1.6.1 = the display fold, a CJK crash fix, the
 disc-number campaign, cover art previewed before writing (`[P]`, `[A]` was AccurateRip).
+1.6.2 (2026-08-15) = **bit-perfect playback** + the output-rate indicator (`ma_device_init`
+returns success while silently converting), art-picker iTunes/Deezer rows, stream recovery.
 
-**1.6.2 (tag `1.6.2`, merge `a1d2698`, 2026-08-15; all three branches in sync):** the
-output-rate indicator + **bit-perfect playback** (`bit_perfect=1`, config-only, lossless
-local files, verified against `internal*` - `ma_device_init` returns success while silently
-converting); art-picker rows from iTunes/Deezer where CAA has none; stream recovery (dead
-stream stops and says why, short drops inaudible, no replayed audio); most-played shimmer;
-Classic scanner palette; C2 rip-log wording; About links. **Read the newest handoff.**
+**1.6.3 is UNRELEASED** - on `experimental` only: not merged to dev or main, not tagged.
+Radio search falls back to `all.api.radio-browser.info` (nl1/at1 retired), user-facing
+em dashes gone, CI is build-only (tests are gated locally, never in GitHub). Dos is
+running it locally before the ceremony. **Read the newest handoff.**
 
 ## 1.6.1: the display fold - read before touching display text
 `foldForDisplay` (`include/StringUtils.h`, was `sanitizeForDisplay`). Per codepoint:

@@ -20,6 +20,14 @@ and the rip status line used a dash that nothing else in RE-MOCT uses.
   are currently running, so one server going away no longer takes search with it.
   Saved stations and playback were never affected.
 
+### Changed
+
+- **The rip status line and the rip log use plain hyphens.** A few messages - the C2
+  line shown when a rip starts, and the drive and pressing offset notes in the rip
+  log - used a long dash where everything else in RE-MOCT uses a hyphen. They now
+  match. Searching older rip logs for one of these lines, the dash is the only
+  difference.
+
 ## [1.6.2] - 2026-08-15
 
 Mostly about being told the truth: what your hardware is doing to your music,

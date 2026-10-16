@@ -7,7 +7,7 @@ is the **canonical source of truth** for dependencies and build steps. If this f
 CI ever disagree, CI wins.
 
 Reference environments:
-- Windows 11 · MSYS2 UCRT64 · GCC 15.2
+- Windows 11 · MSYS2 UCRT64 · GCC 16.1
 - Debian Trixie · GCC 14.2
 
 The single-header dependencies **miniaudio** (`lib/miniaudio.h`) and **nlohmann/json**
@@ -140,10 +140,10 @@ ctest --test-dir build --no-tests=error --output-on-failure
 
 `--no-tests=error` matters: plain `ctest` **exits 0 when it finds no tests at all**, so a
 build configured without them reports success having run nothing. The flag turns that
-into the failure it is, which is why CI passes it too.
+into the failure it is. CI builds only; the suite is run locally on both platforms.
 
 `xfade_handoff_test` self-skips (ctest `SKIP_RETURN_CODE 77`) when the machine has no
-audio device - expected on headless CI. Some tests are Windows-only or Linux-only by
+audio device - expected on a headless machine. Some tests are Windows-only or Linux-only by
 design (platform seam impls); the suite count differs per platform accordingly.
 
 ### Building without the test tools

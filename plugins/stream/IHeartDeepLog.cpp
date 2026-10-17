@@ -1,7 +1,7 @@
 #include "IHeartDeepLog.h"
 
 // Portable since Phase 3 slice 1: Win32 file/time calls became std::filesystem /
-// chrono / localtimeSafe with the behavior contract unchanged — JSONL capture
+// chrono / localtimeSafe with the behavior contract unchanged - JSONL capture
 // files `remoct-deep-analysis-YYYYMMDD-HHMMSS.log` under the per-platform app
 // logs dir (Windows: %APPDATA%\RE-MOCT\logs\, the exact baseline; Linux:
 // $XDG_STATE_HOME/re-moct/logs/), 5 MB size roll, kKeepDays retention by file
@@ -47,7 +47,7 @@ uint32_t           g_last_write_tick = 0;
 bool               g_file_started    = false;  // _meta written for g_cur_path?
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
-// Windows: %APPDATA%\RE-MOCT\logs\ — the baseline location (deep captures live
+// Windows: %APPDATA%\RE-MOCT\logs\ - the baseline location (deep captures live
 // with the app's data, not in %TEMP% like the operational log). Linux:
 // $XDG_STATE_HOME/re-moct/logs/ (fallback ~/.local/state/re-moct/logs/).
 std::string logsDir() {
@@ -151,7 +151,7 @@ void startNewFile(const std::string& dir) {
 }
 
 // Dedup signature: SEMANTIC fields only. Excludes thEnded / audioSec / posSec /
-// mfSeq / timestamps — all of which advance every tick during a freeze and would
+// mfSeq / timestamps - all of which advance every tick during a freeze and would
 // otherwise defeat the heartbeat collapse. A freeze == every field below constant.
 std::string sigOf(const IHeartDeepLog::Record& r) {
     std::string s; s.reserve(256);

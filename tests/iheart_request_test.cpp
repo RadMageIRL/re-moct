@@ -1,4 +1,4 @@
-// iheart_request_test — Windows-only end-to-end request test for HTTP site 8
+// iheart_request_test - Windows-only end-to-end request test for HTTP site 8
 // (slice 4): links the REAL IHeartRadio consumer + the WinINet impl, injects a
 // FakeHttp via core::setHttp, and asserts the requests the consumer builds
 // through its persistent session:
@@ -28,7 +28,7 @@ static const char* kZc  = "zc999999991";
 static const long long kId = 999999991;
 
 // The sidecar is a real cache file in %TEMP% shared with the app. Scrub ONLY our
-// test key so resolve() takes the self-resolve path deterministically — never
+// test key so resolve() takes the self-resolve path deterministically - never
 // delete the file (it can hold user-named stations).
 static void scrubSidecarKey() {
     const std::string path = IHeartRadio::sidecarPath();

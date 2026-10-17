@@ -62,7 +62,7 @@ bool IHeartRadio::ensureSession() {
     if (!h) { logmsg("iheart: InternetOpenA failed err=" + std::to_string(GetLastError())); return false; }
     DWORD to = 5000;   // shorter than a stream connect: this polls on the audio
                        // producer thread, so a hung iHeart connection mustn't
-                       // stall playback for long — skip and retry next cycle.
+                       // stall playback for long - skip and retry next cycle.
     InternetSetOptionA(h, INTERNET_OPTION_CONNECT_TIMEOUT, &to, sizeof(to));
     InternetSetOptionA(h, INTERNET_OPTION_RECEIVE_TIMEOUT, &to, sizeof(to));
     InternetSetOptionA(h, INTERNET_OPTION_SEND_TIMEOUT,    &to, sizeof(to));

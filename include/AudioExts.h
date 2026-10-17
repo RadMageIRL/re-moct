@@ -51,7 +51,7 @@ inline std::string extensionOf(const std::string& path) {
     return ext;
 }
 
-// Losslessly-encoded local formats — the ONLY scope bit-perfect playback applies
+// Losslessly-encoded local formats - the ONLY scope bit-perfect playback applies
 // to (docs/DESIGN-bit-perfect.md). A lossy encode has already discarded what
 // there would be to be faithful to, so preserving its samples exactly preserves
 // the encoder's approximation, not the recording. .aiff/.aif are not listed

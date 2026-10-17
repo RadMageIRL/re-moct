@@ -1,35 +1,35 @@
-/* remoct_plugin.h — the RE-MOCT plugin C ABI (Phase 4, slice (a): the frozen
+/* remoct_plugin.h - the RE-MOCT plugin C ABI (Phase 4, slice (a): the frozen
  * contract). This is the SDK header shared by the host AND every plugin. It is
  * the ONE interface in the project that is a genuine BINARY contract, hard to
- * change after the fact — so the fundamentals are pinned here and evolution is
+ * change after the fact - so the fundamentals are pinned here and evolution is
  * additive only (see "Versioning" below).
  *
- * Ratified design: docs/phase4-readiness.md §2 (Dos, 2026-07-04). Boundary A —
+ * Ratified design: docs/phase4-readiness.md §2 (Dos, 2026-07-04). Boundary A -
  * the first plugin is the streaming source (StreamSource entire; iHeart as its
  * headline capability). This header freezes the full v1 ABI now, against the
  * disposable sine test plugin, BEFORE StreamSource is extracted behind it.
  *
  * The five fundamentals (all four "expensive to change", gotten right up front):
- *   1. C linkage only. NO C++ across the line — no vtables, no name mangling,
+ *   1. C linkage only. NO C++ across the line - no vtables, no name mangling,
  *      no std:: types, no templates. Only POD structs, primitives, UTF-8 C
  *      strings (NUL-terminated), and opaque void* handles. This header compiles
- *      as C (the sine plugin is pure C — the proof nothing C++ leaked in).
+ *      as C (the sine plugin is pure C - the proof nothing C++ leaked in).
  *   2. noexcept everywhere. No C++ exception may cross the boundary. Errors are
  *      return codes / empty results (the IHeartRadio "never throws out of its
  *      public API" posture, now a hard ABI rule).
  *   3. Nobody frees across the boundary. Whoever ALLOCATES, frees. Host buffers
  *      for host->plugin fills (audio frames, metadata strings); host-owned
- *      transport results freed by a host function. No cross-heap free — the
+ *      transport results freed by a host function. No cross-heap free - the
  *      classic C-ABI landmine.
  *   4. Additive, struct-size-gated evolution (see Versioning).
  *   5. Model the real consumer (core::ISource + iHeart's real needs), not a
  *      hypothetical marketplace.
  *
- * Threading: read_frames runs on the AUDIO thread — it must be lock-free, must
+ * Threading: read_frames runs on the AUDIO thread - it must be lock-free, must
  * not allocate, and must not block (exactly the StreamSource::readFrames
  * contract). Every other entry runs on the host/UI thread. open() is blocking
  * and slow; the host wraps it in its own async-connect thread (it already does
- * this for StreamSource today) — the plugin need not make open() async.
+ * this for StreamSource today) - the plugin need not make open() async.
  */
 #ifndef REMOCT_PLUGIN_H
 #define REMOCT_PLUGIN_H
@@ -58,7 +58,7 @@ extern "C" {
 #endif
 
 /* ── POD mirror of core::SourceCaps ──────────────────────────────────────────
- * Declared, never faked — the host branches on these (int used as bool: 0/1). */
+ * Declared, never faked - the host branches on these (int used as bool: 0/1). */
 typedef struct RemoctSourceCaps {
     int32_t seekable;   /* seek_to() is honored           */
     int32_t finite;     /* has an end; duration_sec valid  */
@@ -67,7 +67,7 @@ typedef struct RemoctSourceCaps {
 
 /* ── Host-provided services (injected at create) ─────────────────────────────
  * The host hands the plugin this C function table so the plugin reaches the
- * host's IHttp transport (WinINet/libcurl) instead of carrying its own — the
+ * host's IHttp transport (WinINet/libcurl) instead of carrying its own - the
  * DI endgame architecture.md always described. The transitional core::http()
  * global lives in the HOST binary and is unreachable from a loaded .so/.dll,
  * which is exactly why service injection is mandatory here.
@@ -80,7 +80,7 @@ enum { REMOCT_REDIRECT_FOLLOW_ALL = 0,
 typedef struct RemoctHttpSession RemoctHttpSession;   /* opaque HOST handle */
 
 /* One HTTP request. All strings UTF-8. Bodies go over the wire as raw UTF-8
- * bytes — NEVER widened (widening corrupts non-ASCII scrobbles/queries). */
+ * bytes - NEVER widened (widening corrupts non-ASCII scrobbles/queries). */
 typedef struct RemoctHttpReq {
     const char*        url;
     const char*        method;         /* "GET"/"POST"; NULL => GET            */
@@ -96,7 +96,7 @@ typedef struct RemoctHttpReq {
     int32_t            reject_truncated;
     /* Cancel token: a PLUGIN-owned flag. The plugin sets it nonzero from its
      * close()/stop path; the host transport polls it (acquire load) before the
-     * open and before each chunk — the exact slice-4 granularity, so worst-case
+     * open and before each chunk - the exact slice-4 granularity, so worst-case
      * abort latency stays one receive timeout, never the remaining body. Pinned
      * to int32_t so no std::atomic type crosses; the host reads it with acquire
      * semantics, the plugin writes it with release. NULL => not cancellable. */
@@ -105,7 +105,7 @@ typedef struct RemoctHttpReq {
 
 /* One HTTP response. HOST-allocated and HOST-freed (via http_response_free):
  * the plugin copies out what it needs, then frees. `body`/`final_url` are
- * BORROWED — valid only until http_response_free. */
+ * BORROWED - valid only until http_response_free. */
 typedef struct RemoctHttpResp {
     int32_t     ok;          /* transport succeeded                            */
     int32_t     cancelled;   /* aborted via req.cancel (body cleared)          */
@@ -121,7 +121,7 @@ typedef struct RemoctHostServices {
     uint32_t struct_size;    /* sizeof(RemoctHostServices) at host build time  */
     void*    host_ctx;       /* opaque; pass back to the host fns below        */
 
-    /* HTTP — the Phase-1 IHttp/IHttpSession seam, C-shimmed. A held session =
+    /* HTTP - the Phase-1 IHttp/IHttpSession seam, C-shimmed. A held session =
      * keep-alive reuse across fetches (WinINet InternetOpen handle / libcurl
      * CURLSH share handle). Returns NULL on failure (the plugin retries, as the
      * baselines' ensureSession did). */
@@ -136,7 +136,7 @@ typedef struct RemoctHostServices {
     void  (*http_response_free)(RemoctHttpResp* resp);
 
     /* Optional host log sink (host_ctx-scoped slog). May be NULL. The iHeart
-     * deep log stays PLUGIN-owned (it resolves its own dir) — this is only the
+     * deep log stays PLUGIN-owned (it resolves its own dir) - this is only the
      * host's operational log. */
     void  (*log)(void* host_ctx, const char* msg);
 } RemoctHostServices;
@@ -144,7 +144,7 @@ typedef struct RemoctHostServices {
 /* ── The plugin descriptor ───────────────────────────────────────────────────
  * Returned by the one exported entry. Field ORDER is part of the ABI: never
  * reorder or change a signature (that is a MAJOR bump); only APPEND new
- * function pointers at the end (struct-size-gated — see Versioning).
+ * function pointers at the end (struct-size-gated - see Versioning).
  *
  * REQUIRED (a plugin is undriveable without these; the loader rejects a
  * descriptor missing any): create, destroy, open, read_frames, close.
@@ -158,20 +158,20 @@ typedef struct RemoctPlugin {
     const char* name;           /* stable id, e.g. "stream"                       */
     const char* display_name;   /* "iHeart / Internet Radio"                      */
 
-    /* ── lifecycle (host/UI thread) — REQUIRED ── */
+    /* ── lifecycle (host/UI thread) - REQUIRED ── */
     void*   (*create)(const RemoctHostServices* host, void* host_ctx); /* -> self */
     void    (*destroy)(void* self);
     int32_t (*handles_url)(void* self, const char* url);   /* 1 if it plays url    */
     int32_t (*open)(void* self, const char* url);          /* BLOCKING; 0 = ok     */
 
-    /* ── audio (AUDIO thread — lock-free, no alloc, no block) — REQUIRED ──
+    /* ── audio (AUDIO thread - lock-free, no alloc, no block) - REQUIRED ──
      * Fill dst with frame_count stereo f32 frames @ 44100 Hz; return frames
      * written. A live source ALWAYS returns frame_count (silence-pads while
-     * buffering/paused/underrun — its end is observable via state, not a short
+     * buffering/paused/underrun - its end is observable via state, not a short
      * read), exactly the StreamSource::readFrames contract. */
     uint32_t (*read_frames)(void* self, float* dst, uint32_t frame_count);
 
-    /* ── transport (host/UI thread) — the core::ISource spine ── */
+    /* ── transport (host/UI thread) - the core::ISource spine ── */
     void    (*get_caps)(void* self, RemoctSourceCaps* out);
     double  (*position_sec)(void* self);
     double  (*duration_sec)(void* self);   /* 0.0 when unknown (live)             */
@@ -180,16 +180,16 @@ typedef struct RemoctPlugin {
     int32_t (*is_buffering)(void* self);   /* 1 while (re)filling                 */
     void    (*close)(void* self);          /* REQUIRED; idempotent; joins machinery */
 
-    /* ── metadata (host/UI thread; Phase-2 deferral #2) — OPTIONAL ──
+    /* ── metadata (host/UI thread; Phase-2 deferral #2) - OPTIONAL ──
      * Fill buf (cap bytes incl. NUL). Return the FULL length (snprintf
      * semantics) so the host can grow+retry. Empty ("", return 0) = none yet.
-     * The string is COPIED into the host's buffer — it never crosses ownership
+     * The string is COPIED into the host's buffer - it never crosses ownership
      * (the "nobody frees across the boundary" rule, applied to strings). */
     size_t  (*now_playing)(void* self, char* buf, size_t cap);  /* "Artist - Title" */
     size_t  (*art_url)(void* self, char* buf, size_t cap);
     size_t  (*last_error)(void* self, char* buf, size_t cap);
 
-    /* ── config (host/UI thread) — OPTIONAL ──
+    /* ── config (host/UI thread) - OPTIONAL ──
      * One typed-enough knob channel, modeled on the one real knob. e.g.
      * ("prefer_digital","1"), ("deeplog","1"). NOT a general settings bus. */
     void    (*set_config)(void* self, const char* key, const char* value);
@@ -200,22 +200,22 @@ typedef struct RemoctPlugin {
      * struct_size reaches a field AND the pointer is non-NULL before any
      * call. A v1 plugin (smaller struct) is fully supported forever. ──
      *
-     * set_record_active (host/UI thread) — keep-draining-while-paused.
+     * set_record_active (host/UI thread) - keep-draining-while-paused.
      * While active (a recording is running), a playback pause must NOT
      * interrupt the broadcast pipeline: the plugin keeps consuming the
      * network and read_frames keeps draining REAL audio; the HOST renders
      * playback silence by muting its output buffer AFTER the recorder tap
      * (one truth in the plugin, two views in the host). Inactive: pause
      * behavior is byte-for-byte the pre-cluster contract. Returns 1 if
-     * honored — the ack drives the host's honest pause copy. */
+     * honored - the ack drives the host's honest pause copy. */
     int32_t  (*set_record_active)(void* self, int32_t on);
 
-    /* Copy/remux tee (slice B of the cluster) — DECLARED here so the
+    /* Copy/remux tee (slice B of the cluster) - DECLARED here so the
      * boundary grows exactly once; a plugin may ship these NULL until it
      * implements them (per-fn null-check makes that a valid state).
      * encoded_caps: the REMOCT_CODEC_* currently flowing (0 = none/unknown).
      * set_encoded_capture: arm/disarm the plugin-side compressed-byte tee
-     * (OFF by default — zero cost when unused).
+     * (OFF by default - zero cost when unused).
      * read_encoded: host/WORKER-thread pull of the tee'd compressed bytes
      * (post-transport framing: ICY metaint stripped, HLS segment payloads
      * concatenated); codec_out = REMOCT_CODEC_*; discont_out = 1 when a
@@ -232,7 +232,7 @@ enum { REMOCT_CODEC_NONE = 0, REMOCT_CODEC_MP3 = 1, REMOCT_CODEC_AAC_ADTS = 2 };
 
 /* ── The ONE exported symbol ─────────────────────────────────────────────────
  * A plugin exports exactly this (C linkage, undecorated name), returning a
- * pointer to a STATIC descriptor (valid for the module's lifetime — the host
+ * pointer to a STATIC descriptor (valid for the module's lifetime - the host
  * never frees it). The host resolves it with dlsym/GetProcAddress. */
 typedef const RemoctPlugin* (*RemoctQueryFn)(void);
 REMOCT_EXPORT const RemoctPlugin* remoct_plugin_query(void);

@@ -1,4 +1,4 @@
-// plugin_stream_test — Phase 4 slice (b): the streaming source driven through
+// plugin_stream_test - Phase 4 slice (b): the streaming source driven through
 // the plugin C ABI. Exercises the in-process StreamSource adapter
 // (remoct_stream_plugin_query) two ways: (1) the raw C table over a real
 // StreamSource `self` (proves the adapter forwards caps/lifecycle/metadata), and
@@ -7,7 +7,7 @@
 // a dead-port open() fails fast (no producer thread), so this stays headless and
 // quick on both jobs. The end-to-end audio path is the slice-(b) live gate.
 #define MINIAUDIO_IMPLEMENTATION   // provide the impl for the linked StreamSource
-#include "miniaudio.h"             // (no AudioManager TU here — same as hls_pipeline_test)
+#include "miniaudio.h"             // (no AudioManager TU here - same as hls_pipeline_test)
 
 #include "PluginSource.h"
 #include "PluginHostServices.h"
@@ -114,7 +114,7 @@ int main() {
             CHECK(ps.setRecordActive(true),  "new plugin: set_record_active honored (ack)");
             CHECK(ps.setRecordActive(false), "new plugin: cleared (ack)");
             // slice B: the copy/remux trio is now populated and safe to
-            // exercise before any open — caps report "nothing flowing" and
+            // exercise before any open - caps report "nothing flowing" and
             // an armed-but-dry tee reads zero (no crash, no fabrication).
             CHECK(d->encoded_caps && d->set_encoded_capture && d->read_encoded,
                   "slice B: copy/remux fns populated");
@@ -127,7 +127,7 @@ int main() {
             CHECK(codec == 0 && disc == 0, "dry tee: codec none, no discont");
             ps.setEncodedCapture(false);
         }
-        // new host + OLD (v1) plugin: a v1-sized descriptor — the host must
+        // new host + OLD (v1) plugin: a v1-sized descriptor - the host must
         // refuse to even READ past struct_size (the pointer slot is left
         // non-null garbage-adjacent on purpose: ack==false proves no call).
         {
@@ -147,7 +147,7 @@ int main() {
             ps.close();
         }
         // slice-A/B intermediate: a CURRENT-size descriptor that ships the
-        // tee slots NULL (slice A's exact shipped state) — per-fn null-check
+        // tee slots NULL (slice A's exact shipped state) - per-fn null-check
         // must gate it off even though struct_size reaches the fields.
         {
             RemoctPlugin a = *d;

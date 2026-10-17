@@ -1,4 +1,4 @@
-// GainScan.h — batch ReplayGain over a folder (batch-r128 slice).
+// GainScan.h - batch ReplayGain over a folder (batch-r128 slice).
 //
 // The fourth assembly of proven parts (the plan's whole thesis): the
 // per-track ebur128 block is the rip/recorder shape a third time, the
@@ -10,10 +10,10 @@
 //
 // Semantics: track gain only (album grouping is a recorded follow-up);
 // skip-already-tagged by default (both dialects read via TagLib
-// PropertyMap — which also means pre-mp3-rg-write BLOB-shape MP3s read as
+// PropertyMap - which also means pre-mp3-rg-write BLOB-shape MP3s read as
 // untagged and get HEALED to standard frames, blob removed); .wav counted
 // skipped-with-note (untagged by rip policy too); cancel abandons the
-// in-flight file (nothing written for it) — every stop path leaves whole,
+// in-flight file (nothing written for it) - every stop path leaves whole,
 // valid files only. Audio thread never involved.
 #pragma once
 

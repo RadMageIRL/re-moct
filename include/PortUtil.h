@@ -1,14 +1,14 @@
-// PortUtil.h — tiny cross-platform primitives (Phase 3 slice 1).
+// PortUtil.h - tiny cross-platform primitives (Phase 3 slice 1).
 //
 // The rule that makes this header safe to adopt: on Windows, every helper
-// expands to the BASELINE CALL, verbatim — port::sleepMs is ::Sleep,
-// port::tickMs is ::GetTickCount, port::fopenUtf8 is _wfopen(utf8_to_wide(p)) —
+// expands to the BASELINE CALL, verbatim - port::sleepMs is ::Sleep,
+// port::tickMs is ::GetTickCount, port::fopenUtf8 is _wfopen(utf8_to_wide(p)) -
 // so adopting a helper at a call site is a rename, not a behavior change
 // (the slice-1 gate holds Windows at zero behavior change). Linux gets the
 // direct twin with the same shape, including the baseline's own quirks
 // (uint32 tick wrap arithmetic, ~15 ms sleep granularity noted in lessons.md).
 //
-// Include from .cpp files ONLY — on Windows this pulls in <windows.h>, and
+// Include from .cpp files ONLY - on Windows this pulls in <windows.h>, and
 // keeping platform headers out of remoct's own headers is the slice-8 detox
 // property (audit: grep include/*.h for PortUtil).
 #pragma once
@@ -33,7 +33,7 @@
 
 namespace port {
 
-// Sleep for ~ms. Windows: ::Sleep — the exact baseline call in the CDSource
+// Sleep for ~ms. Windows: ::Sleep - the exact baseline call in the CDSource
 // reader / StreamSource producer / CDRipper pacing loops (granularity ~15 ms,
 // a load-bearing property those loops were tuned against). Linux: nanosleep.
 inline void sleepMs(unsigned ms) {
@@ -60,7 +60,7 @@ inline uint32_t tickMs() {
 #endif
 }
 
-// fopen with a UTF-8 path. Windows: _wfopen(utf8_to_wide(path), wide(mode)) —
+// fopen with a UTF-8 path. Windows: _wfopen(utf8_to_wide(path), wide(mode)) -
 // the exact baseline shape at every CDRipper/Mp4Chapters call site (narrow
 // fopen would break non-ASCII paths there). Linux: fopen, byte paths are
 // UTF-8 natively.
@@ -101,7 +101,7 @@ inline bool statFile(const std::string& path, int64_t& mtime_out, uint64_t& size
     return true;
 }
 
-// Scratch/temp directory WITH trailing separator. Windows: GetTempPathA — the
+// Scratch/temp directory WITH trailing separator. Windows: GetTempPathA - the
 // baseline in Log/IHeartRadio (includes the trailing backslash). Linux:
 // $TMPDIR or /tmp.
 inline std::string tempDir() {
@@ -118,8 +118,8 @@ inline std::string tempDir() {
 }
 
 // Where dated operational logs live, WITH trailing separator. Windows: %TEMP%
-// (the Log.cpp / IHeartDeepLog.cpp baseline — dated files under %TEMP%,
-// day-rolled and trimmed). Linux: XDG state — $XDG_STATE_HOME/re-moct or
+// (the Log.cpp / IHeartDeepLog.cpp baseline - dated files under %TEMP%,
+// day-rolled and trimmed). Linux: XDG state - $XDG_STATE_HOME/re-moct or
 // ~/.local/state/re-moct (created on first use); logs are state, not temp,
 // under the XDG conventions decided for the port.
 inline std::string logDir() {

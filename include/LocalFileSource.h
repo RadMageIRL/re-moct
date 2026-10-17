@@ -1,31 +1,31 @@
 #pragma once
 
 // ─── LocalFileSource ──────────────────────────────────────────────────────────
-// Local-file playback source (Phase 2 slice B) — the third core::ISource
+// Local-file playback source (Phase 2 slice B) - the third core::ISource
 // implementation. Extracted from AudioManager, where the file path lived as
 // inline state (ma_decoder decoder_/next_decoder_ + free functions): the
 // decoder, the open/prime sequence, TagLib metadata, the seek-with-prime logic,
 // and the cursor now live here. The decoder is opened at a fixed heap address
-// for the object's whole life — the audio-thread track swap in AudioManager is
+// for the object's whole life - the audio-thread track swap in AudioManager is
 // a pointer move, no longer a by-value copy of a library struct.
 //
 // Threading contract (inherited from the baseline it was extracted from):
 //   - open()/close()/seekTo()/seekToFrame() are main-thread calls, made only in
 //     device-stopped windows (AudioManager's discipline; ma_device_stop/start
-//     are the fences) — EXCEPT seekToFrame(0), which the audio thread calls on
+//     are the fences) - EXCEPT seekToFrame(0), which the audio thread calls on
 //     the repeat-one path exactly as the baseline seeked decoder_ there.
 //   - readFrames()/positionSec() are called from the audio callback;
 //     positionSec() is also read from the UI thread (the baseline's latent
-//     cursor race, unchanged in kind — see AudioManager's retirement scheme,
+//     cursor race, unchanged in kind - see AudioManager's retirement scheme,
 //     which guarantees the raced dereference always hits a live object).
 //
 // File-specific surface (open/info/path/channels/sampleRate/seekToFrame) is
-// deliberately NOT part of core::ISource — the approved open()/metadata
+// deliberately NOT part of core::ISource - the approved open()/metadata
 // exclusions; metadata is upfront TagLib and stays a concrete accessor.
 
 #include "core/ISource.h"
 #include "TrackInfo.h"
-#include "miniaudio.h"   // declarations only — MINIAUDIO_IMPLEMENTATION lives in AudioManager.cpp
+#include "miniaudio.h"   // declarations only - MINIAUDIO_IMPLEMENTATION lives in AudioManager.cpp
 
 #include <cstdint>
 #include <string>
@@ -48,7 +48,7 @@ public:
     uint32_t channels()   const { return decoder_.outputChannels; }    // always 2 (forced)
     uint32_t sampleRate() const { return decoder_.outputSampleRate; }  // always 44100 (forced)
 
-    // RAW seek, no reservoir priming — the baseline's repeat-one loop
+    // RAW seek, no reservoir priming - the baseline's repeat-one loop
     // (ma_decoder_seek_to_pcm_frame(0) on the audio thread) and the setDevice
     // playback-restart use exactly this shape.
     void seekToFrame(uint64_t frame);
@@ -61,7 +61,7 @@ public:
         return { .seekable = true, .finite = true, .live = false };
     }
     double positionSec() const override;   // decoder cursor / rate (baseline math)
-    double durationSec() const override {  // TagLib duration — deliberately NOT the
+    double durationSec() const override {  // TagLib duration - deliberately NOT the
         return (double)info_.duration_sec; // decoder length (no-Xing cursor race,
     }                                      // the baseline cached_duration_ decision)
     bool   seekTo(double seconds) override;  // seek + ~180ms decode-discard prime

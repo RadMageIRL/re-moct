@@ -19,11 +19,13 @@ std::string urlEncode(const std::string& s) {
     return out;
 }
 
-// Mirror servers — any may be down, so callers try them in order.
+// Mirror servers - any may be down, so callers try them in order. Named mirrors
+// come and go (nl1 and at1 were both gone by 2026-10, leaving one live entry), so
+// the fallback is all.api, the directory's own round-robin name, which resolves
+// to whichever servers are currently up. countClick uses the first entry only.
 const char* kMirrors[] = {
     "https://de1.api.radio-browser.info",
-    "https://nl1.api.radio-browser.info",
-    "https://at1.api.radio-browser.info",
+    "https://all.api.radio-browser.info",
 };
 
 } // namespace

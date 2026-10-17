@@ -1,7 +1,7 @@
-// WavPackEncoder.cpp — see WavPackEncoder.h.
+// WavPackEncoder.cpp - see WavPackEncoder.h.
 #include "WavPackEncoder.h"
 
-#include "PortUtil.h"   // port::fopenUtf8 — the wide-path open; no char* path
+#include "PortUtil.h"   // port::fopenUtf8 - the wide-path open; no char* path
                         // ever crosses libwavpack (block callback over OUR FILE*)
 
 #include <wavpack/wavpack.h>
@@ -21,7 +21,7 @@ int modeFlags(int mode) {
 } // namespace
 
 // STRICT block output (the fold-in): a short fwrite returns failure to
-// libwavpack AND sets the sticky flag — the pair makes a lying success
+// libwavpack AND sets the sticky flag - the pair makes a lying success
 // unrepresentable no matter how the library propagates the error.
 int WavPackEncoder::blockOut(void* id, void* data, int32_t bcount) {
     auto* self = (WavPackEncoder*)id;
@@ -51,7 +51,7 @@ bool WavPackEncoder::open(const std::string& path, uint64_t total_frames) {
 
     WavpackConfig cfg;
     std::memset(&cfg, 0, sizeof(cfg));
-    cfg.bits_per_sample  = 16;      // exactly CD-DA — the round-trip test
+    cfg.bits_per_sample  = 16;      // exactly CD-DA - the round-trip test
     cfg.bytes_per_sample = 2;       // pins these (wrong values can't survive it)
     cfg.num_channels     = 2;
     cfg.channel_mask     = 3;       // stereo L+R
@@ -71,7 +71,7 @@ bool WavPackEncoder::writeFrames(const int16_t* interleaved, size_t frames) {
     stage_.resize(frames * 2);
     for (size_t i = 0; i < frames * 2; ++i)      // sign-extending widen
         stage_[i] = interleaved[i];
-    // Probe-proven: a failed block callback surfaces here as 0 — and the
+    // Probe-proven: a failed block callback surfaces here as 0 - and the
     // sticky flag covers any propagation gap.
     if (!WavpackPackSamples(wpc_, stage_.data(), (uint32_t)frames)) return false;
     return !write_failed_;
@@ -81,19 +81,19 @@ bool WavPackEncoder::finalize(bool ok) {
     bool completed = true;
     if (wpc_) {
         if (ok) {
-            // The final block flushes HERE — a disk-full on it must fail the
+            // The final block flushes HERE - a disk-full on it must fail the
             // track (the reason IEncoder::finalize returns bool).
             if (!WavpackFlushSamples(wpc_)) completed = false;
             if (write_failed_)              completed = false;
             // Third layer of the trap (found by the ENOSPC chain test): small
-            // compressed blocks can sit in STDIO'S buffer — fwrite "succeeds",
+            // compressed blocks can sit in STDIO'S buffer - fwrite "succeeds",
             // the library flush "succeeds", and the real ENOSPC would only
             // surface at an unchecked fclose. Flush the FILE* and check it.
             if (completed && fflush(f_) != 0) completed = false;
             // Insurance for a legitimate non-exact caller only (never the CD
             // path): with completed==true every byte is on disk, so a sample
             // count mismatch can only mean the caller declared a different
-            // total — patch the first block's header copy and rewrite it.
+            // total - patch the first block's header copy and rewrite it.
             if (completed && !first_block_.empty() &&
                 (uint64_t)WavpackGetSampleIndex64(wpc_) != declared_frames_ &&
                 WavpackGetSampleIndex64(wpc_) >= 0) {

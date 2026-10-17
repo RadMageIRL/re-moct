@@ -1,6 +1,6 @@
 #pragma once
 
-// ─── DiscTag — the disc number, one definition per tag container ─────────────
+// ─── DiscTag - the disc number, one definition per tag container ─────────────
 //
 // P5 of the release/disc-picker design. Until now RE-MOCT wrote NO disc number
 // at all: a rip of disc 3 of 7 produced nineteen files whose only record of that
@@ -10,7 +10,7 @@
 //
 // ── Why this is a header and not five lines inside tagFile ───────────────────
 // The writer and its round-trip test must share ONE definition. The risk being
-// retired here is not tagFile's control flow — it is whether TagLib maps each
+// retired here is not tagFile's control flow - it is whether TagLib maps each
 // container's native field onto the PropertyMap key LibraryScanner actually
 // reads ("DISCNUMBER", see readTags in LibraryScanner.cpp). Asserting that
 // mapping is not proving it, and a test that re-implements the write proves only
@@ -19,18 +19,18 @@
 //
 // ── Always written, including 1/1 ────────────────────────────────────────────
 // Dos's ruling. Writing the number only on multi-disc releases would leave a
-// missing DISCNUMBER meaning two different things — "this is a standalone disc"
-// and "this was ripped before the tag existed" — which is the same
+// missing DISCNUMBER meaning two different things - "this is a standalone disc"
+// and "this was ripped before the tag existed" - which is the same
 // value-collision CD-S2 closed in disc.json. Absence now means exactly one
 // thing: not written by this program.
 //
 // ── Each container gets its NATIVE field, not a common denominator ───────────
-//   ID3v2  (MP3)          TPOS         "3/7"   — the standard "part of a set" frame
+//   ID3v2  (MP3)          TPOS         "3/7" - the standard "part of a set" frame
 //   Xiph   (FLAC, Opus)   DISCNUMBER   "3"     + TOTALDISCS "7"
 //   APEv2  (WavPack)      DISC         "3/7"
 //   MP4    (M4A)          disk         integer pair (3, 7)
 //
-// WAV has no tag container and never reaches here — the `taggable` column in
+// WAV has no tag container and never reaches here - the `taggable` column in
 // kRipFormats already routes around it.
 
 #include <taglib/tstring.h>
@@ -47,14 +47,14 @@
 
 namespace disctag {
 
-// "3/7" — the shape ID3v2's TPOS and APEv2's DISC both take.
+// "3/7" - the shape ID3v2's TPOS and APEv2's DISC both take.
 inline std::string pairString(int disc, int total) {
     return std::to_string(disc) + "/" + std::to_string(total);
 }
 
 // A disc number below 1 is not a disc number. pickDiscForTrackCount cannot
 // return one (it falls back to 1), so this is a guard against a future caller,
-// not against today's — and it declines to write rather than writing a zero that
+// not against today's - and it declines to write rather than writing a zero that
 // a reader would have to interpret.
 inline bool valid(int disc) { return disc >= 1; }
 
@@ -66,7 +66,7 @@ inline int clampTotal(int disc, int total) { return std::max(total, disc); }
 
 // ── ID3v2 (MP3) ─────────────────────────────────────────────────────────────
 // TPOS is a STANDARD text frame, so it takes the ordinary
-// TextIdentificationFrame construction — not the TXXX/UserText shape the
+// TextIdentificationFrame construction - not the TXXX/UserText shape the
 // AccurateRip and ReplayGain keys need (mp3-rg-write: a TXXX written as one
 // "KEY=value" blob lands entirely in the description and is invisible to every
 // reader). TENC next door is the matching precedent.
@@ -110,7 +110,7 @@ inline void writeDiscTag(TagLib::APE::Tag* tag, int disc, int total) {
 }
 
 // ── MP4 (M4A) ───────────────────────────────────────────────────────────────
-// The "disk" atom is an INTEGER PAIR, not text — the same shape "trkn" takes for
+// The "disk" atom is an INTEGER PAIR, not text - the same shape "trkn" takes for
 // the track number, which is why setTrack() exists for one and nothing does for
 // the other. setItem replaces.
 inline void writeDiscTag(TagLib::MP4::Tag* tag, int disc, int total) {

@@ -7,14 +7,14 @@
 #include "core/IHttp.h"   // persistent HTTP session via the platform seam (slice 4)
 
 // ─────────────────────────────────────────────────────────────────────────────
-// IHeartRadio — isolated iHeart now-playing service.
+// IHeartRadio - isolated iHeart now-playing service.
 //
 // Resolves a revma zc#### stream URL to an iHeart station id + trackHistory
 // endpoint (sidecar-cached, self-resolving on a miss), then polls for the
 // current track with timestamp gating (blank during ad/talk breaks).
 //
 // Self-contained: owns its HTTP session (a keep-alive core::IHttpSession via the
-// platform seam — WinINet-free since slice 4), depends only on json.hpp + the seam
+// platform seam - WinINet-free since slice 4), depends only on json.hpp + the seam
 // + the standard library. Used by StreamSource (production) and the standalone
 // SniffIHeartRadio probe (diagnostic). All iHeart-specific quirks live HERE, so
 // when iHeart changes their API only this one file needs to change.
@@ -36,7 +36,7 @@ class IHeartRadio {
 public:
     // HTTP transport injected (Phase 4 slice c): plugin::HostServiceHttp over the
     // host services in the plugin; core::http() for in-tree callers. Was the
-    // core::http() global inside ensureSession — unreachable from a loaded .so.
+    // core::http() global inside ensureSession - unreachable from a loaded .so.
     explicit IHeartRadio(core::IHttp& http);
     ~IHeartRadio();
     IHeartRadio(const IHeartRadio&)            = delete;
@@ -56,7 +56,7 @@ public:
     // now (timestamp-gated), else "" (ad/talk break or error). Caller throttles.
     // Poll now-playing. Returns "Artist - Title" for data[0] (the most recent track),
     // or "" on error/no data. If endedSecsAgo is given, it's set to (now - endTime):
-    // <=0 currently playing, >0 ended that many seconds ago, -1 unknown — and the
+    // <=0 currently playing, >0 ended that many seconds ago, -1 unknown - and the
     // raw song is returned regardless of staleness so the caller can judge freshness.
     // With no out-param (probe path) a strict 30s gate applies and stale -> "".
     //
@@ -76,12 +76,12 @@ public:
     };
     std::string pollNowPlaying(long* endedSecsAgo = nullptr, PollDiag* diag = nullptr);
 
-    // Structured live now-playing from the currentTrackMeta endpoint — the source
+    // Structured live now-playing from the currentTrackMeta endpoint - the source
     // the iHeart WEB PLAYER itself uses. Distinct from trackHistory: it reports the
     // CURRENT track (not a history log) with start/end epoch times + album art, and
     // (pending verification) stays fresh through windows where trackHistory freezes.
     // NOTE: the bare currentTrackMeta path returns HTTP 410 ("No meta data"); adding
-    // ?defaultMetadata=true flips it to 200 — which is why the earlier "dead end"
+    // ?defaultMetadata=true flips it to 200 - which is why the earlier "dead end"
     // verdict was a false negative. Epochs arrive in MILLISECONDS here (trackHistory
     // uses seconds), normalised to epoch seconds below. ok=false on HTTP/parse/empty.
     struct CurrentTrack {

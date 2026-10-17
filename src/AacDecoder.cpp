@@ -1,4 +1,4 @@
-// AacDecoder.cpp — miniaudio custom decoding backend backed by FDK-AAC.
+// AacDecoder.cpp - miniaudio custom decoding backend backed by FDK-AAC.
 // See AacDecoder.h for the contract. Decodes raw ADTS (.aac) and AAC inside an
 // MP4/ISO-BMFF container (.m4a/.mp4). Output is interleaved signed-16 PCM.
 //
@@ -139,7 +139,7 @@ struct Mp4Aac {
         // stsc first_chunk is strictly increasing and c increases monotonically, so the
         // matching run only ever moves forward. A single advancing cursor makes this
         // O(chunks + stsc) instead of O(chunks * stsc). Some muxers (e.g. LibriVox m4b)
-        // emit ~one stsc entry per chunk — ~176k chunks * ~120k entries here — where the
+        // emit ~one stsc entry per chunk - ~176k chunks * ~120k entries here - where the
         // old per-chunk inner scan went quadratic (~21B iterations) and froze on open.
         size_t run = 0;
         for (uint32_t c = 0; c < chunks.size(); ++c) {

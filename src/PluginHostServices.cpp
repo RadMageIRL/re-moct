@@ -1,4 +1,4 @@
-// PluginHostServices.cpp — the host HTTP service shim (Phase 4 slice b). See
+// PluginHostServices.cpp - the host HTTP service shim (Phase 4 slice b). See
 // PluginHostServices.h. No platform header (compiles on both matrix jobs).
 #include "PluginHostServices.h"
 #include "Log.h"
@@ -13,10 +13,10 @@ namespace {
 
 // Opaque host session handle (RemoctHttpSession* on the ABI): wraps the real
 // keep-alive core::IHttpSession. Allocated in svc_open_session, freed in
-// svc_session_close — host-owned end to end, never freed by the plugin.
+// svc_session_close - host-owned end to end, never freed by the plugin.
 struct HostHttpSession { std::unique_ptr<IHttpSession> sess; };
 
-// Every entry is noexcept (the ABI forbids exceptions across the line) — bodies
+// Every entry is noexcept (the ABI forbids exceptions across the line) - bodies
 // are wrapped so a std::bad_alloc etc. becomes a safe failure, not terminate().
 
 RemoctHttpSession* svc_open_session(void* host_ctx, const char* ua,
@@ -77,7 +77,7 @@ void svc_fetch(RemoctHttpSession* s, const RemoctHttpReq* req,
         out->read_error = res.read_error? 1 : 0;
         out->truncated  = res.truncated ? 1 : 0;
         out->status     = res.status;
-        // Body is a byte buffer (may contain NULs) — malloc+copy, host-owned,
+        // Body is a byte buffer (may contain NULs) - malloc+copy, host-owned,
         // freed by svc_response_free. Empty => leave nullptr/0.
         if (!res.body.empty()) {
             void* p = std::malloc(res.body.size());
@@ -100,7 +100,7 @@ void svc_fetch(RemoctHttpSession* s, const RemoctHttpReq* req,
     }
 }
 
-// Host-owned malloc'd fields freed by the host here — the plugin copies out first,
+// Host-owned malloc'd fields freed by the host here - the plugin copies out first,
 // then calls this; nobody frees across the boundary.
 void svc_response_free(RemoctHttpResp* resp) noexcept {
     if (!resp) return;

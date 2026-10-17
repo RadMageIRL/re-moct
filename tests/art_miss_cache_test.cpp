@@ -1,11 +1,11 @@
-// art_miss_cache_test — the time-bounded art negative cache contract
+// art_miss_cache_test - the time-bounded art negative cache contract
 // (radio-art-refresh-fix, Fix #2). Pins the two properties that justify the
 // cache's existence in either direction:
 //   - a miss RATE-LIMITS: within the TTL the key stays suppressed (a genuine
 //     no-art song is attempted once per window, never hammered per tick);
 //   - a miss SELF-HEALS: at/after the TTL the entry expires (and is erased),
 //     so a transient network failure costs one rotation window, not the
-//     whole session — the pre-fix set poisoned the song permanently.
+//     whole session - the pre-fix set poisoned the song permanently.
 // Tick math is the tree's uint32 wrap-safe idiom; the wrap case is pinned too.
 #include "ArtMissCache.h"
 

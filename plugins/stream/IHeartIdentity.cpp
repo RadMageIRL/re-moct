@@ -1,6 +1,6 @@
 #include "IHeartIdentity.h"
 
-#include "PortUtil.h"     // port::tickMs (rand seed) — no WinINet
+#include "PortUtil.h"     // port::tickMs (rand seed) - no WinINet
 #include "json.hpp"
 
 #include <fstream>
@@ -16,7 +16,7 @@ namespace fs = std::filesystem;
 namespace {
 
 // Persisted-identity location. Windows: %APPDATA%\RE-MOCT\ (the app-data root the
-// deep log's logsDir() sits under, minus the \logs subdir — the identity is config,
+// deep log's logsDir() sits under, minus the \logs subdir - the identity is config,
 // not a capture). Linux: $XDG_STATE_HOME/re-moct/ (fallback ~/.local/state/re-moct/),
 // alongside the deep-log parent. Returns "" if no base dir is resolvable.
 std::string identityDir() {
@@ -43,7 +43,7 @@ std::string identityDir() {
 }
 
 // A v4-shaped UUID (8-4-4-4-12 hex, version/variant nibbles set). Entropy is from
-// std::rand — sufficient for a persisted, single-user probe identity; the value only
+// std::rand - sufficient for a persisted, single-user probe identity; the value only
 // has to be stable and unique-enough, not cryptographic. Seeded once from tickMs.
 std::string genUuid() {
     static bool seeded = false;
@@ -142,7 +142,7 @@ Identity mintOrLoad(core::IHttp& http, const std::function<void(const std::strin
     }
 
     // POST loginOrCreateOauthUser. Field set replicated VERBATIM from iheart-cli,
-    // including its apparent `acessToken` spelling — the proven form; correcting it is
+    // including its apparent `acessToken` spelling - the proven form; correcting it is
     // an untested change (open question, verify empirically).
     const std::string& uuid = id.deviceId;
     std::string body =
@@ -156,8 +156,8 @@ Identity mintOrLoad(core::IHttp& http, const std::function<void(const std::strin
 
     // UA + timeout are SESSION-level across the plugin ABI (RemoctHttpReq carries
     // neither; the IHttp contract has requests-through-a-session ignore per-request
-    // user_agent/timeout_ms — the session config wins). So set the browser UA and the
-    // bound HERE, exactly like IHeartRadio::ensureSession — otherwise the mint would go
+    // user_agent/timeout_ms - the session config wins). So set the browser UA and the
+    // bound HERE, exactly like IHeartRadio::ensureSession - otherwise the mint would go
     // out with the impl-default UA and an UNBOUNDED timeout on the connect thread.
     core::HttpSessionConfig scfg;
     scfg.user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "

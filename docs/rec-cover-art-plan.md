@@ -1,4 +1,4 @@
-# Cover art per recorded cut — PLAN (rec-cover-art)
+# Cover art per recorded cut - PLAN (rec-cover-art)
 
 **Stage:** PLAN deliverable. No source, no commit.
 **Baseline probed:** `experimental/win-pdcurses` @ `76798ad`.
@@ -12,7 +12,7 @@
 (`radio_art_active_` guard) that resolves the iHeart digital cover URL when
 the station supplies one, else `CoverArt::urlBySong(artist, title)`
 (iTunes → Deezer song lookup, include/CoverArt.h:30), then
-`CoverArt::bytesByUrl` — which **already validates the body is a real
+`CoverArt::bytesByUrl` - which **already validates the body is a real
 raster image** (guards HTML/JSON error pages, include/CoverArt.h:22-25).
 Keyed on `artist + "\t" + title` (the scrobbler's committed-song identity).
 Result lands in `radio_bytes_` / `radio_bytes_key_` with a negative cache
@@ -20,28 +20,28 @@ Result lands in `radio_bytes_` / `radio_bytes_key_` with a negative cache
 `refreshRadioArt` (:3813-…): change-detect on the polled now-playing,
 start fetch, consume `radio_art_done_` into the cache.
 
-### 1.2 Cached vs per-fetch (§3.2) — cached-reuse EXISTS but is pane-gated
+### 1.2 Cached vs per-fetch (§3.2) - cached-reuse EXISTS but is pane-gated
 
 `radio_bytes_` is exactly the cached current-song image the brief hopes
-for — **but `refreshRadioArt` only runs while the Info pane's radio art
+for - **but `refreshRadioArt` only runs while the Info pane's radio art
 box is being drawn** (call site :3947, inside the pane draw). Record with
 the playlist pane up and the cache never fills. So pure cached-read is not
 sufficient on its own.
 
-**Proposal — cached-reuse made pane-independent (no new provider, no new
+**Proposal - cached-reuse made pane-independent (no new provider, no new
 network path):** extract `refreshRadioArt`'s trigger block and pickup
 block into two small UI-thread helpers (`radioArtKick(artist,title)` /
 `radioArtPickup()`), called exactly as today from `refreshRadioArt`, AND
 from the existing per-tick recording wiring (the R2 `onTitle` site) while
 a recording is active. Same single-in-flight guard, same negative cache,
-same provider order, same thread — the fetch machinery just stops caring
+same provider order, same thread - the fetch machinery just stops caring
 whether the pane is open. On pickup, the tick hands the resolved bytes to
 the recorder (below). This is the plan's one structural note: a small
 UI-side extraction, zero engine change, zero new provider.
 
-### 1.3 The recorder's tag pass (§3.3) — PREMISE CORRECTION
+### 1.3 The recorder's tag pass (§3.3) - PREMISE CORRECTION
 
-**`tagCut` embeds no art today** — grep finds no `addPicture`/`APIC` in
+**`tagCut` embeds no art today** - grep finds no `addPicture`/`APIC` in
 StreamRecorder.cpp. The brief's "the recorder's tag pass already embeds
 art" is false; R1 explicitly excluded art (its plan §2). Both embed paths
 get ADDED to `tagCut`, mirroring `tagFile`'s proven shapes verbatim:
@@ -51,7 +51,7 @@ get ADDED to `tagCut`, mirroring `tagFile`'s proven shapes verbatim:
 Small, reference-anchored, in scope per the brief's §4.4 spirit (it
 anticipated the MP3 half; in fact both halves are absent).
 
-### 1.4 Timing vs the cut roll (§3.4) — art typically resolves mid-cut
+### 1.4 Timing vs the cut roll (§3.4) - art typically resolves mid-cut
 
 Sequence: title change → split → new cut opens → the same tick kicks the
 art fetch → fetch resolves in seconds; songs run minutes; the cut closes
@@ -72,33 +72,33 @@ The audio thread and the ring drain are untouched by construction.
 - **Flow:** UI tick (while recording): poll now-playing → `onTitle`
   (existing) + `radioArtKick` for the same parsed artist/title (respecting
   the negative cache and station-art precedence) → on `radioArtPickup`,
-  call the new `StreamRecorder::onArt(artist, title, bytes)` — stores
+  call the new `StreamRecorder::onArt(artist, title, bytes)` - stores
   `pending_art_{key, bytes}` under the existing `meta_mtx_` (UI↔worker
   only, never the audio thread; the `onTitle` pattern exactly).
 - **Alignment rule (the important one): key-match at tag time.** `tagCut`
   embeds the pending art iff its key equals the closing cut's parsed
   (deinverted) artist+title key. A stale or early image whose key doesn't
-  match the cut is NOT attached — **no art rather than wrong art**. Edge
+  match the cut is NOT attached - **no art rather than wrong art**. Edge
   cuts inherit the documented 1-2s slop; the key rule means slop can cost
   a cover, never mislabel one.
-- **Missing/failed/late art:** cut finalizes fully tagged without art —
+- **Missing/failed/late art:** cut finalizes fully tagged without art -
   never a stall (the attach is a mutex-guarded vector read at tag time,
   the fetch is never awaited), never a drop, never an empty picture block.
 - **Validation:** bytes non-empty + magic check (FFD8 → image/jpeg,
   89504E47 → image/png; anything else skipped) layered over
   `bytesByUrl`'s existing raster guard. tagFile hardcodes image/jpeg; the
-  recorder sets MIME from the magic — strictly safer, same providers.
+  recorder sets MIME from the magic - strictly safer, same providers.
 - **Format parity:** both Opus and MP3 per §1.3.
 
-## 3. Hazards (brief §5) — answers
+## 3. Hazards (brief §5) - answers
 
 1. **Cut lifecycle:** attach = one locked read + a TagLib call in the tag
    pass that already runs post-finalize on the worker. Roll timing,
    dropped-frame behavior, teardown: untouched.
-2. **Wrong-cut art:** structurally prevented by the key match (§2) —
+2. **Wrong-cut art:** structurally prevented by the key match (§2) -
    stated limit: an edge cut may LACK art it "deserved", never carry a
    neighbor's.
-3. **Provider sprawl:** none — the recorder holds zero provider knowledge;
+3. **Provider sprawl:** none - the recorder holds zero provider knowledge;
    UIManager's one path (station art → iTunes → Deezer, negative-cached)
    serves both the pane and the recorder.
 4. **Malformed picture:** double-guarded (raster guard + magic/MIME).
@@ -107,13 +107,13 @@ The audio thread and the ring drain are untouched by construction.
 ## 4. Verification (on greenlight)
 
 - **stream_record_test extension (machine, both toolchains):** drive
-  `onArt` directly — matching key → picture embedded in BOTH formats
+  `onArt` directly - matching key → picture embedded in BOTH formats
   (TagLib read-back: MP3 APIC frame list, Opus `pictureList()`) with
   correct MIME; mismatched key → NO picture; garbage bytes → NO picture,
   cut still valid; no-art run unchanged. No network in tests.
 - **Live capture (mainstream station, e.g. KKJO):** cuts land with correct
   embedded covers, visible in RE-MOCT's art pane on playback and in
-  foobar2000/dBpoweramp — both formats. Recording with the Info pane
+  foobar2000/dBpoweramp - both formats. Recording with the Info pane
   CLOSED also gets art (the pane-independence point).
 - **No-art case:** an art-miss station/segment → cuts finalize fully
   tagged, no art, no stall, split timing and drop counters identical.
@@ -124,11 +124,11 @@ The audio thread and the ring drain are untouched by construction.
 
 ## 5. Divergences
 
-1. **Premise correction:** `tagCut` embeds no art today — both format
+1. **Premise correction:** `tagCut` embeds no art today - both format
    paths are added (mirroring tagFile's proven shapes), not fed.
 2. **Cached-reuse needs a small UI-side extraction** (§1.2): the fetch
    machinery is pane-gated today; `radioArtKick`/`radioArtPickup` make it
    recording-aware with zero provider/network change. UIManager-only; the
    engine lanes stay frozen.
-3. The alignment rule chooses "no art rather than wrong art" — an edge
+3. The alignment rule chooses "no art rather than wrong art" - an edge
    cut may miss a cover under slop; stated, not hidden.

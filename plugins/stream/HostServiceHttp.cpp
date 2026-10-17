@@ -1,8 +1,8 @@
-// HostServiceHttp.cpp — plugin-side core::IHttp over the RemoctHostServices C
+// HostServiceHttp.cpp - plugin-side core::IHttp over the RemoctHostServices C
 // table (Phase 4 slice c). See HostServiceHttp.h. The exact inverse of the host's
 // svc_open_session/svc_fetch (PluginHostServices.cpp): request/response fields are
 // translated 1:1 and the int32_t* cancel token crosses VERBATIM (RemoctHttpReq and
-// core::HttpRequest share `const int32_t*` — no reinterpret, unified in slice b).
+// core::HttpRequest share `const int32_t*` - no reinterpret, unified in slice b).
 #include "HostServiceHttp.h"
 
 #include <vector>

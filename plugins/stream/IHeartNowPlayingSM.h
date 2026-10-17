@@ -1,9 +1,9 @@
-// IHeartNowPlayingSM.h — pure iHeart now-playing reconciliation state machine.
+// IHeartNowPlayingSM.h - pure iHeart now-playing reconciliation state machine.
 //
 // Extracted verbatim from StreamSource::updateIHeartNowPlaying so the debounce /
 // target-ladder / LIVE-floor-stall decisions are unit-testable off-network.
 // PURE: no windows.h, no threads, no network, no audio, no I/O. The caller
-// (StreamSource) owns everything impure — manifest classification, the throttled
+// (StreamSource) owns everything impure - manifest classification, the throttled
 // HTTP polls, the cross-thread now_playing_/np_pub_q_ publish, the re-pin
 // armed/cooldown/pending atomics, album art, and the deep log. This unit only
 // consumes already-parsed values and returns a decision.
@@ -66,7 +66,7 @@ public:
     // The whole reconciliation tick. No side effects beyond advancing internal state.
     IHeartDecision tick(const IHeartTick& in);
 
-    // Connect reset — exactly StreamSource.cpp:424-425 (deliberately does NOT touch
+    // Connect reset - exactly StreamSource.cpp:424-425 (deliberately does NOT touch
     // the floor timer, matching the original).
     void reset();
 

@@ -6,23 +6,23 @@
 #include "core/IHttp.h"   // mint POST goes through the platform seam (Linux-portable, no WinINet)
 
 // ─────────────────────────────────────────────────────────────────────────────
-// IHeartIdentity — probe-only minted *anonymous* iHeart account identity.
+// IHeartIdentity - probe-only minted *anonymous* iHeart account identity.
 //
 // The shipped digital handshake (StreamSource::hlsBuildDigitalUrl anon branch)
-// carries NO profileId/skey and a fresh random listenerId per connect — the arm
+// carries NO profileId/skey and a fresh random listenerId per connect - the arm
 // that eats the long "house-bin" ad backfill. The web player, by contrast, carries
 // a real stable profileId (== skey). The one variant never tested live is a real
 // *anonymous* profileId: shashfrankenstien/iheart-cli mints exactly this via the
 // account endpoint below, keyed on a persisted device UUID.
 //
 // This helper wires that mint in as a flag-gated probe. It is invoked ONLY from the
-// minted A/B arm while the deep log is enabled (see StreamSource::hlsConnect) — never
+// minted A/B arm while the deep log is enabled (see StreamSource::hlsConnect) - never
 // in normal use. Any failure returns ok=false and the caller falls back to today's
 // anonymous handshake, so a mint failure can never block or degrade playback.
 //
 // LOAD-BEARING: the identity is minted ONCE and PERSISTED, then reused across runs
 // (mirroring iheart-cli's UUID file). The web player's edge may be identity stability
-// + listening history, not the param on its own — so mint-fresh-every-connect would
+// + listening history, not the param on its own - so mint-fresh-every-connect would
 // be the baseline with extra HTTP (a false negative). Persistence is a requirement.
 //
 // Endpoint:  POST https://us.api.iheart.com/api/v1/account/loginOrCreateOauthUser
@@ -35,10 +35,10 @@ namespace IHeartIdentity {
 struct Identity {
     bool        ok = false;     // a usable minted profileId is available for this connect
     std::string deviceId;       // persisted device UUID (reused across runs; both deviceId & oauthUuid)
-    std::string profileId;      // minted anonymous profileId — used as BOTH profileId and aw_0_1st.skey
+    std::string profileId;      // minted anonymous profileId - used as BOTH profileId and aw_0_1st.skey
     std::string sessionId;      // minted sessionId (persisted; never written to a capture file)
 
-    // Last 6 chars of profileId ("" if none) — the ONLY identity string safe to write
+    // Last 6 chars of profileId ("" if none) - the ONLY identity string safe to write
     // to the deep-log capture (idProfileTail). Never expose the full profileId/skey there.
     std::string profileTail() const;
 };

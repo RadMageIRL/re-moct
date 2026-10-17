@@ -1,7 +1,7 @@
 #include "Log.h"
 
 // Portable since Phase 3 slice 1: the Win32 file-enumeration/time calls became
-// std::filesystem + localtimeSafe with the behavior contract unchanged — dated
+// std::filesystem + localtimeSafe with the behavior contract unchanged - dated
 // files `remoct-YYYY-MM-DD.log` in port::logDir() (Windows: %TEMP%, the exact
 // baseline; Linux: $XDG_STATE_HOME/re-moct), day-roll trim keeping the newest
 // `keep_days` files, "YYYY-MM-DD HH:MM:SS.mmm" local-time stamps.
@@ -26,7 +26,7 @@ namespace fs = std::filesystem;
 // Dated files are kPrefix + "YYYY-MM-DD" + kSuffix under port::logDir().
 // (The old per-subsystem helpers wrote "remoct_stream.log"; the consolidated
 // operational log is dated. Any stale remoct_stream.log from a prior build is
-// left untouched — it is not a dated file — and can be deleted by hand.)
+// left untouched - it is not a dated file - and can be deleted by hand.)
 static const char* kPrefix = "remoct-";
 static const char* kSuffix = ".log";
 
@@ -75,7 +75,7 @@ static bool isDailyName(const std::string& n) {
 // Keep the newest `keepDays` dated files, delete older. ISO dates sort lexically,
 // so an ascending sort puts the oldest first. Non-dated files are ignored.
 // Caller must already hold logMutex(). Non-throwing throughout (error_code
-// overloads) — logging housekeeping must never take the app down.
+// overloads) - logging housekeeping must never take the app down.
 static void trimOldDailyLocked(const std::string& dir, int keepDays) {
     if (keepDays < 1) keepDays = 1;
     std::vector<std::string> names;

@@ -1,9 +1,9 @@
-// GainScan.cpp — batch ReplayGain engine (batch-r128). See the header for
+// GainScan.cpp - batch ReplayGain engine (batch-r128). See the header for
 // the thesis: nothing here is new machinery, it is the fourth assembly of
 // the rip/recorder/BPM shapes with known behavior.
 #include "GainScan.h"
 #include "LocalFileSource.h"
-#include "R128Gain.h"      // r128FromDb — the one home for the Opus dialect
+#include "R128Gain.h"      // r128FromDb - the one home for the Opus dialect
 #include "StringUtils.h"   // utf8_to_wide
 #include "PortUtil.h"      // sleepMs
 
@@ -38,7 +38,7 @@ namespace fs = std::filesystem;
 
 namespace {
 
-// The rip's exact formatters (tagFile / tagCut — parity is textual too).
+// The rip's exact formatters (tagFile / tagCut - parity is textual too).
 std::string rgStr(double gain) {
     std::ostringstream ss; ss << std::fixed << std::setprecision(2) << gain << " dB";
     return ss.str();
@@ -63,7 +63,7 @@ bool taggableExt(const std::string& e) {
 }
 
 // Skip predicate: does the file already carry a track-gain tag in ITS
-// dialect? PropertyMap spans Xiph/ID3v2/APEv2/MP4-freeform — the player's
+// dialect? PropertyMap spans Xiph/ID3v2/APEv2/MP4-freeform - the player's
 // own read logic. Pre-fix BLOB MP3s are PropertyMap-invisible and thus
 // "untagged" here: the scan heals them (the flagged side-effect).
 bool hasTrackGain(const std::string& path, const std::string& ext) {
@@ -87,9 +87,9 @@ bool writeMp3(const std::string& p, double gain, double peak) {
     TagLib::MPEG::File f(TL_PATH(p), false);
     if (!f.isValid()) return false;
     auto* tag = f.ID3v2Tag(true); if (!tag) return false;
-    // Heal: remove EVERY prior REPLAYGAIN_* TXXX — both the pre-fix blob
+    // Heal: remove EVERY prior REPLAYGAIN_* TXXX - both the pre-fix blob
     // shape (the whole "KEY=value" in the description) and any proper frame
-    // being force-replaced — so exactly one standard pair remains.
+    // being force-replaced - so exactly one standard pair remains.
     std::vector<TagLib::ID3v2::Frame*> doomed;
     for (auto* fr : tag->frameList("TXXX")) {
         auto* u = dynamic_cast<TagLib::ID3v2::UserTextIdentificationFrame*>(fr);
@@ -127,7 +127,7 @@ bool writeWv(const std::string& p, double gain, double peak) {
 }
 
 bool writeM4a(const std::string& p, double gain, double peak) {
-    // MP4: the PropertyMap route (freeform REPLAYGAIN atoms) — the same
+    // MP4: the PropertyMap route (freeform REPLAYGAIN atoms) - the same
     // surface the player's read path consults.
     TagLib::MP4::File f(TL_PATH(p), false);
     if (!f.isValid()) return false;
@@ -206,7 +206,7 @@ bool GainScan::processFile(const std::string& path, bool force) {
 
     // Decode-for-measurement: a private LocalFileSource, fully drained (the
     // BPM-detection twin). The playback contract is 44100/stereo f32, so the
-    // ebur128 setup is IDENTICAL to the rip's — parity by construction.
+    // ebur128 setup is IDENTICAL to the rip's - parity by construction.
     LocalFileSource src;
     if (!src.open(path)) { errors_.fetch_add(1); return false; }
 
@@ -220,7 +220,7 @@ bool GainScan::processFile(const std::string& path, bool force) {
         uint32_t got = src.readFrames(buf.data(), 4096);
         if (got == 0) break;
         ebur128_add_frames_float(st, buf.data(), (size_t)got);
-        // Cancel abandons the in-flight file entirely — nothing is written
+        // Cancel abandons the in-flight file entirely - nothing is written
         // for it, so every stop path leaves whole files only (a 2-hour
         // audiobook must not pin the cancel for minutes).
         if (cancel_.load(std::memory_order_relaxed)) { aborted = true; break; }

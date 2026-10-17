@@ -1,4 +1,4 @@
-// Mp3Encoder.h — IEncoder for MP3 rip output (rip-encoder-seam slice).
+// Mp3Encoder.h - IEncoder for MP3 rip output (rip-encoder-seam slice).
 // Verbatim transliteration of the inline LAME path from CDRipper::ripTrack:
 // VBR mtrh V0 quality-2 STEREO, manual Xing tag rewrite at finalize. Byte-
 // identity vs the original inline code is pinned by rip_encoder_seam_test.

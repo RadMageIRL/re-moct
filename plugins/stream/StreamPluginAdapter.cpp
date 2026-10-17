@@ -1,4 +1,4 @@
-// StreamPluginAdapter.cpp — the RemoctPlugin C-ABI adapter over StreamSource
+// StreamPluginAdapter.cpp - the RemoctPlugin C-ABI adapter over StreamSource
 // (Phase 4). Each C entry forwards 1:1 to a StreamSource; the instance (`self`) is
 // a StreamInstance owning the source + the plugin-side HTTP bridge. Since slice (c)
 // this file + StreamSource live in plugins/stream/ and this TU exports
@@ -6,16 +6,16 @@
 // so the compiled-in plugin_stream_test stays the byte-identity reference (D4).
 //
 // The callbacks are internal-linkage (anonymous namespace) and noexcept (the ABI
-// forbids exceptions across the line — StreamSource's queried surface does not
+// forbids exceptions across the line - StreamSource's queried surface does not
 // throw). Assigning C++ statics to the RemoctPlugin C function-pointer members is
 // the same pattern the codebase already uses for miniaudio's C callbacks
 // (AudioManager::maDataCallback). HTTP is routed through the injected host services
 // (slice c): create() builds a plugin::HostServiceHttp over the RemoctHostServices
-// table and constructs StreamSource with it — no core::http() in the plugin.
+// table and constructs StreamSource with it - no core::http() in the plugin.
 #include "StreamPluginAdapter.h"
 #include "StreamSource.h"
 #include "HostServiceHttp.h"   // core::IHttp over the injected host services (slice c)
-#include "IHeartDeepLog.h"     // set_config("deeplog", ...) — deep-log toggle across the ABI
+#include "IHeartDeepLog.h"     // set_config("deeplog", ...) - deep-log toggle across the ABI
 
 #include <cstring>
 #include <cstdlib>   // std::atoi (repin_mode config passthrough)
@@ -25,7 +25,7 @@ namespace {
 
 // The instance behind `self`. Owns the source + the plugin-side HTTP bridge built
 // from the host services handed in at create. Member order matters: `host` then
-// `http` (built from host) then `src` (built from http) — declaration order = ctor
+// `http` (built from host) then `src` (built from http) - declaration order = ctor
 // init order, so each is live before the next uses it.
 struct StreamInstance {
     const RemoctHostServices* host;
@@ -48,7 +48,7 @@ std::size_t fillBuf(char* buf, std::size_t cap, const std::string& s) {
 }
 
 void* sp_create(const RemoctHostServices* host, void* /*host_ctx*/) noexcept {
-    // try/catch: StreamSource's ctor allocates the ring — no exception may cross
+    // try/catch: StreamSource's ctor allocates the ring - no exception may cross
     // the C ABI (rule #2), so a bad_alloc becomes a null return (create failed).
     try { return new StreamInstance(host); }
     catch (...) { return nullptr; }
@@ -126,7 +126,7 @@ int32_t sp_set_record_active(void* self, int32_t on) noexcept {
 // abi-cluster slice B: the copy/remux tee. encoded_caps reports what connect
 // decided (REMOCT_CODEC_*, 0 before open); set_encoded_capture arms/disarms
 // the plugin-side byte ring; read_encoded is the host WORKER-thread pull
-// (host buffer — nobody frees across the line).
+// (host buffer - nobody frees across the line).
 int32_t sp_encoded_caps(void* self) noexcept {
     return inst(self)->src.encodedCaps();
 }
@@ -160,7 +160,7 @@ const RemoctPlugin STREAM_PLUGIN = {
     /* last_error   */ sp_last_error,
     /* set_config   */ sp_set_config,
     /* ── the abi-cluster growth (design doc): drain in slice A, the
-     * copy/remux tee in slice B — the boundary grew exactly once and is now
+     * copy/remux tee in slice B - the boundary grew exactly once and is now
      * fully populated. ── */
     /* set_record_active   */ sp_set_record_active,
     /* encoded_caps        */ sp_encoded_caps,
@@ -171,7 +171,7 @@ const RemoctPlugin STREAM_PLUGIN = {
 } // namespace
 
 // In-process acquisition (compiled-in): kept so plugin_stream_test drives the
-// SAME descriptor without dlopen — the byte-identity reference slice (d) compares
+// SAME descriptor without dlopen - the byte-identity reference slice (d) compares
 // the loaded .so against (D4).
 const RemoctPlugin* remoct_stream_plugin_query() { return &STREAM_PLUGIN; }
 

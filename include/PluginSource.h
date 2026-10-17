@@ -1,4 +1,4 @@
-// PluginSource.h — the host-side driver for a source behind the plugin C ABI
+// PluginSource.h - the host-side driver for a source behind the plugin C ABI
 // (Phase 4 slice b). A thin wrapper holding the RemoctPlugin op table + one
 // instance, exposing the same method names StreamSource did so AudioManager's
 // call sites change by rename only.
@@ -6,7 +6,7 @@
 // Lifetime mirrors the by-value stream_source_ member it replaces: the instance
 // is created ONCE in the ctor and destroyed ONCE in the dtor; open()/close()
 // cycle the source's session inside that instance. `url()` and `paused()` are
-// host-tracked (the ABI has no getter — they are host bookkeeping, not source
+// host-tracked (the ABI has no getter - they are host bookkeeping, not source
 // state). Platform-free.
 #pragma once
 #include <atomic>
@@ -46,20 +46,20 @@ public:
     double positionSec() const;
     void setPreferDigital(bool b);
     // Generic config passthrough to the plugin's set_config (slice c). Used for the
-    // deep-log toggle ("deeplog","1"/"0") — see AudioManager::setDeepLog.
+    // deep-log toggle ("deeplog","1"/"0") - see AudioManager::setDeepLog.
     void setConfig(const char* key, const char* value);
 
     // ── abi-cluster (appended-field consumers). The v1 fields above never
     // needed reach checks (every v1 descriptor carries them); the appended
     // fields DO: reading a pointer past an old plugin's struct_size is a read
     // off the end of its descriptor. supportsRecordActive() is the pure
-    // capability probe (no call — drives the panel copy pre-start);
-    // setRecordActive() returns the plugin's ack (false when absent/refused —
+    // capability probe (no call - drives the panel copy pre-start);
+    // setRecordActive() returns the plugin's ack (false when absent/refused -
     // the pause-gap note stays honest). ──
     bool supportsRecordActive() const;
     bool setRecordActive(bool on);
     // Copy/remux tee (slice B). supportsEncodedCapture() is the pure
-    // capability probe (reach + all three fns non-null — the panel greys the
+    // capability probe (reach + all three fns non-null - the panel greys the
     // Copy row on false); encodedCaps() feeds the quality column (0 when
     // unsupported/not flowing); the arm/pull pair is consumed by
     // AudioManager's beginRecording wiring, never the UI directly.

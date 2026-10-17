@@ -5,6 +5,40 @@ All notable changes to RE-MOCT are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.6.3] - 2026-10-17
+
+Two small fixes and a paperwork correction. Radio station search had quietly come to
+depend on a single server, the rip status line used a dash that nothing else in RE-MOCT
+uses, and the third-party notices described the Windows build as linked in a way it is not.
+
+### Fixed
+
+- **Radio station search no longer depends on one server.** `[Radio]` search asks
+  the radio-browser.info directory, and RE-MOCT tried three of its servers in turn.
+  Two of those have since been retired, so every search was riding on the last one:
+  had it gone too, search would have come back empty even though the directory itself
+  was up. RE-MOCT now falls back to the directory's own address for whichever servers
+  are currently running, so one server going away no longer takes search with it.
+  Saved stations and playback were never affected.
+
+### Changed
+
+- **The rip status line and the rip log use plain hyphens.** A few messages - the C2
+  line shown when a rip starts, and the drive and pressing offset notes in the rip
+  log - used a long dash where everything else in RE-MOCT uses a hyphen. They now
+  match. Searching older rip logs for one of these lines, the dash is the only
+  difference.
+
+- **The third-party notices say how each library is actually linked.** The Windows
+  release is one static executable, and `THIRD-PARTY-NOTICES.md` still described TagLib,
+  LAME and the codecs as separate DLLs. It now gives both platforms, adds PDCursesMod,
+  the GCC runtime and winpthreads, says that FDK AAC also encodes (for M4A), and explains
+  how the LGPL's relinking terms are met for a static build: the complete source is
+  public at every tag, and `BUILD.md` now gives the exact configure line the release is
+  built with. The Windows zip's `licenses/` folder carries the LGPL 2.1 text that TagLib
+  and LAME are under (it had the version 3 text) and the upstream license files for the
+  libraries it includes.
+
 ## [1.6.2] - 2026-08-15
 
 Mostly about being told the truth: what your hardware is doing to your music,
@@ -1650,6 +1684,7 @@ boundary with a **loadable plugin architecture**.
 
 [1.0.0]: https://github.com/RadMageIRL/re-moct/releases/tag/1.0.0
 
+[1.6.3]: https://github.com/RadMageIRL/re-moct/releases/tag/1.6.3
 [1.6.2]: https://github.com/RadMageIRL/re-moct/releases/tag/1.6.2
 [1.6.1]: https://github.com/RadMageIRL/re-moct/releases/tag/1.6.1
 [1.6.0]: https://github.com/RadMageIRL/re-moct/releases/tag/1.6.0

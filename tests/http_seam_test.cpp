@@ -1,4 +1,4 @@
-// Pure unit test for the core::IHttp seam — no WinINet, no network. Proves the seam
+// Pure unit test for the core::IHttp seam - no WinINet, no network. Proves the seam
 // is mockable (a FakeHttp stands in for the transport) and that the group-(a)
 // consumers' response-parsing works against a faked HTTP response. Returns nonzero
 // on failure. Runs on Linux CI as well as MSYS2/UCRT64 (pure std + nlohmann).
@@ -154,7 +154,7 @@ int main() {
 
     // ═══ slice 4: cancel token + persistent sessions ═════════════════════════
 
-    // ---- (10) new fields default inert — the six shipped one-shot sites unchanged ----
+    // ---- (10) new fields default inert - the six shipped one-shot sites unchanged ----
     {
         core::HttpRequest rq;
         CHECK(rq.cancel == nullptr);            // not cancellable unless asked
@@ -175,7 +175,7 @@ int main() {
     }
 
     // ---- (12) default openSession forwarder: session config folded into requests,
-    //           delegates to fetch() — so FakeHttp-backed tests see session traffic ----
+    //           delegates to fetch() - so FakeHttp-backed tests see session traffic ----
     {
         FakeHttp h; h.next.ok = true; h.next.status = 200; h.next.body = "ok";
         core::HttpSessionConfig cfg; cfg.user_agent = "UA-X/1.0"; cfg.timeout_ms = 5000;

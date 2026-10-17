@@ -1,4 +1,4 @@
-// m4a_encoder_test — the M4aEncoder + Mp4Mux contract (aac-m4a-encoder slice),
+// m4a_encoder_test - the M4aEncoder + Mp4Mux contract (aac-m4a-encoder slice),
 // headless on both toolchains.
 //
 // Encodes a frequency-stepped PCM fixture (440/880/1760 Hz thirds) through

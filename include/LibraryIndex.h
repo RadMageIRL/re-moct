@@ -1,6 +1,6 @@
 #pragma once
 
-// ─── Library metadata index — the pure model, format, and hierarchy queries ───
+// ─── Library metadata index - the pure model, format, and hierarchy queries ───
 //
 // Library slice 1. A standalone, PURE unit: an index in, its serialised text
 // out, and that text back in again. No I/O, no filesystem, no globals, no
@@ -12,21 +12,21 @@
 // records, but it does so LOSSILY on purpose: Config.cpp folds tabs to spaces
 // and strips CR/LF so a "podcast=<url>\t<title>\t<art>" line can never
 // mis-split. That is right for a feed title, which is a display string. It is
-// wrong here, because this file's first field is a PATH — identity, not
+// wrong here, because this file's first field is a PATH - identity, not
 // decoration. A folded path names a file that does not exist, and it fails on
 // exactly the tracks nobody checks. Tabs and newlines are both legal in POSIX
 // filenames, so escaping is a correctness requirement rather than tidiness.
 // Every string field is therefore escaped losslessly and round-trips byte-exact.
 //
 // PATHS ARE STRINGS, START TO FINISH. Constructing a std::filesystem::path from
-// a std::string THROWS on Windows for INVALID UTF-8 — and even fs::exists(str, ec)
+// a std::string THROWS on Windows for INVALID UTF-8 - and even fs::exists(str, ec)
 // throws, because the conversion runs before the error code applies. That took down
 // the podcast list draw in podcast slice 5, which built a path out of feed TITLE text.
 //
 // CORRECTED 2026-07-26, measured on both toolchains: the trigger is INVALID UTF-8, not
 // "non-ASCII", and libstdc++ on Windows decodes a narrow path as UTF-8 rather than as
-// the ANSI codepage. Valid UTF-8 of any kind — accents, smart quotes, CJK, 4-byte
-// emoji — constructs fine and round-trips byte-exact. The earlier wording here said
+// the ANSI codepage. Valid UTF-8 of any kind - accents, smart quotes, CJK, 4-byte
+// emoji - constructs fine and round-trips byte-exact. The earlier wording here said
 // "any byte the ANSI codepage cannot map", which was wrong and could not explain why
 // UIManager's own directory_iterator has always worked over this collection's 137
 // non-ASCII paths.
@@ -37,7 +37,7 @@
 // the one sanctioned route.
 //
 // DEFENSIVE CONTRACT: never crash, never throw, never hang. A malformed file
-// degrades to fewer records — ultimately to an empty index, which the caller
+// degrades to fewer records - ultimately to an empty index, which the caller
 // reports as an honest "no library" rather than an error. One linear pass over
 // the text and one sort per query; nothing quadratic.
 //
@@ -113,7 +113,7 @@ inline constexpr std::size_t kFieldCount = 12;
 // sources of truth that drift apart. Slice 7's most-played and recently-played
 // views join on `path` at query time.
 struct LibraryTrack {
-    std::string path;          // absolute; IDENTITY — must round-trip byte-exact
+    std::string path;          // absolute; IDENTITY - must round-trip byte-exact
     std::string artist;
     std::string album;
     std::string album_artist;
@@ -173,7 +173,7 @@ inline std::string escape(const std::string& s) {
 }
 
 // Unknown escape sequences degrade to the escaped character itself, and a
-// trailing lone backslash is dropped. Neither can arise from escape() above —
+// trailing lone backslash is dropped. Neither can arise from escape() above -
 // they only appear in a hand-edited or corrupted file, and the contract there is
 // "never throw", not "be clever".
 inline std::string unescape(const std::string& s) {
@@ -285,7 +285,7 @@ inline bool iless(const std::string& a, const std::string& b) {
 }
 
 // Sort, then collapse case-variant duplicates keeping the first spelling in
-// sorted order — deterministic, and "The Beatles" / "the beatles" become one
+// sorted order - deterministic, and "The Beatles" / "the beatles" become one
 // row rather than two.
 // Filename stem, by BYTES, with no fs::path anywhere - so this header stays free of
 // <filesystem> and therefore of the whole invalid-UTF-8 throw hazard. libnav::pathStem
@@ -596,8 +596,8 @@ inline bool isPathUnder(const std::string& path, const std::string& root) {
 
 // ── The grouping seam ───────────────────────────────────────────────────────
 // SLICE 7 OWNS THE RULE; SLICE 1 OWNS THE SEAM. Every hierarchy query below
-// routes through this one function, so compilation handling — Various Artists
-// recognition, albums whose tracks disagree on artist — changes here and
+// routes through this one function, so compilation handling - Various Artists
+// recognition, albums whose tracks disagree on artist - changes here and
 // nowhere else. Shipping no rule at all was considered and rejected: it would
 // not defer the decision, it would scatter it into slices 3-4 as ad-hoc UI
 // logic that slice 7 would then have to hunt down.
@@ -755,7 +755,7 @@ inline std::string serialiseIndex(const LibraryIndex& idx) {
 // ── Parse ───────────────────────────────────────────────────────────────────
 // ok == false means the header was not understood (empty text, wrong magic,
 // unsupported version, missing root line) and the index is empty. A true return
-// with skipped_records > 0 means the file was readable but partly corrupt —
+// with skipped_records > 0 means the file was readable but partly corrupt -
 // which is still usable, and is reported rather than hidden.
 //
 // No record cap. A library legitimately has six figures of tracks, and the one
@@ -852,7 +852,7 @@ inline ParseResult parseIndex(const std::string& text) {
 // them directly and a list that reorders between launches reads as a bug.
 //
 // An empty grouping artist (a file with neither tag) is kept as its own empty
-// group rather than dropped — losing tracks silently would be worse. What that
+// group rather than dropped - losing tracks silently would be worse. What that
 // row is LABELLED is the UI's call in slices 3-4.
 
 // ── Surviving a rebuild ─────────────────────────────────────────────────────
@@ -1019,7 +1019,7 @@ inline std::vector<std::string> albumsForArtist(const LibraryIndex& idx,
 // Returns INDICES into idx.tracks so the caller reads path and display fields
 // without copying strings.
 //
-// LIFETIME — carried into slice 3's design note: these indices are valid only
+// LIFETIME - carried into slice 3's design note: these indices are valid only
 // against the index instance that produced them. Once slice 2 can rebuild the
 // index while the UI holds a selection, the UI must either re-query after a
 // rebuild or hold the path (the stable identity) rather than the index. This is

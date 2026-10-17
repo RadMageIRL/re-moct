@@ -1,10 +1,10 @@
-// Pure unit test for the core::INotify seam (slice 7) — no PowerShell, no process
+// Pure unit test for the core::INotify seam (slice 7) - no PowerShell, no process
 // spawn, no windows.h. Proves the seam is mockable (a FakeNotify stands in for the
 // transport) and that the consumer-side content adapter in Toast.h builds exactly
-// the (title, body) pair the baseline Toast.cpp built — including its oddities:
+// the (title, body) pair the baseline Toast.cpp built - including its oddities:
 // the artist PREPENDS the title, and an empty album falls back to "RE-MOCT".
 // The transport itself (escaping/-EncodedCommand/CreateProcess, moved verbatim to
-// NotifyWinToast.cpp) is proven at the live gate — including the quote-injection
+// NotifyWinToast.cpp) is proven at the live gate - including the quote-injection
 // case, the documented past bug. Returns nonzero on failure. Runs on Linux CI as
 // well as MSYS2/UCRT64 (pure std).
 #include "core/INotify.h"
@@ -61,7 +61,7 @@ int main() {
         CHECK(n.shown[0].second == "RE-MOCT");
     }
 
-    // ---- (5) the dominant status shape, (msg, "", "") — ~28 of the 33 call sites ----
+    // ---- (5) the dominant status shape, (msg, "", "") - ~28 of the 33 call sites ----
     {
         FakeNotify n;
         showTrackToast("Theme: Awesome", "", "", n);
@@ -69,7 +69,7 @@ int main() {
         CHECK(n.shown[0].second == "RE-MOCT");
     }
 
-    // ---- (6) the ("Streaming", station, "") shape: baseline INVERSION preserved —
+    // ---- (6) the ("Streaming", station, "") shape: baseline INVERSION preserved -
     //          the detail arg prepends, "station - Streaming", not the reverse ----
     {
         FakeNotify n;
@@ -78,7 +78,7 @@ int main() {
         CHECK(n.shown[0].second == "RE-MOCT");
     }
 
-    // ---- (7) content adapter does NOT escape — quotes pass through untouched
+    // ---- (7) content adapter does NOT escape - quotes pass through untouched
     //          (escaping is the transport's job; the fake must see raw metadata) ----
     {
         FakeNotify n;

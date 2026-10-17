@@ -1,4 +1,4 @@
-// PluginSource.cpp — host-side plugin driver (Phase 4 slice b). See PluginSource.h.
+// PluginSource.cpp - host-side plugin driver (Phase 4 slice b). See PluginSource.h.
 #include "PluginSource.h"
 
 namespace core {
@@ -66,7 +66,7 @@ double PluginSource::positionSec() const {
     return (self_ && plugin_->position_sec) ? plugin_->position_sec(self_) : 0.0;
 }
 
-// abi-cluster: the appended-field reach check — the contract's
+// abi-cluster: the appended-field reach check - the contract's
 // min(host, plugin) struct_size rule, applied before even READING a pointer
 // an old (smaller) descriptor does not carry.
 static bool reachesRecordActive(const RemoctPlugin* p) {
@@ -85,7 +85,7 @@ bool PluginSource::setRecordActive(bool on) {
 
 // Slice B: the copy tee's reach check spans all three fns (they were appended
 // together; read_encoded is the last, so reaching it reaches the trio). The
-// per-fn null-checks still apply — a plugin may ship any of them NULL.
+// per-fn null-checks still apply - a plugin may ship any of them NULL.
 static bool reachesEncodedTee(const RemoctPlugin* p) {
     return p && p->struct_size >= offsetof(RemoctPlugin, read_encoded)
                                   + sizeof(p->read_encoded);

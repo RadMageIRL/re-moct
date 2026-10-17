@@ -57,7 +57,7 @@ std::string DigiConfig::themePath() {
 }
 
 void DigiConfig::addRecentTrack(const std::string& path) {
-    // Never store CD audio tracks in recent list — hardware paths are volatile
+    // Never store CD audio tracks in recent list - hardware paths are volatile
     if (isCDTrackPath(path)) return;
     recent_tracks.erase(
         std::remove(recent_tracks.begin(), recent_tracks.end(), path),
@@ -68,10 +68,10 @@ void DigiConfig::addRecentTrack(const std::string& path) {
 }
 
 void DigiConfig::addFavTrack(const std::string& path) {
-    // Audio files only — no CD paths, no dirs
+    // Audio files only - no CD paths, no dirs
     if (isCDTrackPath(path)) return;
     if (path.empty()) return;
-    // Deduplicate — move to front if already present
+    // Deduplicate - move to front if already present
     removeFavTrack(path);
     fav_tracks.insert(fav_tracks.begin(), path);
     // FIFO: drop oldest when over limit
@@ -229,7 +229,7 @@ double DigiConfig::bookPos(const std::string& path) const {
 
 void DigiConfig::recordPlay(const std::string& path) {
     if (path.empty()) return;
-    if (isCDTrackPath(path)) return;  // CD tracks are volatile — never record stats
+    if (isCDTrackPath(path)) return;  // CD tracks are volatile - never record stats
     // NORMALISED (slice 13). Keying on the raw path is what split 17 files' counts
     // across two entries: the same file reached from the browser and from a loaded
     // .m3u produced differently-cased keys, and each accumulated separately.
@@ -670,7 +670,7 @@ void DigiConfig::save() const {
                 double pos = (it != audiobook_pos.end()) ? it->second : 0.0;
                 f << "book=" << nl(bk) << "|" << pos << "\n";
             }
-        // Write stats — cap at STATS_MAX, skip any CD paths
+        // Write stats - cap at STATS_MAX, skip any CD paths
         int written = 0;
         for (const auto& kv : track_stats) {
             if (written >= STATS_MAX) break;
@@ -680,7 +680,7 @@ void DigiConfig::save() const {
             ++written;
         }
         f.flush();
-        if (!f.good()) {                 // write failed — leave the live config untouched
+        if (!f.good()) {                 // write failed - leave the live config untouched
             f.close();
             std::error_code rm; fs::remove(tmp, rm);
             return;

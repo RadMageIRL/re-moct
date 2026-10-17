@@ -2,7 +2,7 @@
 #include "core/IHttp.h"
 #include "json.hpp"
 
-#include "PortUtil.h"     // tempDir (the GetTempPathA baseline on Windows) — no WinINet since slice 4
+#include "PortUtil.h"     // tempDir (the GetTempPathA baseline on Windows) - no WinINet since slice 4
 #include "StringUtils.h"  // localtimeSafe
 
 #include <fstream>
@@ -54,7 +54,7 @@ bool IHeartRadio::ensureSession() {
     cfg.user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) RE-MOCT/1.0";
     cfg.timeout_ms = 5000;   // shorter than a stream connect: this polls on the audio
                              // producer thread, so a hung iHeart connection mustn't
-                             // stall playback for long — skip and retry next cycle.
+                             // stall playback for long - skip and retry next cycle.
     session_ = http_->openSession(cfg);   // slice c: injected host services (was core::http())
     if (!session_) { logmsg("iheart: openSession failed"); return false; }
     return true;
@@ -69,7 +69,7 @@ bool IHeartRadio::httpGet(const std::string& url, std::string& body, long& statu
     req.pragma_no_cache = true;                 // baseline INTERNET_FLAG_PRAGMA_NOCACHE
     req.max_body        = 4u * 1024u * 1024u;   // baseline 4 MB cap-and-keep
     // Deliberately NO cancel token: this poll's boundedness is the session's short
-    // timeout, exactly as baseline. (Wiring stop_ in would be a behavior change —
+    // timeout, exactly as baseline. (Wiring stop_ in would be a behavior change -
     // parked as a separate decision.)
     core::HttpResponse res = session_->fetch(req);
     status = res.status;
@@ -207,7 +207,7 @@ std::string IHeartRadio::pollNowPlaying(long* endedSecsAgo, PollDiag* diag) {
 
     // Pick the genuinely newest entry by startTime that has actually aired.
     // data[] is *nominally* newest-first, but a jumbled Pnp feed (e.g. Z100) can
-    // resurface an old entry at [0] above newer ones — so scan, don't trust [0].
+    // resurface an old entry at [0] above newer ones - so scan, don't trust [0].
     int  best = -1;
     long bestStart = 0;
     for (int i = 0; i < (int)data.size(); ++i) {
@@ -224,7 +224,7 @@ std::string IHeartRadio::pollNowPlaying(long* endedSecsAgo, PollDiag* diag) {
              + ") -> using newest idx=" + std::to_string(best) + " start=" + std::to_string(bestStart));
 
     // Monotonic guard: if even the newest available entry is older than the highest
-    // startTime we've already served, the feed has regressed (resurfacing / freeze) —
+    // startTime we've already served, the feed has regressed (resurfacing / freeze) -
     // hold rather than rewind to a stale song. Only ever SUPPRESSES a known-bad entry;
     // never invents one. Provable no-op on a clean (monotonic) station like Breeze.
     if (bestStart < accepted_max_start_) {
@@ -263,7 +263,7 @@ std::string IHeartRadio::pollNowPlaying(long* endedSecsAgo, PollDiag* diag) {
     return combined;
 }
 
-// ── currentTrackMeta — the iHeart web player's own now-playing source ─────────
+// ── currentTrackMeta - the iHeart web player's own now-playing source ─────────
 // GET us.api.iheart.com/api/v3/live-meta/stream/<id>/currentTrackMeta?defaultMetadata=true
 // Returns the CURRENT track (structured: artist/title/album/art + start/end epoch
 // in MILLISECONDS). Normalised to epoch seconds; endedSecsAgo lets the caller gate
@@ -288,7 +288,7 @@ bool IHeartRadio::pollCurrentTrackMeta(CurrentTrack* out) {
     json j;
     try { j = json::parse(body); } catch (...) { return false; }
 
-    // epoch may be ms (currentTrackMeta) or s — normalise to seconds.
+    // epoch may be ms (currentTrackMeta) or s - normalise to seconds.
     auto toSec = [](long long v) -> long long {
         return (v > 100000000000LL) ? (v / 1000) : v;
     };

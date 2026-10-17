@@ -149,14 +149,14 @@ void PlaylistManager::rebuildShuffleOrder() {
             std::iter_swap(shuffle_order_.begin(), it);
         shuffle_pos_ = 0;
     } else {
-        // Not shuffling — reset pos to match current_ in linear order
+        // Not shuffling - reset pos to match current_ in linear order
         shuffle_pos_ = current_;
     }
 }
 
 std::size_t PlaylistManager::addStream(const std::string& url, const std::string& title) {
     // Internet-radio entry: store the URL verbatim with an explicit label.
-    // No populateMetadata() — there is no local file to read tags from.
+    // No populateMetadata() - there is no local file to read tags from.
     for (std::size_t i = 0; i < entries_.size(); ++i)
         if (entries_[i].path == url) {                 // dedup by URL
             if (!title.empty()) entries_[i].display_title = title;  // refresh label on re-add (rename)
@@ -165,7 +165,7 @@ std::size_t PlaylistManager::addStream(const std::string& url, const std::string
     PlaylistEntry entry;
     entry.path          = url;
     entry.display_title = title;
-    entry.duration_sec  = 0;                        // live stream — continuous
+    entry.duration_sec  = 0;                        // live stream - continuous
     entries_.push_back(std::move(entry));
     ++content_rev_;                 // membership changed; see contentRevision()
     rebuildShuffleOrder();
@@ -182,12 +182,12 @@ std::string PlaylistManager::streamLabel(const std::string& url) {
 }
 
 std::size_t PlaylistManager::addTrack(const std::string& path) {
-    // HTTP(S) URLs are radio streams — store with a derived label, never file I/O.
+    // HTTP(S) URLs are radio streams - store with a derived label, never file I/O.
     // (This is also how session restore re-creates the RADIO: label, since only the
     //  URL is persisted.)
     if (path.rfind("http://", 0) == 0 || path.rfind("https://", 0) == 0)
         return addStream(path, streamLabel(path));
-    // Reject volatile CD track paths — they can't be stored persistently
+    // Reject volatile CD track paths - they can't be stored persistently
     if (isCDTrackPath(path)) return std::string::npos;
     if (std::size_t at = indexOfPath(path); at != std::string::npos) return at;
     PlaylistEntry entry;
@@ -384,7 +384,7 @@ bool PlaylistManager::saveM3U(const std::string& path) const {
     if (!f) return false;
     f << "#EXTM3U\n";
     for (const auto& e : entries_) {
-        // Skip CD audio tracks (hardware paths) and live radio streams — neither
+        // Skip CD audio tracks (hardware paths) and live radio streams - neither
         // belongs in a saved playlist.
         if (isCDTrackPath(e.path) || isStreamPath(e.path)) continue;
         f << "#EXTINF:" << e.duration_sec << "," << strip_breaks(e.display_title) << "\n";
@@ -402,7 +402,7 @@ int PlaylistManager::loadM3U(const std::string& path) {
         // Strip CR
         if (!line.empty() && line.back() == '\r') line.pop_back();
         if (line.empty() || line[0] == '#') continue;
-        // Radio URL — keep as a stream entry (don't filter by file existence).
+        // Radio URL - keep as a stream entry (don't filter by file existence).
         if (line.rfind("http://", 0) == 0 || line.rfind("https://", 0) == 0) {
             addTrack(line);   // delegates to addStream with a derived label
             ++added;
@@ -520,7 +520,7 @@ static std::string xml_unescape(const std::string& s) {
         }
     };
     // &amp; must be unescaped LAST: unescaping it first would turn an escaped
-    // entity such as "&amp;lt;" into "&lt;" and then into "<" — a double-unescape.
+    // entity such as "&amp;lt;" into "&lt;" and then into "<" - a double-unescape.
     replace_all("&lt;",   "<");
     replace_all("&gt;",   ">");
     replace_all("&quot;", "\"");
@@ -562,7 +562,7 @@ int PlaylistManager::loadXSPF(const std::string& path) {
     std::string content((std::istreambuf_iterator<char>(f)),
                          std::istreambuf_iterator<char>());
 
-    // Simple tag extraction — no full XML parser needed for our use case
+    // Simple tag extraction - no full XML parser needed for our use case
     auto extract_tags = [&](const std::string& tag, const std::string& src,
                             std::vector<std::string>& out) {
         std::string open  = "<" + tag + ">";
@@ -639,7 +639,7 @@ void PlaylistManager::sortBy(SortMode mode) {
 
     switch (mode) {
         case SortMode::None:
-            break; // no-op — original add order is gone, just leave as-is
+            break; // no-op - original add order is gone, just leave as-is
         case SortMode::Title:
             std::stable_sort(entries_.begin(), entries_.end(),
                 [](const PlaylistEntry& a, const PlaylistEntry& b) {
@@ -685,7 +685,7 @@ void PlaylistManager::sortBy(SortMode mode) {
 // ── Async background loader ───────────────────────────────────────────────────
 
 void PlaylistManager::addDirectoryAsync(const std::string& dir_path) {
-    // Collect all audio file paths (fast — no TagLib yet)
+    // Collect all audio file paths (fast - no TagLib yet)
     std::vector<std::string> found;
     try {
         for (const auto& de : fs::recursive_directory_iterator(
@@ -698,7 +698,7 @@ void PlaylistManager::addDirectoryAsync(const std::string& dir_path) {
 
     if (found.empty()) return;
 
-    // Push paths onto the work queue — skip any already in playlist
+    // Push paths onto the work queue - skip any already in playlist
     {
         std::lock_guard<std::mutex> lk(work_mutex_);
         for (auto& p : found) {
@@ -758,7 +758,7 @@ bool PlaylistManager::drainPending() {
     while (!local.empty()) {
         PlaylistEntry e = std::move(local.front());
         local.pop();
-        // Dedup check — skip if path already in playlist. Slice 15: the same rule
+        // Dedup check - skip if path already in playlist. Slice 15: the same rule
         // as every other add. This one matters twice over, because the worker
         // cannot check entries_ and a batch can contain its own duplicates.
         if (indexOfPath(e.path) == std::string::npos) {

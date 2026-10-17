@@ -2,9 +2,9 @@
 #include "Log.h"
 #include "Version.h"     // REMOCT_VERSION (single source) for the raw ICY/HLS User-Agent
 #include "StringUtils.h"
-#include "HlsPrime.h"    // hlsFirstMusicBoundary — prime-to-music-boundary scan (clip fix)
+#include "HlsPrime.h"    // hlsFirstMusicBoundary - prime-to-music-boundary scan (clip fix)
 #include "IHeartDeepLog.h"
-#include "PortUtil.h"   // sleepMs/tickMs — expand to the baseline ::Sleep/::GetTickCount on Windows
+#include "PortUtil.h"   // sleepMs/tickMs - expand to the baseline ::Sleep/::GetTickCount on Windows
 #include <cstring>
 #include <algorithm>
 #include <cctype>
@@ -13,7 +13,7 @@
 #include <cstdlib>
 #ifndef _WIN32
 // Phase 3 slice 3: the ICY twin's transport plumbing. Like WinINet on Windows,
-// this is StreamSource-private raw transport — permanently outside the IHttp
+// this is StreamSource-private raw transport - permanently outside the IHttp
 // seam. curl CONNECT_ONLY gives TCP(+TLS); the ICY request/response and the
 // byte stream are spoken by hand so the pull-read shape stays verbatim.
 #include <curl/curl.h>
@@ -30,7 +30,7 @@
 // while a genuine stall heals fast. Tune here.
 // LIVE_STALL_MS moved to IHeartNowPlayingSM.h (used only by the now-playing SM).
 
-// ─── Diagnostic log — routed through the shared operational logger (Log) ──────
+// ─── Diagnostic log - routed through the shared operational logger (Log) ──────
 static void slog(const char* fmt, ...) {
     char buf[2048];
     va_list ap; va_start(ap, fmt);
@@ -90,7 +90,7 @@ bool StreamSource::open(const std::string& url) {
              ? Codec::AAC : Codec::MP3;
 
     // HLS detection: an .m3u8 is a manifest, not a byte stream. Route it through
-    // the segment pump (mode_=HLS) and force the AAC worker — iHeart segments are
+    // the segment pump (mode_=HLS) and force the AAC worker - iHeart segments are
     // raw ADTS, so the existing FDK decode/resample path handles them unchanged.
     if (lower.find(".m3u8") != std::string::npos) {
         mode_  = Mode::HLS;
@@ -120,7 +120,7 @@ void StreamSource::close() {
     // The producer owns the WinINet handles and decoder; it exits within one
     // read chunk because onRead() returns MA_AT_END as soon as stop_ is set,
     // then tears its own resources down. (Promptly interrupting a fully stalled
-    // connection is a later hardening item — see note in producerWorker.)
+    // connection is a later hardening item - see note in producerWorker.)
     if (producer_thread_.joinable()) producer_thread_.join();
     playing_.store(false);
     prebuffered_.store(false);
@@ -131,7 +131,7 @@ void StreamSource::close() {
 #ifndef _WIN32
 // ── Slice 3: the Linux ICY transport twin (curl CONNECT_ONLY + easy_send/recv).
 // Design + correctness argument: docs/phase3-slice3-design.md. Everything above
-// rawRead() — de-interleave, ring feed, producers — is shared and unchanged;
+// rawRead() - de-interleave, ring feed, producers - is shared and unchanged;
 // these helpers exist only to hand connect() a connected socket whose next
 // byte is body offset 0 (THE alignment invariant) with icy-metaint parsed.
 namespace {
@@ -144,7 +144,7 @@ void icyEnsureCurlInit() {
 }
 
 // Wait one slice for the connection's socket. Timeout/EINTR both mean "try the
-// recv/send again" — the caller's loop owns stop_/deadline policy.
+// recv/send again" - the caller's loop owns stop_/deadline policy.
 void icyWaitSocket(CURL* h, short events, int slice_ms) {
     curl_socket_t s = CURL_SOCKET_BAD;
     if (curl_easy_getinfo(h, CURLINFO_ACTIVESOCKET, &s) != CURLE_OK || s == CURL_SOCKET_BAD)
@@ -188,8 +188,8 @@ bool icyHop(const std::string& url, const std::atomic<bool>& stop, IcyHop& out) 
     curl_easy_setopt(h, CURLOPT_NOSIGNAL, 1L);
     // ALPN OFF: with it on, a CDN edge (cloudflare) negotiates HTTP/2 and the
     // hand-written HTTP/1.x request below is protocol garbage on that
-    // connection — the server just closes. Without ALPN it must assume
-    // HTTP/1.1. (Probe finding, 2026-07-03 — see the design doc.)
+    // connection - the server just closes. Without ALPN it must assume
+    // HTTP/1.1. (Probe finding, 2026-07-03 - see the design doc.)
     curl_easy_setopt(h, CURLOPT_SSL_ENABLE_ALPN, 0L);
     CURLcode rc = curl_easy_perform(h);
     if (rc != CURLE_OK) {
@@ -198,7 +198,7 @@ bool icyHop(const std::string& url, const std::atomic<bool>& stop, IcyHop& out) 
         return false;
     }
 
-    // Build the request off curl's own URL parser (CURLU — nothing hand-rolled).
+    // Build the request off curl's own URL parser (CURLU - nothing hand-rolled).
     // HTTP/1.0 deliberately: a 1.0 request forbids Transfer-Encoding: chunked,
     // so the response body is guaranteed to be the raw interleaved byte stream.
     std::string req;
@@ -229,7 +229,7 @@ bool icyHop(const std::string& url, const std::atomic<bool>& stop, IcyHop& out) 
     if (!icySendAll(h, req, stop)) { curl_easy_cleanup(h); return false; }
 
     // Read the response headers OURSELVES (CONNECT_ONLY sends no HTTP, so no
-    // library consumed them) — that ownership is what makes "ICY 200 OK"
+    // library consumed them) - that ownership is what makes "ICY 200 OK"
     // tolerance ours. Bounded 16KB / 8s, stop-aware, tolerate bare \n\n.
     std::string hdr;
     size_t term = std::string::npos, tlen = 0;
@@ -288,7 +288,7 @@ bool icyHop(const std::string& url, const std::atomic<bool>& stop, IcyHop& out) 
         return false;
     }
     // A conformant server cannot chunk an HTTP/1.0 response; one that does
-    // anyway would break the metaint arithmetic — refuse loudly, never garble.
+    // anyway would break the metaint arithmetic - refuse loudly, never garble.
     std::string te = hdrval("transfer-encoding");
     if (te.find("chunked") != std::string::npos) {
         slog("icy connect: server sent Transfer-Encoding: chunked to an HTTP/1.0 request -> refusing");
@@ -298,7 +298,7 @@ bool icyHop(const std::string& url, const std::atomic<bool>& stop, IcyHop& out) 
 
     out.easy     = h;
     out.metaint  = std::atoi(hdrval("icy-metaint").c_str());
-    out.leftover = hdr.substr(term + tlen);               // body offset 0..n — MUST be preserved
+    out.leftover = hdr.substr(term + tlen);               // body offset 0..n - MUST be preserved
     out.ok       = true;
     return true;
 }
@@ -350,7 +350,7 @@ bool StreamSource::connect() {
     slog("connect: icy_metaint=%d", icy_metaint_);
     return true;
 #else
-    // ── Slice 3: the ICY twin — curl CONNECT_ONLY, hand-spoken ICY request,
+    // ── Slice 3: the ICY twin - curl CONNECT_ONLY, hand-spoken ICY request,
     // hand-parsed response headers (helpers above). Redirects followed by hand
     // (WinINet followed them internally), resolved via the portable
     // hlsResolveUrl twin, capped at 5 hops. ─────────────────────────────────
@@ -364,15 +364,15 @@ bool StreamSource::connect() {
             slog("connect: redirect -> %s", cur.c_str());
             continue;
         }
-        // Publish the connection in the slice-1 void* twin member — the shared
+        // Publish the connection in the slice-1 void* twin member - the shared
         // guards (rawRead's and onRead's hConn_ null checks) work unmodified.
         hConn_       = hop.easy;                          // hInet_ stays inert on Linux
         icy_metaint_ = hop.metaint;
-        // Post-connect state init, same as the Windows block above — except
+        // Post-connect state init, same as the Windows block above - except
         // raw_buf_ is primed with the bytes the header reader received past the
         // terminator: THE offset-0 invariant. The first byte rawRead ever
         // serves is body offset 0, so readAudio()'s metaint arithmetic stays
-        // exact. (Windows never sees leftover — WinINet consumes precisely the
+        // exact. (Windows never sees leftover - WinINet consumes precisely the
         // headers.)
         icy_counter_ = icy_metaint_;
         raw_buf_.assign(hop.leftover.begin(), hop.leftover.end());
@@ -392,7 +392,7 @@ void StreamSource::disconnect() {
     if (hConn_) { curl_easy_cleanup(static_cast<CURL*>(hConn_)); hConn_ = nullptr; }
 #endif
     hls_session_.reset();   // HLS: drop the keep-alive session (fresh one per
-                            // re-handshake/re-pin — the lifetime the raw handle had)
+                            // re-handshake/re-pin - the lifetime the raw handle had)
 }
 
 // ─── HLS increment 1: resolve / poll / fetch (standalone, no audio path) ──────
@@ -413,7 +413,7 @@ bool StreamSource::hlsEnsureSession() {
 
 // Short-lived GET over the shared keep-alive session (via the core::IHttp seam).
 // Captures body (text and/or bytes) and, optionally, the post-redirect URL.
-// stop_ rides in as the request's cancel token — the transport polls it per chunk,
+// stop_ rides in as the request's cancel token - the transport polls it per chunk,
 // preserving the baseline's prompt mid-segment abort on stop.
 bool StreamSource::hlsHttpGet(const std::string& url, std::string* out_text,
                               std::vector<uint8_t>* out_bytes, std::string* out_final_url) {
@@ -528,7 +528,7 @@ bool StreamSource::hlsPollMedia() {
     // discontinuity. Because our digital session is independent (its own
     // listenerId / SSAI stitch), our ad pod can run longer than the broadcast
     // avail, so playing it through sequentially leaves us drifting behind the
-    // shared live program — the web player seeks back to the live edge after the
+    // shared live program - the web player seeks back to the live edge after the
     // pod, we don't. So on AD ONSET (first discontinuity of a break) we ask the
     // producer to re-handshake, which re-primes to the live edge and rejoins the
     // program in step with the web player. One-shot per break: fire on the first
@@ -608,7 +608,7 @@ bool StreamSource::hlsPollMedia() {
     if (is_iheart_) updateIHeartNowPlaying(body);   // reconcile manifest + trackHistory
     // Diagnostic: live-edge offset. newest = last seq advertised in the manifest;
     // next_play ≈ the segment we're about to play (front of pending). edgeLag is
-    // how many segments behind the live edge our audio is — watch this across an
+    // how many segments behind the live edge our audio is - watch this across an
     // ad break to see the drift, and confirm the re-pin collapses it.
     uint64_t newest_seq = have_seq ? (media_seq + (uint64_t)(total > 0 ? total - 1 : 0)) : 0;
     long long next_play = (long long)hls_.last_seq - (long long)hls_.pending.size() + 1;
@@ -624,7 +624,7 @@ bool StreamSource::hlsPollMedia() {
     // with a real spotInstanceId = a paid commercial); spot-id (song_spot=T,
     // spotInstanceId=-1 = station id / promo / voice-track); or other. pdt flips
     // to 1 only if iHeart ever starts emitting EXT-X-PROGRAM-DATE-TIME (it doesn't
-    // today) — that would unlock the web player's continuous live-pin. Across hours
+    // today) - that would unlock the web player's continuous live-pin. Across hours
     // these let us see exactly when/how we drift and which content precedes it.
     bool pdt = body.find("#EXT-X-PROGRAM-DATE-TIME") != std::string::npos;
     const char* cls = "none";
@@ -686,7 +686,7 @@ bool StreamSource::hlsFetchSegment(const std::string& url, std::vector<uint8_t>&
     return true;
 }
 
-// HLS branch of connect(): no persistent ICY connection — instead resolve the
+// HLS branch of connect(): no persistent ICY connection - instead resolve the
 // master, poll the first media playlist, and prime near the live edge so tune-in
 // latency feels like a direct stream rather than a full window behind. Runs on
 // the caller/connect-worker thread before the producer spawns (and again on the
@@ -694,7 +694,7 @@ bool StreamSource::hlsFetchSegment(const std::string& url, std::vector<uint8_t>&
 // session token). hls_ is owned by exactly one thread at a time, so no lock.
 // Append the iHeart web-player param set to a raw zc####/hls.m3u8 base URL so the
 // edge mints a token and serves the ad-reduced DIGITAL rendition. Uses the minimal
-// anonymous param set (no profileId/skey — proven sufficient by StreamHandshakeProbe)
+// anonymous param set (no profileId/skey - proven sufficient by StreamHandshakeProbe)
 // with a fresh random listenerId per connect. Returns base unchanged if it isn't a
 // bare iHeart URL we can parameterize.
 std::string StreamSource::hlsBuildDigitalUrl(const std::string& base, const std::string& minted_profile) {
@@ -709,7 +709,7 @@ std::string StreamSource::hlsBuildDigitalUrl(const std::string& base, const std:
 
     // Identity arm (probe, gated in hlsConnect). ANON (minted_profile empty, the default
     // and shipped behavior): fresh random listenerId, no profileId/skey. MINTED: a real
-    // anonymous profileId (== skey), empty listenerId — mirroring the web player. Every
+    // anonymous profileId (== skey), empty listenerId - mirroring the web player. Every
     // other param is identical between the two arms; the anon path stays byte-identical.
     std::string lid;
     if (minted_profile.empty()) {
@@ -741,7 +741,7 @@ bool StreamSource::hlsConnect() {
     digital_active_.store(false);
     bool want_digital = prefer_digital_.load() && IHeartRadio::isIHeartUrl(master);
     // Identity A/B arm (probe): use a minted anonymous profileId ONLY when the arm is
-    // selected AND the deep log is enabled (probe context) — otherwise force anon, so
+    // selected AND the deep log is enabled (probe context) - otherwise force anon, so
     // the shipped binary and every non-probe session are unchanged. Mint is lazy and
     // fail-closed: on any mint failure we keep id_variant_="anon" and build the anon URL.
     id_variant_ = "anon";
@@ -764,7 +764,7 @@ bool StreamSource::hlsConnect() {
     hls_.master_url = want_digital ? hlsBuildDigitalUrl(master, minted_profile) : master;
     // iHeart now-playing: primary source is the variant manifest's EXTINF tags
     // (freeze-proof), trackHistory module as fallback. Set this up BEFORE the initial
-    // poll so hlsPollMedia parses the manifest on connect — otherwise the producer's
+    // poll so hlsPollMedia parses the manifest on connect - otherwise the producer's
     // first trackHistory fallback can clobber the (not-yet-set) manifest result on a
     // station switch. resolve() is url-aware, so switching re-resolves cleanly.
     is_iheart_          = IHeartRadio::isIHeartUrl(url_);
@@ -821,11 +821,11 @@ bool StreamSource::hlsConnect() {
     if (!primed_boundary && hls_.pending.size() > 2)   // unchanged live-edge fallback
         hls_.pending.erase(hls_.pending.begin(), hls_.pending.end() - 2);
     hls_priming_ = false;
-    icy_metaint_ = 0;                   // HLS metadata isn't ICY — readAudio passes straight through
+    icy_metaint_ = 0;                   // HLS metadata isn't ICY - readAudio passes straight through
     icy_counter_ = 0;
     raw_buf_.clear(); raw_pos_ = 0;
     if (is_iheart_)
-        slog("hlsConnect: iHeart station — manifest-primary now-playing (station=\"%s\")",
+        slog("hlsConnect: iHeart station - manifest-primary now-playing (station=\"%s\")",
              iheart_.stationName().c_str());
     slog("hlsConnect: primed pending=%zu variant=%s",
          hls_.pending.size(), hls_.variant_url.c_str());
@@ -837,7 +837,7 @@ bool StreamSource::hlsConnect() {
 // per-segment EXTINF tags, e.g.:
 //   #EXTINF:10,title="Listen To Your Heart",artist="D.H.T.",url="song_spot=\"M\" ..."
 // Unlike trackHistory (which freezes for minutes during long breaks), the manifest
-// rides the audio — it can't go stale while music plays. We read the live-edge
+// rides the audio - it can't go stale while music plays. We read the live-edge
 // segment's tag, classify song vs ad, and drive now_playing_ from it.
 //   song: real artist + title, not flagged spot -> "Artist - Title"
 //   ad:   song_spot="T" / blank artist / Spot Block -> "<station> - Commercial break"
@@ -932,7 +932,7 @@ static IHeartMfCls classifyIHeartManifest(const std::string& body,
 //          -> committed immediately (1 tick); songs are never phantoms.
 //   Ad   : manifest says ad AND trackHistory corroborates (recently active, no
 //          current song) -> committed only after holding 3 ticks.
-//   Live : anything else — boundary, disagreement, or a manifest "ad" while
+//   Live : anything else - boundary, disagreement, or a manifest "ad" while
 //          trackHistory is frozen (can't confirm) -> "<station> - LIVE" after 2 ticks.
 // ── Ad-evidence tracker (f6-repin-finalize) ──────────────────────────────────
 // Producer thread only. Ring-pruned to the evidence window; the (int32_t) diffs
@@ -1182,7 +1182,7 @@ void StreamSource::updateIHeartNowPlaying(const std::string& body) {
     }
 }
 
-// ─── Staging lane (dual-stream smooth re-pin) — Stage A: shadow observer ───────
+// ─── Staging lane (dual-stream smooth re-pin) - Stage A: shadow observer ───────
 // Coordinator-only (guarded by !is_lane_ at the call site). Spawns a parallel
 // StreamSource on the SAME canonical URL with the digital rendition, prebuffers
 // it on a detached thread (never blocking the primary producer), and waits for
@@ -1192,7 +1192,7 @@ void StreamSource::updateIHeartNowPlaying(const std::string& body) {
 // into the lane; Stage C with an equal-power crossfade.
 //
 // Teardown always happens on a detached thread: StreamSource::close() joins the
-// lane's producer, which can take up to a read chunk — doing that inline would
+// lane's producer, which can take up to a read chunk - doing that inline would
 // stall the primary producer (this runs on it) and underrun audio.
 void StreamSource::serviceStaging() {
     uint32_t now = port::tickMs();
@@ -1255,7 +1255,7 @@ void StreamSource::serviceStaging() {
                 slog("staging: peek cls=%s prebuf=%d +%us",
                      staging_->edgeClsName(), staging_->isPrebuffered() ? 1 : 0, el);
             if (staging_ && staging_->isPrebuffered() && staging_->edgeIsMusic()) {
-                slog("staging: READY at music edge +%us — clean blend point reached "
+                slog("staging: READY at music edge +%us - clean blend point reached "
                      "(Stage A observer; B/C will swap/crossfade here)", el);
                 teardown("Stage A: observed only", 60000);
             }
@@ -1317,11 +1317,11 @@ void StreamSource::hlsParseId3(const uint8_t* tag, size_t len) {
     uint8_t flags = tag[5];
     uint32_t tagsize = ((uint32_t)(tag[6]&0x7f)<<21) | ((uint32_t)(tag[7]&0x7f)<<14) |
                        ((uint32_t)(tag[8]&0x7f)<< 7) | ((uint32_t)(tag[9]&0x7f));
-    if (flags & 0x80)                       // unsynchronisation — rare for timed-ID3
+    if (flags & 0x80)                       // unsynchronisation - rare for timed-ID3
         slog("hls-id3: unsync flag set (parse may be partial)");
     size_t pos = 10;
     size_t end = len < (size_t)10 + tagsize ? len : (size_t)10 + tagsize;
-    if (flags & 0x40) {                     // extended header present — skip it
+    if (flags & 0x40) {                     // extended header present - skip it
         if (pos + 4 > end) return;
         uint32_t extlen = (ver >= 4)
             ? (((uint32_t)(tag[pos]&0x7f)<<21)|((uint32_t)(tag[pos+1]&0x7f)<<14)|((uint32_t)(tag[pos+2]&0x7f)<<7)|((uint32_t)(tag[pos+3]&0x7f)))
@@ -1365,21 +1365,21 @@ uint32_t StreamSource::hlsRawRead(void* dst, uint32_t want) {
         hls_.seg_pos += n;
         return n;
     }
-    // 2. Current segment drained — make sure we have a pending segment to fetch.
+    // 2. Current segment drained - make sure we have a pending segment to fetch.
     int repoll_fail = 0;
     while (hls_.pending.empty()) {
         if (stop_.load()) return 0;
         uint32_t since = port::tickMs() - hls_.last_poll;
         if (since < (uint32_t)hls_.target_dur_ms) { port::sleepMs(50); continue; }   // pace polling
         if (!hlsPollMedia()) {
-            // Variant GET failed — session token likely expired. Refresh via master.
+            // Variant GET failed - session token likely expired. Refresh via master.
             if (!hlsResolveMaster() || !hlsPollMedia()) {
                 if (++repoll_fail >= 3) { slog("hlsRawRead: giving up after repoll failures"); return 0; }
                 if (stop_.load()) return 0;
                 port::sleepMs(300);
             }
         }
-        // If still empty, the live edge hasn't advanced yet — loop and wait.
+        // If still empty, the live edge hasn't advanced yet - loop and wait.
     }
     // 3. Fetch the next pending segment.
     std::string next = hls_.pending.front();
@@ -1450,15 +1450,15 @@ uint32_t StreamSource::rawRead(void* dst, uint32_t want) {
     raw_pos_ += n;
     return n;
 #else
-    // ── Slice 3: curl_easy_recv in InternetReadFile's refill slot — the same
+    // ── Slice 3: curl_easy_recv in InternetReadFile's refill slot - the same
     // pull shape, buffered layer, and return-0 semantics. curl_easy_recv is
     // NON-blocking (CURLE_AGAIN when dry), so the wait is ours: recv FIRST
-    // (TLS may hold decrypted bytes the raw socket doesn't show — polling
+    // (TLS may hold decrypted bytes the raw socket doesn't show - polling
     // first would deadlock on data already in hand), then poll in 100 ms
     // slices with stop_ checked per slice. 8 s of dry socket returns 0,
     // mirroring the WinINet RECEIVE_TIMEOUT failure the producer treats as
     // stream-end (reconnect). Net: stop aborts a stalled read in ~100 ms here
-    // vs <=8 s baseline — a named accepted-better delta. ────────────────────
+    // vs <=8 s baseline - a named accepted-better delta. ────────────────────
     if (raw_pos_ >= raw_buf_.size()) {
         if (stop_.load() || hConn_ == nullptr) return 0;
         CURL* h = static_cast<CURL*>(hConn_);
@@ -1501,7 +1501,7 @@ bool StreamSource::rawReadExact(void* dst, uint32_t n) {
 
 uint32_t StreamSource::readAudio(void* out, uint32_t want) {
     if (icy_metaint_ <= 0) {
-        // No inline metadata — straight passthrough. HLS also lands here
+        // No inline metadata - straight passthrough. HLS also lands here
         // (metaint 0): hlsRawRead already served post-ID3-strip bytes, so the
         // tee sees pure elementary stream on every path.
         uint32_t got = rawRead(out, want);
@@ -1583,7 +1583,7 @@ uint32_t StreamSource::readEncoded(uint8_t* dst, uint32_t cap,
         std::memcpy(dst, tee_.data() + off, first);
         if (n > first) std::memcpy(dst + first, tee_.data(), n - first);
         // Validate AFTER the copy: if the writer advanced past our read span
-        // while we copied, the bytes are torn — discard them, resync to the
+        // while we copied, the bytes are torn - discard them, resync to the
         // live tail, and report the gap instead of emitting garbage.
         uint64_t w2 = tee_w_.load(std::memory_order_acquire);
         if (w2 - tee_r_ > TEE_RING_BYTES) {
@@ -1600,7 +1600,7 @@ uint32_t StreamSource::readEncoded(uint8_t* dst, uint32_t cap,
 
 int32_t StreamSource::encodedCaps() const {
     // 1=REMOCT_CODEC_MP3, 2=REMOCT_CODEC_AAC_ADTS (remoct_plugin.h; the
-    // adapter is the ABI boundary — these values are pinned by contract).
+    // adapter is the ABI boundary - these values are pinned by contract).
     if (!producer_thread_.joinable()) return 0;   // what connect decided, 0 before
     return codec_ == Codec::AAC ? 2 : 1;
 }
@@ -1662,7 +1662,7 @@ void StreamSource::uninitDecoder() {
 
 // ─── miniaudio callbacks (0.11.x signatures) ──────────────────────────────────
 // NOTE: if the vendored miniaudio is 0.10.x, the read proc returns size_t (bytes)
-// and the seek proc returns ma_bool32 — adjust these two signatures accordingly.
+// and the seek proc returns ma_bool32 - adjust these two signatures accordingly.
 
 ma_result StreamSource::onRead(ma_decoder* dec, void* out, size_t toRead, size_t* bytesRead) {
     auto* self = static_cast<StreamSource*>(dec->pUserData);
@@ -1675,7 +1675,7 @@ ma_result StreamSource::onRead(ma_decoder* dec, void* out, size_t toRead, size_t
 
     *bytesRead = (size_t)got;
     if (got == 0)
-        return MA_AT_END;           // server closed the stream — producer reconnects
+        return MA_AT_END;           // server closed the stream - producer reconnects
 
     return MA_SUCCESS;
 }
@@ -1684,7 +1684,7 @@ ma_result StreamSource::onSeek(ma_decoder* /*dec*/, ma_int64 /*offset*/, ma_seek
     // A live network stream is not truly seekable, but we only ever read forward.
     // ma_decoder_init performs an internal rewind-to-start during setup; reporting
     // success lets init complete. Any resulting byte offset is harmless because MP3
-    // frames are self-synchronising — the decoder resyncs on the next frame header.
+    // frames are self-synchronising - the decoder resyncs on the next frame header.
     return MA_SUCCESS;
 }
 
@@ -1723,7 +1723,7 @@ void StreamSource::producerWorker() {
             continue;
         }
 
-        // Backpressure: mirror CDSource — if the ring is over half full, let the
+        // Backpressure: mirror CDSource - if the ring is over half full, let the
         // consumer drain before decoding more.
         if (ringAvailable() > RING_SIZE / 2) { port::sleepMs(10); continue; }
 
@@ -1811,7 +1811,7 @@ void StreamSource::producerWorkerAAC() {
     bool logged_first       = false;
 
     while (!stop_.load()) {
-        // abi-cluster keep-draining: see the producer loop above — same gate.
+        // abi-cluster keep-draining: see the producer loop above - same gate.
         if (paused_.load() && !record_active_.load()) { port::sleepMs(20); continue; }
         if (hls_repin_pending_.exchange(false)) {
             slog("producerAAC: ad-onset live-edge re-pin -> re-handshake");
@@ -1824,7 +1824,7 @@ void StreamSource::producerWorkerAAC() {
             const bool ok = connect();
             hls_repin_active_ = false;
             if (!ok) { port::sleepMs(500); continue; }
-            bytes_in_buf = 0;                 // fresh session — drop stale partial frame
+            bytes_in_buf = 0;                 // fresh session - drop stale partial frame
             continue;
         }
         if (ringAvailable() > RING_SIZE / 2) { port::sleepMs(10); continue; }   // backpressure
@@ -1842,12 +1842,12 @@ void StreamSource::producerWorkerAAC() {
                     playing_.store(false);
                     break;
                 }
-                // Not cleared here either — see producerWorker: readFrames drains
+                // Not cleared here either - see producerWorker: readFrames drains
                 // the cushion and drops to buffering on real underrun by itself.
                 port::sleepMs(500 * reconnect_attempts);
                 if (stop_.load()) break;
                 if (!connect()) continue;
-                bytes_in_buf = 0;            // fresh connection — drop stale partial frame
+                bytes_in_buf = 0;            // fresh connection - drop stale partial frame
                 ringFlush();                 // and drop pre-drop audio: see producerWorker
                 continue;
             }
@@ -1881,10 +1881,10 @@ void StreamSource::producerWorkerAAC() {
             }
 
             if (si->sampleRate == SAMPLE_RATE && si->numChannels == CHANNELS) {
-                // Common HE-AAC case: already 44100/stereo — copy straight in.
+                // Common HE-AAC case: already 44100/stereo - copy straight in.
                 ringWrite(reinterpret_cast<int16_t*>(out.data()), si->frameSize * CHANNELS);
             } else {
-                // Off-rate / mono station — convert to 44100/stereo via miniaudio.
+                // Off-rate / mono station - convert to 44100/stereo via miniaudio.
                 if (!conv_ready_ || conv_in_rate_ != si->sampleRate
                                  || conv_in_ch_ != si->numChannels) {
                     if (conv_ready_) { ma_data_converter_uninit(&conv_, nullptr); conv_ready_ = false; }
@@ -1931,9 +1931,9 @@ uint32_t StreamSource::readFrames(float* dst, uint32_t frame_count) {
     int samples_needed = (int)frame_count * CHANNELS;
 
     // abi-cluster keep-draining: while a recording is active, a playback pause
-    // does NOT silence this read — the ring drains REAL frames (the host mutes
+    // does NOT silence this read - the ring drains REAL frames (the host mutes
     // its playback output AFTER the recorder tap; one truth, two views). The
-    // !prebuffered_ arm is untouched — buffering still silence-pads.
+    // !prebuffered_ arm is untouched - buffering still silence-pads.
     if ((paused_.load() && !record_active_.load()) || !prebuffered_.load()) {
         std::memset(dst, 0, samples_needed * sizeof(float));
         return frame_count;
@@ -1965,7 +1965,7 @@ int StreamSource::ringAvailable() const {
 }
 
 void StreamSource::ringWrite(const int16_t* data, int samples) {
-    // Producer thread only — single writer.
+    // Producer thread only - single writer.
     int w = ring_write_.load(std::memory_order_relaxed);
     for (int i = 0; i < samples; ++i) {
         ring_[w] = data[i];
@@ -1975,7 +1975,7 @@ void StreamSource::ringWrite(const int16_t* data, int samples) {
 }
 
 int StreamSource::ringRead(int16_t* dst, int samples) {
-    // Audio callback only — single reader, lock-free.
+    // Audio callback only - single reader, lock-free.
     int avail = ringAvailable();
     int n = std::min(samples, avail);
     int r = ring_read_.load(std::memory_order_relaxed);

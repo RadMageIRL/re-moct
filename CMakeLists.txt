@@ -1,14 +1,14 @@
 cmake_minimum_required(VERSION 3.20)
 # C is enabled alongside CXX for the one vendored C TU: lib/md5.c (the
-# public-domain Openwall MD5 behind LastFm's api_sig — slice 2, both platforms).
-project(remoct VERSION 1.6.2 LANGUAGES C CXX)
+# public-domain Openwall MD5 behind LastFm's api_sig - slice 2, both platforms).
+project(remoct VERSION 1.6.3 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 # Windows toolchain prefix. On Linux the find_library/find_path calls below fall
-# through these (empty/nonexistent) hints to the system paths — verified on Debian
+# through these (empty/nonexistent) hints to the system paths - verified on Debian
 # Trixie: configure passes unchanged (Phase 3 readiness survey, docs/phase3-readiness.md).
 if(WIN32)
     set(MSYS2_PREFIX "C:/msys64/ucrt64")
@@ -43,7 +43,7 @@ option(REMOCT_PROBE "Slice-1: compile temporary curses/cover-art probe logging" 
 
 # ── Test tools ─────────────────────────────────────────────────────────────
 # Toggle with -DREMOCT_BUILD_TESTS=OFF to build the player and its plugin
-# WITHOUT the 40-odd test executables — what install.sh asks for by default,
+# WITHOUT the 40-odd test executables - what install.sh asks for by default,
 # since someone building from source to USE RE-MOCT has no reason to wait for
 # the test suite to link. ON by default so every existing build directory, the
 # standing ctest gate, and CI keep working untouched.
@@ -54,7 +54,7 @@ option(REMOCT_PROBE "Slice-1: compile temporary curses/cover-art probe logging" 
 # target, because that subdirectory is added by exactly one line at the bottom
 # of this file and nothing outside it names a test target.
 #
-# CAUTION: `ctest` EXITS 0 when it finds no tests at all — a build directory
+# CAUTION: `ctest` EXITS 0 when it finds no tests at all - a build directory
 # configured with this OFF reports success having run nothing. Every ctest
 # invocation here and in CI therefore passes --no-tests=error.
 option(REMOCT_BUILD_TESTS "Build the unit-test tools (the ctest suite)" ON)
@@ -82,7 +82,7 @@ set(REMOCT_SOURCES
     src/PluginHostServices.cpp    # RemoctHostServices HTTP shim over core::IHttp
     src/PluginHost.cpp            # loadPlugin / validatePlugin / LoadedPlugin (host is a loader now)
     src/ar_crc.cpp
-    src/AacDecoder.cpp            # FDK-AAC file (.m4a/.m4b) backend — stays host (D5)
+    src/AacDecoder.cpp            # FDK-AAC file (.m4a/.m4b) backend - stays host (D5)
     src/OpusDecoder.cpp           # libopus/libopusfile (.opus) backend
     src/WavPackDecoder.cpp        # libwavpack (.wv) backend
     src/VorbisDecoder.cpp         # libvorbis/libvorbisfile (.ogg) backend
@@ -111,7 +111,7 @@ set(REMOCT_SOURCES
 )
 
 # Platform seams (Phase 1): Windows impls of the core interfaces, in src/platform/win/
-# — the core/platform boundary (win/ compiled only on Windows; linux/ siblings =
+# - the core/platform boundary (win/ compiled only on Windows; linux/ siblings =
 # libcurl / Unix socket, Phase 3).
 if(WIN32)
     list(APPEND REMOCT_SOURCES
@@ -128,7 +128,7 @@ endif()
 # Phase 3: Linux platform sources. Slice 0 landed SeamStubs.cpp (inert seam
 # placeholders + the core:: link-time bridges); slice 1 builds the full remoct
 # target on UNIX against them. Each seam slice (2/4/5/6) replaced its stub with a
-# real impl file — slice 6 (CdIoSgIo.cpp) is the last, so SeamStubs.cpp is gone
+# real impl file - slice 6 (CdIoSgIo.cpp) is the last, so SeamStubs.cpp is gone
 # and every seam now has its real Linux transport.
 if(UNIX)
     list(APPEND REMOCT_SOURCES
@@ -146,7 +146,7 @@ if(UNIX)
     # finds the system libcurl and still defines CURL::libcurl.
     set(CURL_NO_CURL_CMAKE ON)
     find_package(CURL REQUIRED)
-    # Standalone compile check for the seam/stub layer (CI builds it by name —
+    # Standalone compile check for the seam/stub layer (CI builds it by name -
     # proves src/platform/linux/ + the core interface headers stay
     # platform-clean even if the main target is mid-port).
     add_library(remoct_linux_seams OBJECT
@@ -184,7 +184,7 @@ if(WIN32)
         target_include_directories(remoct PRIVATE ${MSYS2_PREFIX}/include/ncursesw)
     endif()
 else()
-    # Debian keeps the wide-char build's headers under /usr/include/ncursesw —
+    # Debian keeps the wide-char build's headers under /usr/include/ncursesw -
     # putting it on the path makes <ncurses.h> resolve to the ncursesw variant
     # (NCURSES_WIDECHAR-ready), mirroring the MSYS2 layout above.
     target_include_directories(remoct PRIVATE /usr/include/ncursesw)
@@ -243,21 +243,21 @@ find_library(OPUS_LIB      NAMES opus     PATHS "${MSYS2_PREFIX}/lib" REQUIRED)
 find_library(OPUSFILE_LIB  NAMES opusfile PATHS "${MSYS2_PREFIX}/lib" REQUIRED)
 # Headers nest exactly like fdk-aac/, identically on MSYS2 and Debian. TWO
 # include entries are needed: the root (so our code can write the explicit
-# <opus/opusfile.h> — TagLib ships its own unrelated opusfile.h, so a bare
+# <opus/opusfile.h> - TagLib ships its own unrelated opusfile.h, so a bare
 # <opusfile.h> in OUR code is banned) and the opus/ dir itself, because
-# opusfile.h includes its libopus siblings (<opus_multistream.h>) unprefixed —
+# opusfile.h includes its libopus siblings (<opus_multistream.h>) unprefixed -
 # upstream mandates -I<prefix>/include/opus via its pkg-config Cflags.
 # The bare-include ban is ENFORCED by the CI grep gate (ci.yml "Include-guard
 # lint"); adding the opus/ dir before TagLib's include dir below is
-# defense-in-depth only — do not rely on -I order as the guard.
+# defense-in-depth only - do not rely on -I order as the guard.
 find_path(OPUS_INCLUDE NAMES opus/opusfile.h PATHS "${MSYS2_PREFIX}/include" REQUIRED)
 # libogg is opusfile's container layer. The dynamic import lib carries it
 # transitively, but under REMOCT_STATIC_PROBE the static libopusfile.a needs
-# it spelled out — for every target that links opusfile, not just remoct
+# it spelled out - for every target that links opusfile, not just remoct
 # (whose probe block already added libogg.a for static libFLAC).
 find_library(OGG_LIB NAMES ogg PATHS "${MSYS2_PREFIX}/lib" REQUIRED)
 # libopusenc (rip-opus-encoder): Opus ENCODE for the rip path. Same family,
-# same include layout (opusenc.h pulls <opus.h> unprefixed — served by the
+# same include layout (opusenc.h pulls <opus.h> unprefixed - served by the
 # include/opus dir already on the path). Linked before opus (dependency).
 find_library(OPUSENC_LIB NAMES opusenc PATHS "${MSYS2_PREFIX}/lib" REQUIRED)
 message(STATUS "opusfile: ${OPUSFILE_LIB}")
@@ -272,7 +272,7 @@ message(STATUS "wavpack: ${WAVPACK_LIB}")
 find_library(VORBIS_LIB     NAMES vorbis     PATHS "${MSYS2_PREFIX}/lib" REQUIRED)
 find_library(VORBISFILE_LIB NAMES vorbisfile PATHS "${MSYS2_PREFIX}/lib" REQUIRED)
 # Root include only: vorbisfile.h pulls its siblings via QUOTED includes
-# (probe-verified — unlike opusfile's unprefixed-angle siblings), so no
+# (probe-verified - unlike opusfile's unprefixed-angle siblings), so no
 # <prefix>/include/vorbis entry exists to order. The bare-include ban is the
 # CI grep gate, which already covers vorbisfile.
 find_path(VORBIS_INCLUDE NAMES vorbis/vorbisfile.h PATHS "${MSYS2_PREFIX}/include" REQUIRED)
@@ -446,7 +446,7 @@ install(TARGETS remoct_stream LIBRARY DESTINATION bin/plugins RUNTIME DESTINATIO
 # ── Phase 0 pure-unit tests ───────────────────────────────────────────────
 # enable_testing() stays OUTSIDE the guard deliberately. With it unconditional,
 # a tests-off build directory still carries a test configuration, so ctest says
-# "No tests were found" — which --no-tests=error turns into a real failure.
+# "No tests were found" - which --no-tests=error turns into a real failure.
 # Moving it inside would instead produce a missing-configuration error that
 # reads like a broken build directory rather than a deliberate build mode.
 enable_testing()

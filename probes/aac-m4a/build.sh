@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# build.sh — build the aac-m4a phase-0 probe on either toolchain.
+# build.sh - build the aac-m4a phase-0 probe on either toolchain.
 # Windows/UCRT64:  PATH="/c/msys64/ucrt64/bin:$PATH" ./build.sh
 # Linux/Debian:    ./build.sh   (run from WSL2 or native)
 #
 # Retained probe, OUT of the production build (aac-m4a-phase0-probe). Rebuild it
-# against the current tree before trusting a result — it links src/AacDecoder.cpp
+# against the current tree before trusting a result - it links src/AacDecoder.cpp
 # so it verifies through the real production decode path.
 set -e
 cd "$(dirname "$0")"

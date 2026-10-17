@@ -1,19 +1,19 @@
-// IpcWinPipe.cpp — Windows named-pipe implementation of core::IIpc.
+// IpcWinPipe.cpp - Windows named-pipe implementation of core::IIpc.
 //
-// Lives in src/platform/win/ (header in include/core/IIpc.h) — built INTO the
+// Lives in src/platform/win/ (header in include/core/IIpc.h) - built INTO the
 // core/platform boundary established at slice 5, not relocated later. Compiled only
 // on Windows (guarded in CMakeLists via if(WIN32)).
 //
 // Faithful transport-only extraction of DiscordRP's baseline pipe code (slice 6):
-//   connect  — CreateFileW on \\.\pipe\<endpoint>, GENERIC_READ|WRITE, no sharing,
+//   connect - CreateFileW on \\.\pipe\<endpoint>, GENERIC_READ|WRITE, no sharing,
 //              OPEN_EXISTING; INVALID_HANDLE_VALUE → nullptr (endpoint absent).
-//   send     — one WriteFile for the whole buffer; short write = failure (Discord's
+//   send - one WriteFile for the whole buffer; short write = failure (Discord's
 //              framing breaks if header and payload arrive in separate writes).
-//   waitReadable — PeekNamedPipe polled every 10 ms (the baseline's granularity)
+//   waitReadable - PeekNamedPipe polled every 10 ms (the baseline's granularity)
 //              until >= min_bytes are available or the timeout elapses.
-//   recvSome — one ReadFile; partial reads are the caller's loop to drive.
-//   teardown — CloseHandle only; NO goodbye frame (baseline never sent Discord a
-//              CLOSE opcode — stay faithful, not polite).
+//   recvSome - one ReadFile; partial reads are the caller's loop to drive.
+//   teardown - CloseHandle only; NO goodbye frame (baseline never sent Discord a
+//              CLOSE opcode - stay faithful, not polite).
 // Protocol (framing, endpoint probing, handshake, reconnect) stays in DiscordRP.
 #ifdef _WIN32
 
@@ -75,7 +75,7 @@ public:
 
 namespace core {
 
-// Production default transport (see IIpc.h — reached by name because core code
+// Production default transport (see IIpc.h - reached by name because core code
 // can't include this TU's headers). Function-local static: thread-safe init;
 // WinPipeIpc is stateless, channels own their handles.
 IIpc& ipc() {

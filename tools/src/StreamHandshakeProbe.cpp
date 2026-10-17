@@ -1,4 +1,4 @@
-// StreamHandshakeProbe.cpp  —  does the iHeart digital-rendition handshake work
+// StreamHandshakeProbe.cpp - does the iHeart digital-rendition handshake work
 // with THROWAWAY credentials, or does it need a real session?
 //
 // RE-MOCT plays the raw broadcast (zc####/hls.m3u8, heavy terrestrial ads). The
@@ -11,9 +11,9 @@
 //   profileId, or are those bound to a real account/session?
 //
 // It runs three requests and prints the full redirect chain for each:
-//   [RAW]      base URL, no params           — control (today's RE-MOCT behavior)
-//   [DIGITAL]  base URL + params, RANDOM ids  — the decisive test
-//   [NO-PROF]  base URL + params, no profileId/skey — is profileId even required?
+//   [RAW]      base URL, no params - control (today's RE-MOCT behavior)
+//   [DIGITAL]  base URL + params, RANDOM ids - the decisive test
+//   [NO-PROF]  base URL + params, no profileId/skey - is profileId even required?
 //
 // Reading the result:
 //   * DIGITAL reaches a 200 playlist (and the chain shows `rj-tok`) with random
@@ -127,7 +127,7 @@ static ChainResult runChain(HINTERNET hInet, const std::string& start, const cha
             std::printf("        body[0:180]: %s\n", pre.c_str());
             return cr;
         }
-        std::printf("        (status %ld, not a redirect or 200 — stopping)\n", h.status);
+        std::printf("        (status %ld, not a redirect or 200 - stopping)\n", h.status);
         return cr;
     }
     std::printf("  (redirect limit reached)\n");
@@ -205,13 +205,13 @@ int main(int argc, char** argv) {
     if (dig.reachedPlaylist && dig.sawRjTok)
         std::printf(" => OUTCOME 1: edge mints a token for ARBITRARY ids. Fully automatable,\n"
                     "    no session call. The upgrade-with-fallback path is worth building.%s\n",
-                    nop.reachedPlaylist ? "\n    (profileId not even required — NO-PROF also worked.)" : "");
+                    nop.reachedPlaylist ? "\n    (profileId not even required - NO-PROF also worked.)" : "");
     else if (raw.reachedPlaylist)
         std::printf(" => OUTCOME 2/3: random ids did NOT yield a digital rendition, but RAW works.\n"
                     "    profileId/skey likely must be session-minted (one more call to find) or\n"
                     "    account-bound (not worth it). Stay raw unless the session-mint call is cheap.\n");
     else
-        std::printf(" => INCONCLUSIVE: even RAW failed — network/headers/geo issue, not the handshake.\n"
+        std::printf(" => INCONCLUSIVE: even RAW failed - network/headers/geo issue, not the handshake.\n"
                     "    (iHeart streams are US-geo; check connectivity.)\n");
 
     InternetCloseHandle(hInet);

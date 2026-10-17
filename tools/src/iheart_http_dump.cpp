@@ -1,8 +1,8 @@
-// iheart_http_dump.cpp — standalone iHeart digital-manifest + ad-tier probe.
+// iheart_http_dump.cpp - standalone iHeart digital-manifest + ad-tier probe.
 //
 // Reproduces RE-MOCT's digital (web-player) handshake for a station, polls the
 // resolved short-lived variant playlist, dumps every manifest revision verbatim,
-// and — the point of this tool — MEASURES the ad load per handshake variant from
+// and - the point of this tool - MEASURES the ad load per handshake variant from
 // the manifest text alone (no audio downloaded). The measurable question is not
 // "did it 200" but "did the AD TIER change": the web player gets clean, short,
 // aligned breaks; RE-MOCT's anonymous-new-every-time session can get a long

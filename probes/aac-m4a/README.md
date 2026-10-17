@@ -19,10 +19,10 @@ Verification drives the real production decode path (`AacDecoder` registered as 
 miniaudio custom backend via `ma_decoder`) and is cross-checked with FFmpeg.
 
 ## Files
-- `Mp4Mux.h` — the reusable minimal MP4 box writer (the Phase 1 artifact).
-- `aac_m4a_probe.cpp` — encode -> mux -> verify (decode/length/seek) -> tag/art driver.
-- `ma_impl.cpp` — the single miniaudio implementation TU (mirrors `AudioManager.cpp:1`).
-- `build.sh` — builds on either toolchain.
+- `Mp4Mux.h` - the reusable minimal MP4 box writer (the Phase 1 artifact).
+- `aac_m4a_probe.cpp` - encode -> mux -> verify (decode/length/seek) -> tag/art driver.
+- `ma_impl.cpp` - the single miniaudio implementation TU (mirrors `AudioManager.cpp:1`).
+- `build.sh` - builds on either toolchain.
 
 ## Run
 ```

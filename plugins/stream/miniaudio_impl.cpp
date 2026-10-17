@@ -1,4 +1,4 @@
-// miniaudio_impl.cpp — the streaming plugin's OWN miniaudio implementation TU
+// miniaudio_impl.cpp - the streaming plugin's OWN miniaudio implementation TU
 // (Phase 4 slice c).
 //
 // StreamSource decodes MP3 (ma_decoder / dr_mp3) and resamples (ma_data_converter).
@@ -6,7 +6,7 @@
 // the HOST binary; once StreamSource is a loaded .so/.dll it cannot resolve those
 // symbols across the module boundary, so the plugin carries its own copy.
 //
-// MA_NO_DEVICE_IO: the plugin NEVER opens an audio device — the host owns the
+// MA_NO_DEVICE_IO: the plugin NEVER opens an audio device - the host owns the
 // device and calls read_frames into its buffer. Trimming the device/backend layer
 // keeps PulseAudio/WASAPI out of the plugin and makes device ownership a build-time
 // invariant. Decoding + data conversion (all StreamSource uses) remain available.

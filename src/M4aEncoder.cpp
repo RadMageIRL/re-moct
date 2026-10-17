@@ -1,4 +1,4 @@
-// M4aEncoder.cpp — AAC-LC (FDK) + MP4 mux (Mp4Mux.h). See M4aEncoder.h.
+// M4aEncoder.cpp - AAC-LC (FDK) + MP4 mux (Mp4Mux.h). See M4aEncoder.h.
 //
 // The encode loop is the aac-m4a-phase0-probe's encoder, transliterated: FDK in
 // TT_MP4_RAW, fed whole 1024-sample frames, each emitted access unit collected;
@@ -6,7 +6,7 @@
 #include "M4aEncoder.h"
 
 #include "Mp4Mux.h"
-#include "PortUtil.h"   // port::fopenUtf8 — the wide-path open (house rule)
+#include "PortUtil.h"   // port::fopenUtf8 - the wide-path open (house rule)
 
 #include <fdk-aac/aacenc_lib.h>
 
@@ -21,7 +21,7 @@ bool M4aEncoder::open(const std::string& path, uint64_t /*total_frames*/) {
     ok &= set(AACENC_AOT, 2);                        // AAC-LC (no HE-AAC)
     ok &= set(AACENC_SAMPLERATE, kSampleRate);
     ok &= set(AACENC_CHANNELMODE, MODE_2);           // stereo (kChannels == 2)
-    ok &= set(AACENC_TRANSMUX, TT_MP4_RAW);          // raw access units — WE mux
+    ok &= set(AACENC_TRANSMUX, TT_MP4_RAW);          // raw access units - WE mux
     if (vbr_) {
         // VBR quality ladder 1-5 (5 best). Caller clamps; clamp again defensively.
         int lvl = vbr_level_ < 1 ? 1 : (vbr_level_ > 5 ? 5 : vbr_level_);

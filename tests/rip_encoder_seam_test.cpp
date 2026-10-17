@@ -1,11 +1,11 @@
-// rip_encoder_seam_test — the rip-encoder-seam byte-identity oracle.
+// rip_encoder_seam_test - the rip-encoder-seam byte-identity oracle.
 //
 // The reference arm below is the FLAC/LAME encode sequence that lived INLINE
 // in CDRipper::ripTrack before the seam, copied VERBATIM (setup :787-830,
 // per-block conversion+encode :1037-1074, offset-tail :1159-1165, finalize
 // :1172-1187 at the pre-seam tree) and frozen here. The seam arm drives the
 // same fixed PCM fixture through FlacEncoder/Mp3Encoder. The test asserts the
-// two .flac outputs and the two .mp3 outputs are BYTE-IDENTICAL — the
+// two .flac outputs and the two .mp3 outputs are BYTE-IDENTICAL - the
 // transliteration-fidelity guarantee, machine-enforced on both platforms,
 // no disc required. It complements the Joan Osborne hardware gate, never
 // replaces it.
@@ -44,7 +44,7 @@ constexpr int CHANNELS = 2;
 constexpr int BIT_DEPTH = 16;
 constexpr int FLAC_COMPRESSION = 5;
 
-// Deterministic PCM: seeded LCG, no time/no rand — identical on every run
+// Deterministic PCM: seeded LCG, no time/no rand - identical on every run
 // and platform. ~100 sectors + a 137-frame tail.
 std::vector<int16_t> makeFixture(size_t frames) {
     std::vector<int16_t> pcm(frames * 2);
@@ -74,7 +74,7 @@ std::vector<Block> schedule(const std::vector<int16_t>& pcm, int tail_frames) {
     return b;
 }
 
-// ── REFERENCE ARM — the pre-seam inline sequence, VERBATIM (frozen) ─────────
+// ── REFERENCE ARM - the pre-seam inline sequence, VERBATIM (frozen) ─────────
 bool encodeInline(const std::string& flac_path, const std::string& mp3_path,
                   const std::vector<Block>& blocks, uint64_t total_frames) {
     // ── FLAC setup ──────────────────────────────────────────────── (:787)
@@ -215,7 +215,7 @@ int main() {
     check(seam_ok, "seam (FlacEncoder/Mp3Encoder) arm encoded");
 
     // Explicit-default arm: FlacEncoder(5)/Mp3Encoder(0) must equal the
-    // argument-free construction — documents the config-default pin.
+    // argument-free construction - documents the config-default pin.
     {
         FlacEncoder flac(5);
         Mp3Encoder  mp3(0);
@@ -321,7 +321,7 @@ int main() {
         if (opened) {
             int16_t buf[588 * 2] = {};
             // fwrite may buffer; the failure must surface by the time the
-            // stdio buffer flushes — write enough to force it through.
+            // stdio buffer flushes - write enough to force it through.
             bool w = true;
             for (int i = 0; i < 64 && w; ++i) w = wav.writeFrames(buf, 588);
             check(!w, "WAV short write returns false (ENOSPC surfaces)");
@@ -335,10 +335,10 @@ int main() {
     // ── WavPack bit-exact round-trip (rip-wavpack-encoder) ─────────────────
     // WavPack COMPRESSES, so "lossless" must be demonstrated, not assumed:
     // encode the fixture, decode through the SHIPPING WavPackDecoder, and
-    // require bit-identity. This also pins the 16-bit CD-DA config — a wrong
+    // require bit-identity. This also pins the 16-bit CD-DA config - a wrong
     // bits/bytes value cannot survive it.
     {
-        WavPackEncoder wv;   // default mode (normal) — the named constant
+        WavPackEncoder wv;   // default mode (normal) - the named constant
         bool ok = wv.open("seam_wv.wv", kFrames);
         for (auto& blk : blocks) {
             if (!ok) break;
@@ -354,7 +354,7 @@ int main() {
         check(r == MA_SUCCESS, "shipping WavPackDecoder opens the rip output");
         if (r == MA_SUCCESS) {
             // The decoder emits f32 = int/2^15 for 16-bit sources; the input
-            // s16 scaled by 1/32768 is exactly representable — compare bits.
+            // s16 scaled by 1/32768 is exactly representable - compare bits.
             std::vector<float> dec(kFrames * 2);
             ma_uint64 got = 0;
             ma_data_source_read_pcm_frames(ds, dec.data(), kFrames, &got);
@@ -395,7 +395,7 @@ int main() {
 
     // ── R128 <-> RG round trip (rip-opus-encoder) ──────────────────────────
     // The encode direction (tagFile) must be the EXACT inverse of the decode
-    // direction (LocalFileSource) for every representable Q7.8 tag value —
+    // direction (LocalFileSource) for every representable Q7.8 tag value -
     // /256 and +/-5 are exact in binary floating point over the int range,
     // so this is a machine proof, not a tolerance check. Full range.
     {

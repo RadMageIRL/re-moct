@@ -459,7 +459,7 @@ static bool detectPressingOffsetFrame450(
 
     FILE* lf = port::fopenUtf8(log_path, "a");
     if (lf) {
-        fprintf(lf, "  frame450 auto-detect: no match in sweep — "
+        fprintf(lf, "  frame450 auto-detect: no match in sweep - "
                     "falling back to candidate-offset probe\n");
         fclose(lf);
     }
@@ -1665,10 +1665,10 @@ void CDRipper::worker(std::string          drive_letter,
     if (cb) {
         RipProgress p; p.state=RipState::Ripping;
         p.status_msg = !C2_QUERYABLE
-            ? "C2 not queried on this platform — standard rip with retry"
+            ? "C2 not queried on this platform - standard rip with retry"
             : use_c2
-            ? "Drive supports C2 error pointers — using C2-assisted rip"
-            : "C2 not supported by drive — using standard rip with retry";
+            ? "Drive supports C2 error pointers - using C2-assisted rip"
+            : "C2 not supported by drive - using standard rip with retry";
         cb(p);
     }
     port::sleepMs(800);
@@ -1964,7 +1964,7 @@ void CDRipper::worker(std::string          drive_letter,
                 if (frame450_matched)
                     fprintf(lf, "  frame450: drive offset %+d confirmed\n", drive_offset);
                 else
-                    fprintf(lf, "  frame450: WARNING — offset %+d not confirmed."
+                    fprintf(lf, "  frame450: WARNING - offset %+d not confirmed."
                             " Check accuraterip.com/driveoffsets.htm\n", drive_offset);
                 fclose(lf);
             }
@@ -2084,7 +2084,7 @@ void CDRipper::worker(std::string          drive_letter,
                     if (pressing_offset == 0) {
                         lf = port::fopenUtf8(log_path, "a");
                         if (lf) {
-                            fprintf(lf, "  Pressing offset: none matched — using drive offset only\n");
+                            fprintf(lf, "  Pressing offset: none matched - using drive offset only\n");
                             fclose(lf);
                         }
                     }

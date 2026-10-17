@@ -83,6 +83,26 @@ configure time:
   opusenc, vorbis, wavpack) is common to both. The two configs use separate build
   directories, so you can keep both around.
 
+### The Windows release build
+
+The `re-moct-v<version>-win-x64.zip` attached to each GitHub release is the wingui
+build, linked statically, configured exactly like this from the release tag:
+
+```bash
+cmake -S . -B build-release -G Ninja -DREMOCT_PDCURSES=ON -DREMOCT_STATIC_PROBE=ON -DREMOCT_BUILD_TESTS=OFF
+cmake --build build-release
+```
+
+`CMAKE_BUILD_TYPE` is left empty on purpose, so assertions stay on. The configure output
+must say `curses: PDCursesMod wingui (vendored, static) - Option C` and
+`STATIC PROBE: preferring .a archives`; without both it is a different build.
+`REMOCT_STATIC_PROBE` folds TagLib, LAME, FLAC, the Xiph codecs, WavPack, zlib and the
+GCC runtime into `remoct.exe`, so the only DLLs it loads besides Windows' own are
+`libfdk-aac-2.dll` and `libebur128.dll` ([THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)
+says why those two stay shared). To relink the release against your own build of one of
+the static libraries, install it into the UCRT64 prefix in place of the MSYS2 package
+and run the same two commands.
+
 **Fonts differ by backend.** The wingui build sets its own GDI font (config key
 `wingui_font`, default a bundled JetBrains Mono Nerd Font); the ncursesw build - like
 the Linux build - renders with the terminal emulator's font. See the README section

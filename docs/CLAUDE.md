@@ -144,16 +144,16 @@ platforms, Linux port done, streaming is a real loadable plugin
 and ship without rebuilding the host" is literally true.** Detail in
 `docs/roadmap.md` / `docs/architecture.md`.
 
-**Released, tagged, on `main`:** 1.5.0 = per-track rip selection + the 17-slice `[Library]`
-+ the CD read-addressing fix. 1.6.0 = HTOA. 1.6.1 = the display fold, a CJK crash fix, the
-disc-number campaign, cover art previewed before writing (`[P]`, `[A]` was AccurateRip).
-1.6.2 (2026-08-15) = **bit-perfect playback** + the output-rate indicator (`ma_device_init`
-returns success while silently converting), art-picker iTunes/Deezer rows, stream recovery.
+**Released, tagged, on `main`:** 1.5.0 = per-track rip + `[Library]` + the CD read-addressing
+fix. 1.6.0 = HTOA. 1.6.1 = display fold, CJK crash fix, disc numbers, art preview (`[P]`;
+`[A]` is AccurateRip). 1.6.2 (2026-08-15) = **bit-perfect playback** + the output-rate
+indicator (`ma_device_init` returns success while silently converting), stream recovery.
+1.6.3 (2026-10-17) = radio search falls back to `all.api`, user-facing em dashes gone, notices
+rewritten for the static Windows link (LGPL relinking met by public source + BUILD.md).
 
-**1.6.3 is UNRELEASED** - on `experimental` only: not merged to dev or main, not tagged.
-Radio search falls back to `all.api.radio-browser.info` (nl1/at1 retired), user-facing
-em dashes gone, CI is build-only (tests are gated locally, never in GitHub). Dos is
-running it locally before the ceremony. **Read the newest handoff.**
+**No cycle is open.** All three branches carry the 1.6.3 tree; CI is build-only (tests gate
+locally, never in GitHub). Zip = 1.6.2's file list, DLLs refreshed from MSYS2 (17 the exe
+never loads, kept by Dos's call). **Read the newest handoff.**
 
 ## 1.6.1: the display fold - read before touching display text
 `foldForDisplay` (`include/StringUtils.h`, was `sanitizeForDisplay`). Per codepoint:

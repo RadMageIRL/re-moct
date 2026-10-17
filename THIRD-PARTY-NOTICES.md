@@ -18,21 +18,29 @@ license texts referenced here must accompany the distribution.
 | **miniaudio** | Audio device I/O, decode/convert, resample | Vendored header (`lib/miniaudio.h`) | Public domain (Unlicense) **or** MIT-0 (dual, your choice) | https://github.com/mackron/miniaudio |
 | **nlohmann/json** | JSON parsing (metadata, service APIs) | Vendored header (`lib/json.hpp`) | MIT | https://github.com/nlohmann/json |
 | **Openwall MD5** (Solar Designer) | `api_sig` signing for Last.fm | Vendored C (`lib/md5.c`, `lib/md5.h`), byte-verbatim | Public domain | https://openwall.info/wiki/people/solar/software/public-domain-source-code-md5 |
-| **libFLAC** (Xiph.Org) | FLAC encode (CD ripping) | Dynamic link | BSD-3-Clause | https://xiph.org/flac/ |
-| **libogg** (Xiph.Org) | Ogg container (libFLAC + libopusfile dependency) | Transitive dynamic link | BSD-3-Clause | https://xiph.org/ogg/ |
-| **libopus** (Xiph.Org) | Opus decode (`.opus` playback) | Dynamic link | BSD-3-Clause | https://opus-codec.org/ |
-| **libopusfile** (Xiph.Org) | Ogg Opus demux/seek over libopus | Dynamic link | BSD-3-Clause | https://opus-codec.org/ |
-| **libvorbis / libvorbisfile** (Xiph.Org) | Ogg Vorbis decode (`.ogg` playback) | Dynamic link | BSD-3-Clause | https://xiph.org/vorbis/ |
-| **libopusenc** (Xiph.Org) | Opus encode (CD ripping) | Dynamic link | BSD-3-Clause | https://opus-codec.org/ |
-| **WavPack (libwavpack)** | WavPack decode (`.wv` playback) | Dynamic link | BSD-3-Clause | https://www.wavpack.com/ |
-| ⚠ **LAME / libmp3lame** | MP3 encode (CD ripping) | Dynamic link | LGPL-2.1-or-later | https://lame.sourceforge.io/ |
-| ⚠ **TagLib** | Read/write audio tags | Dynamic link | LGPL-2.1-only **or** MPL-1.1 (dual) | https://taglib.org/ |
-| **zlib** | Compression (TagLib dependency) | Transitive dynamic link | Zlib License | https://zlib.net/ |
+| **PDCursesMod** (Bill Gray) | Terminal UI on Windows (the wingui/GDI port) | Vendored C (`lib/pdcursesmod/`), compiled in (Windows only) | Public domain | https://github.com/Bill-Gray/PDCursesMod |
+| **libFLAC** (Xiph.Org) | FLAC encode (CD ripping) | Static on Windows, dynamic on Linux | BSD-3-Clause | https://xiph.org/flac/ |
+| **libogg** (Xiph.Org) | Ogg container (libFLAC + libopusfile dependency) | Static on Windows, dynamic on Linux (transitive) | BSD-3-Clause | https://xiph.org/ogg/ |
+| **libopus** (Xiph.Org) | Opus decode (`.opus` playback) | Static on Windows, dynamic on Linux | BSD-3-Clause | https://opus-codec.org/ |
+| **libopusfile** (Xiph.Org) | Ogg Opus demux/seek over libopus | Static on Windows, dynamic on Linux | BSD-3-Clause | https://opus-codec.org/ |
+| **libvorbis / libvorbisfile** (Xiph.Org) | Ogg Vorbis decode (`.ogg` playback) | Static on Windows, dynamic on Linux | BSD-3-Clause | https://xiph.org/vorbis/ |
+| **libopusenc** (Xiph.Org) | Opus encode (CD ripping) | Static on Windows, dynamic on Linux | BSD-3-Clause | https://opus-codec.org/ |
+| **WavPack (libwavpack)** | WavPack decode (`.wv` playback) | Static on Windows, dynamic on Linux | BSD-3-Clause | https://www.wavpack.com/ |
+| ⚠ **LAME / libmp3lame** | MP3 encode (CD ripping) | Static on Windows, dynamic on Linux | LGPL-2.0-or-later | https://lame.sourceforge.io/ |
+| ⚠ **TagLib** | Read/write audio tags | Static on Windows, dynamic on Linux | LGPL-2.1-only **or** MPL-1.1 (dual) | https://taglib.org/ |
+| **zlib** | Compression (TagLib dependency) | Static on Windows, dynamic on Linux (transitive) | Zlib License | https://zlib.net/ |
 | **libebur128** | EBU R128 ReplayGain measurement | Dynamic link | MIT | https://github.com/jiixyj/libebur128 |
-| ⚠ **Fraunhofer FDK AAC** | AAC / HE-AAC decode (files + internet radio) | Dynamic link | Fraunhofer FDK AAC Codec Library License (SPDX `FDK-AAC`) | https://github.com/mstorsjo/fdk-aac |
-| **ncurses (ncursesw / panelw)** | Terminal UI | Dynamic link | X11-style (MIT-family) | https://invisible-island.net/ncurses/ |
+| ⚠ **Fraunhofer FDK AAC** | AAC / HE-AAC decode (files + internet radio), AAC-LC encode (M4A rip and recording) | Dynamic link (one copy, shared by the player and the streaming plugin) | Fraunhofer FDK AAC Codec Library License (SPDX `FDK-AAC`) | https://github.com/mstorsjo/fdk-aac |
+| **ncurses (ncursesw / panelw)** | Terminal UI on Linux | Dynamic link (Linux only) | X11-style (MIT-family) | https://invisible-island.net/ncurses/ |
+| **GCC runtime** (libstdc++, libgcc) | C++ standard library and compiler support | Static on Windows, dynamic on Linux | GPL-3.0-or-later with the GCC Runtime Library Exception 3.1 | https://gcc.gnu.org/ |
+| **mingw-w64 winpthreads** | POSIX threads on Windows | Static (Windows only) | MIT-style, with BSD-3-Clause portions | https://www.mingw-w64.org/ |
 | **libcurl** | HTTP transport on Linux (`core::IHttp`) | Dynamic link (Linux only) | curl License (MIT/X-derivative) | https://curl.se/ |
 | **Win32 system libraries** (WinINet, CryptoAPI, Shell, winmm, ws2_32, ole32, advapi32) | HTTP transport, browser launch, timing, sockets, IPC (Windows only) | Dynamic link (Windows only) | Microsoft Windows system APIs - no separate notice required | - |
+
+**Windows and Linux link differently.** The Windows release is one static executable:
+every component marked "static on Windows" is compiled into `remoct.exe`, and the only
+DLLs it loads besides Windows' own are `libfdk-aac-2.dll` and `libebur128.dll`. On Linux
+every library is the distribution's shared library.
 
 Per-component required notice text is in [§ Required attributions](#required-attributions).
 Network services used at runtime (no code redistributed) are in [§ Data services](#data-services).
@@ -45,13 +53,15 @@ Network services used at runtime (no code redistributed) are in [§ Data service
 
 RE-MOCT dynamically links and (in a binary release) redistributes the Fraunhofer FDK
 AAC Codec Library (`libfdk-aac-2.dll` / `libfdk-aac.so`) to decode AAC and HE-AAC -
-used both for AAC audio files and for internet-radio streams. This component is **not**
+used both for AAC audio files and for internet-radio streams - and to encode AAC-LC for
+M4A rip and stream-recording output. This component is **not**
 released under a standard FOSS license; it is provided under the *"Software License for
 The Fraunhofer FDK AAC Codec Library for Android."* Anyone distributing RE-MOCT with
 this library must:
 
 1. **Retain the full license text**, copied verbatim from the library's own
-   distribution, alongside the binaries (e.g. `licenses/FDK-AAC-LICENSE.txt`).
+   distribution, alongside the binaries (the Windows release ships it as
+   `licenses/FDK-AAC-LICENSE`).
 2. **Make the source available** - recipients must be able to obtain the complete FDK
    AAC source free of charge. RE-MOCT links an unmodified upstream build; source:
    https://github.com/mstorsjo/fdk-aac
@@ -63,35 +73,48 @@ this library must:
 **Patent notice (separate from copyright).** The FDK AAC license **grants no patent
 rights, express or implied.** AAC is patent-encumbered; encode/decode patent licensing
 is administered separately (historically Via Licensing / Via-LA) and is independent of
-the copyright permission to copy the software. RE-MOCT uses the library for **decoding
-only**. Redistributors should evaluate whether AAC patent licensing applies to their
-use and jurisdiction. RE-MOCT can be built **without** FDK AAC - only AAC/HE-AAC
-playback is lost; CD, FLAC/MP3 files, and MP3 streams are unaffected.
+the copyright permission to copy the software. RE-MOCT uses the library to **decode**
+AAC and HE-AAC and to **encode** AAC-LC (M4A output only; every other rip and recording
+format is unaffected). Redistributors should evaluate whether AAC patent licensing
+applies to their use and jurisdiction. FDK AAC is a required dependency of the current
+build; there is no configure option that leaves it out.
 
 > **VERIFY before shipping binaries:** copy the exact upstream `NOTICE` / license file
 > from the FDK-AAC build you link and confirm the four obligations above against it.
+> For 1.6.3, `licenses/FDK-AAC-LICENSE` is byte-identical to the file the MSYS2
+> fdk-aac 2.0.3 package installs.
 
 ### ⚠ TagLib - LGPL-2.1-only OR MPL-1.1 (dual)
 
-RE-MOCT dynamically links TagLib. Under the LGPL branch, a binary distribution must:
+On Linux RE-MOCT links the system's shared TagLib. The Windows release links TagLib
+**statically** into `remoct.exe`. Under the LGPL branch, a binary distribution must:
 
-- Give recipients the LGPL-2.1 license text and TagLib's copyright notice.
-- Allow the user to **replace the TagLib library** and re-run RE-MOCT with their
-  version. Dynamic linking against a system/redistributed shared library satisfies
-  this in practice; **static linking would add relinking-material obligations** - RE-MOCT
-  links dynamically, so keep it that way.
+- Give recipients the LGPL-2.1 license text and TagLib's copyright notice. The Windows
+  release ships the text as `licenses/GNU LGPL.txt`; the notice is in
+  [§ Required attributions](#required-attributions).
+- Allow the user to **replace the TagLib library** and relink RE-MOCT against their
+  version. A shared library allows this by itself. For the static Windows build it is met
+  through source: RE-MOCT's complete source, build files included, is public under MIT
+  at every release tag, the release page that offers the zip offers that source too, and
+  [BUILD.md](BUILD.md) gives the exact configure line the release is built with. Anyone
+  can rebuild `remoct.exe` against a TagLib of their own.
 - Provide a way to obtain TagLib's source (a written offer or a link to the exact
-  upstream version suffices).
+  upstream version suffices). The Windows release links the MSYS2 UCRT64 package of
+  TagLib 2.2.1, unmodified.
 
-The MPL-1.1 alternative is file-level copyleft on TagLib's own files only; either
-branch is satisfied by shipping the shared library unmodified with its notices.
+The MPL-1.1 alternative is file-level copyleft on TagLib's own files only, so it allows
+static linking as long as TagLib's source stays available.
 
-### ⚠ LAME / libmp3lame - LGPL-2.1-or-later
+### ⚠ LAME / libmp3lame - LGPL-2.0-or-later
 
-Same shape as TagLib: dynamically linked, so shipping `libmp3lame` as an unmodified
-shared library with the LGPL-2.1 text + copyright notice, plus a pointer to upstream
-source (https://lame.sourceforge.io/), satisfies the obligation. Do not statically
-link it into `remoct` without adding the relinking-material provisions.
+LAME's headers grant the GNU Library General Public License version 2 "or (at your
+option) any later version", so the LGPL-2.1 text shipped for TagLib covers it too.
+Same shape as TagLib otherwise: a shared library on Linux, linked statically into
+`remoct.exe` on Windows, with relinking met the same way, through RE-MOCT's public
+source and the release's configure line. The copyright notice is in
+[§ Required attributions](#required-attributions), and the source is upstream
+(https://lame.sourceforge.io/); the Windows release links the MSYS2 UCRT64 package of
+LAME 3.100, unmodified.
 
 > **Note on patents:** MP3 decode/encode patents have expired worldwide (2017), so
 > unlike AAC there is no live patent question for LAME.
@@ -141,7 +164,34 @@ redistributions:
 > This software was written by Alexander Peslyak (Solar Designer) in 2001 and placed in
 > the public domain. There's absolutely no warranty. (See the header of `lib/md5.c`.)
 
-**ncurses - X11-style**
+**TagLib - LGPL-2.1-only or MPL-1.1**
+> Copyright (C) 2002-2008 Scott Wheeler, and the TagLib contributors. TagLib is free
+> software; you can redistribute it and/or modify it under the terms of the GNU Lesser
+> General Public License version 2.1, or the Mozilla Public License version 1.1. It is
+> distributed WITHOUT ANY WARRANTY. Full LGPL-2.1 text: `licenses/GNU LGPL.txt`.
+
+**LAME - LGPL-2.0-or-later**
+> Copyright (c) 1999 Mark Taylor, and the LAME developers. This library is free software;
+> you can redistribute it and/or modify it under the terms of the GNU Library General
+> Public License, version 2 or (at your option) any later version. It is distributed
+> WITHOUT ANY WARRANTY.
+
+**PDCursesMod - public domain**
+> The vendored PDCursesMod files (the portable core and the wingui port) are released to
+> the public domain; see the "Distribution Status" sections in `lib/pdcursesmod/`. None of
+> upstream's GPL build scripts were vendored. RE-MOCT's local patches are listed in
+> `lib/pdcursesmod/VENDOR.md`.
+
+**GCC runtime - GPL-3.0-or-later with the GCC Runtime Library Exception 3.1**
+> The exception lets a program compiled with GCC carry the runtime under the program's
+> own license (RE-MOCT's is MIT). No notice is required; this line is a courtesy.
+
+**mingw-w64 winpthreads (Windows) - MIT-style, with BSD-3-Clause portions**
+> Copyright (c) 2011 mingw-w64 project; portions (C) 2010 Lockless Inc. The copyright and
+> permission notices must be included in all copies; the full text ships as
+> `licenses/winpthreads-COPYING`.
+
+**ncurses (Linux) - X11-style**
 > Copyright (c) 1998-2023 Free Software Foundation, Inc. Permission is hereby granted,
 > free of charge … MIT/X11-style; the copyright and permission notice must be retained.
 
@@ -158,6 +208,12 @@ redistributions:
 > library's own distribution (MSYS2 package on Windows, distro package on Linux). The
 > lines here are convenience summaries; a binary release should bundle the exact upstream
 > `COPYING` / `LICENSE` files under `licenses/`.
+>
+> The Windows release's `licenses/` folder carries the files the MSYS2 packages install
+> for FDK AAC, FLAC, libogg, libopus, libopusfile, WavPack, zlib, libebur128, ncurses,
+> winpthreads and the GCC runtime, the LGPL-2.1 text for TagLib and LAME, and RE-MOCT's
+> own MIT license. MSYS2 installs no license file for libvorbis or libopusenc; their
+> BSD-3-Clause notices are the ones above.
 
 ---
 

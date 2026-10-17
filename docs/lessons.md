@@ -371,6 +371,28 @@
   `art_candidates_test` would need folded fixtures too. That is a slice of its
   own. **If it ever bites a real title, it becomes that slice** rather than a
   surprise, which is the only reason this entry exists.
+- **The ceremony's date step catches the date error only if you check the CLOCK,
+  not the conversation.** 1.6.2 was stamped 2026-08-13 while the machine, the tag
+  and both merges said 2026-08-15 - by the person running the step whose entire
+  purpose is to catch that, having taken the date from what was being discussed
+  rather than from `date`. **Run the command.** It costs nothing and it is the only
+  authority; a release date is not something to recall.
+  **The recovery has a window and it is short.** A pushed tag is free to move only
+  while nothing has consumed it - no published release, no downloaded tarball, no
+  CI that fetched it. Inside that window, moving it is correct: a tarball whose own
+  CHANGELOG carries the wrong release date stays wrong permanently, and nothing
+  else fixes it. Outside it, the tag is a fact and the correction goes elsewhere.
+  **Check consumption before reaching for `--force`, and treat the answer as the
+  deciding fact rather than the convenience.**
+- **When a probe does NOT reproduce, its value is the list of what it could not
+  observe - so write that list.** Two probes failed to reproduce the m4b symptom:
+  a decode probe (it was never decode) and then a probe driving the real
+  `LocalFileSource` through a real device bring-up including the warm-up. The
+  second is only useful because it says what it structurally lacked - the wingui
+  message pump, per-track device teardown/reinit, the full callback body, crossfade
+  arming. **That converts "could not reproduce" from a dead end into a ranked
+  search space**, and it is what let the bug be parked honestly instead of guessed
+  at. A non-reproduction reported without its exclusions is just a shrug.
 - **A success code says the call returned, not that you got what you asked for -
   and this is the second subsystem where that has bitten.** `ma_device_init` with
   `shareMode = exclusive` returns `MA_SUCCESS` while silently resampling: measured

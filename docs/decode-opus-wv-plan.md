@@ -1,4 +1,4 @@
-# Slice `decode-opus-wv` — Opus + WavPack decode support (PLAN)
+# Slice `decode-opus-wv` - Opus + WavPack decode support (PLAN)
 
 **Stage:** PLAN. No source written, nothing committed.
 **Scope:** decode/playback only, additive, non-CD-path.
@@ -6,7 +6,7 @@
 **Target branch on greenlight:** `github.com/radmageirl/experimental`.
 
 Every anchor below was resolved against the live checkout. Divergences from the
-brief are in §1 — read that first, two of them change the shape of the work.
+brief are in §1 - read that first, two of them change the shape of the work.
 
 ---
 
@@ -16,7 +16,7 @@ The `/mnt/project` snapshot the brief was written from lags the live tree. Six
 findings differ from what the brief describes. Per the brief's §0 STOP clause I
 am reporting rather than proceeding.
 
-### 1.1 `.opus` is ALREADY in the extension gate — and is a browse-and-fail trap today
+### 1.1 `.opus` is ALREADY in the extension gate - and is a browse-and-fail trap today
 
 The brief's §5 says the playable-extension allow-list is unknown, and asks to
 "plan the addition of `.opus` and `.wv`". Live, the allow-list is
@@ -31,14 +31,14 @@ static const std::vector<std::string> AUDIO_EXTS = {
 
 `.opus` is already there, and `"OPUS"` is already a file-type label in
 [UIManager.cpp:2198-2199](src/UIManager.cpp#L2198-L2199). So `.opus` files are
-**already browsable, already labelled, and already un-playable** — `open_decoder`
+**already browsable, already labelled, and already un-playable** - `open_decoder`
 has no Opus backend, `ma_decoder_init_file_w` fails, `LocalFileSource::open`
 returns false. This slice does not *add* Opus to the gate; it *repairs* a gate
 entry that has been advertising a format the engine cannot decode.
 
 Only `.wv` needs adding, and only to two lists.
 
-### 1.2 There is no built-in Vorbis decoder — `.ogg` is the same trap, and hazard 4 is moot
+### 1.2 There is no built-in Vorbis decoder - `.ogg` is the same trap, and hazard 4 is moot
 
 The brief's hazard 4 asks to protect the built-in Vorbis decoder from being
 shadowed by the Opus vtable on `.ogg`. **There is no built-in Vorbis decoder in
@@ -68,7 +68,7 @@ Consequences:
 - **This is out of scope but cheap later.** This slice links libogg anyway; a
   follow-up could add stb_vorbis or an Ogg-Vorbis vtable. Flagging, not doing.
 
-### 1.3 The R128 ReplayGain path exists and is actively wrong — a tagged Opus file plays SILENT
+### 1.3 The R128 ReplayGain path exists and is actively wrong - a tagged Opus file plays SILENT
 
 The brief asks to "plan an Opus branch in the RG read". A branch already exists,
 at [LocalFileSource.cpp:59-63](src/LocalFileSource.cpp#L59-L63):
@@ -79,14 +79,14 @@ if (rg_db == 0.0f) rg_db = tryRG("replaygain_track_gain");
 if (rg_db == 0.0f) rg_db = tryRG("R128_TRACK_GAIN");
 ```
 
-`tryRG` is `std::stof` — it reads `R128_TRACK_GAIN` as **plain decimal dB**. That
+`tryRG` is `std::stof` - it reads `R128_TRACK_GAIN` as **plain decimal dB**. That
 tag is Q7.8 fixed-point (dB × 256). A perfectly ordinary `-1234` (= −4.82 dB)
 is read as **−1234 dB**, and the audio thread
 ([AudioManager.cpp:811-821](src/AudioManager.cpp#L811-L821)) then computes
 `pow(10, -1234/20)` → `0.0` → `clamp(0, 0, 4)` → **0.0** → total silence for the
 whole track, with ReplayGain enabled.
 
-So this is not "add a branch" — it is "fix a branch that currently mutes tagged
+So this is not "add a branch" - it is "fix a branch that currently mutes tagged
 Opus files". It is inert today only because nothing can decode Opus in the first
 place; **making Opus decode is what arms this bug.** The RG fix is therefore not
 optional polish, it is part of the decode slice.
@@ -108,7 +108,7 @@ include handling is needed**, and the CMake block collapses to a verbatim mirror
 of the FDK-AAC one (§6). This makes the dependency work materially smaller than
 the brief budgeted for.
 
-### 1.5 There is no `extras/` — miniaudio is a single vendored header
+### 1.5 There is no `extras/` - miniaudio is a single vendored header
 
 The brief's §3 note suggests evaluating miniaudio's reference libopus backend
 from its `extras/` folder. That folder does not exist in this tree: miniaudio is
@@ -121,7 +121,7 @@ Combined with §4.4, the recommendation is **hand-roll**.
 - Headers live in `include/`, not beside the `.cpp` (`include/AacDecoder.h` +
   `src/AacDecoder.cpp`). New headers follow that.
 - The `Shift+F` file-type column's own comment
-  ([UIManager.cpp:2186](src/UIManager.cpp#L2186)) still says "F11" — stale, the real
+  ([UIManager.cpp:2186](src/UIManager.cpp#L2186)) still says "F11" - stale, the real
   binding is `Shift+F` at [UIManager.cpp:5365](src/UIManager.cpp#L5365). Cosmetic,
   not touched by this slice.
 
@@ -142,7 +142,7 @@ as first member, whole-file slurp on init, magic-sniff before the slurp complete
 
 **Naming note:** libopus's own `opus.h` typedefs a struct called `OpusDecoder`.
 Our *file* `OpusDecoder.h` does not collide (libopus ships no such filename) and
-we declare no C++ type of that name — only `ma_opus_backend_vtable()`. Safe, but
+we declare no C++ type of that name - only `ma_opus_backend_vtable()`. Safe, but
 worth knowing before someone adds a class later.
 
 ---
@@ -174,7 +174,7 @@ worth knowing before someone adds a class later.
 
 ### 4.1 `src/OpusDecoder.cpp`
 
-**Library:** libopusfile (`op_*`) over libopus. `#include <opus/opusfile.h>` — see
+**Library:** libopusfile (`op_*`) over libopus. `#include <opus/opusfile.h>` - see
 the collision hazard in §5.1, the `opus/` prefix is **mandatory**, not stylistic.
 
 **Open path:** slurp → `op_open_memory(data, size, &err)`.
@@ -195,7 +195,7 @@ Using the *memory* entry point (not `op_open_file`) is the load-bearing choice:
    `MA_NO_BACKEND`.
 
 libopusfile's own parser is the Opus-vs-Vorbis discriminator. **No hand-rolled Ogg
-page walking** — the brief's hazard 4 sniff is the library's job, and it is the
+page walking** - the brief's hazard 4 sniff is the library's job, and it is the
 one component guaranteed to agree with the format spec.
 
 **Format reported by `get_format`:** `ma_format_s16`, `op_channel_count(of, -1)`
@@ -204,7 +204,7 @@ always outputs 48 kHz regardless of the encoder's `input_sample_rate`). The
 forced-format converter resamples 48000 → 44100. Read via `op_read` (native
 `opus_int16`), mirroring AAC's s16 output.
 
-**Seek / cursor / length:** `op_pcm_seek`, `op_pcm_total(of, -1)` — both exact and
+**Seek / cursor / length:** `op_pcm_seek`, `op_pcm_total(of, -1)` - both exact and
 native, so this backend is simpler than `AacDecoder`'s sample-table machinery
 (no MP4 box tree, no ADTS frame walk).
 
@@ -224,12 +224,12 @@ over the in-memory buffer, `wvc_id = NULL`, flags `OPEN_NORMALIZE`.
 
 Same reasoning as Opus (house style + Windows wide paths), plus one bonus: passing
 `wvc_id = NULL` **defers `.wvc` by construction** rather than by a flag we might
-forget — a memory reader has no filename to derive the sidecar from.
+forget - a memory reader has no filename to derive the sidecar from.
 
 **Sniff:** bytes 0-3 == `"wvpk"`. Trivial and unambiguous; disjoint from every
 other magic in play.
 
-**Bit depth — the brief's hazard 3, and a deliberate deviation from the AAC template:**
+**Bit depth - the brief's hazard 3, and a deliberate deviation from the AAC template:**
 
 `WavpackUnpackSamples` always returns `int32_t` per sample, whatever the source
 depth. Rather than truncate to s16, this backend reports **`ma_format_f32`**:
@@ -246,19 +246,19 @@ through the converter and costs nothing. Flagging as an intentional,
 justified departure from the template.
 
 This directly answers the brief's "confirm the forced-format conversion path
-accepts >16-bit input": it does — miniaudio's converter takes any
+accepts >16-bit input": it does - miniaudio's converter takes any
 format/rate/channel combination the data source reports and converts to the
 config's f32/2/44100. 24-bit and non-44.1 kHz are **converted, not rejected**.
 Non-44.1 kHz WavPack resamples the same way Opus's 48 kHz does.
 
 **`.wvc` hybrid correction: DEFERRED (recommended, per the brief).** Plain `.wv`
-only. A hybrid `.wv` without its `.wvc` still decodes — it is a valid lossy
-stream — so the failure mode is "plays at lossy quality", not "fails". Acceptable
+only. A hybrid `.wv` without its `.wvc` still decodes - it is a valid lossy
+stream - so the failure mode is "plays at lossy quality", not "fails". Acceptable
 for this slice; revisit only if asked.
 
 **Seek / cursor / length:** `WavpackSeekSample64`, `WavpackGetNumSamples64`.
 
-### 4.3 The Opus ReplayGain branch — exact conversion
+### 4.3 The Opus ReplayGain branch - exact conversion
 
 Replace the broken `R128_TRACK_GAIN` fallback (§1.3) with a correctly-typed branch.
 
@@ -268,21 +268,21 @@ replaygain_db = (float)R128_TRACK_GAIN_q78 / 256.0f + 5.0f
 
 Two terms, each load-bearing:
 
-1. **`/ 256.0` — Q7.8 fixed-point → dB.** The tag is an *integer* string of
+1. **`/ 256.0` - Q7.8 fixed-point → dB.** The tag is an *integer* string of
    dB×256. This is the term whose absence causes today's silence bug.
-2. **`+ 5.0` — reference re-basing.** R128 references **−23 LUFS**; ReplayGain
+2. **`+ 5.0` - reference re-basing.** R128 references **−23 LUFS**; ReplayGain
    references **−18 LUFS** (89 dB). The tag's gain lands the track at −23 LUFS;
    reaching −18 LUFS needs **5 dB more**. Without this, Opus plays ~5 dB quiet
-   relative to every other format — the brief's stated hazard, and the number
+   relative to every other format - the brief's stated hazard, and the number
    is 5, not 6 (6 dB is the unrelated preamp, see below).
 
-**No header-gain term** — libopusfile already applied it (§4.1), and RFC 7845
+**No header-gain term** - libopusfile already applied it (§4.1), and RFC 7845
 defines `R128_TRACK_GAIN` as relative to post-header-gain level. The two facts
 cancel exactly; this is why the design pins `OP_HEADER_GAIN` default.
 
 **Ordering:** the Opus branch must be tried **before** the generic
 `REPLAYGAIN_TRACK_GAIN` lookups, or an Opus file carrying both tags takes the
-wrong path. Gate it on the file actually being Opus, not on tag presence — some
+wrong path. Gate it on the file actually being Opus, not on tag presence - some
 taggers write both, and `R128_TRACK_GAIN` is authoritative for `.opus`.
 
 **Explicitly NOT touched:** the unconditional `+6 dB` preamp at
@@ -294,7 +294,7 @@ different slice. (Two pre-existing oddities noticed in passing, both out of
 scope: the preamp boosts *untagged* tracks +6 dB, and `REPLAYGAIN_TRACK_PEAK` is
 written by the ripper but never read back, so there is no clip protection.)
 
-**WavPack RG needs no branch** — APEv2 carries plain-dB `REPLAYGAIN_TRACK_GAIN`,
+**WavPack RG needs no branch** - APEv2 carries plain-dB `REPLAYGAIN_TRACK_GAIN`,
 which the existing first `tryRG` already handles.
 
 ### 4.4 Recommendation: hand-roll, do not adapt miniaudio's reference backend
@@ -305,9 +305,9 @@ which the existing first `tryRG` already handles.
    third-party source + notices churn, not reusing something already present.
 2. **House style.** The reference backend is streaming-callback shaped; the house
    pattern is slurp-then-parse, deliberately ("this removes a class of streaming-I/O
-   bugs" — [AacDecoder.cpp:6-9](src/AacDecoder.cpp#L6-L9)).
+   bugs" - [AacDecoder.cpp:6-9](src/AacDecoder.cpp#L6-L9)).
 3. **The reference backend does not implement `onInitFileW`, and would fail
-   silently on Windows.** miniaudio hard-stops when it is null —
+   silently on Windows.** miniaudio hard-stops when it is null -
    [lib/miniaudio.h:63111-63113](lib/miniaudio.h#L63111-L63113):
 
    ```c
@@ -318,7 +318,7 @@ which the existing first `tryRG` already handles.
 
    No fallback to the callback path. Since the host opens via
    `ma_decoder_init_file_w` on Windows, a backend without `onInitFileW` is never
-   given the file — the custom-backend loop just moves on and Opus silently never
+   given the file - the custom-backend loop just moves on and Opus silently never
    plays. `AacDecoder` implements `be_init_file_w` ([AacDecoder.cpp:427](src/AacDecoder.cpp#L427))
    for exactly this reason. Adapting the reference backend would mean rewriting
    its entry points anyway, which is most of the work.
@@ -340,8 +340,8 @@ cfg.pCustomBackendUserData = nullptr;
 ```
 
 **Ordering: irrelevant to correctness, by construction.** The three sniffs are
-disjoint on the first four bytes — `FF Fx`/`ftyp` (AAC), `OggS` (Opus), `wvpk`
-(WavPack) — and each returns `MA_NO_BACKEND` on a miss. No format can shadow
+disjoint on the first four bytes - `FF Fx`/`ftyp` (AAC), `OggS` (Opus), `wvpk`
+(WavPack) - and each returns `MA_NO_BACKEND` on a miss. No format can shadow
 another, and with no built-in Vorbis (§1.2) there is nothing downstream to
 shadow either. Appending is chosen purely to keep the diff additive.
 
@@ -351,12 +351,12 @@ shadow either. Appending is chosen purely to keep the diff additive.
 separately for `detectBpm`. **Decision: register all three there too.**
 
 Rationale: leaving it AAC-only means BPM silently returns nothing for `.opus`/`.wv`
-while working for every other playable format — a per-format inconsistency users
+while working for every other playable format - a per-format inconsistency users
 would read as a bug, at the cost of two array entries. It is a throwaway
 analysis decoder on its own worker thread, no audio-thread involvement.
 
 One caveat to record, **not to fix here**: that site uses
-`ma_decoder_config_init(ma_format_f32, 1, 0)` — channels 1, **rate 0** — which is
+`ma_decoder_config_init(ma_format_f32, 1, 0)` - channels 1, **rate 0** - which is
 precisely the format-sniffer path `open_decoder`'s comment warns against
 ([LocalFileSource.cpp:82-88](src/LocalFileSource.cpp#L82-L88)). Pre-existing, off
 the main thread, unchanged by this slice.
@@ -370,10 +370,10 @@ Only `.wv`. `.opus` is already present in both (§1.1).
   Label `WV` (2 chars, fits the 5-col `ftw`). `"WAVPACK"` would overflow.
 
 Neither `isAudiobook` ([PlaylistManager.cpp:43](src/PlaylistManager.cpp#L43)) nor
-the MP4 chapter probe ([UIManager.cpp:1741](src/UIManager.cpp#L1741)) applies —
+the MP4 chapter probe ([UIManager.cpp:1741](src/UIManager.cpp#L1741)) applies -
 neither format is a book or MP4-family container.
 
-### 4.8 TagLib coverage — confirmed, no gap, no per-format branch
+### 4.8 TagLib coverage - confirmed, no gap, no per-format branch
 
 TagLib 2.2.1 (MSYS2 `mingw-w64-ucrt-x86_64-taglib 2.2.1-1`), with
 `opusfile.h`/`opusproperties.h`/`xiphcomment.h` and
@@ -381,11 +381,11 @@ TagLib 2.2.1 (MSYS2 `mingw-w64-ucrt-x86_64-taglib 2.2.1-1`), with
 
 `FileRef` resolves `.opus` → `Ogg::Opus::File` (Xiph comments) and `.wv` →
 `WavPack::File` (APEv2). `populate_track_info`'s generic `ref.tag()` +
-`tag->properties()` path picks up both with **no per-format branch** — title /
+`tag->properties()` path picks up both with **no per-format branch** - title /
 artist / album / genre / comment / year / track and `audioProperties()`
 duration / bitrate / sampleRate / channels all work as-is.
 
-The single exception is the RG *value semantics* for Opus (§4.3) — which is a tag
+The single exception is the RG *value semantics* for Opus (§4.3) - which is a tag
 **interpretation** gap, not a tag **coverage** gap.
 
 `mp4AacChannelCount(path)` ([LocalFileSource.cpp:73](src/LocalFileSource.cpp#L73))
@@ -394,12 +394,12 @@ both formats. No change needed.
 
 ---
 
-## 5. Hazards — decisions
+## 5. Hazards - decisions
 
 ### 5.1 NEW hazard the brief did not anticipate: TagLib ships its own `opusfile.h`
 
 TagLib installs `taglib/opusfile.h` (its C++ `TagLib::Ogg::Opus::File` class), and
-that directory is **already on the remoct target's include path** —
+that directory is **already on the remoct target's include path** -
 [CMakeLists.txt:238](CMakeLists.txt#L238) adds `${TAGLIB_INCLUDE_DIRS}`
 (= `${MSYS2_PREFIX}/include/taglib`). Confirmed present on **both** platforms:
 
@@ -408,7 +408,7 @@ that directory is **already on the remoct target's include path** —
 
 Meanwhile `opusfile.pc` advertises `Cflags: -I${includedir}/opus`. **If we follow
 pkg-config's Cflags and write `#include <opusfile.h>`, which header wins depends
-on `-I` order** — and `LocalFileSource.cpp` includes TagLib headers in the same
+on `-I` order** - and `LocalFileSource.cpp` includes TagLib headers in the same
 TU as the decoder registration. A C++ tag-reader class silently substituted for
 the C codec API is a confusing compile failure at best.
 
@@ -420,28 +420,28 @@ unreachable. Same for `<wavpack/wavpack.h>`.
 
 This is also the tiebreaker for §6's find_library-vs-pkg-config choice.
 
-### 5.2 WASAPI first-init warm-up — already covers `.opus`/`.wv`, no change
+### 5.2 WASAPI first-init warm-up - already covers `.opus`/`.wv`, no change
 
 **Confirmed format-agnostic.** [AudioManager.cpp:170-204](src/AudioManager.cpp#L170-L204)
 is gated on a function-local `static bool audio_backend_warmed`, uses a
 hardcoded f32/2/44100 throwaway device, and runs on the first `initDevice()` of
-the process regardless of the file. Nothing about the file's codec reaches it —
+the process regardless of the file. Nothing about the file's codec reaches it -
 no parameter, no extension check, no `file_src_` inspection. The code comment
 states the intent outright: *"it's the first backend init that's fragile, not the
 AAC file"*.
 
 **Reasoning:** the bug is that the first WASAPI bring-up in a process is fragile
 when it coincides with a *custom* (non-built-in) `ma_decoder` backend. `.opus`
-and `.wv` are custom backends, i.e. the same class of trigger as `.aac` — and the
+and `.wv` are custom backends, i.e. the same class of trigger as `.aac` - and the
 warm-up already neutralises it for the whole class by making the first bring-up
 coincide with no decoder at all. **No change needed; already covered.** Test in §7.2
 verifies rather than assumes.
 
 (Noted in passing, pre-existing, out of scope: the warm-up sets `wc.dataCallback`
 with `pUserData = this`, and its comment claims safety because `file_src_` is
-null. On the first `play()` that premise is false — `file_src_` is assigned at
+null. On the first `play()` that premise is false - `file_src_` is assigned at
 [AudioManager.cpp:150](src/AudioManager.cpp#L150), *before* `initDevice()` at
-:154 — so the warm-up callback can consume a few frames from the real decoder.
+:154 - so the warm-up callback can consume a few frames from the real decoder.
 Also the outer comment says "init/uninit (no start) is enough … the callback
 never fires" while the code does `start`/`stop`; that comment is stale.)
 
@@ -450,16 +450,16 @@ never fires" while the code does `start`/`stop`; that comment is stale.)
 | hazard | decision |
 |---|---|
 | Opus RG offset | `q78/256.0 + 5.0`. `/256` fixes today's silence bug; `+5` re-bases −23 → −18 LUFS. No header-gain term (libopusfile applies it; RFC 7845 defines the tag relative to post-header-gain). |
-| WavPack bit depth | Backend reports **f32**, not s16 — justified deviation from the AAC template (§4.2). Converter accepts >16-bit and non-44.1 kHz by conversion, not rejection. |
+| WavPack bit depth | Backend reports **f32**, not s16 - justified deviation from the AAC template (§4.2). Converter accepts >16-bit and non-44.1 kHz by conversion, not rejection. |
 | `.wvc` correction file | **Deferred** (as recommended). Memory reader with `wvc_id = NULL` defers it structurally. Hybrid `.wv` still plays, at lossy quality. |
-| `.ogg` disambiguation / vtable order | **Moot** — no built-in Vorbis exists (§1.2). Sniffs are disjoint on 4-byte magic; order irrelevant. Opus-vs-Vorbis discrimination delegated to `op_open_memory`. |
-| BPM decoder scope | **In scope** — register all three (§4.6). |
-| WASAPI warm-up | **No change** — already format-agnostic (§5.2). |
-| TagLib `opusfile.h` collision | **NEW** — mandatory `opus/` include prefix (§5.1). |
+| `.ogg` disambiguation / vtable order | **Moot** - no built-in Vorbis exists (§1.2). Sniffs are disjoint on 4-byte magic; order irrelevant. Opus-vs-Vorbis discrimination delegated to `op_open_memory`. |
+| BPM decoder scope | **In scope** - register all three (§4.6). |
+| WASAPI warm-up | **No change** - already format-agnostic (§5.2). |
+| TagLib `opusfile.h` collision | **NEW** - mandatory `opus/` include prefix (§5.1). |
 
 ---
 
-## 6. CMake — exact edit shape
+## 6. CMake - exact edit shape
 
 **pkg-config vs find_library: use `find_library` + `find_path`.** Three reasons:
 the FDK-AAC/FLAC/LAME/ebur128 blocks all do
@@ -469,7 +469,7 @@ are identical across platforms so pkg-config buys nothing (§1.4); and pkg-confi
 `Cflags: -I${includedir}/opus` would actively *arm* the TagLib collision (§5.1).
 TagLib's pkg-config usage is the exception, and it exists because TagLib needs it.
 
-**Dependency availability — verified on both toolchains:**
+**Dependency availability - verified on both toolchains:**
 
 | | MSYS2 UCRT64 (7of9) | Debian Trixie (WSL2) |
 |---|---|---|
@@ -478,7 +478,7 @@ TagLib's pkg-config usage is the exception, and it exists because TagLib needs i
 | wavpack | **installed** 5.9.0-1 | not installed, candidate `5.8.1-1` |
 
 Windows needs **no new package installs**. Linux/CI needs
-`apt-get install libopus-dev libopusfile-dev libwavpack-dev` — which also means
+`apt-get install libopus-dev libopusfile-dev libwavpack-dev` - which also means
 **`.github/` CI needs its Debian install list extended**, or the Linux job breaks
 at configure on the `REQUIRED` finds. (wavpack 5.9.0 vs 5.8.1 is a harmless minor
 skew; every API used exists in both.)
@@ -505,21 +505,21 @@ target_include_directories(remoct PRIVATE ${OPUS_INCLUDE} ${WAVPACK_INCLUDE})
 
 **Why a second `target_include_directories` call rather than extending the one at
 [:128-135](CMakeLists.txt#L128-L135):** that block already interpolates
-`${FDKAAC_INCLUDE}` at **:134 — 50 lines before `find_path` sets it at :184**.
+`${FDKAAC_INCLUDE}` at **:134 - 50 lines before `find_path` sets it at :184**.
 CMake evaluates top-to-bottom, so that entry expands to empty today. It works
 only because `${MSYS2_PREFIX}/include` is added at :137 anyway. Adding our vars
 there would silently inherit the same latent bug. Placing the call *after* the
 finds is correct and additive. **The pre-existing FDKAAC ordering bug is left
-alone** — flagging, not fixing, in a decode slice.
+alone** - flagging, not fixing, in a decode slice.
 
-**Sources** — after [CMakeLists.txt:66](CMakeLists.txt#L66):
+**Sources** - after [CMakeLists.txt:66](CMakeLists.txt#L66):
 
 ```cmake
     src/OpusDecoder.cpp           # libopus/libopusfile (.opus) backend
     src/WavPackDecoder.cpp        # libwavpack (.wv) backend
 ```
 
-**Link** — after [CMakeLists.txt:258](CMakeLists.txt#L258) (`${FDKAAC_LIB}`):
+**Link** - after [CMakeLists.txt:258](CMakeLists.txt#L258) (`${FDKAAC_LIB}`):
 
 ```cmake
     ${OPUSFILE_LIB}   # must precede ${OPUS_LIB}: opusfile depends on opus
@@ -527,7 +527,7 @@ alone** — flagging, not fixing, in a decode slice.
     ${WAVPACK_LIB}
 ```
 
-**Static probe (`-DREMOCT_STATIC_PROBE=ON`) — already satisfied, one line to verify.**
+**Static probe (`-DREMOCT_STATIC_PROBE=ON`) - already satisfied, one line to verify.**
 Static libopusfile needs libogg explicitly, and
 [CMakeLists.txt:288](CMakeLists.txt#L288) *already* links
 `"${MSYS2_PREFIX}/lib/libogg.a"` (added for static libFLAC). The static probe is
@@ -535,11 +535,11 @@ therefore covered for free; worth an explicit check rather than an assumption.
 Unlike fdk-aac, opus/opusfile/wavpack are **not** shared with `remoct_stream`, so
 they need no dynamic-by-design carve-out ([:186-193](CMakeLists.txt#L186-L193)).
 
-**`plugins/stream/` — untouched.** It links its own FDK-AAC + miniaudio for the
+**`plugins/stream/` - untouched.** It links its own FDK-AAC + miniaudio for the
 radio path and has zero custom-backend registrations. Opus/WavPack are file-decode
 only; the plugin does not need them.
 
-**`tests/CMakeLists.txt` — MUST change or the build breaks.** `xfade_handoff_test`
+**`tests/CMakeLists.txt` - MUST change or the build breaks.** `xfade_handoff_test`
 (Windows-only) links `src/LocalFileSource.cpp` **and** `src/AacDecoder.cpp`. Once
 `open_decoder` references `ma_opus_backend_vtable()`/`ma_wavpack_backend_vtable()`,
 that target fails to **link** unless it also gets the two new `.cpp`s plus
@@ -560,25 +560,25 @@ defer is graceful rather than a crash.
 ### 7.2 First-file / WASAPI
 `.opus` as the very first file of a fresh session; `.wv` as the very first file of
 another fresh session. Both must play with no chirp-then-silence. This tests §5.2's
-"already covered" reasoning against reality — it is the claim most worth being
+"already covered" reasoning against reality - it is the claim most worth being
 wrong about, since it is the one where the plan changes nothing.
 
 ### 7.3 ReplayGain (validates the R128 offset)
 A tagged Opus file's applied gain matches a reference within tolerance. Concretely:
-- With RG **off**, and with RG **on**, on the same Opus file — RG-on must **not**
+- With RG **off**, and with RG **on**, on the same Opus file - RG-on must **not**
   be silent. That is the direct regression test for the §1.3 silence bug.
 - Compare applied gain against `R128_TRACK_GAIN/256 + 5` computed by hand from the
   tag; and cross-check loudness against a FLAC of the same master with
-  `REPLAYGAIN_TRACK_GAIN` — they should land within ~1 dB. This is what actually
+  `REPLAYGAIN_TRACK_GAIN` - they should land within ~1 dB. This is what actually
   validates `+5` rather than `+6`/`0`.
 - A `.wv` with APEv2 `REPLAYGAIN_TRACK_GAIN` → unchanged generic path.
 
 ### 7.4 Regression
 FLAC / MP3 / AAC / `.m4a` / `.m4b` playback unchanged (proves the 3-entry vtable
 array shadows nothing and the sniffs fail fast). Both platforms: Windows ctest
-20/20, Linux 21/21 green — including `xfade_handoff_test` after the §6 test edit.
+20/20, Linux 21/21 green - including `xfade_handoff_test` after the §6 test edit.
 
-**`.ogg` Vorbis is deliberately NOT a regression check** — it does not decode today
+**`.ogg` Vorbis is deliberately NOT a regression check** - it does not decode today
 (§1.2), so "still decodes" cannot pass. The honest check is that `.ogg` behaviour
 is *unchanged* (still fails to open). Recording this so a red `.ogg` result is not
 later misread as caused by this slice.

@@ -1,4 +1,4 @@
-// stream_record_test — the frozen StreamRecorder engine contract (stream-record
+// stream_record_test - the frozen StreamRecorder engine contract (stream-record
 // slice R1), proven headless BEFORE any UI exists (the probe-first doctrine).
 //
 // Drives the REAL engine end-to-end: a producer pushes synthetic f32 PCM
@@ -8,13 +8,13 @@
 //   1. the three-cut session: split boundaries exact at the frame level
 //      (worker accounting), first/tail cuts marked partial, middle cut clean,
 //      per-format files exist and carry the right tags + per-cut ReplayGain
-//      (plain RG TXXX on MP3, R128 Q7.8 on Opus — the two dialects), zero
+//      (plain RG TXXX on MP3, R128 Q7.8 on Opus - the two dialects), zero
 //      drops, duplicate onTitle dedup (a repeat must not cut twice)
-//   2. timestamp-fallback naming on an unparseable StreamTitle (title-only) —
+//   2. timestamp-fallback naming on an unparseable StreamTitle (title-only) -
 //      a sanely-named valid file, raw string preserved in the TITLE tag
 //   3. split_on_meta off: one continuous timestamp-named file, titles ignored
 //   4. ring overflow (tiny ring, instant production): drops COUNTED and
-//      accounted (written + dropped == pushed), capture degrades honestly —
+//      accounted (written + dropped == pushed), capture degrades honestly -
 //      the finished file stays valid, recording does not fail
 //   5. parseNowPlaying: the "Artist - Title" convention edge cases
 #include "StreamRecorder.h"
@@ -80,7 +80,7 @@ static void pushSine(StreamRecorder& rec, uint64_t& phase, uint32_t frames,
 
 // ─── slice B: copy-mode fixtures ─────────────────────────────────────────────
 // Synthetic-but-VALID frame headers (FrameSync parses them; nothing decodes
-// them — the copy path never decodes, that's the claim under test).
+// them - the copy path never decodes, that's the claim under test).
 
 // MPEG-1 Layer III, 128 kbps, 44100 Hz, no padding -> 417 bytes, 1152 samples.
 static std::vector<uint8_t> mp3Frame(uint8_t fill) {
@@ -102,7 +102,7 @@ static std::vector<uint8_t> adtsFrame(uint8_t fill) {
 }
 
 // The injected byte source: a scripted queue of (chunk, discont) pairs the
-// worker pump drains — exactly the shape AudioManager wires to read_encoded.
+// worker pump drains - exactly the shape AudioManager wires to read_encoded.
 struct FakePull {
     std::mutex m;
     std::deque<std::pair<std::vector<uint8_t>, int32_t>> q;
@@ -150,7 +150,7 @@ static std::vector<uint8_t> mp3AudioBytes(const std::string& p) {
     uint32_t skip = framesync::id3v2Size(all.data(), all.size());
     return std::vector<uint8_t>(all.begin() + skip, all.end());
 }
-// mdat payload of an .m4a (scanned by box walk, position-independent — the
+// mdat payload of an .m4a (scanned by box walk, position-independent - the
 // tag pass may shift boxes).
 static std::vector<uint8_t> m4aMdatBytes(const std::string& p) {
     auto all = readAll(p);
@@ -183,7 +183,7 @@ struct Mp3Tags {
 };
 // Strengthened for mp3-rg-write: the RG frame must be a genuine
 // UserTextIdentificationFrame with a CLEAN description (exactly
-// "REPLAYGAIN_TRACK_GAIN" — no "=value" blob baked in) and a NON-EMPTY
+// "REPLAYGAIN_TRACK_GAIN" - no "=value" blob baked in) and a NON-EMPTY
 // value field. This is the production-write half of the write->read chain:
 // tagCut writes the standard shape on every ctest, and mp3_rg_read_test's
 // standard-shape case proves LocalFileSource reads exactly that shape.
@@ -375,7 +375,7 @@ int main() {
 
     // ── 4. ring overflow: drops counted, capture degrades honestly ──────────
     {
-        StreamRecorder rec(4096);          // ~93 ms ring — trivially floodable
+        StreamRecorder rec(4096);          // ~93 ms ring - trivially floodable
         RecOptions opt;
         opt.split_offset_ms = 0;   // split-trim regression anchor: today's timing
         opt.formats = { RipFormat::Opus };
@@ -548,7 +548,7 @@ int main() {
     // ── 4d. ad-aware: classify + route (Save) / suppress (Discard) ──────────
     {
         // Save: non-song cuts route to <Station>/ads/ (sortable names, files
-        // exist — routing never destroys); songs stay in main.
+        // exist - routing never destroys); songs stay in main.
         StreamRecorder rec;
         RecOptions opt; opt.formats = { RipFormat::Opus }; opt.split_offset_ms = 0;
         CHECK(rec.start(opt, "Test FM", root));
@@ -622,7 +622,7 @@ int main() {
     }
 
     // ── 4e. copy mode (abi-cluster slice B): byte fidelity + frame-exact
-    // splits through the injected pull — no plugin, no network, no decode ────
+    // splits through the injected pull - no plugin, no network, no decode ────
     {
         // Three-cut MP3 copy session: every emitted cut's audio bytes are the
         // EXACT bytes pushed for it (the copy claim, literal), splits land on
@@ -702,7 +702,7 @@ int main() {
     }
     {
         // Discont resync: a flagged gap drops the orphaned partial frame and
-        // the cut carries ONLY whole clean frames — no torn frame ever lands.
+        // the cut carries ONLY whole clean frames - no torn frame ever lands.
         StreamRecorder rec;
         FakePull fp;
         RecOptions opt = fp.wire(RecOptions{});
@@ -771,7 +771,7 @@ int main() {
     }
     {
         // Ad-aware composes in copy mode: Discard suppresses (counted, no
-        // file), songs land tagged — the classifier is upstream of the writer.
+        // file), songs land tagged - the classifier is upstream of the writer.
         StreamRecorder rec;
         FakePull fp;
         RecOptions opt = fp.wire(RecOptions{});

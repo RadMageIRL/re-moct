@@ -1,9 +1,9 @@
-// WavEncoder.cpp — see WavEncoder.h. Header fields are serialized explicitly
+// WavEncoder.cpp - see WavEncoder.h. Header fields are serialized explicitly
 // little-endian byte-by-byte: both targets are LE (so this is moot today) but
 // the file format is LE by spec and the code shouldn't rely on host order.
 #include "WavEncoder.h"
 
-#include "PortUtil.h"   // port::fopenUtf8 — same open call the sibling encoders use
+#include "PortUtil.h"   // port::fopenUtf8 - same open call the sibling encoders use
 
 #include <cstdint>
 #include <cstring>
@@ -55,7 +55,7 @@ bool WavEncoder::open(const std::string& path, uint64_t total_frames) {
 
 bool WavEncoder::writeFrames(const int16_t* interleaved, size_t frames) {
     if (!f_) return false;
-    // STRICT: a short write is a hard failure (see header comment) — the
+    // STRICT: a short write is a hard failure (see header comment) - the
     // track aborts and the caller removes the partial file.
     if (fwrite(interleaved, BLOCK_ALIGN, frames, f_) != frames) return false;
     written_frames_ += frames;
@@ -73,7 +73,7 @@ bool WavEncoder::finalize(bool ok) {
         fseek(f_, 0, SEEK_SET);
         fwrite(h, 1, sizeof(h), f_);
     }
-    // Strict writeFrames guarantees fwrite accepted every byte — but a final
+    // Strict writeFrames guarantees fwrite accepted every byte - but a final
     // sub-buffer tail can still sit in stdio (the ENOSPC chain-test lesson
     // from the WavPack slice); flush and check before declaring completion.
     bool completed = !ok || fflush(f_) == 0;

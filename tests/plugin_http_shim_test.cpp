@@ -1,4 +1,4 @@
-// plugin_http_shim_test — Phase 4 slice (b): the host HTTP service shim.
+// plugin_http_shim_test - Phase 4 slice (b): the host HTTP service shim.
 // Proves the RemoctHostServices table (PluginHostServices) correctly bridges the
 // plugin C ABI to core::IHttp: request/response translation, the ZERO-bridge
 // cancel passthrough (the plugin's int32_t* reaches the transport unchanged), the

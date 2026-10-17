@@ -1,6 +1,6 @@
-// nowplaying_wide_probe.cpp — WIDE now-playing visibility probe (scope nowplaying-wide-probe).
+// nowplaying_wide_probe.cpp - WIDE now-playing visibility probe (scope nowplaying-wide-probe).
 //
-// Brackets the full cross-product every tick and lets rates-with-n narrow it — NO
+// Brackets the full cross-product every tick and lets rates-with-n narrow it - NO
 // pre-narrowing, NO single-window verdicts:
 //   station  x  session  x  channel , each correlated with in-band ground truth.
 //
@@ -77,7 +77,7 @@ static bool sameTrack(const std::string& a1,const std::string& t1,const std::str
     return A1==A2 || A1.find(A2)!=std::string::npos || A2.find(A1)!=std::string::npos;
 }
 
-// ── manifest in-band classify (ground truth) — ported from iheart_http_dump ──────
+// ── manifest in-band classify (ground truth) - ported from iheart_http_dump ──────
 static std::string escAttr(const std::string& s, const char* key) {
     size_t p = s.find(key); if (p == std::string::npos) return {};
     p += std::strlen(key);
@@ -142,7 +142,7 @@ struct Session {
     std::string profileId, sessionId, deviceId, listenerId, bearer, cookie;
 };
 
-// ctm URL — the web-player form (no session query params; the web player sent none).
+// ctm URL - the web-player form (no session query params; the web player sent none).
 static std::string ctmUrl(const std::string& id, const Session&) {
     return "https://us.api.iheart.com/api/v3/live-meta/stream/" + id +
            "/currentTrackMeta?defaultMetadata=true";
@@ -281,7 +281,7 @@ int main(int argc, char** argv) {
             json sc; sc["station"]=stn.id; sc["slug"]=stn.slug;
             sc["inband"]=ibCls; sc["inbandArtist"]=ibArtist; sc["inbandTitle"]=ibTitle; sc["inbandSeq"]=(long long)ibSeq;
 
-            // trackHistory (session-independent public feed) — co-timing
+            // trackHistory (session-independent public feed) - co-timing
             { Resp th=httpGet(*sess,"https://us.api.iheart.com/api/v3/live-meta/stream/"+stn.id+"/trackHistory",
                               browserHeaders(stn.slug.empty()?"www":stn.slug+".iheart.com"));
               std::string thArt,thTit; bool thok=false;
@@ -292,7 +292,7 @@ int main(int argc, char** argv) {
               sc["trackHistory"]={{"status",th.status},{"artist",thArt},{"title",thTit},{"matchesInband",thm}};
               if (music){auto&c=tally[stn.id+"|public|trackHistory"];++c.musicN;if(thm)++c.correct;} }
 
-            // graphql GetOnAirNow (public; slug-keyed) — is it phase-locked?
+            // graphql GetOnAirNow (public; slug-keyed) - is it phase-locked?
             if (!stn.slug.empty()){
               std::string gu="https://webapi.radioedit.iheart.com/graphql?operationName=GetOnAirNow"
                   "&variables=%7B%22slug%22%3A%22"+stn.slug+"%22%7D"
@@ -320,7 +320,7 @@ int main(int argc, char** argv) {
               if (music){auto&c=tally[stn.id+"|public|graphqlOnAir"];++c.musicN;if(gm)++c.correct;}
             }
 
-            // ctm x session — THE untested matrix
+            // ctm x session - THE untested matrix
             json ctmArr=json::array();
             for (auto& S : sessions) {
                 json cell; cell["session"]=S.label;

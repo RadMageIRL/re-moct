@@ -1,43 +1,43 @@
-// HttpCurl.cpp — Linux/libcurl implementation of core::IHttp (Phase 3 slice 2).
+// HttpCurl.cpp - Linux/libcurl implementation of core::IHttp (Phase 3 slice 2).
 //
 // The platform::lnx sibling of src/platform/win/HttpWinInet.cpp, same TU
 // layout: a file-static executeRequest() shared by the one-shot fetch() and
 // session fetches; core::http()/setHttp() defined here with the exact
 // g_override shape the Windows TU has (tests inject identically on both
-// platforms). Parity is field-by-field per docs/phase3-slice2-design.md §2 —
+// platforms). Parity is field-by-field per docs/phase3-slice2-design.md §2 -
 // notable mappings and their reasoning:
 //
-//   Sessions   — a held CURLSH share handle (CONNECT + DNS + SSL_SESSION
+//   Sessions - a held CURLSH share handle (CONNECT + DNS + SSL_SESSION
 //                caches, mutex-locked) + one easy handle PER FETCH bound via
 //                CURLOPT_SHARE. Keep-alive reuse across fetches AND the
 //                contract's concurrent-fetch thread safety (a single shared
-//                easy handle can't run two transfers — rejected in design).
-//   Cancel     — pre-check before perform (pre-cancelled = zero network),
+//                easy handle can't run two transfers - rejected in design).
+//   Cancel - pre-check before perform (pre-cancelled = zero network),
 //                then CURLOPT_XFERINFOFUNCTION polling the atomic; nonzero
 //                return -> CURLE_ABORTED_BY_CALLBACK -> finalizeCancelled().
 //                Accepted-better residual: the callback also fires during
 //                CONNECT, so a stalled connect is cancellable here where
 //                WinINet can't (documented cross-platform difference).
-//   timeout_ms — WinINet's RECEIVE_TIMEOUT is a per-read STALL guard, not a
+//   timeout_ms - WinINet's RECEIVE_TIMEOUT is a per-read STALL guard, not a
 //                whole-transfer deadline: mapped to CONNECTTIMEOUT_MS +
 //                LOW_SPEED_LIMIT=1/LOW_SPEED_TIME≈timeout. Deliberately NOT
 //                CURLOPT_TIMEOUT_MS (that would kill a healthy slow cover-art
-//                download mid-body — behavior WinINet never had).
-//   Redirects  — FollowAll -> FOLLOWLOCATION; FollowNone -> off (3xx is the
+//                download mid-body - behavior WinINet never had).
+//   Redirects - FollowAll -> FOLLOWLOCATION; FollowNone -> off (3xx is the
 //                final response, as WinINet's NO_AUTO_REDIRECT); Follow-
 //                SameScheme -> FOLLOWLOCATION + REDIR_PROTOCOLS_STR pinned to
 //                the ORIGINAL scheme (cross-scheme redirect fails, the same
 //                observable outcome as WinINet's IGNORE_REDIRECT_TO_* pair).
-//   Cache flags— WinINet's RELOAD/NO_CACHE_WRITE bypass ITS client cache;
+//   Cache flags - WinINet's RELOAD/NO_CACHE_WRITE bypass ITS client cache;
 //                curl has none -> no-op. pragma_no_cache stays a real request
 //                header ("Pragma: no-cache"), as the flag it mirrors.
-//   Proxy      — curl's env-var convention (http_proxy/https_proxy/no_proxy),
+//   Proxy - curl's env-var convention (http_proxy/https_proxy/no_proxy),
 //                the Linux system convention (WinINet PRECONFIG = IE/system).
-//   POST body  — CURLOPT_POSTFIELDS raw bytes; UTF-8 is never widened (no
-//                wide API exists on this path at all — the group-(b) rule).
+//   POST body - CURLOPT_POSTFIELDS raw bytes; UTF-8 is never widened (no
+//                wide API exists on this path at all - the group-(b) rule).
 //
 // The ICY/continuous live audio read loop stays OUT of this seam permanently
-// (its Linux twin is slice 3) — exactly as WinINet's header says.
+// (its Linux twin is slice 3) - exactly as WinINet's header says.
 #ifdef __linux__
 
 #include "core/IHttp.h"
@@ -54,7 +54,7 @@
 
 namespace {
 
-// The app's canonical UA — byte-identical to HttpWinInet's kDefaultUA.
+// The app's canonical UA - byte-identical to HttpWinInet's kDefaultUA.
 constexpr const char* kDefaultUA =
     "RE-MOCT/" REMOCT_VERSION " (https://github.com/RadMageIRL/re-moct)";
 
@@ -75,7 +75,7 @@ struct TransferCtx {
 };
 
 // Body sink. Mirrors HttpWinInet::readBody's shape: append the whole incoming
-// chunk FIRST, then check the cap — so a capped body may exceed max_body by up
+// chunk FIRST, then check the cap - so a capped body may exceed max_body by up
 // to one chunk, exactly like the Windows loop. Returning a short count aborts
 // the transfer (CURLE_WRITE_ERROR), disambiguated from a real write error via
 // ctx->cap_hit.
@@ -86,12 +86,12 @@ size_t writeBody(char* ptr, size_t size, size_t nmemb, void* userdata) {
     if (ctx->req->max_body && ctx->res->body.size() > ctx->req->max_body) {
         ctx->res->truncated = true;
         ctx->cap_hit = true;
-        return 0;                        // abort — the Windows loop's `break`
+        return 0;                        // abort - the Windows loop's `break`
     }
     return n;
 }
 
-// Cancel poll — libcurl calls this throughout the transfer (including the
+// Cancel poll - libcurl calls this throughout the transfer (including the
 // connect phase). Nonzero aborts with CURLE_ABORTED_BY_CALLBACK.
 int xferInfo(void* userdata, curl_off_t, curl_off_t, curl_off_t, curl_off_t) {
     auto* ctx = static_cast<TransferCtx*>(userdata);
@@ -170,7 +170,7 @@ core::HttpResponse executeRequest(CURLSH* share, const core::HttpRequest& req,
     const bool is_get = req.method.empty() || req.method == "GET";
     if (!is_get) {
         if (req.method == "POST") {
-            // Raw bytes, never widened — nlohmann emits UTF-8 and it goes out
+            // Raw bytes, never widened - nlohmann emits UTF-8 and it goes out
             // as-is (the "Björk" wire-fidelity rule from group (b)).
             curl_easy_setopt(h, CURLOPT_POSTFIELDS, req.body.data());
             curl_easy_setopt(h, CURLOPT_POSTFIELDSIZE, (long)req.body.size());
@@ -202,12 +202,12 @@ core::HttpResponse executeRequest(CURLSH* share, const core::HttpRequest& req,
         // req.cancel fired mid-transfer (connect or body).
         core::finalizeCancelled(res);
     } else if (rc == CURLE_OK || (rc == CURLE_WRITE_ERROR && ctx.cap_hit)) {
-        // Clean EOF, or the cap stopped us — the WinINet loop-break shape:
+        // Clean EOF, or the cap stopped us - the WinINet loop-break shape:
         // finalizeBody applies cap-and-keep vs reject_truncated+clear.
         grabFinalUrl();
         core::finalizeBody(res, req);
     } else if (status != 0) {
-        // Transfer began (headers/status arrived) then died mid-body — the
+        // Transfer began (headers/status arrived) then died mid-body - the
         // InternetReadFile-failure shape: read_error flagged, partial body
         // KEPT, ok per finalizeBody (hls gates on the flag; the six one-shot
         // sites keep the partial, exactly as on Windows).
@@ -228,11 +228,11 @@ core::HttpResponse executeRequest(CURLSH* share, const core::HttpRequest& req,
 namespace platform::lnx {
 
 // A persistent keep-alive session: one CURLSH share handle held for the
-// object's lifetime — the connection/DNS/TLS-session caches live in the share,
+// object's lifetime - the connection/DNS/TLS-session caches live in the share,
 // so consecutive fetches reuse pooled connections (proven live by
 // http_cancel_test scenario B: two fetches, ONE observed TCP connection).
 // Each fetch runs its own easy handle bound to the share, so concurrent
-// fetch() calls from different threads are safe — the contract both audio-site
+// fetch() calls from different threads are safe - the contract both audio-site
 // baselines rely on. UA + timeout are session-level; per-request values are
 // ignored, per the IHttpSession contract (same as WinInetSession).
 struct CurlSession final : core::IHttpSession {
@@ -265,7 +265,7 @@ struct CurlSession final : core::IHttpSession {
 };
 
 struct CurlHttp final : core::IHttp {
-    // One-shot fetch: fresh easy handle per call, no share — no connection
+    // One-shot fetch: fresh easy handle per call, no share - no connection
     // reuse across one-shots, the same wire shape as WinINet's fresh
     // InternetOpen per call.
     core::HttpResponse fetch(const core::HttpRequest& req) override {
@@ -353,7 +353,7 @@ struct CurlHttp final : core::IHttp {
 
 namespace core {
 
-// Transitional injection pointer — the exact HttpWinInet.cpp shape, so tests
+// Transitional injection pointer - the exact HttpWinInet.cpp shape, so tests
 // that inject via setHttp() behave identically on both platforms.
 static IHttp* g_override = nullptr;
 

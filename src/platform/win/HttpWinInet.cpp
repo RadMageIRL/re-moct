@@ -1,25 +1,25 @@
-// HttpWinInet.cpp — Windows/WinINet implementation of core::IHttp.
+// HttpWinInet.cpp - Windows/WinINet implementation of core::IHttp.
 //
-// Lives in src/platform/win/ (header in include/core/IHttp.h) — the core/platform
+// Lives in src/platform/win/ (header in include/core/IHttp.h) - the core/platform
 // boundary established at the Phase 1 reorg. Compiled only on Windows
 // (guarded in CMakeLists via if(WIN32)).
 //
 // Two request shapes, each mirroring the per-module helpers it replaces:
-//   GET  (slice 1)  — InternetOpenUrlW: MBLookup, RadioBrowser, and the auth GETs.
-//   POST (slice 2)  — InternetConnectW + HttpOpenRequestW + HttpSendRequestW with a
+//   GET  (slice 1) - InternetOpenUrlW: MBLookup, RadioBrowser, and the auth GETs.
+//   POST (slice 2) - InternetConnectW + HttpOpenRequestW + HttpSendRequestW with a
 //                     request body: the LastFm / ListenBrainz scrobble writes.
 // PRECONFIG proxy, RELOAD|NO_CACHE_WRITE, INTERNET_FLAG_SECURE derived from the URL
 // scheme.
 // Slice 4 adds the two audio-thread capabilities:
-//   Sessions — openSession() returns a WinInetSession holding ONE InternetOpen handle
+//   Sessions - openSession() returns a WinInetSession holding ONE InternetOpen handle
 //              for its lifetime (UA + timeouts set at creation, all three like both
 //              audio-site baselines); every fetch through it adds KEEP_CONNECTION so
 //              WinINet's per-session connection pool actually reuses connections.
 //              One-shot fetch() keeps its fresh-handle-per-call shape, NO keep-alive
-//              flag — the six shipped sites stay byte-identical.
-//   Cancel   — req.cancel polled before open and before each chunk read (baseline
+//              flag - the six shipped sites stay byte-identical.
+//   Cancel - req.cancel polled before open and before each chunk read (baseline
 //              stop_ granularity; see IHttp.h).
-// Still no streaming — the live audio read loop in StreamSource stays out of this
+// Still no streaming - the live audio read loop in StreamSource stays out of this
 // seam by design, permanently.
 #ifdef _WIN32
 
@@ -52,7 +52,7 @@ std::string toUtf8(const wchar_t* w, int wlen) {
 }
 
 // Extra request headers (UTF-8 -> wide, CRLF-joined). Content-Type is emitted first
-// when set, then the caller's headers (e.g. Authorization) — matching the byte order
+// when set, then the caller's headers (e.g. Authorization) - matching the byte order
 // the scrobble helpers wrote ("Content-Type: ...\r\nAuthorization: ...\r\n").
 std::wstring buildHeaders(const core::HttpRequest& req) {
     std::wstring h;
@@ -106,7 +106,7 @@ void readBody(HINTERNET h, const core::HttpRequest& req, core::HttpResponse& res
     }
 }
 
-// Per-request flag word. keep_alive is true only for session fetches — it adds
+// Per-request flag word. keep_alive is true only for session fetches - it adds
 // KEEP_CONNECTION exactly as both audio-site baselines did on every call; one-shot
 // fetches never set it, so the shipped sites' requests are unchanged.
 DWORD requestFlags(const core::HttpRequest& req, bool keep_alive) {
@@ -134,7 +134,7 @@ constexpr const wchar_t* kDefaultUA =
 core::HttpResponse executeRequest(HINTERNET inet, const core::HttpRequest& req,
                                   bool keep_alive) {
     core::HttpResponse res;
-    if (wasCancelled(req)) {     // cancelled before we even opened — skip the network
+    if (wasCancelled(req)) {     // cancelled before we even opened - skip the network
         core::finalizeCancelled(res);
         return res;
     }
@@ -180,7 +180,7 @@ core::HttpResponse executeRequest(HINTERNET inet, const core::HttpRequest& req,
                                           nullptr, nullptr, nullptr, flags, 0);
         if (!reqh) { InternetCloseHandle(conn); return res; }
 
-        // Body is sent as RAW bytes — never widened. nlohmann emits raw UTF-8,
+        // Body is sent as RAW bytes - never widened. nlohmann emits raw UTF-8,
         // and HttpSendRequest's payload is a byte buffer; widening would corrupt
         // a non-ASCII scrobble ("Björk", "Sigur Rós", …).
         if (HttpSendRequestW(reqh, hp, hlen,
@@ -203,7 +203,7 @@ core::HttpResponse executeRequest(HINTERNET inet, const core::HttpRequest& req,
 namespace platform::win {
 
 // A persistent keep-alive session: one InternetOpen handle held for the object's
-// lifetime — WinINet's connection pool is per-session-handle, so this is what makes
+// lifetime - WinINet's connection pool is per-session-handle, so this is what makes
 // KEEP_CONNECTION actually reuse connections across fetches. UA + all three timeouts
 // are set at creation (both audio-site baselines set CONNECT+RECEIVE+SEND on their
 // session); per-request user_agent/timeout_ms are ignored per the IHttpSession
@@ -219,7 +219,7 @@ struct WinInetSession final : core::IHttpSession {
 };
 
 struct WinInetHttp final : core::IHttp {
-    // One-shot fetch: fresh session handle per call, no keep-alive — the shape (and
+    // One-shot fetch: fresh session handle per call, no keep-alive - the shape (and
     // wire behavior) of slices 1-3, unchanged for the six shipped sites.
     core::HttpResponse fetch(const core::HttpRequest& req) override {
         core::HttpResponse res;
@@ -236,7 +236,7 @@ struct WinInetHttp final : core::IHttp {
             InternetSetOptionW(inet, INTERNET_OPTION_RECEIVE_TIMEOUT, &to, sizeof(to));
             // SEND timeout: set on the GET path only. That preserves slice 1's
             // behavior (RadioBrowser's baseline set all three). The POST path does
-            // NOT set it — the scrobble helpers it replaces set only CONNECT+RECEIVE,
+            // NOT set it - the scrobble helpers it replaces set only CONNECT+RECEIVE,
             // and a request-body send never blocks on these tiny payloads anyway.
             if (req.method.empty() || req.method == "GET")
                 InternetSetOptionW(inet, INTERNET_OPTION_SEND_TIMEOUT, &to, sizeof(to));

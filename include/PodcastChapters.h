@@ -11,21 +11,21 @@
 // pane, the seek, and the cursor logic never learn a second type.
 //
 // TRUST BOUNDARY. These documents come off the open internet and are cached to
-// disk, so this parser is the single place either source is trusted — the fetch
+// disk, so this parser is the single place either source is trusted - the fetch
 // path and the sidecar-read path both land here, and a cached document is
 // re-validated on every read rather than once when it was written. Everything is
 // bounded: nlohmann runs in no-exceptions mode (malformed input, including
 // invalid UTF-8, becomes a discarded value and then an empty list), the shape is
 // checked before it is walked, per-entry values are range-checked, titles are
 // sanitized for the terminal, and the result is capped. One pass and one sort,
-// nothing quadratic — the same "linear or reject" rule the MP4 box reader lives
+// nothing quadratic - the same "linear or reject" rule the MP4 box reader lives
 // under.
 //
 // DEFENSIVE CONTRACT: never crash, never throw, never hang. Anything unexpected
-// degrades to fewer chapters — ultimately to none, which the caller reports as an
+// degrades to fewer chapters - ultimately to none, which the caller reports as an
 // honest "no chapters" rather than an error.
 
-#include "Mp4Chapters.h"   // Mp4Chapter — the one chapter model
+#include "Mp4Chapters.h"   // Mp4Chapter - the one chapter model
 #include "StringUtils.h"   // foldForDisplay
 
 #include "json.hpp"        // nlohmann single-header (vendored; already in product TUs)
@@ -44,7 +44,7 @@ namespace pc_detail {
 // ones happened to be written first.
 inline constexpr std::size_t kMaxChapters = 512;
 
-// Titles are one row of a pane, not prose. Bytes, not codepoints — the truncation
+// Titles are one row of a pane, not prose. Bytes, not codepoints - the truncation
 // backs off to a UTF-8 boundary so a multi-byte character is never split in half.
 inline constexpr std::size_t kMaxTitleBytes = 256;
 
@@ -99,7 +99,7 @@ inline std::string cleanChapterTitle(const std::string& raw) {
 
 // Parse a chapters document. Returns chapters sorted by start time, deduplicated
 // on exact-equal starts (keep-first), and capped. Empty for anything that is not
-// a readable v1.1.0-shaped document — which the caller reports as no chapters.
+// a readable v1.1.0-shaped document - which the caller reports as no chapters.
 inline std::vector<Mp4Chapter> parsePodcastChaptersJson(const std::string& doc) {
     using namespace pc_detail;
     std::vector<Mp4Chapter> out;

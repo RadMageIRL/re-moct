@@ -1,9 +1,9 @@
-// hls_fixture.h — shared synthetic HLS origin for the HLS pipeline tests.
+// hls_fixture.h - shared synthetic HLS origin for the HLS pipeline tests.
 //
 // A FakeHls (core::IHttp) serves master -> variant (a 4-segment sliding window) ->
 // segments carrying REAL FDK-encoded ADTS sine, so the whole decode/buffer path
 // runs exactly as production, off-network. Factored out of hls_pipeline_test so
-// plugin_hls_parity_test (Phase 4 slice d — the identical-to-compiled-in byte
+// plugin_hls_parity_test (Phase 4 slice d - the identical-to-compiled-in byte
 // gate) reuses the identical fixture through the loaded plugin boundary.
 //
 // Transport-only: no StreamSource / miniaudio here (the includer owns those).
@@ -22,7 +22,7 @@
 #include <vector>
 
 // ─── Fixture: real ADTS audio (FDK-encoded stereo 44100 sine) ─────────────────
-// 44100 in == 44100 out, so StreamSource's resampler is BYPASSED — the whole
+// 44100 in == 44100 out, so StreamSource's resampler is BYPASSED - the whole
 // capture path stays fixed-point/integer (FDK decode -> int16 ring -> exact
 // int16->float), which is what makes the slice-d byte-identity hold across two
 // separately-compiled targets (compiled-in vs the .so), independent of float flags.
@@ -158,7 +158,7 @@ struct FakeHls final : core::IHttp {
         if (p != std::string::npos) {
             ++segment_gets;
             if (fail_segments.load()) {
-                // A dying origin: immediate failure — drives the producer's
+                // A dying origin: immediate failure - drives the producer's
                 // reconnect path (slice B uses it to pin the tee's discont).
                 res.ok = false; res.status = 503;
                 return res;

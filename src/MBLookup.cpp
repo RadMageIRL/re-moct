@@ -144,7 +144,7 @@ std::vector<MBRelease> MBLookup::parseDiscIdJson(const std::string& json_str,
 
         // Media → tracks. Parse ALL media (discs), tagging each track with its
         // 1-based disc number. The correct disc is selected at consumption time
-        // via pickDiscForTrackCount() — see MBLookup.h. (Previously this read
+        // via pickDiscForTrackCount() - see MBLookup.h. (Previously this read
         // only media[0], so every disc inherited disc 1's track titles.)
         if (rel.contains("media")) {
             int disc_no = 0;
@@ -188,7 +188,7 @@ std::vector<MBRelease> MBLookup::parseDiscIdJson(const std::string& json_str,
 // ─── Worker thread ────────────────────────────────────────────────────────────
 void MBLookup::worker(int first_track, int last_track,
                        std::vector<uint32_t> offsets, MBDiscIdCallback cb) {
-    // Rate limiting — enforce 1 req/sec
+    // Rate limiting - enforce 1 req/sec
     {
         std::lock_guard<std::mutex> lk(rate_mutex_);
         auto now     = std::chrono::steady_clock::now();
@@ -310,7 +310,7 @@ std::vector<MBSearchResult> MBLookup::parseSearchJson(const std::string& json_st
 // ─── Parse Discogs search JSON (fallback) ────────────────────────────────────
 // Search response: { "results": [ { "id", "title" (= "Artist - Album"),
 //             "year", "country", "label": [...], "resource_url" } ] }
-// NOTE: the search endpoint does NOT include a tracklist — only summary fields.
+// NOTE: the search endpoint does NOT include a tracklist - only summary fields.
 // Track titles come from the release-detail endpoint (see discogsReleaseWorker).
 std::vector<MBSearchResult> MBLookup::parseDiscogsJson(const std::string& json_str) {
     std::vector<MBSearchResult> results;
@@ -331,7 +331,7 @@ std::vector<MBSearchResult> MBLookup::parseDiscogsJson(const std::string& json_s
             }
             r.date    = rel.value("year", "");
             r.country = rel.value("country", "");
-            // Discogs numeric ID — prefix so it's visually distinct from MBIDs
+            // Discogs numeric ID - prefix so it's visually distinct from MBIDs
             r.mbid = "discogs:" + std::to_string(rel.value("id", 0));
             if (rel.contains("label") && rel["label"].is_array() && !rel["label"].empty())
                 r.label = rel["label"][0].get<std::string>();
@@ -523,19 +523,19 @@ bool MBLookup::lookupDiscogsRelease(const std::string& discogs_id, MBCallback cb
 }
 
 // ─── Discogs release-detail worker ───────────────────────────────────────────
-// The Discogs /database/search endpoint returns NO tracklist — only summary
+// The Discogs /database/search endpoint returns NO tracklist - only summary
 // fields. The tracklist lives on the release-detail endpoint. This mirrors
 // mbidWorker: GET /releases/{id}, parse the `tracklist` array, and feed the
 // same MBCallback pipeline so a Discogs pick populates tracks like an MB pick.
 //
 // Discogs quirks handled here:
-//   • positions are non-numeric on many releases ("A1", "1-2") — we renumber
+//   • positions are non-numeric on many releases ("A1", "1-2") - we renumber
 //     sequentially so they line up with CD track numbers.
 //   • tracklists contain "heading"/"index" rows (section titles, medley
-//     containers) with no audio — filtered out by type_.
+//     containers) with no audio - filtered out by type_.
 //   • the release-level artist name often carries a " (N)" disambiguator that
-//     Discogs appends for duplicate names — stripped for display.
-//   • per-track artists exist on compilations — captured when present.
+//     Discogs appends for duplicate names - stripped for display.
+//   • per-track artists exist on compilations - captured when present.
 void MBLookup::discogsReleaseWorker(std::string discogs_id, MBCallback cb) {
     {
         std::lock_guard<std::mutex> lk(rate_mutex_);
@@ -598,7 +598,7 @@ void MBLookup::discogsReleaseWorker(std::string discogs_id, MBCallback cb) {
             release.artist = a;
         }
 
-        // Tracklist — real tracks only, renumbered sequentially.
+        // Tracklist - real tracks only, renumbered sequentially.
         int seq = 0;
         for (auto& t : j["tracklist"]) {
             std::string type = t.value("type_", "track");

@@ -9,7 +9,7 @@
 
 #include "UIManager.h"
 #include "CoverArt.h"
-#include "PortUtil.h"   // port::exeDir — locate a bundled wingui font beside the exe
+#include "PortUtil.h"   // port::exeDir - locate a bundled wingui font beside the exe
 #include "BrowserPins.h" // the one pinned-row order, shared by refreshDir and the sort
 #include "BrowserSections.h" // slice 17: the one virtual-section flag set
 #include "PaneScroll.h"  // the one cursor/scroll rule, shared by both list panes
@@ -31,7 +31,7 @@
 #include "Config.h"
 #include "LrcData.h"
 #include "Toast.h"
-// IHeartDeepLog moved into the streaming plugin (slice c) — the host no longer
+// IHeartDeepLog moved into the streaming plugin (slice c) - the host no longer
 // includes it. Ctrl+A toggles it across the ABI via audio_.setDeepLog().
 
 #include <filesystem>
@@ -133,7 +133,7 @@ std::string releaseLabel(const MBRelease& rel, const DiscPick& pick = DiscPick{}
 }  // namespace
 
 #ifdef PDCURSES
-#include <dwmapi.h>   // DwmSetWindowAttribute — OS-matching (dark) title bar
+#include <dwmapi.h>   // DwmSetWindowAttribute - OS-matching (dark) title bar
 // wingui global (pdcdisp.c), UNICODE build => wchar_t[128]. Declared at global
 // scope: an extern "C" inside an anonymous namespace is a linkage contradiction.
 extern "C" TCHAR PDC_font_name[];
@@ -371,13 +371,13 @@ UIManager::UIManager(PlaylistManager& playlist, AudioManager& audio,
     noecho();
 #ifndef _WIN32
     // Linux ttys ship with XON/XOFF flow control (IXON): the driver consumes
-    // ^Q (XON) and ^S (XOFF) before curses ever sees them — so Ctrl+Q (quit,
+    // ^Q (XON) and ^S (XOFF) before curses ever sees them - so Ctrl+Q (quit,
     // key 17) never arrived and ^S would freeze output. cbreak() doesn't turn
-    // this off (raw() would, but it also takes ISIG — too big a hammer).
+    // this off (raw() would, but it also takes ISIG - too big a hammer).
     // Windows consoles have no tty flow control, which is why the baseline
     // never needed this. (Slice-1 follow-up, Dos-found on the Debian VM.)
     // NOTE: this is the ONLY control char the Linux tty steals in cbreak
-    // mode — a minimal-curses key probe confirmed ^B/^G/^U/^N/^T (2/7/21/
+    // mode - a minimal-curses key probe confirmed ^B/^G/^U/^N/^T (2/7/21/
     // 14/20) all reach getch() with just this. The slice-2 "dead keys" were
     // an #ifdef _WIN32 span in handleInput's key switch, not the terminal.
     {
@@ -445,9 +445,9 @@ void UIManager::showTrackToast(const std::string& title, const std::string& arti
                                const std::string& album) {
     ::showTrackToast(title, artist, album, *notify_);
 #ifndef _WIN32
-    // Cmdline echo (KEPT past slice 5 — see UIManager.h): a real notify-send
+    // Cmdline echo (KEPT past slice 5 - see UIManager.h): a real notify-send
     // toast now lands on a Linux desktop with a daemon, but headless/no-daemon
-    // Linux (WSL2, CI, SSH) renders nothing — so mirror the adapter's title
+    // Linux (WSL2, CI, SSH) renders nothing - so mirror the adapter's title
     // mapping (artist prepends) into the cmdline bar as the always-visible
     // graceful-degradation surface. Sanitized: the bar draws via the narrow API
     // and metadata can carry non-ASCII.
@@ -800,7 +800,7 @@ void UIManager::applyAwesomeTheme() {
     if (!has_colors()) return;
     // start_color()/use_default_colors() are guaranteed by the callers (initColours
     // routes here; the F8 handler re-applies after they have already run). We only
-    // re-init pairs — no window rebuild — so a live cycle is just a recolour.
+    // re-init pairs - no window rebuild - so a live cycle is just a recolour.
     const AwesomeTheme& t = kAwesomeThemes[config_.awesome_theme];
 
     // Semantic -> colour-pair mapping (design spec section 4.2). Every otherwise
@@ -832,7 +832,7 @@ void UIManager::applyAwesomeTheme() {
         // Truecolor path: dedupe the palette's unique hex values, assign custom slot
         // ids starting at 16 (0..15 reserved for base ANSI), init_color() each, then
         // reference them by slot id. Re-applying a theme re-init_colors the same slot
-        // pool with new values — no leak, no window rebuild.
+        // pool with new values - no leak, no window rebuild.
         std::vector<std::pair<unsigned, short>> slots;   // hex -> assigned slot id
         short next = 16;
         auto slotFor = [&](unsigned hex) -> short {
@@ -882,7 +882,7 @@ void UIManager::applyAwesomeTheme() {
 
     // stdscr base fill: the pane/title/cwd/cmdline subwindows get a base bg via
     // wbkgd(CP_DIM) in createWindows(), but the inter-pane gutter, outer insets, and
-    // any cell no subwindow covers are stdscr itself — still at the default -1, which
+    // any cell no subwindow covers are stdscr itself - still at the default -1, which
     // renders black. Fill the root with the same base-bg pair so no black seam shows
     // through on non-near-black bases (Zero Cool, Nord, Gruvbox). CP_DIM.bg == base in
     // Awesome; F8 re-runs applyAwesomeTheme(), so the fill tracks each theme.
@@ -1043,7 +1043,7 @@ void UIManager::destroyWindows() {
 }
 
 // Theme-aware panel border.
-//  • Classic theme: behaves exactly like the previous box(w,0,0) call — the
+//  • Classic theme: behaves exactly like the previous box(w,0,0) call - the
 //    caller's current attributes apply, so no migrated pane changes look.
 //  • Awesome theme: draws the straight edges, then rounds the four corners with
 //    ╭ ╮ ╰ ╯ in an accent colour (bright cyan when focused, dim when not). The
@@ -1059,7 +1059,7 @@ void UIManager::panelFrame(WINDOW* w, const std::string& title, bool focused,
     if (rows < 2 || cols < 2) return;
 
     if (!config_.awesome_mode) {
-        box(w, 0, 0);                 // classic — identical to prior behaviour
+        box(w, 0, 0);                 // classic - identical to prior behaviour
         return;
     }
 
@@ -1068,7 +1068,7 @@ void UIManager::panelFrame(WINDOW* w, const std::string& title, bool focused,
 
     wattron(w, COLOR_PAIR(pair) | at);
     box(w, 0, 0);                                          // straight edges (ACS)
-    // Corners as true wide chars — single cells, no UTF-8 byte mojibake. The
+    // Corners as true wide chars - single cells, no UTF-8 byte mojibake. The
     // bottom-right uses ins_wch (insert, not add) so writing the final cell can
     // never advance the cursor off-window (which would scroll/ERR, dropping it).
     auto corner = [&](int y, int x, wchar_t glyph, bool insert) {
@@ -1088,7 +1088,7 @@ void UIManager::panelFrame(WINDOW* w, const std::string& title, bool focused,
     // already space-padded header string and still get a clean inset label.
     if (cols > 6) {
         int tx = 2;
-        // Optional Nerd Font icon — drawn via the wide API (the narrow path on
+        // Optional Nerd Font icon - drawn via the wide API (the narrow path on
         // this build doesn't decode UTF-8, so a glyph in a char string mojibakes).
         if (config_.nerd_icons && icon) {
             cchar_t cc;
@@ -1247,7 +1247,7 @@ void UIManager::manualNext() {
                 return;                                  // queue item has no playlist row
             }
             if (audio_.cdMode()) audio_.closeCD();
-            play_next(qpath, true);  // from_queue=true — don't move cursor
+            play_next(qpath, true);  // from_queue=true - don't move cursor
         }
     } else if (auto p = playlist_.next(); p.has_value())
         play_next(p.value());
@@ -1454,7 +1454,7 @@ bool UIManager::reopenCDForAction(const std::string& drive) {
 
 void UIManager::run() {
     last_playlist_current_for_sync_ = (int)playlist_.current();
-    // Directory watch — poll every ~2s for changes
+    // Directory watch - poll every ~2s for changes
     constexpr int DIR_POLL_INTERVAL = 25;
     try { dir_mtime_ = fs::last_write_time(current_dir_); } catch (...) {}
 
@@ -1522,7 +1522,7 @@ void UIManager::run() {
                 media_->updatePosition(pos, dur, st);
             }
         }
-        // Stream-record R2: hand the polled now-playing to the recorder —
+        // Stream-record R2: hand the polled now-playing to the recorder -
         // onTitle dedups internally (a repeat can never cut twice) and
         // no-ops when idle/split-off, so the unconditional per-tick call is
         // safe; the fetch is one the scrobbler/art paths already make. The
@@ -1612,13 +1612,13 @@ void UIManager::run() {
         // Async stream connect/fail confirmation toasts. Un-gated at slice 5:
         // this was #ifdef _WIN32 slice-1 scaffolding from when notify was a
         // Linux no-op. Streams are ported (slices 2/3) and every dep here is
-        // portable — takeStreamConnected/Failed are plain atomics, stationLabel/
+        // portable - takeStreamConnected/Failed are plain atomics, stationLabel/
         // streamUrl already run on Linux via drawProgress. Windows is a
         // preprocessed non-event (the block already compiled under _WIN32); this
         // only ADDS the toasts to the Linux build. The file-track toast below
-        // deliberately skips streams (curIsStream), so these own stream toasts —
+        // deliberately skips streams (curIsStream), so these own stream toasts -
         // no double toast. (Dos-found closing slice 5: "Streaming"/"FAILED"
-        // toasts were dead on Linux — same class as 4f0b240 / 91caf7a.)
+        // toasts were dead on Linux - same class as 4f0b240 / 91caf7a.)
         if (audio_.takeStreamConnected()) {
             // Label from the URL actually streaming, not playlist_.current(): a
             // station launched from the override queue has no playlist row, so
@@ -1724,7 +1724,7 @@ void UIManager::run() {
         }
 
         // Slice 3: the old stopped-state media poll here was removed. Slice 1
-        // proved it never checked real media — stop() closes the handle, so it
+        // proved it never checked real media - stop() closes the handle, so it
         // only ever ran checkMedia() on a null handle (always false) and became a
         // 6-second timer that purged the CD rows + MB metadata of a stopped-but-
         // loaded disc. A stopped-but-loaded disc is now a normal, persistent state
@@ -1915,7 +1915,7 @@ void UIManager::run() {
                 // Toast for a new FILE track. Skip when the newly current entry is a
                 // radio stream: streams aren't reflected in audio_.currentTrack()
                 // (it still holds the last file), so toasting here re-announces the
-                // stale file — the double toast on file->radio. The radio path
+                // stale file - the double toast on file->radio. The radio path
                 // (beginStream -> "Negotiating/Streaming") owns stream toasts.
                 bool curIsStream = (cur >= 0 && (size_t)cur < playlist_.size()
                                     && isStreamPath(playlist_.at((size_t)cur).path));
@@ -2056,7 +2056,7 @@ void UIManager::tickFrame() {
     if (right_pane_ == RightPane::Visualizer || vizStripShown())
         computeVizBins();
 
-    // Animate the breathing progress head — only in Awesome mode while playing,
+    // Animate the breathing progress head - only in Awesome mode while playing,
     // so Classic mode keeps its repaint-on-change cadence (no extra cost).
     if (config_.awesome_mode && audio_.state() == PlaybackState::Playing)
         redraw_needed_.store(true);
@@ -2083,7 +2083,7 @@ void UIManager::tickFrame() {
         redraw_needed_.store(false);
     } else
     if (redraw_needed_.load()) {
-        // slice 6: overlay dispatch is common — RipConfirm is live on Linux
+        // slice 6: overlay dispatch is common - RipConfirm is live on Linux
         // (^Y rip). MBSearch draw/input handlers are portable too; the overlay
         // just never opens on Linux because ^F (case 6) stays gated.
         if (ui_overlay_ != UIOverlay::None) {
@@ -2542,7 +2542,7 @@ void UIManager::drawRipConfirm() {   // slice 6: common (ncurses + portable CDSo
             mvwaddstr(w, 7 + kRipFormatCount, 5, hint);
     }
 
-    // Mode options — plain text; dimmed while nothing is selected (commit
+    // Mode options - plain text; dimmed while nothing is selected (commit
     // keys are inert then; N stays live). Cancel row never dims. Rows below
     // the format block are table-size-relative.
     int mode_y = 8 + kRipFormatCount;
@@ -2633,7 +2633,7 @@ void UIManager::drawRipConfirm() {   // slice 6: common (ncurses + portable CDSo
 // cloned (centered newwin, themed bkgd, panelFrame + Classic manual title,
 // MAX_DIR truncation); rip-specific rows dropped. Two views on one overlay:
 // SETTINGS while idle, live STATE while recording (^E reopens to it). Every
-// lifecycle datum is read from the recorder's atomic accessors per render —
+// lifecycle datum is read from the recorder's atomic accessors per render -
 // no UI-side copy exists to drift.
 void UIManager::drawRecPanel() {
     const int BOX_W = 68;
@@ -2745,7 +2745,7 @@ void UIManager::drawRecPanel() {
                   rec_ads_discard_ ? "DISCARD (not written)" : "Save (to ads/ folder)");
         mvwaddstr(w, 13, 3, "[D] Output dir (edit)");
 
-        // The pause note — driven by the plugin's keep-draining capability
+        // The pause note - driven by the plugin's keep-draining capability
         // (abi-cluster slice A): with a capable plugin, pausing mutes playback
         // while the recording continues gaplessly; with an old plugin the R1
         // pause-gap truth stays. Plus the Discard cost AT THE TOGGLE and the
@@ -2784,7 +2784,7 @@ void UIManager::drawRecPanel() {
         mvwprintw(w, 7, 3, "elapsed %d:%02d    cuts %d    written %.1f MB",
                   es / 60, es % 60, rec.cutIndex(),
                   (double)rec.bytesWritten() / (1024.0 * 1024.0));
-        // ad-aware: the skip counter is the trust surface for Discard — the
+        // ad-aware: the skip counter is the trust surface for Discard - the
         // only evidence the mode is working, and the tell when it over-fires.
         if (int skipped = rec.adsSkipped(); skipped > 0)
             mvwprintw(w, 6, 3, "ads skipped: %d (Discard is on)", skipped);
@@ -3361,7 +3361,7 @@ void UIManager::drawTitleBar() {
         case PlaybackState::Paused:  badge = "| "; break;
         case PlaybackState::Stopped: badge = "  "; break;
     }
-    // Build MOC-style mode indicators — only show active modes
+    // Build MOC-style mode indicators - only show active modes
     std::string modes;
     switch (playlist_.repeatMode()) {
         case RepeatMode::One: modes += " [REPEAT ONE]"; break;
@@ -3370,7 +3370,7 @@ void UIManager::drawTitleBar() {
     }
     if (playlist_.shuffle()) modes += " [SHUFFLE]";
     // Stream-record R2: DERIVED from the recorder's own state (one relaxed
-    // atomic) — no stored UI flag exists, so a stale badge is impossible:
+    // atomic) - no stored UI flag exists, so a stale badge is impossible:
     // every engine teardown path (stop/station switch/file/CD/quit) already
     // clears recording() via the R1 hooks.
     if (audio_.streamRecorder().recording()) modes += " [REC]";
@@ -3430,7 +3430,7 @@ void UIManager::drawTitleBar() {
 
     if (!np.empty() && max_np > 0) {
         if (dispWidth(np) <= max_np) {
-            // Fits — no scroll needed, reset state
+            // Fits - no scroll needed, reset state
             if (marquee_last_path_ != track.path) {
                 marquee_offset_ = 0;
                 marquee_ticks_  = 0;
@@ -3438,7 +3438,7 @@ void UIManager::drawTitleBar() {
             }
             line += np;
         } else {
-            // Doesn't fit — marquee scroll
+            // Doesn't fit - marquee scroll
             // Reset on track change
             if (marquee_last_path_ != track.path) {
                 marquee_offset_ = 0;
@@ -3736,7 +3736,7 @@ void UIManager::drawDirBrowser() {
                     // guard this line throws every frame - the slice-5 crash.
                     || (!in_recent_ && !in_favs_ && !in_radio_ && !in_podcasts_ && !in_books_ && !in_library_ && fs::is_directory(fs::path(current_dir_) / name));
 
-        // Dead path check for FAVs — grey out missing files
+        // Dead path check for FAVs - grey out missing files
         bool dead_path = false;
         if ((in_favs_ || in_books_) && name != "[Back]" && !name.empty()) {
             dead_path = !fs::exists(name);
@@ -3963,7 +3963,7 @@ void UIManager::drawPlaylist() {
     }
     int visible = paneVisibleRows(win_playlist_);
     // Guard against a stale scroll offset left past the end of the list (e.g.
-    // a load where every track was a duplicate) — otherwise the bounds check
+    // a load where every track was a duplicate) - otherwise the bounds check
     // below fires on the first row and the pane draws blank.
     if (pl_scroll_ >= (int)playlist_.size())
         pl_scroll_ = std::max(0, (int)playlist_.size() - 1);
@@ -4382,7 +4382,7 @@ void UIManager::drawHelp() {
         int screen_row = r + 1;
 
         if (lines[(size_t)li].is_section) {
-            // Section header — cyan bold, full width
+            // Section header - cyan bold, full width
             wattron(w, COLOR_PAIR(CP_TITLE) | A_BOLD);
             std::string sh = "  " + lines[(size_t)li].key;
             sh.resize((size_t)cols, ' ');
@@ -5196,7 +5196,7 @@ void UIManager::drawEq() {
             }
         }
 
-        // Gain value — show "0" for flat, "+N" or "-N" otherwise
+        // Gain value - show "0" for flat, "+N" or "-N" otherwise
         char dbstr[8];
         if (std::abs(db) < 0.5f)
             std::snprintf(dbstr, sizeof(dbstr), "0");
@@ -5574,7 +5574,7 @@ void UIManager::startRadioArtFetch(const std::string& artist, const std::string&
 // Info-pane art box. Mirrors the Discord committed-song decision but runs
 // independently (so the pane's art works with Discord presence off). UI thread.
 // rec-cover-art: the committed-song identity parse, one home for the pane and
-// the recording wiring (the RAW pane parse — deliberately NOT deinverted, so
+// the recording wiring (the RAW pane parse - deliberately NOT deinverted, so
 // the fetch key matches what the pane always used).
 std::string UIManager::radioSongIdentity(const std::string& np,
                                          std::string& artist, std::string& title) {
@@ -5665,7 +5665,7 @@ void UIManager::radioArtFloor(const std::string& song_key) {
 }
 
 void UIManager::refreshRadioArt(int box_cols, int box_rows) {
-    // Committed-song identity — same parse as updateScrobbler's radio branch.
+    // Committed-song identity - same parse as updateScrobbler's radio branch.
     std::string artist, title;
     std::string song_key = radioSongIdentity(audio_.streamNowPlaying(), artist, title);
 
@@ -5673,7 +5673,7 @@ void UIManager::refreshRadioArt(int box_cols, int box_rows) {
     if (!song_key.empty())
         radioArtKick(artist, title, song_key);
     else
-        radioArtFloor(song_key);   // same code, new home — behavior identical
+        radioArtFloor(song_key);   // same code, new home - behavior identical
 
     // Decode step: real cover if we have one, else the logo floor. Cached on
     // (source | box), so no per-frame re-decode and the logo doesn't thrash.
@@ -5767,7 +5767,7 @@ void UIManager::drawTrackInfo() {
                                    ? playlist_.at(idx) : subj_entry;
         const std::string& path = entry.path;
 
-        // Use cached metadata from PlaylistManager — no file open needed
+        // Use cached metadata from PlaylistManager - no file open needed
         // For currently playing track, use AudioManager's richer TrackInfo cache
         const TrackInfo* ct_ptr = nullptr;
         if (entry.path == audio_.currentTrack().path) {
@@ -5866,7 +5866,7 @@ void UIManager::drawTrackInfo() {
         addInt("Sample Rate", ct.sample_rate,    " Hz");
         addInt("Channels",    ct.channels);
 
-        // BPM — from live detection if this is the current track
+        // BPM - from live detection if this is the current track
         {
             const auto& ct = audio_.currentTrack();
             int live_bpm = audio_.currentBpm();
@@ -5896,7 +5896,7 @@ void UIManager::drawTrackInfo() {
         } catch (...) {}
         add("Path", foldForDisplay(path));
 
-        // Play statistics — not applicable for CD tracks (volatile, not saved)
+        // Play statistics - not applicable for CD tracks (volatile, not saved)
         //
         // SLICE 10: through the SAME folded, aggregating lookup the most-played view
         // ranks on, so the number here and the number there cannot disagree. The old
@@ -6149,11 +6149,11 @@ void UIManager::drawProgress() {
     if (bw < 4) bw = 4;
     int filled = (dur > 0) ? (int)((pos/dur)*bw) : 0;
     filled = std::clamp(filled, 0, bw);
-    // Stream status readouts — portable since slice 2 (the whole radio path
+    // Stream status readouts - portable since slice 2 (the whole radio path
     // runs on Linux); the _WIN32 gate here was slice-1 scaffolding and left
     // Linux drawing the file-mode bar (blank 0:00 + bpm) over a live stream.
     if (audio_.streamConnecting()) {
-        // Backgrounded connect in progress — make the current operation obvious.
+        // Backgrounded connect in progress - make the current operation obvious.
         std::string left  = "Negotiating Radio Stream...";
         std::string right = "vol:" + std::to_string((int)(audio_.volume()*100.0f+0.5f)) + "%";
         int avail = cols - (int)right.size() - 3;
@@ -6261,7 +6261,7 @@ void UIManager::drawProgress() {
     if (config_.awesome_mode) {
         // Comet-style progress with a proportional gradient tail: a bright █ head at
         // the playhead, fading back through ▓▒░ over a span sized to how much has
-        // PLAYED — so the gradient stretches across the whole track. The 2-cell head
+        // PLAYED - so the gradient stretches across the whole track. The 2-cell head
         // stays visible even when a crossfade hands off before 100%; ahead is blank.
         // While playing it gently "breathes" 1↔2↔3 cells on a ~1.2s sine (the run loop
         // forces per-tick redraws only in Awesome mode while playing).
@@ -6321,7 +6321,7 @@ void UIManager::drawCmdLine() {
         wnoutrefresh(win_cmdline_);
         return;
     }
-    // Status line (see UIManager.h) — drawn exactly like rip_status_, except
+    // Status line (see UIManager.h) - drawn exactly like rip_status_, except
     // the iHeart mode confirms (Ctrl+K/F6) draw in yellow so they read as mode state.
     // Both platforms: mode confirms are in-place status, never a toast.
     if (!status_msg_.empty()) {
@@ -6332,7 +6332,7 @@ void UIManager::drawCmdLine() {
         wnoutrefresh(win_cmdline_);
         return;
     }
-    // slice 6: MB/rip status on the cmdline is common — CD lookup (^R) and rip
+    // slice 6: MB/rip status on the cmdline is common - CD lookup (^R) and rip
     // (^Y) progress now render on Linux too. On Linux this runs AFTER the toast-
     // fallback above; on Windows there is no toast-fallback block, so this is the
     // first cmdline path exactly as before (behavior unchanged).
@@ -6503,7 +6503,7 @@ std::string UIManager::stationLabel(const std::string& url) const {
 // Shared junk-metadata gate for scrobbling. Real radio tracks (e.g. "Sia -
 // Unstoppable") pass; ad/station-break markers and empty/Unknown fields are
 // dropped so neither Last.fm nor ListenBrainz gets polluted. Heuristic by
-// nature — extend the marker list as new junk patterns turn up in the log.
+// nature - extend the marker list as new junk patterns turn up in the log.
 // (deinvertArtist moved verbatim to StringUtils.h in stream-record R2 so the
 // recorder's parseNowPlaying shares it; the :4663 caller is unchanged.)
 
@@ -6512,7 +6512,7 @@ std::string UIManager::stationLabel(const std::string& url) const {
 // callers below are unchanged.)
 
 // Canonical track identity for scrobble dedup. iHeart sometimes relabels the SAME
-// song mid-play with a different EXTINF string — moving the featured artist between
+// song mid-play with a different EXTINF string - moving the featured artist between
 // the artist and title fields and/or changing spacing, e.g.:
 //     "Pink Pantheress / Zara Larsson - Stateside"
 //     "PinkPantheress - Stateside + Zara Larsson"
@@ -6625,11 +6625,11 @@ void UIManager::onTrackReplayed() {
 
 void UIManager::updateScrobbler() {
     // Portable since slice 2 (the scrobble clients + MD5 signing run on both
-    // platforms) — the whole-body _WIN32 gate came off with the ^B/^G key fix:
+    // platforms) - the whole-body _WIN32 gate came off with the ^B/^G key fix:
     // it was slice-1 scaffolding from the MD5-placeholder era, and it silently
     // no-op'd every scrobble/auth-commit on Linux while the login PROMPTS
     // worked (Dos-found). Discord RP's inner gates came off at slice 4
-    // (Unix-socket IIpc) — the whole tick is common code now.
+    // (Unix-socket IIpc) - the whole tick is common code now.
     static bool announced = false;
     if (!announced) {
         sclog("updateScrobbler active (session=%s)",
@@ -6840,7 +6840,7 @@ void UIManager::updateScrobbler() {
         if (!media_art_cache_.empty()) art_bytes = &media_art_cache_;
     }
     publishMedia(artist, track, album, art_url, *art_bytes, pos, dur);
-    // Discord Rich Presence — same resolved metadata, independent of scrobbling.
+    // Discord Rich Presence - same resolved metadata, independent of scrobbling.
     // Portable since slice 4 (Unix-socket IIpc twin).
     if (config_.discord_presence) {
         // iHeart digital cover (empty in raw mode / on ad breaks -> logo). Tracked so a
@@ -6931,7 +6931,7 @@ void UIManager::updateScrobbler() {
                     discord_art_neg_.add(forkey, port::tickMs());
                 }
             } else if (!audio_.streamMode() && !discord_album_.empty() && !isPlayingPodcast()) {
-                // The finished lookup was for a since-skipped track — retry for the
+                // The finished lookup was for a since-skipped track - retry for the
                 // one we actually landed on (unless already cached). Covers file+cd.
                 // Skipped for an episode: its art is the RSS URL, never a tag lookup, so
                 // a stale music lookup landing mid-episode must not start a new one.
@@ -7050,7 +7050,7 @@ void UIManager::startLastfmPoll(const std::string& token) {
     if (lf_poll_thread_.joinable()) lf_poll_thread_.join();
     std::string key = config_.lastfm_key, secret = config_.lastfm_secret, tok = token;
     lf_poll_thread_ = std::thread([this, key, secret, tok]() {
-        // Retry getSession for ~60s; the worker NEVER touches config_ — it only
+        // Retry getSession for ~60s; the worker NEVER touches config_ - it only
         // drops the result into guarded slots for the UI thread to commit.
         for (int attempt = 0; attempt < 20 && lf_poll_active_.load(); ++attempt) {
             for (int w = 0; w < 30 && lf_poll_active_.load(); ++w)   // ~3s, responsive
@@ -7077,7 +7077,7 @@ void UIManager::startListenBrainzValidate(const std::string& token) {
     std::string tok = token;
     lb_validate_thread_ = std::thread([this, tok]() {
         // Network call lives entirely off the UI thread; the worker NEVER touches
-        // config_ — it drops the result into guarded slots for the UI thread to commit.
+        // config_ - it drops the result into guarded slots for the UI thread to commit.
         std::string user;
         bool ok = ListenBrainz::validateToken(tok, user);
         {
@@ -7204,7 +7204,7 @@ void UIManager::handleInput(int ch) {
         }
         return;   // swallow other keys while the popup is up
     }
-    // ── [Rec] panel (stream-record R2) — intercepts all input when active ──
+    // ── [Rec] panel (stream-record R2) - intercepts all input when active ──
     // The rip modal's structural disambiguation, minus its empty-selection
     // guard (a single-select radio always has exactly one format chosen):
     // N/Esc first (close always works; recording continues), then the
@@ -7220,7 +7220,7 @@ void UIManager::handleInput(int ch) {
             if (ch == 'x' || ch == 'X') {
                 audio_.endRecording();          // finalizes the in-flight cut
                                                 // + clears the drain signal
-                // Session-end summary: the ads-skipped count rides the toast —
+                // Session-end summary: the ads-skipped count rides the toast -
                 // the Discard trust surface survives past the live panel.
                 std::string sum = std::to_string(rec.cuts().size() -
                                                  (size_t)rec.adsSkipped()) + " cut(s) saved";
@@ -7291,7 +7291,7 @@ void UIManager::handleInput(int ch) {
         }
         if (ch == 'd' || ch == 'D') {
             // The goto bar and an overlay don't compose (drawGotoBar returns
-            // early) — close the panel, prompt, reopen on submit.
+            // early) - close the panel, prompt, reopen on submit.
             ui_overlay_ = UIOverlay::None;
             openInputBar(InputMode::RecDir,
                          rec_dir_.empty() ? CDRipper::recordingsDir() : rec_dir_);
@@ -7335,7 +7335,7 @@ void UIManager::handleInput(int ch) {
             redraw_needed_.store(true);         // panel flips to recording view
             return;
         }
-        return;   // swallow everything else — the overlay is modal
+        return;   // swallow everything else - the overlay is modal
     }
     // ── batch-r128: the ^O tag/force prompt intercepts until answered ────────
     if (rgscan_prompt_) {
@@ -7361,14 +7361,14 @@ void UIManager::handleInput(int ch) {
         rip_msg_ticks_ = 0;   // keep the prompt line alive while undecided
         return;               // modal until answered
     }
-    // ── Rip mode selection modal — intercepts all input when active ─────────
+    // ── Rip mode selection modal - intercepts all input when active ─────────
     // Input disambiguation is STRUCTURAL (rip-format-select): N/Esc first
     // (cancel always works), digits toggle and return inside their own case
     // (can never commit), letters carry the empty-selection guard (can never
-    // toggle, and commit is inert — not "commits with empty list" — while
+    // toggle, and commit is inert - not "commits with empty list" - while
     // nothing is checked; the dimmed rows + red hint explain why).
     if (ui_overlay_ == UIOverlay::RipConfirm) {
-        // Cancel — always allowed, selection state irrelevant.
+        // Cancel - always allowed, selection state irrelevant.
         if (ch == 'n' || ch == 'N' || ch == 27) {
             ui_overlay_ = UIOverlay::None;
             redraw_needed_.store(true);
@@ -7495,7 +7495,7 @@ void UIManager::handleInput(int ch) {
         rip_msg_ticks_ = 0;
         redraw_needed_.store(true);
         // Build the rip request: selection normalized to TABLE order (the
-        // fan-out sequence must not depend on toggle history — default set
+        // fan-out sequence must not depend on toggle history - default set
         // always rips FLAC-then-MP3, byte-identical to pre-selection), plus
         // the config-fed quality values (defaults == the old literals).
         RipOptions opt;
@@ -7895,7 +7895,7 @@ void UIManager::handleInput(int ch) {
     }
 
     // Dismiss help with any non-? key too (just re-route to normal handling)
-    // Actually let ? be the only toggle — other keys pass through below
+    // Actually let ? be the only toggle - other keys pass through below
 
     // v: Awesome -> show/hide the full-width Spectrum strip; Classic -> the
     // right-pane visualizer overlay (unchanged MOC-style toggle).
@@ -7941,7 +7941,7 @@ void UIManager::handleInput(int ch) {
         }
     }
 
-    // Bookmarks popup — j/k navigate, Enter jump, x delete, B close
+    // Bookmarks popup - j/k navigate, Enter jump, x delete, B close
     if (right_pane_ == RightPane::Chapters) {
         switch (ch) {
             case 17: audio_.stop(); running_ = false; return;
@@ -8030,7 +8030,7 @@ void UIManager::handleInput(int ch) {
         }
     }
 
-    // Focus-aware search results — pick-to-jump (mirrors the Bookmarks popup)
+    // Focus-aware search results - pick-to-jump (mirrors the Bookmarks popup)
     if (right_pane_ == RightPane::SearchResults) {
         switch (ch) {
             case 17: audio_.stop(); running_ = false; return;
@@ -8128,15 +8128,15 @@ void UIManager::handleInput(int ch) {
         }
     }
 
-    // Track info — global keys only
+    // Track info - global keys only
     if (right_pane_ == RightPane::TrackInfo) {
-        // In edit mode — capture all keystrokes for text editing
+        // In edit mode - capture all keystrokes for text editing
         if (tag_edit_mode_) {
             switch (ch) {
-                case 27:  // Esc — cancel
+                case 27:  // Esc - cancel
                     tag_edit_mode_ = false;
                     break;
-                case '\n': case KEY_ENTER: case '\r':  // Enter — save
+                case '\n': case KEY_ENTER: case '\r':  // Enter - save
                     if (!saveTagEdits()) {
                         // Write refused (file locked/read-only). Exit edit mode anyway -
                         // staying would trap the user (s = stop isn't reachable from
@@ -8179,7 +8179,7 @@ void UIManager::handleInput(int ch) {
                 info_cached_path_.clear();
                 return;
             case 'e': {   // E freed for eject (was a pure dupe of e)
-                // Enter edit mode — only for real files, not CD tracks, not currently playing
+                // Enter edit mode - only for real files, not CD tracks, not currently playing
                 //
                 // THE SAME RESOLVER THE PANE DRAWS FROM. This used to be a verbatim
                 // copy of drawTrackInfo's idx dance, which is how the two could mean
@@ -8216,7 +8216,7 @@ void UIManager::handleInput(int ch) {
                     case TagEditability::Empty:
                         return;                          // silently ignore, as today
                     case TagEditability::PlayingLocked:
-                        // Currently playing — warn in the cmdline bar (persists ~5s).
+                        // Currently playing - warn in the cmdline bar (persists ~5s).
                         // Applies to a browser row exactly as to a playlist one: the
                         // check is on the PATH, and the decoder has that file open
                         // whichever pane the cursor is in.
@@ -8227,7 +8227,7 @@ void UIManager::handleInput(int ch) {
                     case TagEditability::Editable:
                         break;                           // fall through to enter edit mode
                 }
-                // All checks passed — enter edit mode
+                // All checks passed - enter edit mode
                 tag_edit_path_ = path;
                 tag_edit_field_ = 0;
                 {
@@ -8319,32 +8319,32 @@ void UIManager::handleInput(int ch) {
     }
 
     switch (ch) {
-        case 17:  // Ctrl+Q — quit
+        case 17:  // Ctrl+Q - quit
             audio_.stop(); running_ = false; break;
         // Ctrl+A / Ctrl+K un-gated for Linux (slice-5 follow-up, Dos-found: both
-        // keys dead on Linux — the whole case was compiled out, not the tty).
+        // keys dead on Linux - the whole case was compiled out, not the tty).
         // Both are portable and depend on NO unported subsystem: IHeartDeepLog is
         // portable since slice 1; the digital(HLS)/raw(ICY) stream paths are both
         // ported (slices 2/3). Unlike ^F/^Y/^R (overlay/CD still Windows-gated),
-        // these had no reason to stay gated — a missed un-gate, same class as
+        // these had no reason to stay gated - a missed un-gate, same class as
         // b2abb12.
-        case 1:  // Ctrl+A — toggle deep-analysis iHeart capture log (diagnostic; not persisted)
+        case 1:  // Ctrl+A - toggle deep-analysis iHeart capture log (diagnostic; not persisted)
         {
             // Deep log lives in the streaming plugin now (slice c): toggle it across
             // the ABI (audio_.setDeepLog -> set_config("deeplog",...)). The host
             // tracks the on/off state; the plugin-side capture path is no longer
             // surfaced in the toast (it was lazily created on the producer thread
-            // anyway — path() right after enable was already racy/empty).
+            // anyway - path() right after enable was already racy/empty).
             deeplog_on_ = !deeplog_on_;
             audio_.setDeepLog(deeplog_on_);
             showTrackToast(deeplog_on_ ? "Deep log: ON" : "Deep log: OFF", "", "");
         }
             break;
-        case 11:  // Ctrl+K — toggle iHeart stream mode: digital (web player) vs raw broadcast
+        case 11:  // Ctrl+K - toggle iHeart stream mode: digital (web player) vs raw broadcast
             config_.prefer_digital_stream = !config_.prefer_digital_stream;
             config_.save();
             audio_.setPreferDigital(config_.prefer_digital_stream);
-            // Confirm ONCE, on the cmdline status row, in yellow — both platforms,
+            // Confirm ONCE, on the cmdline status row, in yellow - both platforms,
             // never a toast (same surface as F6, the one place mode changes report).
             status_msg_ = config_.prefer_digital_stream ? "Feed: digital (web player)"
                                                         : "Feed: raw broadcast";
@@ -8354,9 +8354,9 @@ void UIManager::handleInput(int ch) {
             if (audio_.streamMode())                 // reconnect now so it takes effect
                 audio_.beginStream(audio_.streamUrl());
             break;
-        case 16:  // Ctrl+P — PROBE: toggle iHeart digital-handshake identity arm
+        case 16:  // Ctrl+P - PROBE: toggle iHeart digital-handshake identity arm
                   // (anon vs minted anonymous profileId). Hidden A/B control; only has
-                  // an effect while the deep log (Ctrl+A) is ON — the mint is probe-gated
+                  // an effect while the deep log (Ctrl+A) is ON - the mint is probe-gated
                   // in hlsConnect. Read at reconnect, so reconnect now to switch arms.
             config_.iheart_probe_minted = !config_.iheart_probe_minted;
             config_.save();
@@ -8367,7 +8367,7 @@ void UIManager::handleInput(int ch) {
             if (audio_.streamMode())                 // reconnect now so the arm takes effect
                 audio_.beginStream(audio_.streamUrl());
             break;
-        case 20:  // Ctrl+T — toggle Classic / Awesome theme
+        case 20:  // Ctrl+T - toggle Classic / Awesome theme
             config_.awesome_mode = !config_.awesome_mode;
             config_.save();
             // Awesome has no right-pane visualizer (the spectrum is the bottom
@@ -8384,7 +8384,7 @@ void UIManager::handleInput(int ch) {
             redraw_needed_.store(true);   // full shrink-safe screen wipe
             theme_tag_ticks_ = 0;   // flash [THEME:<name>] on the cwd line for ~10s
             break;
-        case 14:  // Ctrl+N — toggle Nerd Font title icons (needs a Nerd Font)
+        case 14:  // Ctrl+N - toggle Nerd Font title icons (needs a Nerd Font)
             config_.nerd_icons = !config_.nerd_icons;
             config_.save();
             redraw_needed_.store(true);
@@ -8424,7 +8424,7 @@ void UIManager::handleInput(int ch) {
         case KEY_F(6): {  // cycle iHeart re-pin mode: off -> ad-escape -> hybrid -> timed -> live-edge (persisted)
             // Feed (Ctrl+K) and re-pin behaviour are independent axes; F6 changes only
             // the re-pin half. Read live by the producer/SM, so no reconnect is needed.
-            // Confirm ONCE, on the cmdline status row, in yellow — both platforms,
+            // Confirm ONCE, on the cmdline status row, in yellow - both platforms,
             // never a toast (it is in-place mode state, not a notification).
             config_.repin_mode = (config_.repin_mode + 1) % 5;
             config_.save();
@@ -8458,7 +8458,7 @@ void UIManager::handleInput(int ch) {
             const int step = (ch == KEY_F(7)) ? (kNumAwesomeThemes - 1) : 1;
             config_.awesome_theme = (config_.awesome_theme + step) % kNumAwesomeThemes;
             config_.save();
-            applyAwesomeTheme();          // recolour in place — pairs are global, no rebuild
+            applyAwesomeTheme();          // recolour in place - pairs are global, no rebuild
             clearok(stdscr, TRUE);
             redraw_needed_.store(true);
             theme_tag_ticks_ = 0;   // flash [THEME:<name>] on the cwd line for ~10s
@@ -8510,7 +8510,7 @@ void UIManager::handleInput(int ch) {
                 redraw_needed_.store(true);
             }
             break;
-        case 27:    // Esc — cancel a running library scan
+        case 27:    // Esc - cancel a running library scan
             // Scoped by a condition that is only true DURING a scan, so Esc keeps
             // meaning nothing here the rest of the time. Popups and the input bar
             // intercept Esc before this switch is reached, so neither is affected.
@@ -8528,7 +8528,7 @@ void UIManager::handleInput(int ch) {
                 redraw_needed_.store(true);
             }
             break;
-        case 'E':   // Shift+E — eject the highlighted CD drive ([Drives] only)
+        case 'E':   // Shift+E - eject the highlighted CD drive ([Drives] only)
             // Per-pane key meaning (like d / K / J): e stays EQ / tag-edit
             // everywhere; E acts only in [Drives], and only on a row the eject
             // hint is shown for (CD drive with media at last enumeration).
@@ -8540,7 +8540,7 @@ void UIManager::handleInput(int ch) {
             }
             break;
 #ifdef PDCURSES
-        case ALT_ENTER:      // Alt+Enter — wingui borderless-fullscreen toggle
+        case ALT_ENTER:      // Alt+Enter - wingui borderless-fullscreen toggle
         case ALT_PADENTER:   // (numpad Enter variant)
             toggleWinguiFullscreen();
             clearok(stdscr, TRUE);
@@ -8550,12 +8550,12 @@ void UIManager::handleInput(int ch) {
         // Per-case Windows gates below (slice-2 fix): a single #ifdef here
         // used to span ^D/^B/^F/^G/^U/^Y/^R, silently deleting the portable
         // scrobbler-login and radio-URL keys from the Linux build (Dos-found:
-        // ^U/^G/^B dead while ^N/^T/^L/^Q worked — a key probe proved the tty
+        // ^U/^G/^B dead while ^N/^T/^L/^Q worked - a key probe proved the tty
         // delivers all of them; the gap was here). Gate each key on WHY:
         // ^D = common since slice 4 (Unix-socket IIpc); ^F = COMMON as of the
         // release/disc picker - the last thing keeping it Windows-only was the
         // gate itself; ^Y/^R = common since slice 6 (SG_IO CD).
-        case 4:  // Ctrl+D — toggle Discord Rich Presence
+        case 4:  // Ctrl+D - toggle Discord Rich Presence
             config_.discord_presence = !config_.discord_presence;
             config_.save();
             if (config_.discord_presence) {
@@ -8568,13 +8568,13 @@ void UIManager::handleInput(int ch) {
                 showTrackToast("Discord presence: OFF", "", "");
             }
             break;
-        case 2:  // Ctrl+B — ListenBrainz login (paste user token; no browser/handshake)
+        case 2:  // Ctrl+B - ListenBrainz login (paste user token; no browser/handshake)
             if (config_.listenbrainz_token.empty())
                 openInputBar(InputMode::ListenBrainzToken, "");
             else
                 showTrackToast("ListenBrainz: logged in as " + config_.listenbrainz_user, "", "");
             break;
-        case 6:  // Ctrl+F — MusicBrainz / Discogs manual search
+        case 6:  // Ctrl+F - MusicBrainz / Discogs manual search
             // UNGATED. This was #ifdef _WIN32 with the reason "the feature is
             // Windows-only for now", and the tree said twice that the draw and
             // input handlers were already portable. The picker this feeds is
@@ -8587,9 +8587,9 @@ void UIManager::handleInput(int ch) {
                 redraw_needed_.store(true);
             }
             break;
-        case 7:  // Ctrl+G — Last.fm login (stateful: request token, then exchange)
+        case 7:  // Ctrl+G - Last.fm login (stateful: request token, then exchange)
             if (!config_.lastfm_session.empty()) {
-                // Already logged in — report it, mirroring ^B. (Re-auth = clear
+                // Already logged in - report it, mirroring ^B. (Re-auth = clear
                 // lastfm-session in the conf, same convention as ListenBrainz.)
                 showTrackToast("Last.fm: logged in as " + config_.lastfm_user, "", "");
             } else if (config_.lastfm_key.empty() || config_.lastfm_secret.empty()) {
@@ -8611,29 +8611,29 @@ void UIManager::handleInput(int ch) {
                     lf_poll_active_.store(false);   // stop any background poll
                     showTrackToast("Last.fm: logged in as " + user, "", "");
                 } else if (err == 14) {
-                    // Token valid but not authorized yet — keep it; re-arm the
+                    // Token valid but not authorized yet - keep it; re-arm the
                     // auto-poll so clicking Allow still completes hands-free.
                     startLastfmPoll(config_.lastfm_pending);
                     showTrackToast("Last.fm: approve in browser - finishes automatically", "", "");
                 } else if (err != 0) {
                     // Definitive API rejection (15 expired / 4 invalid / other):
-                    // the pending token can never succeed — drop it and start a
+                    // the pending token can never succeed - drop it and start a
                     // fresh auth right away instead of looping on a dead token.
                     config_.lastfm_pending.clear();
                     config_.save();
                     sclog("ctrl+G: pending token dead (err=%d), restarting auth", err);
                     lastfmBeginAuth();
                 } else {
-                    // Transport failure — token may still be good, keep it.
+                    // Transport failure - token may still be good, keep it.
                     showTrackToast("Last.fm: network error - press Ctrl+G to retry", "", "");
                 }
             }
             break;
-        case 21:  // Ctrl+U — input an internet-radio stream URL
+        case 21:  // Ctrl+U - input an internet-radio stream URL
             if (ui_overlay_ == UIOverlay::None)
                 openInputBar(InputMode::StreamURL, "");
             break;
-        case 15:  // Ctrl+O — batch ReplayGain scan over the browsed folder (batch-r128)
+        case 15:  // Ctrl+O - batch ReplayGain scan over the browsed folder (batch-r128)
             if (gain_scan_.running()) {
                 gain_scan_.cancel();
                 rip_status_ = "ReplayGain scan: cancelling (finishing nothing mid-file)...";
@@ -8642,7 +8642,7 @@ void UIManager::handleInput(int ch) {
             } else if (cd_ripper_.isActive()) {
                 showTrackToast("ReplayGain scan", "Wait for the rip to finish", "");
             } else {
-                // The prompt names the folder — no fat-fingered scans on the
+                // The prompt names the folder - no fat-fingered scans on the
                 // wrong directory. Enter = tag untagged, F = force re-tag all.
                 rgscan_prompt_ = true;
                 rgscan_dir_    = current_dir_;
@@ -8652,7 +8652,7 @@ void UIManager::handleInput(int ch) {
                 redraw_needed_.store(true);
             }
             break;
-        case 5:  // Ctrl+E — stream recording: the [Rec] panel (stream-record R2)
+        case 5:  // Ctrl+E - stream recording: the [Rec] panel (stream-record R2)
             if (ui_overlay_ != UIOverlay::None) break;  // already showing a modal
             if (audio_.streamMode() || audio_.streamRecorder().recording()) {
                 // Idle -> settings view; recording -> live-state view (the
@@ -8660,22 +8660,22 @@ void UIManager::handleInput(int ch) {
                 ui_overlay_ = UIOverlay::RecPanel;
                 redraw_needed_.store(true);
             } else {
-                // Precondition: recording taps the playing stream — nothing
+                // Precondition: recording taps the playing stream - nothing
                 // to record from a CD/file/silence. Toast, no panel.
                 showTrackToast("Stream recording", "Start a stream first (Ctrl+U)", "");
             }
             break;
-        case 25:  // Ctrl+Y — CD rip  (slice 6: common — CD path live on Linux)
+        case 25:  // Ctrl+Y - CD rip  (slice 6: common - CD path live on Linux)
             if (ui_overlay_ != UIOverlay::None) break;  // already showing modal
             if (cd_ripper_.isActive()) {
-                // Already ripping — Ctrl+Y cancels
+                // Already ripping - Ctrl+Y cancels
                 cd_ripper_.cancel();
                 rip_status_    = "Rip cancelled by user.";
                 rip_msg_ticks_ = 0;
                 redraw_needed_.store(true);
             } else if (!cd_drive_letter_.empty()) {
                 // Slice 3: rip works on a stopped-but-loaded disc. Gate on loaded
-                // (cd_drive_letter_), not cdMode — stop() closed the handle, so
+                // (cd_drive_letter_), not cdMode - stop() closed the handle, so
                 // reopen it first. reopenCDForAction handles an empty tray (eject
                 // while stopped): purge + toast + false, and we bail.
                 if (!reopenCDForAction(cd_drive_letter_)) break;
@@ -8689,7 +8689,7 @@ void UIManager::handleInput(int ch) {
                 redraw_needed_.store(true);
             }
             break;
-        case 18:  // Ctrl+R — MusicBrainz CD lookup
+        case 18:  // Ctrl+R - MusicBrainz CD lookup
             // Every refusal below now SAYS SO. All but one used to be a bare
             // `break`, so a press could do nothing at all with no feedback -
             // which is how repeated presses came to look like they were cycling
@@ -8705,7 +8705,7 @@ void UIManager::handleInput(int ch) {
             }
             {
                 // Slice 3: look up a stopped-but-loaded disc. Gate on loaded, not
-                // cdMode — reopen the handle first (stop() closed it); bail on an
+                // cdMode - reopen the handle first (stop() closed it); bail on an
                 // empty tray (reopenCDForAction purges + toasts).
                 if (!reopenCDForAction(cd_drive_letter_)) break;
                 const auto& cd = audio_.cdSource();
@@ -8807,7 +8807,7 @@ void UIManager::handleInput(int ch) {
                 break;
             } else if (focus_ == Pane::DirBrowser && dir_cursor_ < (int)dir_entries_.size()) {
                 const std::string& nm = dir_entries_[(size_t)dir_cursor_];
-                // Build full path — dir_entries_ stores names, not full paths
+                // Build full path - dir_entries_ stores names, not full paths
                 std::string p;
                 // in_library_ is listed EXPLICITLY rather than left to the
                 // is_absolute() fallback. Relying on that fallback would make levels
@@ -8861,7 +8861,7 @@ void UIManager::handleInput(int ch) {
         case '~':
             // Live-reload theme.conf: re-init the colour pairs and force a full
             // repaint. Pairs are global state, so re-running init_pair() updates
-            // every COLOR_PAIR() reference in place — no need to rebuild windows.
+            // every COLOR_PAIR() reference in place - no need to rebuild windows.
             initColours();
             clearok(stdscr, TRUE);
             showTrackToast("Theme reloaded", DigiConfig::themePath(), "");
@@ -8917,7 +8917,7 @@ void UIManager::handleInput(int ch) {
                 audio_.setReplayGain(!audio_.replayGain());
             break;
         case '*': {
-            // Star/favourite the highlighted track — playlist pane or browser
+            // Star/favourite the highlighted track - playlist pane or browser
             std::string fav_path;
             if (focus_ == Pane::Playlist && pl_cursor_ < (int)playlist_.size()) {
                 fav_path = playlist_.at((size_t)pl_cursor_).path;
@@ -8949,7 +8949,7 @@ void UIManager::handleInput(int ch) {
             }
             break;
         }
-        case KEY_DC:  // Del key — remove from FAVs pane
+        case KEY_DC:  // Del key - remove from FAVs pane
             if (focus_ == Pane::DirBrowser && in_favs_
                 && dir_cursor_ < (int)dir_entries_.size()) {
                 const std::string& nm = dir_entries_[(size_t)dir_cursor_];
@@ -9054,7 +9054,7 @@ void UIManager::handleInput(int ch) {
             }
             // Add current directory to bookmarks (not available from [Drives] list)
             if (!in_drive_list_ && !in_recent_ && !in_radio_ && !in_podcasts_ && !in_library_ && !current_dir_.empty()) {
-                // Don't bookmark CD drive roots — physical drives are volatile
+                // Don't bookmark CD drive roots - physical drives are volatile
 #ifdef _WIN32
                 std::string dp = current_dir_;
                 if (dp.back() != '\\') dp += '\\';
@@ -9632,7 +9632,7 @@ void UIManager::gotoClose(bool commit) {
     goto_active_ = false;
     if (commit) {
         std::string target = goto_input_;
-        // Strip trailing separator — but preserve drive roots (e.g. "G:\")
+        // Strip trailing separator - but preserve drive roots (e.g. "G:\")
         // A bare "G:" without separator is not a valid Windows path
         auto is_drive_root = [](const std::string& s) {
             return s.size() == 3 && std::isalpha((unsigned char)s[0])
@@ -9658,7 +9658,7 @@ void UIManager::gotoClose(bool commit) {
                         showTrackToast("Playlist loaded", std::to_string(miss) + " file(s) not found", "");
                     if (after > before) {
                         // Jump to the first genuinely-new entry (trust the size
-                        // delta, not the line count — dedup may drop duplicates).
+                        // delta, not the line count - dedup may drop duplicates).
                         pl_cursor_ = (int)before;   // scroll placed by the draw-time invariant
                         if (audio_.state() == PlaybackState::Stopped) {
                             playlist_.selectAt(before);
@@ -9667,7 +9667,7 @@ void UIManager::gotoClose(bool commit) {
                             }
                         }
                     } else {
-                        // All duplicates / none on disk — keep the view valid.
+                        // All duplicates / none on disk - keep the view valid.
                         if (pl_cursor_ >= (int)after) pl_cursor_ = std::max(0, (int)after - 1);
                     }
                 } else if (fs::exists(target) && fs::is_directory(target)) {
@@ -9774,7 +9774,7 @@ void UIManager::gotoClose(bool commit) {
                 if (!url.empty()) {
                     // Supplied name -> "RADIO: <name>" (keeps the station-signalling
                     // prefix); blank -> today's URL-derived label. Name is in-session
-                    // only for now — persistence needs the Config schema change.
+                    // only for now - persistence needs the Config schema change.
                     std::string label = name.empty() ? radioLabel(url)
                                                       : ("RADIO: " + foldForDisplay(name));
                     config_.addRadioStation(url, name);   // persist URL + name, show in [Radio]
@@ -9950,7 +9950,7 @@ std::vector<std::string> UIManager::gotoGetMatches(const std::string& partial) c
         search_dir = partial.empty() ? "." : partial;
         stem = "";
     } else if (fs::is_directory(p)) {
-        // Exact dir — list its children
+        // Exact dir - list its children
         search_dir = p;
         stem = "";
     } else {
@@ -9991,14 +9991,14 @@ std::vector<std::string> UIManager::gotoGetMatches(const std::string& partial) c
 }
 
 void UIManager::gotoTabComplete() {
-    // First Tab press — compute matches
+    // First Tab press - compute matches
     if (tab_idx_ == -1) {
         tab_prefix_  = goto_input_;
         tab_matches_ = gotoGetMatches(goto_input_);
         if (tab_matches_.empty()) return;
         tab_idx_ = 0;
     } else {
-        // Subsequent Tab — cycle forward
+        // Subsequent Tab - cycle forward
         tab_idx_ = (tab_idx_ + 1) % (int)tab_matches_.size();
     }
 
@@ -10275,7 +10275,7 @@ void UIManager::activateSelection() {
             // now and after restart: "RADIO: <name>" if known, else derived.
             std::string label = stationLabel(url);
             if (!uuid.empty()) RadioBrowser::countClick(uuid);  // popularity courtesy
-            // Append the station and jump to it — coexists with existing file/CD
+            // Append the station and jump to it - coexists with existing file/CD
             // entries (delete from the playlist to remove). addStream dedups by
             // URL, so re-selecting a station just jumps to its existing row.
             std::size_t idx = playlist_.addStream(url, label);
@@ -10377,7 +10377,7 @@ void UIManager::activateSelection() {
                 sectionAscend();
                 return;
             }
-            if (!fs::exists(name)) return;  // dead path — ignore
+            if (!fs::exists(name)) return;  // dead path - ignore
             if (PlaylistManager::isSupportedAudio(name)) {
                 // Add to playlist and play
                 size_t idx = playlist_.addTrack(name);
@@ -10401,7 +10401,7 @@ void UIManager::activateSelection() {
                 sectionAscend();
                 return;
             }
-            if (!fs::exists(name)) return;            // dead path — ignore
+            if (!fs::exists(name)) return;            // dead path - ignore
             if (PlaylistManager::isSupportedAudio(name)) {
                 size_t idx = playlist_.addTrack(name);
                 playlist_.selectAt(idx);
@@ -10489,7 +10489,7 @@ void UIManager::activateSelection() {
                 config_.addRecentTrack(p.value());
             }
         } else {
-            // M3U file — load it
+            // M3U file - load it
             std::string ext = full.extension().string();
             std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
             if (ext == ".m3u" || ext == ".m3u8" || ext == ".pls" || ext == ".xspf") {
@@ -10510,7 +10510,7 @@ void UIManager::activateSelection() {
                     audio_.playCDTrack(track_num);
                     return;
                 }
-                // Regular file — exits CD mode automatically inside play()
+                // Regular file - exits CD mode automatically inside play()
                 audio_.play(path);
                 config_.addRecentTrack(path);
             }
@@ -10552,7 +10552,7 @@ std::vector<std::string> UIManager::listDrives() {
     // Linux (slice 6): CD devices first (/dev/sr*), then browsable roots + the
     // user's mount points. CD entries route to CD mode in activateDrive; every
     // other entry is a directory the browser descends into. This is also the fix
-    // for the empty [Drive] menu on Linux — Windows enumerated drive letters here.
+    // for the empty [Drive] menu on Linux - Windows enumerated drive letters here.
     try {
         std::vector<std::string> cds;
         for (const auto& de : fs::directory_iterator("/dev")) {
@@ -10569,7 +10569,7 @@ std::vector<std::string> UIManager::listDrives() {
     drives.push_back("/");
     if (const char* h = std::getenv("HOME"); h && *h) drives.push_back(h);
     // User / removable mount points from /proc/mounts (under /media, /run/media,
-    // /mnt) — where udisks / desktop environments mount USB sticks, discs, phones.
+    // /mnt) - where udisks / desktop environments mount USB sticks, discs, phones.
     std::ifstream mounts("/proc/mounts");
     std::string line;
     while (std::getline(mounts, line)) {
@@ -10821,7 +10821,7 @@ void UIManager::activateDrive(const std::string& drive_entry) {
             right_pane_ = RightPane::Playlist;
             return;
         }
-        return;   // CD open failed — don't try to browse a device node as a dir
+        return;   // CD open failed - don't try to browse a device node as a dir
     }
 #endif
     if (fs::exists(drive_entry)) {
@@ -13867,7 +13867,7 @@ void UIManager::drawMBSearch() {
     // Input-only fields (artist_buf, album_buf, cursors) are only ever
     // written on the UI thread, so no lock needed for those.
 
-    // Reuse or create the modal window — avoids newwin/delwin churn every 80ms
+    // Reuse or create the modal window - avoids newwin/delwin churn every 80ms
     // which can corrupt ncurses window list on Windows after many iterations.
     if (!mb_search_win_ || getmaxx(mb_search_win_) != BOX_W
                         || getmaxy(mb_search_win_) != BOX_H) {
@@ -13976,7 +13976,7 @@ void UIManager::drawMBSearch() {
             const char* line = line_s.c_str();
 
             if (hi) {
-                // Selected result row — use the themeable 'selected' pair so the
+                // Selected result row - use the themeable 'selected' pair so the
                 // modal matches the playlist/dir selection instead of raw reverse.
                 wattron(w, COLOR_PAIR(CP_SELECTED) | A_BOLD);
                 mvwprintw(w, LIST_START + i, 2, "%-*s", BOX_W - 4, line);
@@ -13992,7 +13992,7 @@ void UIManager::drawMBSearch() {
     mvwaddstr(w, BOX_H - 1, 2, "Tab:field  Enter:search/select  Up/Down:list  Esc:close");
 
     wrefresh(w);
-    // Don't delwin — window is cached in mb_search_win_ and reused each frame
+    // Don't delwin - window is cached in mb_search_win_ and reused each frame
 }
 
 // ─── handleMBSearchInput ──────────────────────────────────────────────────────
@@ -14011,7 +14011,7 @@ void UIManager::handleMBSearchInput(int ch) {
         if (cur > 0) { buf.erase((size_t)(cur - 1), 1); --cur; }
     };
 
-    if (ch == 27) {  // Escape — close modal
+    if (ch == 27) {  // Escape - close modal
         if (s.searching) mb_lookup_.cancel();
         mb_search_ = {};
         if (mb_search_win_) { delwin(mb_search_win_); mb_search_win_ = nullptr; }
@@ -14020,7 +14020,7 @@ void UIManager::handleMBSearchInput(int ch) {
         return;
     }
     // Pass global control keys (Ctrl+R, Ctrl+Y, Ctrl+Q, Ctrl+L etc.) through
-    // to the normal handler — don't trap them in the search modal.
+    // to the normal handler - don't trap them in the search modal.
     if (ch < 32 && ch != '\t' && ch != '\n' && ch != '\r' && ch != '\b'
         && ch != KEY_BACKSPACE) {
         mb_search_ = {};
@@ -14043,7 +14043,7 @@ void UIManager::handleMBSearchInput(int ch) {
             return;
         }
         if (ch == '\n' || ch == KEY_ENTER || ch == '\r') {
-            // Snapshot the selected result under mb_mutex_ — the search callback
+            // Snapshot the selected result under mb_mutex_ - the search callback
             // writes mb_search_.results under this same mutex, so we must hold
             // it while reading to avoid a data race on the vector/strings.
             bool        p_discogs = false;
@@ -14058,13 +14058,13 @@ void UIManager::handleMBSearchInput(int ch) {
                 p_date    = s.results[(size_t)s.list_cursor].date;
             }
 
-            // Cancel any running worker — all result data safely copied above.
+            // Cancel any running worker - all result data safely copied above.
             mb_lookup_.cancel();
 
             if (p_discogs) {
                 // Discogs result: the search endpoint carries no tracklist, so
-                // fetch the release detail (/releases/{id}) — mirrors the MB
-                // second-fetch — and populate tracks the same way an MB pick does.
+                // fetch the release detail (/releases/{id}) - mirrors the MB
+                // second-fetch - and populate tracks the same way an MB pick does.
                 std::string discogs_id = p_mbid;
                 const std::string pfx = "discogs:";
                 if (discogs_id.rfind(pfx, 0) == 0)
@@ -14105,7 +14105,7 @@ void UIManager::handleMBSearchInput(int ch) {
                 return;
             }
 
-            // MusicBrainz result — fetch full release by MBID.
+            // MusicBrainz result - fetch full release by MBID.
             s.searching  = true;
             s.status_msg = "Fetching full release data...";
             redraw_needed_.store(true);
@@ -14137,7 +14137,7 @@ void UIManager::handleMBSearchInput(int ch) {
             }
             return;
         }
-        // Tab or any other key in result mode — go back to input fields
+        // Tab or any other key in result mode - go back to input fields
         if (ch == '\t') { s.field = 0; redraw_needed_.store(true); return; }
     }
 

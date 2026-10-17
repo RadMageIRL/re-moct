@@ -1,12 +1,12 @@
-// FlacEncoder.cpp — see FlacEncoder.h. The bodies below are the inline FLAC
+// FlacEncoder.cpp - see FlacEncoder.h. The bodies below are the inline FLAC
 // blocks from CDRipper::ripTrack moved verbatim (setup / process_interleaved /
 // finish); only the buffer names changed. Do not "improve" values or ordering
-// here — byte-identity with the pre-seam rip output is the contract, and
+// here - byte-identity with the pre-seam rip output is the contract, and
 // rip_encoder_seam_test diffs this class against a frozen copy of the
 // original inline sequence.
 #include "FlacEncoder.h"
 
-#include "PortUtil.h"   // port::fopenUtf8 — same open call the inline code used
+#include "PortUtil.h"   // port::fopenUtf8 - same open call the inline code used
 
 #include <cstdio>
 

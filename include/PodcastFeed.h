@@ -3,7 +3,7 @@
 // ─── Podcast RSS/Atom feed parser ────────────────────────────────────────────
 //
 // A standalone, PURE feed parser: raw feed XML (a std::string) in, a PodcastFeed
-// struct out. No I/O, no globals, no throw — the whole point of Podcasts slice 1
+// struct out. No I/O, no globals, no throw - the whole point of Podcasts slice 1
 // is to prove the one genuinely-new, genuinely-messy piece (XML-in-the-wild) in
 // isolation before any UI/HTTP wiring lands (slice 2+).
 //
@@ -15,11 +15,11 @@
 // attribute reads (<enclosure url=…>, <itunes:image href=…>), namespaced tags
 // (itunes:*), CDATA, and HTML-in-descriptions, so this unit carries its own small
 // helper set. xml_unescape is DUPLICATED here (extended for numeric entities)
-// rather than shared out of PlaylistManager.cpp — sharing it would mean editing
+// rather than shared out of PlaylistManager.cpp - sharing it would mean editing
 // that file to expose a currently file-static helper, which this slice avoids.
 //
 // FORMAT SUPPORT: RSS 2.0 (<rss><channel><item>) fully. Atom (<feed><entry>) is
-// DEFERRED to a later slice — RSS is ~95% of podcasts; an Atom feed simply parses
+// DEFERRED to a later slice - RSS is ~95% of podcasts; an Atom feed simply parses
 // to ok=false here (no <item> found), never a crash. Note the defer, don't build it.
 //
 // DEFENSIVE CONTRACT: never crash, never throw, never hang. Missing fields
@@ -35,7 +35,7 @@
 
 struct PodcastEpisode {
     std::string  title;
-    std::string  audio_url;          // <enclosure url="…"> — the playable/downloadable file
+    std::string  audio_url;          // <enclosure url="…"> - the playable/downloadable file
     std::string  guid;               // <guid> body if present (identity key candidate 1)
     std::string  pub_date_raw;       // <pubDate> as-found (kept verbatim regardless of parse)
     std::int64_t pub_date_unix = 0;  // epoch seconds, 0 if unparseable
@@ -46,7 +46,7 @@ struct PodcastEpisode {
     // chapters_url is left EMPTY for an element whose type attribute explicitly names
     // something other than JSON, so a non-JSON document is never fetched at all.
     // Identity key resolved at use (slice 3): guid ? guid : audio_url ? audio_url
-    // : hash(title + pub_date_raw). Not computed here — the parser just fills the inputs.
+    // : hash(title + pub_date_raw). Not computed here - the parser just fills the inputs.
 };
 
 struct PodcastFeed {
@@ -97,7 +97,7 @@ inline bool findElement(const std::string& s, const std::string& tag, size_t fro
         char c = (nx < s.size()) ? s[nx] : '\0';
         if (c == '>' || c == '/' || c == ' ' || c == '\t' || c == '\n' || c == '\r')
             break;
-        p = nx;  // a longer name that merely starts with `tag` — keep looking
+        p = nx;  // a longer name that merely starts with `tag` - keep looking
     }
     open_lt = p;
     size_t gt = s.find('>', p);
@@ -107,7 +107,7 @@ inline bool findElement(const std::string& s, const std::string& tag, size_t fro
     if (self_closing) { body_begin = body_end = gt; after = gt + 1; return true; }
     const std::string close = "</" + tag + ">";
     size_t c = s.find(close, gt + 1);
-    if (c == std::string::npos) {           // truncated / unclosed — take the rest, don't fail
+    if (c == std::string::npos) {           // truncated / unclosed - take the rest, don't fail
         body_begin = gt + 1; body_end = s.size(); after = s.size(); return true;
     }
     body_begin = gt + 1; body_end = c; after = c + close.size();
@@ -191,7 +191,7 @@ inline void appendUtf8(std::string& o, unsigned long cp) {
 // XML entity unescape: the five named entities plus numeric &#NNN; / &#xHH;.
 // A DUPLICATE of PlaylistManager's xml_unescape, extended for numeric forms
 // (feeds use &#39; &#8217; heavily). Digits parsed by hand so a bad entity can
-// never throw — an unrecognized "&…;" is left verbatim.
+// never throw - an unrecognized "&…;" is left verbatim.
 inline std::string unescapeEntities(const std::string& s) {
     std::string out;
     out.reserve(s.size());
@@ -286,7 +286,7 @@ inline std::string collapseWs(const std::string& s) {
     return out;
 }
 
-// Lowercase a byte string (ASCII only — media types are ASCII by spec).
+// Lowercase a byte string (ASCII only - media types are ASCII by spec).
 inline std::string asciiLower(std::string s) {
     for (char& c : s) c = (char)std::tolower((unsigned char)c);
     return s;
@@ -332,7 +332,7 @@ inline std::int64_t parseDuration(const std::string& in) {
         } else if (c >= '0' && c <= '9') {
             cur = cur * 10 + (c - '0'); any = true;
         } else if (c == '.' ) {
-            // fractional seconds — ignore the remainder of this component
+            // fractional seconds - ignore the remainder of this component
             // by consuming digits until the next ':' or end
             while (i + 1 < s.size() && s[i + 1] != ':') ++i;
         } else {
@@ -349,7 +349,7 @@ inline std::int64_t parseDuration(const std::string& in) {
 }
 
 // Days since 1970-01-01 for a proleptic-Gregorian date (Howard Hinnant's
-// algorithm) — pure integer math, no libc timezone calls, no throw.
+// algorithm) - pure integer math, no libc timezone calls, no throw.
 inline std::int64_t daysFromCivil(std::int64_t y, unsigned m, unsigned d) {
     y -= m <= 2;
     std::int64_t era = (y >= 0 ? y : y - 399) / 400;
@@ -361,7 +361,7 @@ inline std::int64_t daysFromCivil(std::int64_t y, unsigned m, unsigned d) {
 
 // RFC-822-ish <pubDate> -> epoch seconds, best-effort. Handles the optional
 // "Dow, " prefix, named months, 2- or 4-digit years, HH:MM(:SS), and both
-// numeric (+/-HHMM) and named (GMT/UT/UTC/EST…PDT) zones. 0 on any failure —
+// numeric (+/-HHMM) and named (GMT/UT/UTC/EST…PDT) zones. 0 on any failure -
 // the raw string is always kept by the caller regardless.
 inline std::int64_t parseRfc822(const std::string& in) {
     std::string s = collapseWs(in);
@@ -491,7 +491,7 @@ inline PodcastFeed parsePodcastFeed(const std::string& xml) {
         ep.description  = cleanRich(firstNonEmpty(elementBody(it, "description"),
                                                   elementBody(it, "itunes:summary")));
         ep.image_url    = firstAttr(it, "itunes:image", "href");
-        // <podcast:chapters url="…" type="application/json"/> — the Podcasting 2.0
+        // <podcast:chapters url="…" type="application/json"/> - the Podcasting 2.0
         // chapter document. Both attributes are read off the SAME (first) element,
         // and the URL is kept only when the type says it is JSON (or says nothing).
         if (chaptersTypeEligible(firstAttr(it, "podcast:chapters", "type")))

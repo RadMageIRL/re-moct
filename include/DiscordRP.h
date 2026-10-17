@@ -1,14 +1,14 @@
 #pragma once
 // Minimal Discord Rich Presence over the local IPC named pipe. Best-effort:
 // every call silently no-ops if Discord isn't running or the client is logged
-// out. Synchronous by design — the pipe is local (sub-millisecond) and updates
+// out. Synchronous by design - the pipe is local (sub-millisecond) and updates
 // fire only on track change, so there's nothing to background; a short read
 // timeout guarantees a hung client can't stall the caller.
 //
 // Transport goes through the core::IIpc seam (slice 6). Discord's PROTOCOL stays
 // here, consumer-side: the [opcode u32][len u32][payload] framing, the
 // discord-ipc-0..9 endpoint probe, the handshake, the 1 MB response cap, and the
-// lazy-reconnect policy — the same protocol/transport split as the IHttp seam.
+// lazy-reconnect policy - the same protocol/transport split as the IHttp seam.
 #include "core/IIpc.h"
 #include <cstdint>
 #include <memory>
@@ -17,7 +17,7 @@
 class DiscordRP {
 public:
     // ipc == nullptr -> the production platform transport (core::ipc()); tests
-    // inject a FakeIpc here (constructor injection — no setIpc global).
+    // inject a FakeIpc here (constructor injection - no setIpc global).
     explicit DiscordRP(std::string app_id, core::IIpc* ipc = nullptr)
         : app_id_(std::move(app_id)), ipc_(ipc ? ipc : &core::ipc()) {}
     ~DiscordRP() { disconnect(); }

@@ -1,17 +1,17 @@
-// PluginLoaderWin.cpp — Windows LoadLibrary implementation of core::IPluginLoader.
+// PluginLoaderWin.cpp - Windows LoadLibrary implementation of core::IPluginLoader.
 //
-// Lives in src/platform/win/ (header in include/core/IPluginLoader.h) — the 5th
+// Lives in src/platform/win/ (header in include/core/IPluginLoader.h) - the 5th
 // seam built INTO the slice-5 core/platform boundary. Compiled only on Windows
 // (guarded here + in CMake). The platform::lnx::PosixPluginLoader sibling
 // (src/platform/linux/PluginLoaderPosix.cpp) is the dlopen twin.
 //
-//   load    — LoadLibraryExW on the UTF-8 path (widened via MultiByteToWideChar,
-//             self-contained — no StringUtils dependency). LOAD_WITH_ALTERED_
+//   load - LoadLibraryExW on the UTF-8 path (widened via MultiByteToWideChar,
+//             self-contained - no StringUtils dependency). LOAD_WITH_ALTERED_
 //             SEARCH_PATH so a plugin's co-located dependency DLLs resolve from
 //             its own directory when the path is absolute (harmless for a
 //             dependency-free plugin like the sine test source).
-//   symbol  — GetProcAddress; nullptr if absent.
-//   unload  — FreeLibrary in the module dtor.
+//   symbol - GetProcAddress; nullptr if absent.
+//   unload - FreeLibrary in the module dtor.
 #ifdef _WIN32
 
 #include "core/IPluginLoader.h"
@@ -58,7 +58,7 @@ public:
 
 namespace core {
 
-// Production default loader (see IPluginLoader.h — reached by name because core
+// Production default loader (see IPluginLoader.h - reached by name because core
 // code can't include this TU's headers). Function-local static: thread-safe
 // init; WinPluginLoader is stateless, modules own their HMODULE.
 IPluginLoader& pluginLoader() {

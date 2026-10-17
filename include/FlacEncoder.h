@@ -1,4 +1,4 @@
-// FlacEncoder.h — IEncoder for FLAC rip output (rip-encoder-seam slice).
+// FlacEncoder.h - IEncoder for FLAC rip output (rip-encoder-seam slice).
 // Verbatim transliteration of the inline FLAC path from CDRipper::ripTrack:
 // level 5, verify off, 2ch/16-bit/44.1k, total_samples_estimate from the TOC.
 // Byte-identity vs the original inline code is pinned by rip_encoder_seam_test.
@@ -12,7 +12,7 @@
 
 class FlacEncoder : public IEncoder {
 public:
-    // Default MUST stay 5 — the pre-seam literal. The seam oracle constructs
+    // Default MUST stay 5 - the pre-seam literal. The seam oracle constructs
     // this argument-free and diffs against the frozen inline reference, so a
     // drifted default fails CI. Caller clamps (0-8); this ctor trusts it.
     explicit FlacEncoder(int level = 5) : level_(level) {}

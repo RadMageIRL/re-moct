@@ -1,4 +1,4 @@
-// Mp4Mux.h — minimal hand-rolled MP4/ISO-BMFF writer for AAC-LC access units.
+// Mp4Mux.h - minimal hand-rolled MP4/ISO-BMFF writer for AAC-LC access units.
 //
 // PHASE-0 PROBE ARTIFACT (aac-m4a-phase0-probe). Not in the production build.
 // This is the reusable deliverable the Phase 1 M4aEncoder is expected to lift:

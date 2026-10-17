@@ -1,12 +1,12 @@
-// Mp3Encoder.cpp — see Mp3Encoder.h. The bodies below are the inline LAME
+// Mp3Encoder.cpp - see Mp3Encoder.h. The bodies below are the inline LAME
 // blocks from CDRipper::ripTrack moved verbatim (setup / encode_buffer+fwrite /
 // flush + Xing rewrite + close); only the buffer names changed. Do not
-// "improve" values or ordering here — byte-identity with the pre-seam rip
+// "improve" values or ordering here - byte-identity with the pre-seam rip
 // output is the contract, and rip_encoder_seam_test diffs this class against
 // a frozen copy of the original inline sequence.
 #include "Mp3Encoder.h"
 
-#include "PortUtil.h"   // port::fopenUtf8 — same open call the inline code used
+#include "PortUtil.h"   // port::fopenUtf8 - same open call the inline code used
 
 namespace {
 constexpr int SAMPLE_RATE = 44100;

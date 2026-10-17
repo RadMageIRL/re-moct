@@ -1,4 +1,4 @@
-// plugin_loader_test.cpp — Phase 4 slice (a): freeze the C ABI against a
+// plugin_loader_test.cpp - Phase 4 slice (a): freeze the C ABI against a
 // disposable plugin. Loads the pure-C sine plugin from a REAL .dll/.so via the
 // core::IPluginLoader seam + core::loadPlugin policy, drives the full lifecycle
 // through the C table, and unit-tests the version gate's reject paths with
@@ -78,7 +78,7 @@ static void testRealSinePlugin() {
     core::PluginLoad why = core::PluginLoad::MissingRequiredFn;
     auto loaded = core::loadPlugin(SINE_PLUGIN_PATH, &why);
     CHECK(loaded != nullptr, "loadPlugin succeeded");
-    if (!loaded) { std::printf("  (reason: %s) — cannot continue lifecycle\n",
+    if (!loaded) { std::printf("  (reason: %s) - cannot continue lifecycle\n",
                                core::pluginLoadName(why)); return; }
 
     const RemoctPlugin* pl = loaded->plugin();
@@ -131,7 +131,7 @@ static void testRealSinePlugin() {
     CHECK(need2 == 12 && std::strlen(tiny) == 4 && std::strcmp(tiny, "Sine") == 0,
           "tiny buffer truncates to cap-1 + NUL, still returns full length");
 
-    // config channel + the rest of the transport surface (smoke — no crash).
+    // config channel + the rest of the transport surface (smoke - no crash).
     pl->set_config(self, "prefer_digital", "1");
     (void)pl->position_sec(self);
     (void)pl->duration_sec(self);

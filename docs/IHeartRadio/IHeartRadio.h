@@ -5,7 +5,7 @@
 #include <functional>
 
 // ─────────────────────────────────────────────────────────────────────────────
-// IHeartRadio — isolated iHeart now-playing service.
+// IHeartRadio - isolated iHeart now-playing service.
 //
 // Resolves a revma zc#### stream URL to an iHeart station id + trackHistory
 // endpoint (sidecar-cached, self-resolving on a miss), then polls for the

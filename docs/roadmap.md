@@ -1134,9 +1134,15 @@ convert / art slices), kept here so they are not re-scoped by accident:
   warm-up device in `initDevice` exists for the same class of failure on the
   **FDK-AAC** path. Both scars are on the lossy path, which this scope excludes.
   Recon: `docs/RECON-bit-perfect.md`. Proposal: `docs/DESIGN-bit-perfect.md`.
-- **OPEN BUG, NOT REPRODUCIBLE, NOT IN 1.6.2: 24 kHz m4b audiobooks chirp, cut
+- **CLOSED, NOT RECURRED - NO FIX WAS MADE: 24 kHz m4b audiobooks chirp, cut
   out, and play at the wrong pitch and speed (reported 2026-08-12; recon
-  2026-08-15, `docs/RECON-m4b-chirp.md`).**
+  2026-08-15, `docs/RECON-m4b-chirp.md`; closed 2026-10-16).**
+  **Dos has not heard it again since the one report**, two months of normal
+  listening. No commit after the recon touched the audio or AAC path, so nothing
+  fixed it; it simply has not come back. Closed on that basis, not on a cause.
+  **If it returns, this entry is the starting point**, and the record below
+  still holds. It is not the June "chirp then silence" bug, which WAS fixed (the
+  warm-up device and forced 44100 in `initDevice`/`open_decoder`).
   **Deliberately left out of 1.6.2 because it is UNLOCATED, not because it is
   large.** A fix now would be a guess dressed as a change, and the two workarounds
   already in the tree are what guessing at this failure produced last time.
@@ -1166,7 +1172,7 @@ convert / art slices), kept here so they are not re-scoped by accident:
   **Both workarounds are confirmed firing:** the warm-up device inits/starts/stops
   cleanly before the AAC decoder opens, and the forced 44100 is in effect (every
   book reports `2 ch 44100 Hz` from a 24000/mono source).
-  **THE ONE QUESTION LEFT, for the next occurrence:** *is it the first file played
+  **THE ONE QUESTION, if it ever recurs:** *is it the first file played
   after launch, or only after something else played first?* That distinguishes a
   first-bring-up failure and a per-track teardown/reinit failure - the two
   candidates a fix would NOT have to reach the audio thread for - from the callback
@@ -1175,8 +1181,9 @@ convert / art slices), kept here so they are not re-scoped by accident:
   rather than scoped.
   **If the warm-up has stopped holding it affects every AAC file and every stream**,
   not just audiobooks - the reason this is its own job rather than a footnote.
-  The probe is reusable: `scratchpad/m4b_play.cpp`, with `--no-warmup`,
-  `--first <file>` and `--seek <sec>`.
+  The 08-15 probe (`m4b_play.cpp`, with `--no-warmup`, `--first <file>` and
+  `--seek <sec>`) lived in that session's scratchpad and is GONE as of 2026-10-16;
+  `docs/RECON-m4b-chirp.md` (untracked) describes it well enough to rebuild.
 - **HLS segment resume on reconnect: reported and DECLINED (2026-08-12).** After a
   network drop, `hlsConnect()` discards `hls_ = HlsState{}` as its first act, so
   `last_seq` - the highest `EXT-X-MEDIA-SEQUENCE` consumed - is never consulted and

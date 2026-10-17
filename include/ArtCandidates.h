@@ -2,16 +2,16 @@
 #include <string>
 #include <vector>
 
-// ArtCandidates — the free-text cover-art candidate list, as ROWS.
+// ArtCandidates - the free-text cover-art candidate list, as ROWS.
 //
 // CoverArt::bytesByText scores ~10 albums each from iTunes and Deezer, keeps one
 // URL and drops every loser inside the loop. This module keeps them, so the art
-// picker can show a list on the discs where Cover Art Archive has nothing — which
+// picker can show a list on the discs where Cover Art Archive has nothing - which
 // is exactly where the automatic pick is least trustworthy.
 //
 // SPLIT ON PURPOSE: everything here is pure and depends on nothing. The JSON
 // field extraction lives in ArtCandidatesJson.h, which is included by CoverArt.cpp
-// and by the test and NOT by UIManager — json.hpp is a large header and the
+// and by the test and NOT by UIManager - json.hpp is a large header and the
 // picker only needs the struct.
 //
 // The normalisation and artist gate below are the SAME RULES CoverArt's text path
@@ -25,11 +25,11 @@ namespace art {
 // One album a free-text search offered. Field availability is NOT uniform across
 // the two services and the empty values are load-bearing (see below).
 struct Candidate {
-    std::string source;      // "iT" or "dz" — shown as a row tag, never inferred
+    std::string source;      // "iT" or "dz" - shown as a row tag, never inferred
     std::string artist;
     std::string title;
-    std::string year;        // 4 chars, or "" — DEEZER ALBUM SEARCH PUBLISHES NONE
-    std::string country;     // 2-3 chars, or "" — likewise none from Deezer
+    std::string year;        // 4 chars, or "" - DEEZER ALBUM SEARCH PUBLISHES NONE
+    std::string country;     // 2-3 chars, or "" - likewise none from Deezer
     int         tracks = 0;  // 0 = unknown. The discriminating field: see below
     std::string thumb_url;   // 250px, for the preview pane
     std::string image_url;   // full size, fetched only when a row is chosen
@@ -82,13 +82,13 @@ inline int albumOverlap(const std::string& want, const std::string& got) {
 //
 // The rule is bytesByText's, replicated exactly: highest album_overlap wins,
 // compared with a STRICT `>` so that on a TIE THE FIRST-LISTED CANDIDATE WINS,
-// and iTunes is decided on its own — Deezer is consulted only when iTunes offered
+// and iTunes is decided on its own - Deezer is consulted only when iTunes offered
 // nothing at all.
 //
 // MEASURED, and it is the reason this feature exists: for album "Relish" both
 // "Relish" and "Relish (Expanded Edition)" score 1, because the request has one
 // token and both titles contain it. The tie hands the pick to whatever the
-// service listed first, and iTunes lists the 20-track Expanded Edition — so a
+// service listed first, and iTunes lists the 20-track Expanded Edition - so a
 // 12-track disc gets 20-track art, chosen by result ordering rather than by any
 // judgement of ours.
 //

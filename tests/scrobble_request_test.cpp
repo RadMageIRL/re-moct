@@ -1,11 +1,11 @@
 // Windows-only end-to-end request test for the scrobble POST sites (group b).
 //
 // Injects a FakeHttp via core::setHttp() and drives the REAL public LastFm /
-// ListenBrainz API — so the actual signing (api_sig) and JSON body-building run — then
+// ListenBrainz API - so the actual signing (api_sig) and JSON body-building run - then
 // asserts the request that reaches the seam: verb, content-type, Authorization header,
 // URL, timeout, and body shape. Includes a non-ASCII (UTF-8) artist/track so the fake
 // confirms the body is carried as raw bytes up to the seam. (True wire fidelity is the
-// live round-trip's job — a fake can't prove UTF-8 survives the socket.)
+// live round-trip's job - a fake can't prove UTF-8 survives the socket.)
 //
 // Not Linux-CI-pure (it links the Windows consumers), so it is if(WIN32)-guarded in
 // tests/CMakeLists.txt: Linux CI runs the 3 pure suites, Windows runs 4.
@@ -41,7 +41,7 @@ static bool has(const std::string& hay, const std::string& needle) {
 }
 
 int main() {
-    // Non-ASCII artist/track — exercises the raw-UTF-8 body path.
+    // Non-ASCII artist/track - exercises the raw-UTF-8 body path.
     const std::string kArtist = "Björk";
     const std::string kTrack  = "Jóga";
     const std::string kAlbum  = "Homogenic";

@@ -244,7 +244,7 @@ int main(int argc, char* argv[]) {
         playlist.setRepeat(static_cast<RepeatMode>(config.repeat_mode));
         playlist.setShuffle(config.shuffle);
         // Bit-perfect: config-only, no key and no menu, so it is applied here and
-        // never written back — nothing in the UI can change it (DESIGN-bit-perfect).
+        // never written back - nothing in the UI can change it (DESIGN-bit-perfect).
         audio.setBitPerfect(config.bit_perfect);
         // Restore EQ
         audio.setEqEnabled(config.eq_enabled);
@@ -307,7 +307,7 @@ int main(int argc, char* argv[]) {
                 playlist.repeatMode() != RepeatMode::One)
                 playlist.next();
             // Queue has items but the head was not what swapped in: leave the
-            // playlist index where it is — on_track_end_ / the poll handle it.
+            // playlist index where it is - on_track_end_ / the poll handle it.
         });
 
         // ── Auto-advance callback ─────────────────────────────────────────
@@ -372,7 +372,7 @@ int main(int argc, char* argv[]) {
                 if (parseCDPath(qpath, drive, track_num)) {
                     // Slice 3: this auto-advance queue-pop is a second reopen shape
                     // (openCD on the !cdMode branch). It fails SILENTLY BY DESIGN on
-                    // an empty tray (continue, no row-purge/toast) — unlike the UI
+                    // an empty tray (continue, no row-purge/toast) - unlike the UI
                     // paths' reopenCDForAction. That helper lives in UIManager and
                     // isn't reachable here, and it isn't needed: this runs mid-
                     // playback (a track just ended), so an ejected disc is already
@@ -469,7 +469,7 @@ int main(int argc, char* argv[]) {
 
         // NOTE deliberately NO custom SIGWINCH handler: ncursesw installs its
         // own at initscr(), which is what turns a terminal resize into
-        // KEY_RESIZE through getch() — the resize path UIManager already
+        // KEY_RESIZE through getch() - the resize path UIManager already
         // handles (KEY_RESIZE → relayout). Installing ours DISPLACED that
         // handler, so ncurses never learned the new size and redraws happened
         // at the stale geometry (the Dos-found resize bug on the Debian VM).
@@ -482,7 +482,7 @@ int main(int argc, char* argv[]) {
         config.repeat_mode      = (int)playlist.repeatMode();
         config.shuffle          = playlist.shuffle();
         // toast_enabled is toggled in-place via UIManager's config reference, so
-        // it is already current here — no copy needed.
+        // it is already current here - no copy needed.
         config.eq_enabled       = audio.eqEnabled();
         for (int b = 0; b < AudioManager::EQ_BANDS; ++b)
             config.eq_gains[b]  = audio.getEqGain(b);

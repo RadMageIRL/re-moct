@@ -1,10 +1,10 @@
-// OpusDecoder.cpp — miniaudio custom decoding backend backed by libopusfile.
+// OpusDecoder.cpp - miniaudio custom decoding backend backed by libopusfile.
 // See OpusDecoder.h for the contract. Decodes Ogg Opus (.opus). Output is
 // interleaved 32-bit float PCM at 48 kHz (native-float lossy decode, like
-// the Vorbis backend — op_read_float, one hop, no s16 quantize round trip).
+// the Vorbis backend - op_read_float, one hop, no s16 quantize round trip).
 //
 // Design: the whole encoded file is slurped into memory on init (the
-// AacDecoder.cpp pattern — songs are a few MB; this removes a class of
+// AacDecoder.cpp pattern - songs are a few MB; this removes a class of
 // streaming-I/O bugs) and handed to op_open_memory, so libopusfile never sees
 // a file path and Windows wide paths need nothing beyond the slurp itself.
 // libopusfile owns demux, seek, and decode; op_pcm_seek is sample-exact, so
@@ -12,7 +12,7 @@
 //
 // The include below MUST keep the explicit opus/ prefix: TagLib ships its own
 // (unrelated C++) opusfile.h and its include directory is on this target's
-// include path — a bare <opusfile.h> can resolve to the wrong header.
+// include path - a bare <opusfile.h> can resolve to the wrong header.
 
 #include "OpusDecoder.h"
 
@@ -41,7 +41,7 @@ namespace {
 struct OpusBackend {
     ma_data_source_base ds;        // MUST be first
 
-    std::vector<uint8_t> file;     // op_open_memory reads from this in place —
+    std::vector<uint8_t> file;     // op_open_memory reads from this in place -
                                    // it must outlive `of` and never reallocate
     OggOpusFile* of = nullptr;
 

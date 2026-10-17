@@ -1,4 +1,4 @@
-// M4aEncoder.h — IEncoder for AAC-LC in an MP4 (.m4a) container (aac-m4a-encoder
+// M4aEncoder.h - IEncoder for AAC-LC in an MP4 (.m4a) container (aac-m4a-encoder
 // slice). FDK-AAC encoder (the SAME libfdk-aac already linked for decode - no new
 // dependency, no new DLL) emitting raw access units, muxed by Mp4Mux.h.
 //

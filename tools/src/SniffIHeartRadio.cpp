@@ -1,5 +1,5 @@
 // ─────────────────────────────────────────────────────────────────────────────
-// SniffIHeartRadio.cpp  —  standalone iHeart now-playing API prober for RE-MOCT
+// SniffIHeartRadio.cpp - standalone iHeart now-playing API prober for RE-MOCT
 //
 // NOT part of the RE-MOCT build. Compile on demand, point it at an iHeart HLS
 // URL, and it walks iHeart's (undocumented) API to discover how to resolve a
@@ -8,9 +8,9 @@
 // dumps every stage's raw + pretty JSON so we can see exactly what iHeart returns.
 //
 // Two outputs:
-//   1. %TEMP%\re-moct-iheartbeat.log        — human-readable trace (for diffing
+//   1. %TEMP%\re-moct-iheartbeat.log - human-readable trace (for diffing
 //                                              when iHeart churns their API)
-//   2. %TEMP%\re-moct-iheart-stations.json  — structured identity cache the app
+//   2. %TEMP%\re-moct-iheart-stations.json - structured identity cache the app
 //                                              can later read (zc#### -> id/meta_url)
 //
 // Build (MSYS2 ucrt64):
@@ -36,7 +36,7 @@
 #include <fstream>
 
 #include "json.hpp"        // nlohmann single-header (sits next to this .cpp in E:\code)
-#include "IHeartRadio.h"   // the production module — -M mode exercises it
+#include "IHeartRadio.h"   // the production module - -M mode exercises it
 using json = nlohmann::json;
 
 // ── Dual logging: stdout + %TEMP%\re-moct-iheartbeat.log ─────────────────────
@@ -346,7 +346,7 @@ static int runModuleTest(const std::string& url) {
 // ── -P mode: dump the HLS variant playlist's EXTINF lines ────────────────────
 // Resolves master -> variant (the way StreamSource does) and prints the media
 // playlist's per-segment tags, flagging whether iHeart embeds song metadata
-// (title=/artist=/song_spot=) inline — a potential second now-playing source
+// (title=/artist=/song_spot=) inline - a potential second now-playing source
 // that, unlike trackHistory, can't freeze without stopping the audio.
 static std::string resolveUrl(const std::string& base, const std::string& ref) {
     if (ref.rfind("http://", 0) == 0 || ref.rfind("https://", 0) == 0) return ref;
@@ -387,7 +387,7 @@ static int runPlaylistDump(const std::string& url) {
 
     std::string media_url, media_body;
     if (m.body.find("#EXT-X-STREAM-INF") != std::string::npos) {
-        // master with variants — take the first variant URI (first non-# line)
+        // master with variants - take the first variant URI (first non-# line)
         std::string variant;
         size_t i = 0;
         while (i < m.body.size()) {
@@ -441,7 +441,7 @@ static int runPlaylistDump(const std::string& url) {
             // a line with title=/artist= is NOT a song if it's flagged as a traffic spot
             // (song_spot="T"), a Spot Block boundary, a zero-length marker, or has a blank
             // artist. KBKS ads carry a REAL artist string (artist="Kroger") so the blank
-            // check alone misses them — song_spot="T" is the decisive ad discriminator and
+            // check alone misses them - song_spot="T" is the decisive ad discriminator and
             // must gate here just as `spot != 'T'` does in classifyIHeartManifest. (Z100's
             // "Spot Block End" lines have no song_spot at all, caught by spotBlock/zeroLen.)
             if (hasTitle && hasArtist) {

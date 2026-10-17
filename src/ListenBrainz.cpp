@@ -51,7 +51,7 @@ std::string ListenBrainz::buildSubmitBody(const std::string& listen_type,
 // buildSubmitBody + accepted() stay here; only transport moved. Parity: UA is the
 // seam default (byte-identical to the app UA), Content-Type application/json,
 // Authorization: Token header, 8 s connect+receive timeout. The HTTP status is
-// surfaced back through http_status — accepted() gates on status==200 (JSON fallback),
+// surfaced back through http_status - accepted() gates on status==200 (JSON fallback),
 // so status is load-bearing here (unlike LastFm, which gates on the JSON error field).
 std::string ListenBrainz::httpPost(const std::string& path, const std::string& body,
                                    const std::string& token, long* http_status) {

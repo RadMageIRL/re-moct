@@ -92,9 +92,9 @@ inline bool looksLikeRealTrack(const std::string& artist, const std::string& tra
 }
 
 // ─── Wide string conversion ───────────────────────────────────────────────────
-// Windows: MultiByteToWideChar (UTF-16, the baseline — astral glyphs become
+// Windows: MultiByteToWideChar (UTF-16, the baseline - astral glyphs become
 // surrogate pairs; the terminal folds them to '?', accepted in lessons.md).
-// Linux: a straight codepoint decode further down (after utf8_next) — wchar_t
+// Linux: a straight codepoint decode further down (after utf8_next) - wchar_t
 // is UTF-32 there, so the ncursesw wide-draw path gets one wchar_t per glyph.
 #ifdef _WIN32
 inline std::wstring utf8_to_wide(const std::string& s) {
@@ -108,11 +108,11 @@ inline std::wstring utf8_to_wide(const std::string& s) {
 #endif
 
 // ─── CD track path detection ──────────────────────────────────────────────────
-// Synthetic CD path format: "<spec>:CD Track NN" — "F:CD Track 01" on Windows
+// Synthetic CD path format: "<spec>:CD Track NN" - "F:CD Track 01" on Windows
 // (single drive letter), "sr0:CD Track 01" on Linux (SG_IO device, slice 6).
 // <spec> is the drive key: 1+ chars, no ':'. The "CD Track " tag is anchored
 // right after the first colon and the suffix must be digits only, so a real path
-// that merely contains the substring — e.g. "D:\Music\Best CD Tracks\01.flac" —
+// that merely contains the substring - e.g. "D:\Music\Best CD Tracks\01.flac" -
 // never matches. Generalizing from the old index-1 colon (colon-delimited spec)
 // is behavior-identical for every Windows single-char drive.
 inline bool isCDTrackPath(const std::string& p) {
@@ -135,7 +135,7 @@ inline bool isStreamPath(const std::string& p) {
 }
 
 // Returns the 1-based track number encoded in a synthetic CD path
-// ("<letter>:CD Track NN"), or -1 if `p` is not a CD-track path. Never throws —
+// ("<letter>:CD Track NN"), or -1 if `p` is not a CD-track path. Never throws -
 // isCDTrackPath() guarantees a digits-only suffix, and the try/catch guards the
 // pathological overflow case. Use this instead of a raw find("CD Track ")+stoi,
 // which throws std::invalid_argument on real paths that merely contain the
@@ -148,7 +148,7 @@ inline int cdTrackNumber(const std::string& p) {
 }
 
 // Parse drive spec ("D" on Windows, "sr0" on Linux) and track number from a CD
-// path. Returns false if not a valid CD path. (Colon-delimited spec — identical
+// path. Returns false if not a valid CD path. (Colon-delimited spec - identical
 // to the old single-char parse for every Windows drive letter.)
 inline bool parseCDPath(const std::string& p, std::string& drive, int& track_num) {
     if (!isCDTrackPath(p)) return false;
@@ -263,7 +263,7 @@ inline std::string foldForDisplay(const std::string& s) {
 // byte-identical too). Width is 0 for combining/zero-width marks, 2 for East-Asian
 // wide glyphs and most emoji, 1 otherwise. These power column-correct truncation,
 // padding and marquee scrolling feeding the wide ncurses API. They do NOT fold at
-// all — foldForDisplay normalizes typography, these preserve every codepoint.
+// all - foldForDisplay normalizes typography, these preserve every codepoint.
 
 // Decode one UTF-8 codepoint at s[i], advancing i past it. Malformed bytes return
 // the raw byte as a codepoint and advance by one, so callers always make progress.
@@ -289,7 +289,7 @@ inline uint32_t utf8_next(const std::string& s, size_t& i) {
 // A .m3u or .pls written by an older tool on Windows is CP1252, not UTF-8, so an
 // accented filename inside it is a raw high byte. That matters far beyond
 // display: std::filesystem::path built from a narrow string is decoded as UTF-8
-// on Windows, and INVALID UTF-8 makes it THROW ("Illegal byte sequence") — from
+// on Windows, and INVALID UTF-8 makes it THROW ("Illegal byte sequence") - from
 // the plain constructor and from fs::exists(s, ec) alike, because the conversion
 // runs before the error code applies. A single legacy playlist line was enough
 // to throw straight out of the loaders. Valid UTF-8 is never touched by these,
@@ -351,14 +351,14 @@ inline std::string cp1252_to_utf8(const std::string& s) {
 }
 
 // The one call sites use: leave valid UTF-8 exactly as it is, rescue the rest.
-// Deliberately not a guess between encodings — CP1252 is the ANSI codepage these
+// Deliberately not a guess between encodings - CP1252 is the ANSI codepage these
 // files come from, and a wrong-but-valid glyph beats a crash or a dropped track.
 inline std::string ensure_utf8(const std::string& s) {
     return isValidUtf8(s) ? s : cp1252_to_utf8(s);
 }
 
 // Linux twin of utf8_to_wide (see the Windows version above): wchar_t is
-// UTF-32 here, so one decoded codepoint per wchar_t — the ncursesw wide-draw
+// UTF-32 here, so one decoded codepoint per wchar_t - the ncursesw wide-draw
 // path gets whole glyphs with no surrogate handling needed.
 #ifndef _WIN32
 inline std::wstring utf8_to_wide(const std::string& s) {

@@ -1,6 +1,6 @@
-// discord_ipc_test — Windows-only unit test for the core::IIpc seam (slice 6):
+// discord_ipc_test - Windows-only unit test for the core::IIpc seam (slice 6):
 // drives the REAL DiscordRP consumer through an injected FakeIpc (constructor
-// injection — no global) and asserts the Discord protocol frames it builds:
+// injection - no global) and asserts the Discord protocol frames it builds:
 //   - endpoint probe: discord-ipc-0..9 in order, first accepting slot wins,
 //     all-refused -> silent no-op (Discord not running)
 //   - handshake: opcode 0, exact {"v":1,"client_id":...} payload, drained response
@@ -49,7 +49,7 @@ static bool contains(const std::string& hay, const std::string& needle) {
 // Channel state lives OUTSIDE the channel object (shared_ptr held by FakeIpc):
 // DiscordRP destroys its channel on every failure path (that's the behavior under
 // test), so the captured frames must outlive the channel or the assertions read
-// freed memory — the fixture-observation twin of the http_cancel_test lesson.
+// freed memory - the fixture-observation twin of the http_cancel_test lesson.
 struct ChanState {
     std::vector<std::string> sent;   // one entry per send() call, verbatim (the
                                      // single-write framing contract is visible here)

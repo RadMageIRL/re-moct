@@ -1,4 +1,4 @@
-// lb_probe — headless verification of the ListenBrainz client, before any UI.
+// lb_probe - headless verification of the ListenBrainz client, before any UI.
 //
 // Prompts for the user token at runtime (typing is hidden) so nothing lands on
 // disk or in the binary. If LISTENBRAINZ_TOKEN is already set in the environment

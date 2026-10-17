@@ -1,4 +1,4 @@
-// HlsPrime.h — pure prime-to-music-boundary scan for the iHeart re-pin clip fix.
+// HlsPrime.h - pure prime-to-music-boundary scan for the iHeart re-pin clip fix.
 //
 // Header-inline (like StringUtils.h) so it is unit-testable off the StreamSource TU.
 // PURE: no windows.h, no threads, no network. Given a media playlist body, returns

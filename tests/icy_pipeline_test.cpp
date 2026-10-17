@@ -1,10 +1,10 @@
-// icy_pipeline_test — Phase 3 slice 3: the ICY/continuous path, replayed
+// icy_pipeline_test - Phase 3 slice 3: the ICY/continuous path, replayed
 // headlessly against a REAL localhost ICY server fixture on BOTH platforms.
 //
 // This closes the slice-0 honest limit ("the ICY path cannot be replayed
-// headlessly — live gates only"): the fixture is a real TCP server speaking the
+// headlessly - live gates only"): the fixture is a real TCP server speaking the
 // ICY protocol (ICY 200 OK status, icy-metaint interleaving, StreamTitle
-// blocks), so the REAL StreamSource Continuous pipeline runs end-to-end —
+// blocks), so the REAL StreamSource Continuous pipeline runs end-to-end -
 // open() -> connect (raw WinINet on Windows / the slice-3 curl twin on Linux)
 // -> producerWorkerAAC -> readAudio de-interleave -> FDK decode -> ring ->
 // readFrames. Nothing in StreamSource is faked or injected.
@@ -15,17 +15,17 @@
 //   1. connect sends Icy-MetaData: 1; icy-metaint honored from the response
 //   2. audio flows (prebuffer -> real decoded energy through readFrames)
 //   3. THE offset-0 invariant: StreamTitle blocks parse EXACTLY at metaint
-//      boundaries across two title transitions — a single-byte slip garbles
+//      boundaries across two title transitions - a single-byte slip garbles
 //      both the ADTS decode and the titles, failing 2+3 deterministically
 //   4. server-side drop -> producer reconnects and self-heals (fixture sees a
 //      second connection, audio + fresh metadata resume)
-//   5. close() during a silent (blocked-read) stream returns bounded — <=8s
+//   5. close() during a silent (blocked-read) stream returns bounded - <=8s
 //      receive-timeout class on Windows, ~100ms stop_-poll class on Linux
 //   6. a response without icy-metaint -> passthrough (no de-interleave)
 //
 // BASELINE FINDING (this test's first run, 2026-07-03): WinINet does NOT
 // surface `icy-metaint` from a response whose status line is "ICY 200 OK"
-// (HttpQueryInfoA finds nothing -> icy_metaint_=0) — on a true SHOUTcast v1
+// (HttpQueryInfoA finds nothing -> icy_metaint_=0) - on a true SHOUTcast v1
 // server the Windows baseline plays audio with the metadata blocks bleeding
 // into the decoder (ADTS resync swallows them) and titles never parse. Every
 // live-verified Windows station speaks "HTTP/1.0 200 OK" (the wild probe found
@@ -38,7 +38,7 @@
 // The AAC codec is used (URL carries ".aac") because the fixture reuses the
 // runtime FDK-encoded ADTS generator (no binary fixtures, the hls_pipeline_test
 // precedent). The transport + de-interleave under test sit BELOW the codec
-// split — the MP3 continuous decoder stays covered by the live gates.
+// split - the MP3 continuous decoder stays covered by the live gates.
 
 #define MINIAUDIO_IMPLEMENTATION            // StreamSource.cpp holds decls only
 #include "miniaudio.h"
@@ -100,7 +100,7 @@ static void capSocketWaits(SockT c, unsigned ms) {
 #endif
 
 // Stop a LISTENING socket so a thread blocked in accept() wakes (POSIX close()
-// alone does NOT wake it — the http_cancel_test lesson: shutdown first).
+// alone does NOT wake it - the http_cancel_test lesson: shutdown first).
 static void stopListener(SockT s) {
 #ifndef _WIN32
     ::shutdown(s, SHUT_RDWR);
@@ -114,7 +114,7 @@ static int g_fail = 0;
 } while (0)
 
 // ─── Fixture audio: real ADTS (FDK-encoded stereo 44100 sine) ─────────────────
-// Verbatim generator shape from hls_pipeline_test — no binary fixtures.
+// Verbatim generator shape from hls_pipeline_test - no binary fixtures.
 
 static std::vector<uint8_t> encodeAdtsSine(double secs, double freq, double amp) {
     std::vector<uint8_t> out;
@@ -166,7 +166,7 @@ static std::vector<uint8_t> encodeAdtsSine(double secs, double freq, double amp)
 // icy-metaint header, then interleaved [metaint audio bytes][metadata block]
 // forever. The audio is the ADTS buffer looped (frame-aligned end, so the
 // splice is a legal ADTS stream). Titles are sent in the metadata slot on
-// change, zero-length blocks otherwise — the real-station shape.
+// change, zero-length blocks otherwise - the real-station shape.
 
 struct IcyServer {
     // config (set before start())
@@ -317,7 +317,7 @@ static bool waitFor(int timeout_ms, Pred pred) {
     return false;
 }
 
-// Wait for a condition while KEEPING THE RING DRAINED — the producer only
+// Wait for a condition while KEEPING THE RING DRAINED - the producer only
 // touches the network while the ring has room (backpressure at half), so any
 // wait that needs network progress (metadata blocks, noticing a server drop)
 // must drain, exactly as the real audio callback always does.
@@ -345,7 +345,7 @@ int main() {
     CHECK(adts.size() >= 2 && adts[0] == 0xFF && (adts[1] & 0xF6) == 0xF0);
 
     // ── Scenario A: the full ICY contract (HTTP/1.0 status, metaint 4096) ────
-    // The status shape every live-verified station uses — both platforms parse
+    // The status shape every live-verified station uses - both platforms parse
     // icy-metaint and run the de-interleave identically here.
     {
         IcyServer srv;
@@ -376,7 +376,7 @@ int main() {
         CHECK(waitTitle(ss, "Beta Two", 20000));
         srv.setTitle("Gamma Three");
         CHECK(waitTitle(ss, "Gamma Three", 20000));
-        // Position advances only on real (non-silence) frames — drain until a
+        // Position advances only on real (non-silence) frames - drain until a
         // full second has actually been consumed rather than asserting on a
         // platform-speed-dependent snapshot.
         CHECK(drainWaitFor(ss, 20000, [&] { return ss.positionSec() >= 1; }));
@@ -389,13 +389,13 @@ int main() {
         srv.setTitle("Delta Four");
         CHECK(waitTitle(ss, "Delta Four", 25000));       // metadata resumed
         // Titles parse producer-side and can land BEFORE the post-reconnect
-        // prebuffer refills — wait for prebuffer before asserting audible audio.
+        // prebuffer refills - wait for prebuffer before asserting audible audio.
         CHECK(waitFor(15000, [&] { return ss.isPrebuffered(); }));
         auto healed = drainFrames(ss, 20 * 512);
         CHECK(rmsOf(healed) > 0.15);
         std::printf("  reconnect: healed on connection %d\n", srv.connections.load());
 
-        // 5. prompt close on a SILENT stream — drain to underrun first so the
+        // 5. prompt close on a SILENT stream - drain to underrun first so the
         // producer is genuinely blocked in the network read, not backpressure.
         srv.stall.store(true);
         {
@@ -411,9 +411,9 @@ int main() {
         uint32_t dt = port::tickMs() - t0;
         std::printf("  close() on a silent stream: %u ms\n", dt);
 #ifdef _WIN32
-        CHECK(dt < 12000);   // receive-timeout class (8s) — the baseline bound
+        CHECK(dt < 12000);   // receive-timeout class (8s) - the baseline bound
 #else
-        CHECK(dt < 2000);    // stop_-poll class (~100ms slices) — the twin bound
+        CHECK(dt < 2000);    // stop_-poll class (~100ms slices) - the twin bound
 #endif
         CHECK(!ss.isOpen());
 
@@ -441,9 +441,9 @@ int main() {
 
     // ── Scenario C: the "ICY 200 OK" status shape (true SHOUTcast v1) ─────────
     // Pins the per-platform reality (the baseline finding above): Windows/
-    // WinINet accepts the stream but yields icy_metaint=0 — audio plays via
+    // WinINet accepts the stream but yields icy_metaint=0 - audio plays via
     // ADTS resync, titles never parse (byte-verbatim sacred, unchanged). The
-    // Linux twin parses the ICY status + metaint itself — a NAMED
+    // Linux twin parses the ICY status + metaint itself - a NAMED
     // accepted-better delta.
     {
         IcyServer srv;

@@ -21,7 +21,7 @@ logs/
 # Release / dev-build staging (built by the release process, not tracked)
 binary-dev/
 
-# Local runtime config (holds real API keys) — NEVER track. The app writes
+# Local runtime config (holds real API keys) - NEVER track. The app writes
 # remoct.conf/theme.conf to cwd when the config dir isn't resolvable, so a
 # test/app run from the repo root can drop one here.
 remoct.conf
@@ -29,7 +29,7 @@ theme.conf
 
 # App icon asset (local, not tracked). CMake conditionally embeds icon/remoct.ico
 # as the exe's first icon when present (Explorer/taskbar/shortcut + wingui window).
-# remoct_logo.jpg IS shipped though — it's the app logo, used as the radio-art floor.
+# remoct_logo.jpg IS shipped though - it's the app logo, used as the radio-art floor.
 icon/*
 !icon/remoct_logo.jpg
 

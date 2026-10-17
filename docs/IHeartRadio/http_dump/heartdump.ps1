@@ -1,4 +1,4 @@
-# heartdump.ps1 — fire all four handshake variants at the same break
+# heartdump.ps1 - fire all four handshake variants at the same break
 $dur = 180
 $poll = 3
 $variants = 'baseline','clone','emptyid','synth'

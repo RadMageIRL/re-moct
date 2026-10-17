@@ -1,4 +1,4 @@
-// RipFormats.h — the rip output-format table (rip-format-select slice).
+// RipFormats.h - the rip output-format table (rip-format-select slice).
 //
 // ONE data-driven table feeds everything: the modal rows (label, digit =
 // index+1, quality text, the * master marker), the output extensions, and
@@ -6,7 +6,7 @@
 // a row here + an IEncoder and touch no modal logic.
 //
 // `lossless` drives the * master marker (the AR/CTDB-verifiable master vs
-// derived lossy copies) and the CUE/M3U8 target choice — a property, never a
+// derived lossy copies) and the CUE/M3U8 target choice - a property, never a
 // row index, so appended rows can't skew it.
 #pragma once
 
@@ -40,7 +40,7 @@ inline const RipFormatRow* ripFormatRow(RipFormat f) {
     return nullptr;
 }
 
-// The rip request the UI hands to CDRipper::start — copied into the worker
+// The rip request the UI hands to CDRipper::start - copied into the worker
 // like every other start argument (no mutable cross-thread state). Defaults
 // are EXACTLY the pre-slice-2 behavior: both formats, FLAC level 5, LAME V0
 // (the seam oracle pins the encoder-side defaults against the frozen inline

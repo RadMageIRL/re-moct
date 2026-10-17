@@ -1,6 +1,6 @@
 #pragma once
 
-// ─── Library scanner — walk the collection, read tags, refresh the index ─────
+// ─── Library scanner - walk the collection, read tags, refresh the index ─────
 //
 // Library slice 2. Fills and refreshes the LibraryIndex that slice 1 defined:
 // walks the music root, reads tags with TagLib, and revalidates incrementally so

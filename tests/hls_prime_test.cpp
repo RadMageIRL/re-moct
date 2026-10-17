@@ -1,4 +1,4 @@
-// hls_prime_test.cpp — pure unit tests for the prime-to-music-boundary scan
+// hls_prime_test.cpp - pure unit tests for the prime-to-music-boundary scan
 // (iHeart re-pin clip fix, Section A). Header-only; returns nonzero on failure.
 //
 // The decisive property for the FAIL-SAFE requirement: hlsFirstMusicBoundary must

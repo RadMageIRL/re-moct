@@ -1,11 +1,11 @@
-// radio_probe.cpp — standalone WinINet radio-stream probe.
+// radio_probe.cpp - standalone WinINet radio-stream probe.
 //
 // Mirrors StreamSource::connect() EXACTLY (same User-Agent, 8s timeouts, the same
 // RELOAD|NO_CACHE_WRITE|PRAGMA_NOCACHE|KEEP_CONNECTION flags, and the same
-// "Icy-MetaData: 1" request header) — but with NO decoder, NO ring buffer, NO UI,
+// "Icy-MetaData: 1" request header) - but with NO decoder, NO ring buffer, NO UI,
 // NO scrobbler, NO Discord. Just raw bytes off the socket, timed.
 //
-// Purpose: answer one question cleanly — does the station periodically CLOSE the
+// Purpose: answer one question cleanly - does the station periodically CLOSE the
 // connection (the 30-60s drop), independent of anything in RE-MOCT? Because this
 // tool shares none of RE-MOCT's playback code, if it reproduces the same cadence
 // the cause is upstream of everything we built.
@@ -32,7 +32,7 @@ static long long now_ms() {
 }
 
 static HINTERNET g_inet = nullptr, g_conn = nullptr;
-static DWORD     g_recv_to = 8000;   // receive timeout (ms) — overridable via argv[3]
+static DWORD     g_recv_to = 8000;   // receive timeout (ms) - overridable via argv[3]
 
 // ── Identical connect path to StreamSource::connect() ────────────────────────
 static bool probe_connect(const std::string& url) {
@@ -54,7 +54,7 @@ static bool probe_connect(const std::string& url) {
         return false;
     }
 
-    // Report what the server told us — useful for spotting redirects, wrong
+    // Report what the server told us - useful for spotting redirects, wrong
     // content-type, chunked transfer, or a low bitrate.
     char  qbuf[512]; DWORD qlen; DWORD qidx;
     DWORD code = 0, clen = sizeof(code); qidx = 0;
@@ -179,7 +179,7 @@ int main(int argc, char** argv) {
         printf("avg connection life: %.1fs\n", (sum_conn_dur / 1000.0) / closes);
         printf("\n>>> The station CLOSED the connection %d time(s) during the run.\n", closes);
         printf(">>> This probe shares NONE of RE-MOCT's playback code (no decoder, ring,\n");
-        printf(">>> or UI), so the drops are SERVER-SIDE — not something RE-MOCT introduced.\n");
+        printf(">>> or UI), so the drops are SERVER-SIDE - not something RE-MOCT introduced.\n");
         printf(">>> RE-MOCT's job is only how gracefully it masks them.\n");
     } else {
         printf("\n>>> No server closes observed; the socket stayed up the whole run.\n");

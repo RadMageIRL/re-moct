@@ -1,4 +1,4 @@
-// Pure unit tests for IHeartNowPlayingSM — no deps, returns nonzero on failure.
+// Pure unit tests for IHeartNowPlayingSM - no deps, returns nonzero on failure.
 // Real golden fixtures (derived from iheart_http_dump / SniffIHeartRadio captures)
 // land in a follow-up; this scaffold pins the debounce + floor-stall invariants.
 #include "IHeartNowPlayingSM.h"

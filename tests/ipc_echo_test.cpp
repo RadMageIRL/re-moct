@@ -1,14 +1,14 @@
-// ipc_echo_test — REAL-transport test of the core::IIpc seam (Phase 3 slice 4).
+// ipc_echo_test - REAL-transport test of the core::IIpc seam (Phase 3 slice 4).
 //
 // discord_ipc_test proves the PROTOCOL through an injected FakeIpc; this test
 // proves the TRANSPORT: a real local server (Windows: CreateNamedPipe fixture;
 // Linux: a Unix-domain-socket listener) driven through the REAL platform impl
-// via core::ipc(). One file, both platforms — identical scenarios and
+// via core::ipc(). One file, both platforms - identical scenarios and
 // assertions against both transports IS the parity check (the http_cancel_test
 // pattern). Run green against the UNTOUCHED Windows impl BEFORE the Linux twin
 // landed (baseline-first, the slice-3 pattern).
 //
-// Scenarios (each on a fresh endpoint/connection — fixture state is owned by
+// Scenarios (each on a fresh endpoint/connection - fixture state is owned by
 // the fixture, never by the object the client discards):
 //   S0  absent endpoint            -> connect() == nullptr
 //   S1  16-byte round-trip echo    -> byte-identical
@@ -61,7 +61,7 @@ static long long nowMs() {
 // ── per-platform server fixture ─────────────────────────────────────────────
 // listen() creates the endpoint BEFORE the client connects; run() accepts one
 // connection on a fixture thread and hands it to the scenario script. The
-// script talks raw OS handles — the CLIENT side is what goes through the seam.
+// script talks raw OS handles - the CLIENT side is what goes through the seam.
 struct ServerConn {
 #ifdef _WIN32
     HANDLE h = INVALID_HANDLE_VALUE;
@@ -118,7 +118,7 @@ struct EchoServer {
     std::string path;                                // bound socket path (for unlink)
 #endif
 
-    // Create the endpoint under `dir` (Linux; ignored on Windows — pipes have
+    // Create the endpoint under `dir` (Linux; ignored on Windows - pipes have
     // one namespace). Must succeed before the client's connect().
     bool listen(const std::string& dir) {
 #ifdef _WIN32
@@ -187,7 +187,7 @@ static std::string uniq(const char* tag, int n) {
     return "remoct-echo-" + std::to_string(pid) + "-" + tag + "-" + std::to_string(n);
 }
 
-// Drain exactly `n` bytes through recvSome (the consumer's body-loop shape —
+// Drain exactly `n` bytes through recvSome (the consumer's body-loop shape -
 // DiscordRP drives partial reads exactly like this) and count the calls.
 static bool drainExact(core::IIpcChannel& ch, std::string& out, std::size_t n, int& calls) {
     out.assign(n, '\0');
@@ -241,7 +241,7 @@ int main() {
         srv.finish();
     }
 
-    // ---- S2: 64 KiB round-trip — whole-buffer send, multi-recvSome drain ----
+    // ---- S2: 64 KiB round-trip - whole-buffer send, multi-recvSome drain ----
     {
         const std::size_t N = 64 * 1024;
         EchoServer srv; srv.name = uniq("echo64k", ++scenario);
@@ -263,7 +263,7 @@ int main() {
         srv.finish();
     }
 
-    // ---- S3: split delivery — min_bytes semantics ----
+    // ---- S3: split delivery - min_bytes semantics ----
     // Header (8) lands now; body (32) lands ~400ms later. A body-sized wait with
     // only the header queued must return false (avail < min_bytes); the header-
     // sized wait succeeds immediately; the body wait succeeds once it arrives.
@@ -291,7 +291,7 @@ int main() {
         srv.finish();
     }
 
-    // ---- S4: silent server — waitReadable timeout is bounded and false ----
+    // ---- S4: silent server - waitReadable timeout is bounded and false ----
     {
         EchoServer srv; srv.name = uniq("silent", ++scenario);
         CHECK(srv.listen(dir));
@@ -308,14 +308,14 @@ int main() {
         srv.finish();
     }
 
-    // ---- S5: buffered-then-close — queued bytes survive peer death, then EOF ----
+    // ---- S5: buffered-then-close - queued bytes survive peer death, then EOF ----
     {
         EchoServer srv; srv.name = uniq("bufclose", ++scenario);
         CHECK(srv.listen(dir));
         const std::string msg = pattern(8);
         srv.run([&](ServerConn& c) {
             c.writeAll(msg.data(), 8);
-            // closeConn() runs when the script returns — bytes stay queued
+            // closeConn() runs when the script returns - bytes stay queued
         });
         auto ch = core::ipc().connect(srv.name);
         CHECK(ch != nullptr);
@@ -346,7 +346,7 @@ int main() {
         msleep(100);
         if (ch) {
             // A first send can land in OS buffers after the peer closed; the
-            // failure must surface within a few attempts — as `false`, not a signal.
+            // failure must surface within a few attempts - as `false`, not a signal.
             bool failed = false;
             const std::string msg = pattern(64);
             for (int i = 0; i < 20 && !failed; ++i) {
@@ -359,7 +359,7 @@ int main() {
     }
 
 #ifndef _WIN32
-    // ---- S7 (Linux only): endpoint discovery — sandbox subdirs + env fallback ----
+    // ---- S7 (Linux only): endpoint discovery - sandbox subdirs + env fallback ----
     {
         // flatpak: <base>/app/com.discordapp.Discord/<name>
         std::string fp = dir + "/app/com.discordapp.Discord";

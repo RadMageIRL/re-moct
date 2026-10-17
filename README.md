@@ -159,14 +159,21 @@ and a playlist/rip view. The public feature guide is [`docs/index.html`](docs/in
   station cover / iTunes-Deezer lookup / logo floor)
 - 18 named truecolor Awesome palettes, cycled with **F7** / **F8**; a KITT scanner in
   the radio status bar
-- Optional Windows GDI (wingui) build: truecolor window, remembered size, **Alt+Enter**
-  borderless fullscreen (see [BUILD.md](BUILD.md))
+- Windows GDI (wingui) build, the one the release zip ships: truecolor window,
+  remembered size, **Alt+Enter** borderless fullscreen (see [BUILD.md](BUILD.md))
 
 **Cross-platform & plugin architecture**
 - Runs on **Windows** (MSYS2 UCRT64) and **Linux** (Debian Trixie); every platform
   call sits behind a seam with a Windows and a Linux implementation
 - The streaming source is a **real loadable plugin** (`remoct_stream.{so,dll}`) driven
   through a frozen C ABI - a streaming fix ships as a rebuilt plugin, no host rebuild
+
+## Download
+
+Windows x64 builds are attached to each
+[release](https://github.com/RadMageIRL/re-moct/releases): unzip anywhere and run
+`remoct.exe`. There is no installer, and settings live in `%APPDATA%\RE-MOCT\`. On
+Linux, build from source as below.
 
 ## Build
 
@@ -185,7 +192,8 @@ them, and `--tests-only` builds just the test tools and installs nothing. A plai
 Binary: `build/bin/remoct.exe` (Windows) / `build/bin/remoct` (Linux), with the streaming
 plugin built beside it in `build/bin/plugins/`. Windows has two render backends - the
 console `ncursesw` build (default) and a GDI **wingui** build (`-DREMOCT_PDCURSES=ON`,
-truecolor + Alt+Enter fullscreen); see [BUILD.md](BUILD.md).
+truecolor + Alt+Enter fullscreen); see [BUILD.md](BUILD.md). The release zip is the
+wingui build linked statically, and BUILD.md gives its exact configure line.
 
 ## Keybindings (selection)
 

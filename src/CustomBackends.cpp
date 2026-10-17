@@ -1,4 +1,4 @@
-// CustomBackends.cpp — see CustomBackends.h. Add new codec backends HERE (and
+// CustomBackends.cpp - see CustomBackends.h. Add new codec backends HERE (and
 // only here); every registration site picks them up through the accessor.
 #include "CustomBackends.h"
 
@@ -10,7 +10,7 @@
 extern "C" ma_decoding_backend_vtable** remoct_custom_backends(size_t* count) {
     // Function-local static: initialized on first call (thread-safe since
     // C++11), so there is no static-init-order coupling to the singletons.
-    // Ordering is not load-bearing — the sniffs fail fast with MA_NO_BACKEND:
+    // Ordering is not load-bearing - the sniffs fail fast with MA_NO_BACKEND:
     // 4-byte magic (FF Fx/ftyp, OggS, wvpk), and the two OggS backends (Opus,
     // Vorbis) each delegate codec discrimination to their library's parser
     // (OP_ENOTFORMAT / OV_ENOTVORBIS), so neither captures the other's files.

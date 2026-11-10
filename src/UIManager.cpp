@@ -11921,6 +11921,7 @@ void UIManager::showLibrarySearch() {
     // whether the album still fits. The pane does the actual column-correct clipping.
     int wrows = 0, wcols = 0;
     if (win_dir_) getmaxyx(win_dir_, wrows, wcols);
+    (void)(wrows);
     const int cols = std::max(20, wcols - 4);     // borders plus the row prefix
     std::vector<std::string> ident;
     ident.reserve(rows.size());

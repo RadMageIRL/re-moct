@@ -343,6 +343,10 @@ else()
 endif()
 
 # ── Link ───────────────────────────────────────────────────────────────────
+if(TAGLIB_LIBRARY_DIRS)
+	target_link_directories(remoct PUBLIC ${TAGLIB_LIBRARY_DIRS})
+endif()
+
 target_link_libraries(remoct PRIVATE
     ${TAGLIB_LIBRARIES}
     ${FLAC_LIB}

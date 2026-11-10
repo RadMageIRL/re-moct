@@ -7886,12 +7886,13 @@ void UIManager::handleInput(int ch) {
     }
 
     if (ch == 'i' || ch == 'I') {
-        if (right_pane_ == RightPane::TrackInfo) {
+        if (right_pane_ == RightPane::TrackInfo and !tag_edit_mode_) {
             right_pane_ = RightPane::Playlist;  // always return to playlist
-        } else {
+           return;
+        } else if (right_pane_ != RightPane::TrackInfo) {
             right_pane_ = RightPane::TrackInfo;
+            return;
         }
-        return;
     }
 
     // Dismiss help with any non-? key too (just re-route to normal handling)
@@ -7899,7 +7900,7 @@ void UIManager::handleInput(int ch) {
 
     // v: Awesome -> show/hide the full-width Spectrum strip; Classic -> the
     // right-pane visualizer overlay (unchanged MOC-style toggle).
-    if (ch == 'v' || ch == 'V') {
+    if ((ch == 'v' || ch == 'V') and !tag_edit_mode_) {
         if (config_.awesome_mode) {
             awesome_viz_strip_ = !awesome_viz_strip_;
             resizeWindows();              // rebuild panes with/without the strip
@@ -8148,10 +8149,10 @@ void UIManager::handleInput(int ch) {
                     }
                     tag_edit_mode_ = false;
                     break;
-                case KEY_UP: case 'k':
+                case KEY_UP:
                     if (tag_edit_field_ > 0) --tag_edit_field_;
                     break;
-                case KEY_DOWN: case 'j':
+                case KEY_DOWN:
                     if (tag_edit_field_ < 4) ++tag_edit_field_;
                     break;
                 case KEY_BACKSPACE: case 127: case 8: {
@@ -11921,6 +11922,7 @@ void UIManager::showLibrarySearch() {
     // whether the album still fits. The pane does the actual column-correct clipping.
     int wrows = 0, wcols = 0;
     if (win_dir_) getmaxyx(win_dir_, wrows, wcols);
+    (void)(wrows);
     const int cols = std::max(20, wcols - 4);     // borders plus the row prefix
     std::vector<std::string> ident;
     ident.reserve(rows.size());
